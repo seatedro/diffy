@@ -215,6 +215,38 @@ pub fn render(control: Control, chrome: &Chrome) -> AnyElement {
     }
 }
 
+pub fn menu_item(control: Control, chrome: &Chrome) -> AnyElement {
+    let focus = control.focus();
+    let action = control.action.clone();
+    let label = control.label.clone();
+    let shortcut = control.shortcut.map(|keys| kbd(keys, chrome, chrome.muted));
+    view! {
+        <div
+            class="w-full flex-row items-center"
+            h={chrome.height}
+            px={chrome.pad_x}
+            gap={chrome.gap}
+            rounded={chrome.radius}
+            hover_bg={chrome.ghost_hover}
+            cursor={CursorHint::Pointer}
+            on:click={action.clone()}
+            on:key:enter={action.clone()}
+            on:key:space={action}
+            focus_ring={focus}
+            role="menuitem"
+            aria-label={label.clone()}
+            test_id={control.id.clone()}
+        >
+            if let Some(icon) = control.icon {
+                <icon svg={icon} size={chrome.icon} color={chrome.accent} />
+            }
+            <text size={chrome.font} color={chrome.text}>{label}</text>
+            <div class="flex-1" />
+            {?shortcut}
+        </div>
+    }
+}
+
 pub fn row(controls: Vec<Control>, chrome: &Chrome) -> AnyElement {
     let gap = chrome.gap;
     let items: Vec<AnyElement> = controls

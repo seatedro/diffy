@@ -211,6 +211,18 @@ fn progress(id: JobId, message: impl Into<String>) -> Intent {
     })
 }
 
+fn mutable_file(cx: &SharedContext, file: FileKey) -> bool {
+    cx.manifest
+        .as_ref()
+        .filter(|manifest| manifest.working_tree)
+        .is_some_and(|manifest| {
+            manifest
+                .files
+                .iter()
+                .any(|entry| entry.key == file && !entry.buckets.is_empty())
+        })
+}
+
 pub fn working_tree(cx: &SharedContext) -> bool {
     cx.manifest
         .as_ref()
@@ -1351,6 +1363,13 @@ impl Controller for MutationsController {
                 FileOperation::Discard,
                 cx,
             ),
+            A::SelectLines(target)
+            | A::ToggleLineSelection(target)
+            | A::ExtendLineSelection(target)
+                if !mutable_file(cx, target.file) =>
+            {
+                Reduction::default()
+            }
             A::SelectLines(target) => {
                 self.select_lines(&target);
                 self.refresh_presentation(cx);
@@ -1370,6 +1389,9 @@ impl Controller for MutationsController {
                 let Some(target) = cx.selection.clone() else {
                     return error("Move the cursor to a changed line before selecting lines.");
                 };
+                if !mutable_file(cx, target.file) {
+                    return Reduction::default();
+                }
                 if action == A::ToggleCurrentLineSelection {
                     self.toggle_lines(&target);
                 } else {

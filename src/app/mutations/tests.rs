@@ -744,7 +744,7 @@ fn commit_menu_amends_with_a_banner_and_restores_the_draft() {
     ui.click_node(By::role_name(Role::MultilineTextInput, "Commit message"));
     ui.type_text("draft");
     ui.click_node(By::role_name(Role::Button, "More commit actions"));
-    ui.click_node(By::role_name(Role::Button, "Amend last commit"));
+    ui.click_node(By::role_name(Role::MenuItem, "Amend last commit"));
     assert!(matches!(
         ui.app().effects().last(),
         Some(MutationsEffect::LoadLastCommit { .. })

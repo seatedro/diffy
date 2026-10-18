@@ -156,7 +156,7 @@ fn key_row(
                 <text size={layout.small} class="font-mono" color={tc.text_muted}>{masked}</text>
                 <text size={layout.small} color={tc.text_disabled}>{model}</text>
                 <div class="flex-1" />
-                <div w={dot} h={dot} class="rounded-full" bg={tc.status_info} />
+                <div w={dot} h={dot} class="rounded-full shrink-0" bg={tc.accent} />
                 {controls::row(vec![edit, remove], chrome)}
             </div>
         };
@@ -170,7 +170,9 @@ fn key_row(
         .focused(focused)
         .masked(true)
         .bare()
-        .placeholder("Paste key\u{2026}");
+        .placeholder("Paste key\u{2026}")
+        .w_full()
+        .h(layout.row);
     let mut actions = Vec::new();
     if typed {
         actions.push(

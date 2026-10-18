@@ -1,6 +1,5 @@
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::{PopoverSide, anchored, popover_panel};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -21,6 +20,7 @@ const PANEL_WIDTH: f32 = 420.0;
 const EDITOR_MIN_LINES: f32 = 3.0;
 const EDITOR_MAX_LINES: f32 = 10.0;
 const SUBJECT_LIMIT: usize = 72;
+const MENU_WIDTH: f32 = 220.0;
 
 pub fn view(mutations: &mut MutationsController, slot: &Slot, cx: &mut ViewContext) -> AnyElement {
     let theme = cx.theme;
@@ -153,6 +153,7 @@ pub fn commit_box(
     } else {
         "Commit"
     };
+    let mut commit_menu: Option<AnyElement> = None;
     let actions = if generating {
         controls::render(
             Control::new(
@@ -231,30 +232,37 @@ pub fn commit_box(
             );
             let rows: Vec<AnyElement> = items
                 .into_iter()
-                .map(|item| {
-                    controls::render(
-                        item,
-                        &Chrome {
-                            muted: tc.text,
-                            ..chrome
-                        },
-                    )
-                })
+                .map(|item| controls::menu_item(item, &chrome))
                 .collect();
-            let panel = popover_panel(theme)
-                .p(tokens::scaled(Sp::XS, scale))
-                .gap(tokens::scaled(Sp::XXS, scale))
-                .semantic_role(quark::SemanticRole::Menu)
-                .accessibility_label("Commit actions")
-                .test_id("mutations.commit.menu")
-                .children(rows);
-            anchored(panel, PopoverSide::Top, cx.frame.size())
+            let width = tokens::scaled(MENU_WIDTH, scale).min(slot.width - 2.0 * pad);
+            let bottom = pad + chrome.height + tokens::scaled(Sp::XS, scale);
+            view! {
+                <div
+                    class="absolute flex-col"
+                    right={pad}
+                    bottom={bottom}
+                    w={width}
+                    p={tokens::scaled(Sp::XS, scale)}
+                    gap={tokens::scaled(Sp::XXS, scale)}
+                    z_index={200}
+                    bg={tc.elevated_surface}
+                    border={tc.border}
+                    rounded={theme.metrics.panel_radius}
+                    shadow_preset={Shadow::POPOVER}
+                    role="menu"
+                    aria-label="Commit actions"
+                    test_id="mutations.commit.menu"
+                    on:key:escape={MutationsAction::CloseCommitMenu}
+                >
+                    {...rows}
+                </div>
+            }
         });
+        commit_menu = menu;
         view! {
-            <div class="flex-row items-center relative" gap={tokens::scaled(Sp::XXS, scale)}>
+            <div class="flex-row items-center" gap={tokens::scaled(Sp::XXS, scale)}>
                 {commit}
                 {more}
-                {?menu}
             </div>
         }
     };
@@ -268,7 +276,7 @@ pub fn commit_box(
     };
     Some(view! {
         <div
-            class="flex-col shrink-0"
+            class="flex-col shrink-0 relative"
             w={slot.width}
             p={pad}
             gap={gap}
@@ -298,6 +306,7 @@ pub fn commit_box(
                 <div class="flex-1" />
                 {actions}
             </div>
+            {?commit_menu}
         </div>
     })
 }

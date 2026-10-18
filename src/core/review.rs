@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use std::ops::Range;
 
+use diffy_diff::{DiffDocument, ObjectId};
 use serde::{Deserialize, Serialize};
 
 use crate::contracts::shared::{FileKey, FileRevision, Side, SourceTarget};
@@ -283,6 +284,33 @@ impl ReviewAnchor {
             None if matches_old => Some(Side::Old),
             _ => None,
         }
+    }
+
+    pub fn lands_in(&self, document: &DiffDocument, file: u32, target: &SourceTarget) -> bool {
+        let last = target.lines.end.max(target.lines.start.saturating_add(1)) - 1;
+        document
+            .store_line(file, target.side, target.lines.start)
+            .is_some()
+            && document.store_line(file, target.side, last).is_some()
+    }
+
+    pub fn hunk_in(
+        &self,
+        document: &DiffDocument,
+        file: u32,
+        target: &SourceTarget,
+    ) -> Option<u32> {
+        document.hunk_at(file, target.side, target.lines.start)
+    }
+
+    pub fn commit_matches(&self, head: &str) -> bool {
+        let Some(head) = ObjectId::parse(head) else {
+            return true;
+        };
+        self.commit_id
+            .as_deref()
+            .and_then(ObjectId::parse)
+            .is_none_or(|commit| commit.matches(&head))
     }
 
     pub fn to_source_target(
@@ -1154,6 +1182,41 @@ mod tests {
             ),
             Some(target)
         );
+    }
+
+    #[test]
+    fn anchors_resolve_against_document_coordinates() {
+        let document = diffy_diff::parse_unified(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d\n e\n",
+        )
+        .unwrap();
+        let anchor =
+            ReviewAnchor::inline("src/lib.rs", ReviewSide::New, ReviewLineRange::new(11, 2));
+        let target = anchor
+            .to_source_target(
+                FileKey(0),
+                FileRevision(0),
+                &paths("src/lib.rs", "src/lib.rs"),
+            )
+            .unwrap();
+        let outside = SourceTarget {
+            lines: 40..41,
+            ..target.clone()
+        };
+
+        assert!(anchor.lands_in(&document, 0, &target));
+        assert_eq!(anchor.hunk_in(&document, 0, &target), Some(0));
+        assert!(!anchor.lands_in(&document, 0, &outside));
+        assert_eq!(anchor.hunk_in(&document, 0, &outside), None);
+    }
+
+    #[test]
+    fn commit_ids_match_by_prefix() {
+        let mut anchor = ReviewAnchor::inline("a.rs", ReviewSide::New, ReviewLineRange::new(1, 1));
+        assert!(anchor.commit_matches("abc123"));
+        anchor.commit_id = Some("ABC123def".to_owned());
+        assert!(anchor.commit_matches("abc123"));
+        assert!(!anchor.commit_matches("fff000"));
     }
 
     #[test]

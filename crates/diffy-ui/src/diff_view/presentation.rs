@@ -105,6 +105,7 @@ pub struct DiffPresentation {
     pub headers: FileHeaders,
     pub empty_side: EmptySideFill,
     pub sticky_headers: bool,
+    pub wrap_column: Option<u16>,
 }
 
 impl Default for DiffPresentation {
@@ -117,6 +118,7 @@ impl Default for DiffPresentation {
             headers: FileHeaders::default(),
             empty_side: EmptySideFill::default(),
             sticky_headers: false,
+            wrap_column: None,
         }
     }
 }
@@ -134,6 +136,7 @@ impl DiffPresentation {
             headers: FileHeaders::Hidden,
             empty_side: EmptySideFill::Hatch,
             sticky_headers: false,
+            wrap_column: None,
         }
     }
 
@@ -148,6 +151,7 @@ impl DiffPresentation {
             headers: FileHeaders::BuiltIn,
             empty_side: EmptySideFill::Hatch,
             sticky_headers: false,
+            wrap_column: None,
         }
     }
 }
@@ -208,6 +212,19 @@ pub fn band_height(kind: RowKind, m: &Metrics, presentation: &DiffPresentation) 
 /// A compact fold bar: a third of a line, at least four points.
 fn compact_separator_height(m: &Metrics) -> f32 {
     (m.line_h * 0.3).round().max(4.0)
+}
+
+pub fn wrap_width(
+    columns: &Columns,
+    side: Side,
+    m: &Metrics,
+    presentation: &DiffPresentation,
+) -> f32 {
+    let width = columns.wrap_width(side, m);
+    match presentation.wrap_column {
+        Some(column) if column > 0 => width.min(f32::from(column) * m.char_w).max(m.char_w),
+        _ => width,
+    }
 }
 
 /// Colors the app sets over the theme's diff tokens; `None` keeps the

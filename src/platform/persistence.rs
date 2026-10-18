@@ -99,9 +99,9 @@ pub struct SettingsStore {
 
 impl SettingsStore {
     pub fn new_default() -> Self {
-        let base = dirs::config_dir()
+        let base = crate::platform::startup::app_config_dir()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        Self::new_in(base.join("diffy"))
+        Self::new_in(base)
     }
 
     pub fn new_in(path: impl Into<PathBuf>) -> Self {

@@ -10,6 +10,7 @@ commands:
   watch       rerun the default app check when source files change
   run         run the app through cargo
   app         build, install, and launch Diffy Dev.app
+              [--bundle-dir DIR] [--bundle-suffix NAME] [REPO | -- diffy-args...]
   test        run the app library tests
   clippy      run clippy for the app crate
   fmt         check formatting

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use diffy_diff::{
@@ -12,10 +14,15 @@ use crate::contracts::viewport::pipeline::{
     FileStatsRequest, ManifestFile, PipelineFailure, Preparation, PreparedDiff, SourceLoadRequest,
     StatusDiffRequest, TextCompareRequest, TotalStatsRequest,
 };
+use crate::core::compare::git::{compare_worktree, compare_worktree_entry};
 use crate::core::compare::service::matching_document;
-use crate::core::compare::{CompareOutput, ComparePhase, ProgressSink, compare_text};
+use crate::core::compare::{
+    CompareEntry, CompareOutput, ComparePhase, ProgressSink, RendererKind, compare_text,
+};
 use crate::core::error::DiffyError;
+use crate::core::vcs::git::GitService;
 use crate::core::vcs::model::RevisionId;
+use crate::core::vcs::model::{VcsCompareSpec, VcsKind};
 use crate::core::vcs::source::SourceText;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -53,6 +60,32 @@ pub fn estimated_lines(stats: diffy_diff::DiffStats) -> u32 {
     })
 }
 
+pub fn stable_key(entry: &CompareEntry) -> FileKey {
+    let mut hasher = std::hash::DefaultHasher::new();
+    entry.bucket.map(|bucket| bucket as u8).hash(&mut hasher);
+    entry.paths.old_path().hash(&mut hasher);
+    entry.paths.new_path().hash(&mut hasher);
+    FileKey(hasher.finish() | 1 << 63)
+}
+
+pub fn manifest_keys(entries: &[CompareEntry]) -> Vec<FileKey> {
+    let mut used = HashSet::with_capacity(entries.len());
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let mut key = match entry.bucket {
+                Some(_) => stable_key(entry),
+                None => key_at(index),
+            };
+            while !used.insert(key) {
+                key = FileKey(key.0.wrapping_add(1) | 1 << 63);
+            }
+            key
+        })
+        .collect()
+}
+
 pub fn compare_result(
     generation: CompareGeneration,
     resolved: (String, String),
@@ -60,11 +93,17 @@ pub fn compare_result(
     preparation: Option<Preparation>,
 ) -> Result<CompareResult, PipelineFailure> {
     let revision = file_revision(generation);
+    let keys = manifest_keys(&output.entries);
+    let key_at = |index: usize| keys[index];
     let files: Arc<[ManifestFile]> = output
         .entries
         .iter()
         .enumerate()
-        .map(|(index, entry)| ManifestFile::from_entry(key_at(index), revision, entry))
+        .map(|(index, entry)| {
+            let mut file = ManifestFile::from_entry(key_at(index), revision, entry);
+            file.buckets.extend(entry.bucket);
+            file
+        })
         .collect();
     let prepared = output
         .documents
@@ -130,6 +169,28 @@ fn unchanged_document(path: &str, text: &str) -> Result<Arc<DiffDocument>, Pipel
     Ok(Arc::new(builder.build()))
 }
 
+fn is_git_worktree(kind: VcsKind, spec: &VcsCompareSpec) -> bool {
+    kind == VcsKind::GIT && matches!(spec, VcsCompareSpec::WorkingCopy)
+}
+
+fn open_git(path: &std::path::Path) -> Result<GitService, PipelineFailure> {
+    let mut git = GitService::new();
+    git.open(&path.to_string_lossy()).map_err(failed)?;
+    Ok(git)
+}
+
+fn worktree_document(
+    path: &std::path::Path,
+    entry: &CompareEntry,
+    renderer: RendererKind,
+) -> Result<Arc<DiffDocument>, PipelineFailure> {
+    let git = open_git(path)?;
+    compare_worktree_entry(&git, entry, renderer)
+        .map_err(failed)?
+        .map(Arc::new)
+        .ok_or_else(|| PipelineFailure::Failed("No changes in this file.".to_owned()))
+}
+
 impl PipelineServices {
     pub fn run_compare(
         &self,
@@ -142,7 +203,12 @@ impl PipelineServices {
             open_compare_repository(&job.intent.repo_path, request.spec.refs()).map_err(failed)?;
         progress.phase(ComparePhase::ResolvingRefs);
         let resolved = repo.resolve_compare_request(request).map_err(failed)?;
-        let output = repo.compare(request, Some(progress)).map_err(failed)?;
+        let output = if is_git_worktree(repo.location().kind, &request.spec) {
+            let git = open_git(&job.intent.repo_path)?;
+            compare_worktree(&git, request.renderer, Some(progress)).map_err(failed)?
+        } else {
+            repo.compare(request, Some(progress)).map_err(failed)?
+        };
         compare_result(job.generation, resolved, output, job.preparation)
     }
 
@@ -180,6 +246,16 @@ impl PipelineServices {
 
     pub fn load_file(&self, request: &FileLoadRequest) -> Result<PreparedDiff, PipelineFailure> {
         let entry = &request.file.entry;
+        if entry.bucket.is_some() {
+            let doc = worktree_document(&request.repo_path, entry, request.request.renderer)?;
+            return prepare(
+                request.file.key,
+                request.generation,
+                request.file.revision,
+                doc,
+            )
+            .map(|prepared| prepared.with_segment(request.preparation));
+        }
         let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())
             .map_err(failed)?;
         let path = entry.path().into_owned();
@@ -201,6 +277,25 @@ impl PipelineServices {
         &self,
         request: &FileStatsRequest,
     ) -> Result<Vec<FileStat>, PipelineFailure> {
+        if request.files.iter().any(|file| file.entry.bucket.is_some()) {
+            return request
+                .files
+                .iter()
+                .map(|file| {
+                    let doc = worktree_document(
+                        &request.repo_path,
+                        &file.entry,
+                        request.request.renderer,
+                    )?;
+                    let (additions, deletions) = doc.stats(0).known().unwrap_or((0, 0));
+                    Ok(FileStat {
+                        key: file.key,
+                        additions,
+                        deletions,
+                    })
+                })
+                .collect();
+        }
         let mut repo = open_compare_repository(&request.repo_path, request.request.spec.refs())
             .map_err(failed)?;
         let entries: Vec<_> = request
@@ -422,5 +517,126 @@ mod tests {
             loaded.document().text(0, diffy_diff::Side::New).line(1),
             Some("three")
         );
+    }
+
+    #[test]
+    fn git_working_copies_list_each_bucket_with_its_own_pair_and_stable_key() {
+        use crate::contracts::viewport::pipeline::{
+            CompareIntent, CompareJob, CompareResult, CompareWorkPriority, FileLoadRequest,
+            FileTarget, ManifestFile,
+        };
+        use crate::core::vcs::model::{ChangeBucket, VcsCompareRequest, VcsCompareSpec};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        crate::core::compare::service::tests::commit_file(&repo, "a.rs", "one\n", "a");
+        std::fs::write(dir.path().join("a.rs"), "two\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("a.rs")).unwrap();
+        index.write().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "three\n").unwrap();
+        std::fs::write(dir.path().join("new.txt"), "fresh\n").unwrap();
+        let blob = |text: &str| repo.blob(text.as_bytes()).unwrap().to_string();
+
+        for renderer in [RendererKind::Builtin, RendererKind::Difftastic] {
+            let request = VcsCompareRequest {
+                spec: VcsCompareSpec::WorkingCopy,
+                layout: LayoutMode::Unified,
+                renderer,
+            };
+            let run = |generation| {
+                PipelineServices
+                    .run_compare(
+                        &CompareJob {
+                            generation: CompareGeneration(generation),
+                            intent: CompareIntent {
+                                repo_path: dir.path().to_path_buf(),
+                                request: request.clone(),
+                            },
+                            preparation: None,
+                        },
+                        &Phases,
+                    )
+                    .unwrap()
+            };
+            let first = run(1);
+            let files = &first.manifest.files;
+            let rows: Vec<_> = files
+                .iter()
+                .map(|file| (file.paths.display_path().into_owned(), file.buckets.clone()))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("a.rs".to_owned(), vec![ChangeBucket::Staged]),
+                    ("a.rs".to_owned(), vec![ChangeBucket::Unstaged]),
+                    ("new.txt".to_owned(), vec![ChangeBucket::Untracked]),
+                ],
+                "{renderer:?}"
+            );
+            assert_ne!(files[0].key, files[1].key);
+            let lines = |key| {
+                let prepared = first.prepared.iter().find(|p| p.key() == key).unwrap();
+                let doc = prepared.document();
+                let line = |side| {
+                    let store = doc.text(0, side);
+                    (0..store.line_count())
+                        .map(|i| store.line(i).unwrap().to_owned())
+                        .collect::<Vec<_>>()
+                };
+                (line(diffy_diff::Side::Old), line(diffy_diff::Side::New))
+            };
+            assert_eq!(
+                lines(files[0].key),
+                (vec!["one".into()], vec!["two".into()])
+            );
+            assert_eq!(
+                lines(files[1].key),
+                (vec!["two".into()], vec!["three".into()])
+            );
+            assert_eq!(lines(files[2].key), (vec![], vec!["fresh".into()]));
+            let id = |file: &ManifestFile| {
+                (
+                    file.old_id.as_ref().map(|id| id.to_string()),
+                    file.new_id.as_ref().map(|id| id.to_string()),
+                )
+            };
+            let (staged_old, staged_new) = id(&files[0]);
+            assert!(blob("one\n").starts_with(&staged_old.unwrap()));
+            assert!(blob("two\n").starts_with(&staged_new.unwrap()));
+            let (unstaged_old, _) = id(&files[1]);
+            assert!(blob("two\n").starts_with(&unstaged_old.unwrap()));
+
+            let again = run(2);
+            let keys = |result: &CompareResult| {
+                result
+                    .manifest
+                    .files
+                    .iter()
+                    .map(|f| f.key)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(keys(&first), keys(&again));
+
+            let unstaged = first.entries[1].clone();
+            let loaded = PipelineServices
+                .load_file(&FileLoadRequest {
+                    generation: CompareGeneration(1),
+                    repo_path: dir.path().to_path_buf(),
+                    request,
+                    file: FileTarget {
+                        key: files[1].key,
+                        revision: FileRevision(1),
+                        entry: unstaged,
+                    },
+                    priority: CompareWorkPriority::InteractiveSelectedFile,
+                    preparation: None,
+                })
+                .unwrap();
+            assert_eq!(
+                loaded.document().text(0, diffy_diff::Side::Old).line(0),
+                Some("two")
+            );
+        }
     }
 }

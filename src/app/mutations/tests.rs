@@ -14,7 +14,7 @@ use super::presentation::action_buttons;
 use super::{MutationsController, panel, view};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{TextCx, TextHost};
-use crate::contracts::commands::ToastUpdate;
+use crate::contracts::commands::{CommandsAction, ToastUpdate};
 use crate::contracts::mutations::{
     ConfirmedMutation, MutationSelection, MutationSource, MutationSourceKey, MutationsAction,
     MutationsEffect, MutationsEvent, StagedDigest,
@@ -459,20 +459,19 @@ fn staged_checks_that_beat_the_start_event_still_count() {
 
 #[test]
 fn provider_preference_and_saved_prompt_steer_generation() {
-    let cx = shared();
+    let mut cx = shared();
     let mut controller = MutationsController::default();
     ai_ready(&mut controller, &cx);
-    controller.reduce_action(
-        MutationsAction::SetAiProvider(Some(crate::ai::Provider::OpenAi)),
-        &cx,
-    );
+    let mut settings = cx.settings.as_ref().clone();
+    settings.settings.ai_provider = Some(crate::ai::Provider::OpenAi);
+    cx.settings = Rc::new(settings.clone());
     let missing = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
     assert!(missing.effects.is_empty());
-    controller.reduce_action(MutationsAction::SetAiProvider(None), &cx);
-    controller
-        .steering_editor_mut()
-        .set_text("Use imperative mood");
-    controller.reduce_action(MutationsAction::SaveSteeringPrompt, &cx);
+    settings.settings.ai_provider = None;
+    settings.settings.ai_steering_prompt = "Use imperative mood".to_owned();
+    cx.settings = Rc::new(settings);
+    controller.apply_intent(&Intent::SettingsChanged(cx.settings.clone()), &cx);
+    assert_eq!(controller.steering_editor().text(), "Use imperative mood");
     let reduction = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
     let effects = mutation_effects(&reduction);
     let [MutationsEffect::GenerateCommitMessage(request)] = effects.as_slice() else {
@@ -784,6 +783,7 @@ struct SettingsHost {
     controller: MutationsController,
     shared: SharedContext,
     reductions: Vec<Reduction>,
+    commands: Vec<CommandsAction>,
     now_ms: u64,
 }
 
@@ -799,9 +799,13 @@ impl UiApp for SettingsHost {
     }
 
     fn update(&mut self, action: Action, _cx: &mut UiContext) {
-        if let Action::Mutations(action) = action {
-            let reduction = self.controller.reduce_action(action, &self.shared);
-            self.reductions.push(reduction);
+        match action {
+            Action::Mutations(action) => {
+                let reduction = self.controller.reduce_action(action, &self.shared);
+                self.reductions.push(reduction);
+            }
+            Action::Commands(action) => self.commands.push(action),
+            _ => {}
         }
     }
 
@@ -824,6 +828,7 @@ fn clankers_settings_save_keys_and_prompt() {
             controller: MutationsController::default(),
             shared: shared(),
             reductions: Vec::new(),
+            commands: Vec::new(),
             now_ms: 0,
         },
         (900.0, 900.0),
@@ -850,8 +855,10 @@ fn clankers_settings_save_keys_and_prompt() {
 
     ui.click_node(By::role_name(Role::Button, "Anthropic"));
     assert_eq!(
-        ui.app().controller.ai().provider,
-        Some(crate::ai::Provider::Anthropic)
+        ui.app().commands.last(),
+        Some(&CommandsAction::SetAiProvider(Some(
+            crate::ai::Provider::Anthropic
+        )))
     );
 
     ui.click_node(By::role_name(
@@ -862,8 +869,13 @@ fn clankers_settings_save_keys_and_prompt() {
     ui.type_text("Be brief");
     ui.click_node(By::role_name(Role::Button, "Save prompt"));
     assert_eq!(
-        ui.app().controller.ai().steering.as_deref(),
-        Some("Be brief")
+        ui.app().commands.last(),
+        Some(&CommandsAction::SetAiSteeringPrompt("Be brief".to_owned()))
+    );
+    ui.click_node(By::role_name(Role::Button, "Reset to default"));
+    assert_eq!(
+        ui.app().commands.last(),
+        Some(&CommandsAction::SetAiSteeringPrompt(String::new()))
     );
 }
 

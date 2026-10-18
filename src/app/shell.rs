@@ -390,8 +390,13 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             };
             navigation::view(&mut self.controllers.navigation, &slot, cx)
         });
+        let presentation = self.controllers.review.presentation();
+        self.controllers
+            .viewport
+            .interaction
+            .sync_review(&presentation);
         let decorator = self.slots.decorator(
-            self.controllers.review.presentation(),
+            presentation,
             self.controllers.mutations.presentation(),
             tokens::ui_scale(theme),
         );

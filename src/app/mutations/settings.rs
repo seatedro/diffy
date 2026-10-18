@@ -9,12 +9,12 @@ use quark_ui::text_input::text_editor_element;
 use quark_ui::theme::Theme;
 
 use super::MutationsController;
-use crate::ai::Provider;
+use crate::ai::{DEFAULT_STEERING_PROMPT, Provider};
 use crate::app::text_targets::{
     SETTINGS_ANTHROPIC_KEY, SETTINGS_OPENAI_KEY, SETTINGS_STEERING_PROMPT,
 };
 use crate::app::tokens::{self, Sp, TextStyle};
-use crate::contracts::commands::SettingsSnapshot;
+use crate::contracts::commands::{CommandsAction, SettingsSnapshot};
 use crate::contracts::mutations::MutationsAction;
 use crate::platform::secrets::AiKeyKind;
 
@@ -41,7 +41,7 @@ fn provider_row(current: Option<Provider>, gap: f32) -> AnyElement {
         <div class="flex-row items-center" gap={gap} role="radiogroup" aria-label="AI provider">
             for (label, provider) in options key={label} {
                 <div>
-                    {Button::new(MutationsAction::SetAiProvider(provider))
+                    {Button::new(CommandsAction::SetAiProvider(provider))
                         .label(label)
                         .active(current == provider)
                         .size(ButtonSize::Compact)}
@@ -160,14 +160,17 @@ pub fn clankers_settings(
             editing: ai.anthropic_editing,
         },
     ];
-    let provider = provider_row(ai.provider, gap);
+    let provider = provider_row(settings.settings.ai_provider, gap);
     let keys: Vec<AnyElement> = blocks
         .into_iter()
         .map(|block| key_block(block, mutations, width, cx))
         .collect();
-    let custom = match &mutations.ai().steering {
-        Some(prompt) => !prompt.is_empty(),
-        None => !settings.settings.ai_steering_prompt.trim().is_empty(),
+    let custom = !settings.settings.ai_steering_prompt.trim().is_empty();
+    let edited = mutations.steering_editor().text().trim();
+    let saved = if edited == DEFAULT_STEERING_PROMPT.trim() {
+        String::new()
+    } else {
+        edited.to_owned()
     };
     let prompt_note = if custom {
         "A custom prompt guides generated commit messages."
@@ -214,11 +217,11 @@ pub fn clankers_settings(
                     {prompt}
                 </div>
                 <div class="flex-row items-center" gap={gap}>
-                    {Button::new(MutationsAction::SaveSteeringPrompt)
+                    {Button::new(CommandsAction::SetAiSteeringPrompt(saved))
                         .label("Save prompt")
                         .style(ButtonStyle::Filled)
                         .size(ButtonSize::Compact)}
-                    {Button::new(MutationsAction::ResetSteeringPrompt)
+                    {Button::new(CommandsAction::SetAiSteeringPrompt(String::new()))
                         .label("Reset to default")
                         .size(ButtonSize::Compact)}
                 </div>

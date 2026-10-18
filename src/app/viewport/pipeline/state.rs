@@ -15,6 +15,7 @@ use crate::contracts::viewport::pipeline::{
     PipelineEffect, PipelineFailure, Preparation, PreparedDiff, SlotUpdate, SourceLoadRequest,
     TotalStatsRequest,
 };
+use crate::core::compare::git::bucket_refs;
 use crate::core::compare::{CompareEntry, ComparePhase};
 use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
 
@@ -65,6 +66,7 @@ struct ActiveCompare {
     sources_loading: HashSet<FileKey>,
     totals_loading: bool,
     used: HashMap<FileKey, u64>,
+    positions: HashMap<FileKey, usize>,
     selected: Option<FileKey>,
 }
 
@@ -86,6 +88,7 @@ impl ActiveCompare {
             sources_loading: HashSet::new(),
             totals_loading: false,
             used: HashMap::new(),
+            positions: HashMap::new(),
             selected,
         }
     }
@@ -232,6 +235,12 @@ impl PipelineController {
         let files: Arc<[FileKey]> = manifest.files.iter().map(|file| file.key).collect();
         let pending_totals = manifest.totals.is_pending() && !manifest.files.is_empty();
         active.entries = result.entries;
+        active.positions = manifest
+            .files
+            .iter()
+            .enumerate()
+            .map(|(index, file)| (file.key, index))
+            .collect();
         active.manifest = Some(manifest.clone());
         let mut prepared: HashMap<FileKey, PreparedDiff> = result
             .prepared
@@ -304,11 +313,8 @@ impl PipelineController {
 
     fn target(active: &ActiveCompare, key: FileKey) -> Option<FileTarget> {
         let manifest = active.manifest.as_ref()?;
-        let file = manifest.file(key)?;
-        let index = manifest
-            .files
-            .iter()
-            .position(|candidate| candidate.key == key)?;
+        let index = *active.positions.get(&key)?;
+        let file = manifest.files.get(index)?;
         Some(FileTarget {
             key,
             revision: file.revision,
@@ -363,9 +369,10 @@ impl PipelineController {
         let mut files = Vec::new();
         for key in keys {
             let pending = active
-                .manifest
-                .as_ref()
-                .and_then(|manifest| manifest.file(key))
+                .positions
+                .get(&key)
+                .zip(active.manifest.as_ref())
+                .and_then(|(&index, manifest)| manifest.files.get(index))
                 .is_some_and(|file| file.stats.is_pending());
             if !pending || active.stats_loading.contains(&key) {
                 continue;
@@ -426,13 +433,30 @@ impl PipelineController {
         else {
             return Reduction::default();
         };
+        let (old_reference, new_reference) = match file.entry.bucket {
+            Some(bucket) => {
+                let (old, new) = bucket_refs(bucket);
+                let old = old.map_or(String::new(), |old| {
+                    if old == "HEAD" {
+                        manifest.resolved_left.clone()
+                    } else {
+                        old.to_owned()
+                    }
+                });
+                (old, new.to_owned())
+            }
+            None => (
+                manifest.resolved_left.clone(),
+                manifest.resolved_right.clone(),
+            ),
+        };
         let request = SourceLoadRequest {
             generation: active.generation,
             repo_path: active.intent.repo_path.clone(),
             file,
             prepared: prepared.clone(),
-            old_reference: manifest.resolved_left.clone(),
-            new_reference: manifest.resolved_right.clone(),
+            old_reference,
+            new_reference,
             purpose,
             preparation,
         };
@@ -445,9 +469,10 @@ impl PipelineController {
             return stale(generation);
         };
         let expected = active
-            .manifest
-            .as_ref()
-            .and_then(|manifest| manifest.file(prepared.key()))
+            .positions
+            .get(&prepared.key())
+            .zip(active.manifest.as_ref())
+            .and_then(|(&index, manifest)| manifest.files.get(index))
             .map(|file| file.revision);
         if prepared.generation() != generation || expected != Some(prepared.revision()) {
             return stale(generation);
@@ -550,7 +575,7 @@ impl PipelineController {
             if value.is_pending() {
                 continue;
             }
-            let Some(index) = manifest.files.iter().position(|file| file.key == key) else {
+            let Some(&index) = active.positions.get(&key) else {
                 continue;
             };
             if manifest.files[index].stats == value {
@@ -749,7 +774,7 @@ fn tag_buckets(manifest: &mut CompareManifestSnapshot, cx: &SharedContext) {
         return;
     }
     let mut files = manifest.files.to_vec();
-    for file in &mut files {
+    for file in files.iter_mut().filter(|file| file.buckets.is_empty()) {
         let path = file.paths.display_path();
         if let Some(list) = buckets.get(path.as_ref()) {
             file.buckets = list.clone();

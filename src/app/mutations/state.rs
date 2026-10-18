@@ -84,8 +84,6 @@ pub struct AiState {
     pub generation: u64,
     pub active: bool,
     pub error: Option<String>,
-    pub provider: Option<Provider>,
-    pub steering: Option<String>,
     staged: Option<StagedDigest>,
     observed: Option<StagedDigest>,
     has_staged: bool,
@@ -119,7 +117,7 @@ pub struct MutationsController {
     openai_field: TextField,
     anthropic_field: TextField,
     steering: Editor,
-    steering_synced: String,
+    steering_setting: Option<String>,
 }
 
 impl std::fmt::Debug for MutationsController {
@@ -149,7 +147,7 @@ impl Default for MutationsController {
             openai_field: TextField::new(""),
             anthropic_field: TextField::new(""),
             steering: Editor::new(EditorMode::ProseInput),
-            steering_synced: String::new(),
+            steering_setting: None,
         }
     }
 }
@@ -742,12 +740,12 @@ impl MutationsController {
             .filter(|key| !key.is_empty())
             .map(|key| (provider, key))
         };
-        let chosen = match self.ai.provider {
+        let chosen = match cx.settings.settings.ai_provider {
             Some(provider) => key(provider),
             None => key(Provider::Anthropic).or_else(|| key(Provider::OpenAi)),
         };
         let Some((provider, api_key)) = chosen else {
-            return error(match self.ai.provider {
+            return error(match cx.settings.settings.ai_provider {
                 Some(provider) => format!(
                     "Add a {} key under Settings \u{2192} Clankers first.",
                     provider.label()
@@ -762,11 +760,7 @@ impl MutationsController {
                 .file_changes
                 .iter()
                 .any(|change| change.bucket == ChangeBucket::Staged);
-        let steering = self
-            .ai
-            .steering
-            .as_ref()
-            .unwrap_or(&cx.settings.settings.ai_steering_prompt);
+        let steering = &cx.settings.settings.ai_steering_prompt;
         let steering_prompt = if steering.trim().is_empty() {
             DEFAULT_STEERING_PROMPT.to_owned()
         } else {
@@ -884,14 +878,17 @@ impl MutationsController {
     }
 
     fn sync_steering(&mut self, prompt: &str) {
+        if self.steering_setting.as_deref() == Some(prompt) {
+            return;
+        }
+        self.steering_setting = Some(prompt.to_owned());
         let shown = if prompt.trim().is_empty() {
             DEFAULT_STEERING_PROMPT
         } else {
             prompt
         };
-        if self.steering.text() == self.steering_synced && self.steering_synced != shown {
+        if self.steering.text() != shown {
             self.steering.set_text(shown);
-            self.steering_synced = shown.to_owned();
         }
     }
 
@@ -1311,27 +1308,7 @@ impl Controller for MutationsController {
                 self.commit.scroll(lines as f32 * step);
                 Reduction::changed()
             }
-            A::SetAiProvider(provider) => {
-                self.ai.provider = provider;
-                Reduction::changed()
-            }
             A::SaveAiKeyField(kind) => self.save_key_field(kind),
-            A::SaveSteeringPrompt => {
-                let prompt = self.steering.text().trim().to_owned();
-                self.steering_synced = self.steering.text().to_owned();
-                self.ai.steering = Some(prompt);
-                Reduction::changed().intent(toast(
-                    ToastKind::Success,
-                    None,
-                    "Steering prompt saved.",
-                ))
-            }
-            A::ResetSteeringPrompt => {
-                self.steering.set_text(DEFAULT_STEERING_PROMPT);
-                self.steering_synced = DEFAULT_STEERING_PROMPT.to_owned();
-                self.ai.steering = Some(String::new());
-                Reduction::changed()
-            }
             A::ScrollSteeringPrompt(lines) => {
                 let step = self.steering.scroll_line_height_px();
                 self.steering.scroll(lines as f32 * step);
@@ -1620,9 +1597,7 @@ impl Controller for MutationsController {
                 Reduction::default().effect(MutationsEffect::LoadAiKeys)
             }
             Intent::SettingsChanged(snapshot) => {
-                if self.ai.steering.is_none() {
-                    self.sync_steering(&snapshot.settings.ai_steering_prompt);
-                }
+                self.sync_steering(&snapshot.settings.ai_steering_prompt);
                 Reduction::changed()
             }
             Intent::ActivateWorkspace { .. } => {

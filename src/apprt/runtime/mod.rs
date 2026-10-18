@@ -105,6 +105,7 @@ impl AppRuntime {
             ShellEffect::SetClipboard(text) => {
                 thread::spawn(move || shell.set_clipboard(text));
             }
+            ShellEffect::Focus(_) => {}
         }
     }
 }

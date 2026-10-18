@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use diffy_syntax::legacy_pack::{self, LegacyLanguage};
-use diffy_syntax::{GrammarStore, HighlightWorker, LegacyPacks, PublicKey, StoreConfig};
+use diffy_syntax::{
+    GrammarStore, HighlightWorker, LegacyPacks, PublicKey, ScopeWorker, StoreConfig,
+};
 
 const PACK_INDEX_PUBLIC_KEY: &str = match option_env!("PHOSPHOR_PACK_INDEX_PUBLIC_KEY") {
     Some(key) => key,
@@ -72,6 +74,7 @@ pub fn language_for_path(path: &str) -> Option<&'static LegacyLanguage> {
 pub struct Grammars {
     store: GrammarStore,
     worker: Arc<Mutex<HighlightWorker>>,
+    scopes: Arc<Mutex<ScopeWorker>>,
 }
 
 impl std::fmt::Debug for Grammars {
@@ -92,6 +95,7 @@ impl Grammars {
     pub fn with_store(store: GrammarStore) -> Self {
         Self {
             worker: Arc::new(Mutex::new(HighlightWorker::new(store.clone()))),
+            scopes: Arc::new(Mutex::new(ScopeWorker::new(store.clone()))),
             store,
         }
     }
@@ -116,5 +120,12 @@ impl Grammars {
         let worker = self.worker();
         worker.set_wake(wake);
         worker
+    }
+
+    pub fn scope_worker(&self) -> ScopeWorker {
+        self.scopes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .share()
     }
 }

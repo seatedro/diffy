@@ -314,4 +314,10 @@ pub trait DiffDecorator {
     fn hunk_actions(&self, _cx: &SeparatorContext) -> Option<AnyElement> {
         None
     }
+
+    /// A band above the diff, outside its rows, such as a commit header:
+    /// its height and content for a view `width` points wide.
+    fn banner(&self, _width: f32) -> Option<(f32, AnyElement)> {
+        None
+    }
 }

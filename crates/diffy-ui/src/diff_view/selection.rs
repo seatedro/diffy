@@ -366,20 +366,16 @@ impl DiffViewState {
     }
 }
 
-/// The changed or unchanged line under a point of the view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineHit {
     pub file: FileId,
     pub revision: Revision,
     pub side: Side,
-    /// Zero-based source line on `side`.
     pub line: u32,
     pub kind: RowKind,
 }
 
 impl DiffViewState {
-    /// The line under window point `(x, y)`: the side of the column it
-    /// is over, or in unified the side the row shows.
     pub fn line_at(&self, x: f32, y: f32) -> Option<LineHit> {
         let (x, y) = self.local(x, y);
         let frame = self.frame.as_ref()?;

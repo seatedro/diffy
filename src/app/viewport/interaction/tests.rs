@@ -310,7 +310,8 @@ fn stale_installs_are_ignored() {
     });
     ui.frame();
     assert!(ui.try_find(By::test_id("diffy.diff.file.9.1")).is_none());
-    assert!(ui.painted_text().contains("Loading diff"));
+    assert!(!ui.painted_text().contains("Loading diff"));
+    assert!(ui.try_find(By::test_id("diffy.diff.file.1.1")).is_some());
 }
 
 #[test]
@@ -851,4 +852,33 @@ fn a_decorator_banner_sits_above_the_rows() {
         list.y >= banner.y + banner.height - 0.5,
         "{banner:?} {list:?}"
     );
+}
+
+#[test]
+fn a_refresh_keeps_the_shown_diff_until_its_files_arrive() {
+    let mut ui = loaded(Host::new());
+    let next = CompareGeneration(GENERATION.0 + 1);
+    ui.app_mut()
+        .install(ViewportInstall::Begin { generation: next });
+    ui.frame();
+    assert!(!ui.painted_text().contains("Loading diff"));
+    assert!(line_names(&ui).iter().any(|n| n == "changed ten"));
+
+    let base = numbered(0..60);
+    ui.app_mut().install(ViewportInstall::File {
+        prepared: prepared_at(
+            next,
+            1,
+            2,
+            "a.rs",
+            &base,
+            &base.replace("line 10\n", "ten again\n"),
+        ),
+        remap: None,
+    });
+    ui.frame();
+    let names = line_names(&ui);
+    assert!(names.iter().any(|n| n == "ten again"));
+    assert!(!names.iter().any(|n| n == "changed ten"));
+    assert!(!ui.app().interaction.has_text_selection());
 }

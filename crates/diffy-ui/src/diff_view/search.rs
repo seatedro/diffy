@@ -26,8 +26,6 @@ pub enum SearchSides {
     New,
     /// Old and new occurrences are separate matches.
     Both,
-    /// Each line the diff shows once: every new line, and old lines only
-    /// where they were removed or changed.
     Shown,
 }
 

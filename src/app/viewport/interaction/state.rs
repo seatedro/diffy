@@ -91,6 +91,7 @@ pub struct InteractionController {
     pub(super) modifiers: LineModifiers,
     pub(super) line_actions: Vec<MutationsAction>,
     pub(super) line_drag: Option<SourceTarget>,
+    pub(super) stale_view: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -147,6 +148,7 @@ impl Default for InteractionController {
             modifiers: LineModifiers::default(),
             line_actions: Vec::new(),
             line_drag: None,
+            stale_view: None,
         }
     }
 }
@@ -396,6 +398,7 @@ impl InteractionController {
         self.review_revision = None;
         self.seeded.clear();
         self.scopes.borrow_mut().clear();
+        self.stale_view = None;
         self.phase = Phase::Loading;
     }
 
@@ -434,7 +437,31 @@ impl InteractionController {
     ) -> Reduction {
         let mut reduction = Reduction::default();
         let mut pending = Vec::new();
+        let mut restore = None;
         for install in batch {
+            let settles = match &install {
+                InstallItem::View(
+                    ViewportInstall::Begin { .. } | ViewportInstall::TextCompare { .. },
+                ) => false,
+                InstallItem::View(ViewportInstall::File { prepared, .. }) => {
+                    prepared.generation() >= self.generation
+                }
+                _ => true,
+            };
+            if settles && let Some(offset) = self.stale_view.take() {
+                let collapsed: Vec<FileKey> = self.diff.as_ref().map_or(Vec::new(), |diff| {
+                    let order = diff.session().order();
+                    order
+                        .iter()
+                        .copied()
+                        .filter(|&key| diff.is_file_collapsed(key))
+                        .collect()
+                });
+                let seeded = std::mem::take(&mut self.seeded);
+                self.reset(self.generation);
+                self.seeded = seeded;
+                restore = Some((offset, collapsed));
+            }
             match install {
                 InstallItem::View(ViewportInstall::File { prepared, remap }) => {
                     reduction.merge(self.queue_file(prepared, remap, &mut pending, cx));
@@ -461,7 +488,22 @@ impl InteractionController {
             }
         }
         reduction.merge(self.flush(pending, cx));
+        if let Some((offset, collapsed)) = restore
+            && let Some(diff) = &mut self.diff
+        {
+            for key in collapsed {
+                diff.set_file_collapsed(key, true);
+            }
+            diff.handle(DiffEvent::ScrollTo(offset));
+            reduction.changed = true;
+        }
         reduction
+    }
+
+    pub fn has_text_selection(&self) -> bool {
+        self.diff
+            .as_ref()
+            .is_some_and(|diff| diff.selection().is_some())
     }
 
     fn queue_file(
@@ -679,7 +721,17 @@ impl InteractionController {
                 if generation < self.generation {
                     return Reduction::default();
                 }
+                let shown = self.phase == Phase::Ready
+                    && !self.text_compare.active
+                    && self.diff.as_ref().is_some_and(|d| !d.session().is_empty());
+                if shown && generation > self.generation {
+                    let offset = self.diff.as_ref().map_or(0.0, |d| d.scroll_offset());
+                    self.generation = generation;
+                    self.stale_view = self.stale_view.or(Some(offset));
+                    return Reduction::default();
+                }
                 self.text_compare.active = false;
+                self.stale_view = None;
                 self.reset(generation);
                 Reduction::changed()
             }

@@ -676,7 +676,7 @@ fn commit_matches(commit: &VcsChange, query: &str) -> bool {
         || commit.author_name.to_lowercase().contains(&query)
 }
 
-fn now_secs() -> i64 {
+pub(super) fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
@@ -816,7 +816,7 @@ fn history(
     }
 }
 
-fn pill(label: &str, theme: &Theme) -> AnyElement {
+pub(super) fn pill(label: &str, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
     view! {
@@ -832,137 +832,6 @@ fn pill(label: &str, theme: &Theme) -> AnyElement {
             <text size={TextStyle::Caption.font_size(theme)} class="font-medium" color={tc.text_muted}>{label.to_owned()}</text>
         </div>
     }
-}
-
-pub fn commit_header_height(theme: &Theme) -> f32 {
-    let scale = tokens::ui_scale(theme);
-    tokens::scaled(Sp::MD, scale) * 3.0
-        + tokens::scaled(Layout::AVATAR_MD, scale).max(TextStyle::Heading.font_size(theme) * 2.2)
-        + theme.metrics.ui_row_height.round()
-}
-
-pub fn commit_header(
-    nav: &NavigationController,
-    review: &ReviewController,
-    layout_unified: bool,
-    theme: &Theme,
-) -> Option<AnyElement> {
-    let selected = nav.history().selected.as_deref()?;
-    let commit = nav
-        .history_commits()?
-        .iter()
-        .find(|c| c.revision.id.starts_with(selected) || c.short_revision == selected)?;
-    let tc = &theme.colors;
-    let scale = tokens::ui_scale(theme);
-    let small = TextStyle::BodySmall.font_size(theme);
-    let mono = TextStyle::MonoSmall.font_size(theme);
-    let age = relative_age(now_secs(), commit.timestamp);
-    let byline = if age.is_empty() {
-        format!("{} committed", commit.author_name)
-    } else {
-        format!("{} committed {age} ago", commit.author_name)
-    };
-    let (files, additions, deletions) = nav
-        .manifest()
-        .map(|m| {
-            let (a, d) = match m.totals {
-                FileStats::Known {
-                    additions,
-                    deletions,
-                } => (Some(additions), Some(deletions)),
-                FileStats::Pending => (None, None),
-            };
-            (m.files.len(), a, d)
-        })
-        .unwrap_or_default();
-    let revision = commit.revision.id.clone();
-    let avatar = author_avatar(review, &commit.author_name, "").size(Layout::AVATAR_MD);
-    let layout = quark_components::SegmentedControl::new(vec![
-        quark_components::SegmentedItem::new(
-            "Unified",
-            Action::from(CommandsAction::SetLayout(
-                crate::core::compare::LayoutMode::Unified,
-            )),
-            layout_unified,
-        ),
-        quark_components::SegmentedItem::new(
-            "Split",
-            Action::from(CommandsAction::SetLayout(
-                crate::core::compare::LayoutMode::Split,
-            )),
-            !layout_unified,
-        ),
-    ])
-    .id("commit-header.layout");
-    let noun = if files == 1 { "file" } else { "files" };
-    Some(view! {
-        <div
-            class="flex-col w-full"
-            h={commit_header_height(theme)}
-            gap={tokens::scaled(Sp::MD, scale)}
-            px={tokens::scaled(Sp::LG, scale)}
-            py={tokens::scaled(Sp::MD, scale)}
-            bg={tc.title_bar_background}
-            border_b={tc.border_variant}
-            accessibility_role={AccessibilityRole::Region}
-            aria-label={format!("Commit {}", commit.short_revision)}
-            test_id="commit-header"
-        >
-            <div class="flex-row items-center w-full" gap={tokens::scaled(Sp::MD, scale)}>
-                {avatar}
-                <div class="flex-1 flex-col" min_w={0.0} gap={tokens::scaled(Sp::XXS, scale)}>
-                    <text size={TextStyle::Heading.font_size(theme)} class="truncate font-semibold" color={tc.text_strong}>{commit.summary.clone()}</text>
-                    <text size={small} class="truncate" color={tc.text_muted}>{byline}</text>
-                </div>
-                <div
-                    class="flex-row items-center shrink-0"
-                    gap={tokens::scaled(Sp::XS, scale)}
-                    h={theme.metrics.ui_row_height}
-                    px={tokens::scaled(Sp::SM, scale)}
-                    rounded={theme.metrics.control_radius}
-                    bg={tc.element_background}
-                    border={tc.control_border}
-                    hover_bg={tc.element_hover}
-                    cursor={CursorHint::Pointer}
-                    id="commit-header.copy"
-                    role="button"
-                    aria-label={format!("Copy {}", commit.short_revision)}
-                    on:click={ShellAction::CopyText(revision.clone())}
-                >
-                    <text size={mono} class="font-mono" color={tc.text}>{commit.short_revision.clone()}</text>
-                    <icon svg={lucide::COPY} size={Ico::XS} color={tc.icon} />
-                </div>
-                <div
-                    class="flex-row items-center shrink-0"
-                    h={theme.metrics.ui_row_height}
-                    px={tokens::scaled(Sp::MD, scale)}
-                    rounded={theme.metrics.control_radius}
-                    bg={tc.element_background}
-                    border={tc.control_border}
-                    hover_bg={tc.element_hover}
-                    cursor={CursorHint::Pointer}
-                    id="commit-header.compare-worktree"
-                    role="button"
-                    aria-label="Compare with working tree"
-                    on:click={NavigationAction::CompareWithWorkingTree(revision)}
-                >
-                    <text size={small} class="font-medium" color={tc.text}>"Compare with working tree"</text>
-                </div>
-            </div>
-            <div class="flex-row items-center w-full" gap={tokens::scaled(Sp::LG, scale)}>
-                <text size={small} color={tc.text_muted}>{format!("{files} {noun}")}</text>
-                {?additions.zip(deletions).map(|(a, d)| view! {
-                    <div class="flex-row" gap={tokens::scaled(Sp::XS, scale)}>
-                        <text size={mono} color={tc.line_add_text}>{format!("+{a}")}</text>
-                        <text size={mono} color={tc.line_del_text}>{format!("\u{2212}{d}")}</text>
-                    </div>
-                })}
-                {pill("Read-only", theme)}
-                <div class="flex-1" />
-                <div class="shrink-0">{layout}</div>
-            </div>
-        </div>
-    })
 }
 
 pub fn viewing_status(nav: &NavigationController, theme: &Theme) -> Option<AnyElement> {

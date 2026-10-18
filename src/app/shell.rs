@@ -408,43 +408,28 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             .viewport
             .interaction
             .sync_review(&presentation);
+        let unified = self.shared.settings.settings.viewport.layout == LayoutMode::Unified;
+        let banner =
+            self.controllers
+                .navigation
+                .decorator(&self.controllers.review, unified, theme);
         let decorator = self.slots.decorator(
             presentation,
             self.controllers.mutations.presentation(),
+            banner,
             tokens::ui_scale(theme),
         );
-        let unified = self.shared.settings.settings.viewport.layout == LayoutMode::Unified;
-        let header = navigation::commit_header(
-            &self.controllers.navigation,
-            &self.controllers.review,
-            unified,
-            theme,
-        );
-        let header_h = if header.is_some() {
-            navigation::commit_header_height(theme).min(height)
-        } else {
-            0.0
-        };
         let slot = Slot {
             shared: &self.shared,
             width: main_w,
-            height: height - header_h,
+            height,
         };
-        let diff = viewport::interaction::view_shared(
+        let main = viewport::interaction::view_shared(
             &mut self.controllers.viewport.interaction,
             &slot,
             decorator,
             cx,
         );
-        let main = match header {
-            Some(header) => view! {
-                <div w={main_w} h={height} class="flex-col">
-                    <div class="w-full shrink-0 overflow-hidden" h={header_h}>{header}</div>
-                    {diff}
-                </div>
-            },
-            None => diff,
-        };
         let content = match files {
             Some(files) => Split::new(
                 "diffy.sidebar",

@@ -179,6 +179,7 @@ pub struct NavigationController {
     marked: Vec<FileKey>,
     anchor: Option<FileKey>,
     modifiers: Cell<ClickModifiers>,
+    banner: RefCell<super::banner::BannerCache>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -221,6 +222,7 @@ impl Default for NavigationController {
             marked: Vec::new(),
             anchor: None,
             modifiers: Cell::new(ClickModifiers::default()),
+            banner: RefCell::new(None),
         }
     }
 }
@@ -290,6 +292,10 @@ impl NavigationController {
         self.repository
             .as_ref()
             .is_some_and(|r| r.snapshot.capabilities.operation_log)
+    }
+
+    pub(super) fn banner_cache(&self) -> &RefCell<super::banner::BannerCache> {
+        &self.banner
     }
 
     pub fn observe_modifiers(&self, modifiers: ClickModifiers) {

@@ -2302,7 +2302,7 @@ mod tests {
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
         let source = git.read_file_source_at(&head, "src/lib.rs").unwrap();
-        assert_eq!(source.bytes(), b"one\ntwo\nthree\n");
+        assert_eq!(&*source.bytes(), b"one\ntwo\nthree\n");
     }
 
     #[test]
@@ -2315,7 +2315,7 @@ mod tests {
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
         let source = git.read_file_source_at(WORKDIR_REF, "src/lib.rs").unwrap();
-        assert_eq!(source.bytes(), b"a\nb\nc");
+        assert_eq!(&*source.bytes(), b"a\nb\nc");
     }
 
     #[test]
@@ -2330,7 +2330,7 @@ mod tests {
         git.stage_paths(["src/lib.rs"]).unwrap();
 
         let source = git.read_file_source_at(INDEX_REF, "src/lib.rs").unwrap();
-        assert_eq!(source.bytes(), b"a\nb\nc\n");
+        assert_eq!(&*source.bytes(), b"a\nb\nc\n");
     }
 
     #[test]
@@ -2343,7 +2343,7 @@ mod tests {
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
         let source = git.read_file_source_at(WORKDIR_REF, "src/lib.rs").unwrap();
-        assert_eq!(source.bytes(), b"a\r\nb\r\nc");
+        assert_eq!(&*source.bytes(), b"a\r\nb\r\nc");
         let text = source.text().unwrap();
         assert_eq!(text.line(0), Some("a\r"));
         assert_eq!(text.display_line(2), Some("c"));
@@ -2361,7 +2361,7 @@ mod tests {
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
         let source = git.read_file_source_at(WORKDIR_REF, "img.bin").unwrap();
         assert!(source.is_binary());
-        assert_eq!(source.bytes(), [0u8, 1, 2, 0, 3]);
+        assert_eq!(&*source.bytes(), [0u8, 1, 2, 0, 3]);
     }
 
     #[test]

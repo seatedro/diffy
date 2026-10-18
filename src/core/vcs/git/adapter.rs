@@ -1107,12 +1107,12 @@ mod tests {
         let old_text = adapter
             .read_file_source(&RevisionId::git(first), "src/lib.rs")
             .unwrap();
-        assert_eq!(old_text.bytes(), b"hello\nworld\n");
+        assert_eq!(&*old_text.bytes(), b"hello\nworld\n");
 
         let workdir_text = adapter
             .read_file_source(&RevisionId::git(WORKDIR_REF), "src/lib.rs")
             .unwrap();
-        assert_eq!(workdir_text.bytes(), b"changed\n");
+        assert_eq!(&*workdir_text.bytes(), b"changed\n");
 
         assert!(
             adapter
@@ -1132,7 +1132,7 @@ mod tests {
             .read_file_source(&RevisionId::git(oid), "blob.bin")
             .unwrap();
         assert!(source.is_binary());
-        assert_eq!(source.bytes(), b"\x00\x01\x02binary");
+        assert_eq!(&*source.bytes(), b"\x00\x01\x02binary");
     }
 
     #[test]

@@ -1,5 +1,7 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
+pub use diffy_diff::ObjectId;
 use diffy_diff::TextStore;
 
 const BINARY_PROBE_BYTES: usize = 8000;
@@ -7,7 +9,7 @@ const BINARY_PROBE_BYTES: usize = 8000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceText {
     Text(TextStore),
-    Bytes(Arc<[u8]>),
+    Binary(Arc<[u8]>),
 }
 
 impl Default for SourceText {
@@ -18,42 +20,42 @@ impl Default for SourceText {
 
 impl SourceText {
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        if probe_binary(&bytes) {
-            return Self::Bytes(bytes.into());
+        if bytes[..bytes.len().min(BINARY_PROBE_BYTES)].contains(&0) {
+            return Self::Binary(bytes.into());
         }
         match String::from_utf8(bytes) {
             Ok(text) => Self::Text(TextStore::new(text)),
-            Err(error) => Self::Bytes(error.into_bytes().into()),
+            Err(error) => Self::Text(TextStore::from_bytes(error.as_bytes())),
         }
     }
 
-    pub fn bytes(&self) -> &[u8] {
+    pub fn bytes(&self) -> Cow<'_, [u8]> {
         match self {
-            Self::Text(text) => text.as_str().as_bytes(),
-            Self::Bytes(bytes) => bytes,
+            Self::Text(text) => text.to_source_bytes(),
+            Self::Binary(bytes) => Cow::Borrowed(bytes),
         }
     }
 
     pub fn text(&self) -> Option<&TextStore> {
         match self {
             Self::Text(text) => Some(text),
-            Self::Bytes(_) => None,
+            Self::Binary(_) => None,
         }
     }
 
     pub fn is_binary(&self) -> bool {
-        match self {
-            Self::Text(_) => false,
-            Self::Bytes(bytes) => probe_binary(bytes),
-        }
+        matches!(self, Self::Binary(_))
     }
 
-    pub fn is_utf8(&self) -> bool {
-        matches!(self, Self::Text(_))
+    pub fn is_exact_utf8(&self) -> bool {
+        self.text().is_some_and(TextStore::is_exact)
     }
 
     pub fn len(&self) -> usize {
-        self.bytes().len()
+        match self {
+            Self::Text(text) => text.source_len(),
+            Self::Binary(bytes) => bytes.len(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -61,31 +63,20 @@ impl SourceText {
     }
 }
 
-fn probe_binary(bytes: &[u8]) -> bool {
-    bytes[..bytes.len().min(BINARY_PROBE_BYTES)].contains(&0)
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct SourceIdentity {
-    pub old: Option<Arc<str>>,
-    pub new: Option<Arc<str>>,
+    pub old: Option<ObjectId>,
+    pub new: Option<ObjectId>,
 }
 
 impl SourceIdentity {
     pub fn matches(&self, other: &SourceIdentity) -> bool {
-        object_matches(self.old.as_deref(), other.old.as_deref())
-            && object_matches(self.new.as_deref(), other.new.as_deref())
-    }
-}
-
-fn object_matches(left: Option<&str>, right: Option<&str>) -> bool {
-    match (left, right) {
-        (None, None) => true,
-        (Some(left), Some(right)) => {
-            let len = left.len().min(right.len());
-            len >= 7 && left[..len].eq_ignore_ascii_case(&right[..len])
-        }
-        _ => false,
+        let side = |left: &Option<ObjectId>, right: &Option<ObjectId>| match (left, right) {
+            (None, None) => true,
+            (Some(left), Some(right)) => left.matches(right),
+            _ => false,
+        };
+        side(&self.old, &other.old) && side(&self.new, &other.new)
     }
 }
 
@@ -98,16 +89,17 @@ mod tests {
         let source = SourceText::from_bytes(b"a\r\nb".to_vec());
         let text = source.text().expect("utf-8 text");
         assert_eq!(text.line(0), Some("a\r"));
-        assert_eq!(source.bytes(), b"a\r\nb");
-        assert!(!source.is_binary());
+        assert_eq!(&*source.bytes(), b"a\r\nb");
+        assert!(source.is_exact_utf8());
     }
 
     #[test]
     fn invalid_utf8_keeps_exact_bytes() {
         let source = SourceText::from_bytes(vec![b'a', 0xff, b'\n']);
-        assert!(source.text().is_none());
-        assert_eq!(source.bytes(), &[b'a', 0xff, b'\n']);
+        assert!(!source.is_exact_utf8());
         assert!(!source.is_binary());
+        assert_eq!(&*source.bytes(), &[b'a', 0xff, b'\n']);
+        assert_eq!(source.len(), 3);
     }
 
     #[test]
@@ -119,16 +111,17 @@ mod tests {
 
     #[test]
     fn identity_accepts_abbreviated_objects() {
+        let id = |hex: &str| ObjectId::parse(hex);
         let full = SourceIdentity {
-            old: Some(Arc::from("0123456789abcdef")),
+            old: id("0123456789abcdef"),
             new: None,
         };
         let short = SourceIdentity {
-            old: Some(Arc::from("0123456")),
+            old: id("0123456"),
             new: None,
         };
         let other = SourceIdentity {
-            old: Some(Arc::from("0123457")),
+            old: id("0123457"),
             new: None,
         };
         assert!(full.matches(&short));

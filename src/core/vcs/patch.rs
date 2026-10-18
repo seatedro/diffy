@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use crate::core::vcs::mutation::{PatchSelection, Side, SideRange};
-use crate::core::vcs::source::SourceIdentity;
+use crate::core::vcs::source::{ObjectId, SourceIdentity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchError {
@@ -428,13 +428,7 @@ fn parse_index(rest: &[u8]) -> SourceIdentity {
     let Some((old, new)) = split_once(objects, b"..") else {
         return SourceIdentity::default();
     };
-    let object = |id: &[u8]| -> Option<Arc<str>> {
-        let id = std::str::from_utf8(id).ok()?;
-        (!id.is_empty()
-            && id.bytes().any(|b| b != b'0')
-            && id.bytes().all(|b| b.is_ascii_hexdigit()))
-        .then(|| Arc::from(id))
-    };
+    let object = |id: &[u8]| ObjectId::parse(std::str::from_utf8(id).ok()?);
     SourceIdentity {
         old: object(old),
         new: object(new),
@@ -797,8 +791,8 @@ mod tests {
     #[test]
     fn parses_identity_and_source_lines() {
         let file = parse(MODIFIED);
-        assert_eq!(file.identity.old.as_deref(), Some("1111111"));
-        assert_eq!(file.identity.new.as_deref(), Some("2222222"));
+        assert_eq!(file.identity.old.as_ref().map(ObjectId::as_str), Some("1111111"));
+        assert_eq!(file.identity.new.as_ref().map(ObjectId::as_str), Some("2222222"));
         assert_eq!(file.path(), Some(&b"f"[..]));
         let hunk = &file.hunks[0];
         assert_eq!(hunk.lines[1].old, Some(1));

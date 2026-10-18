@@ -93,6 +93,27 @@ impl Segment {
         }
     }
 
+    pub fn from_parts(
+        doc: Arc<DiffDocument>,
+        slot: u32,
+        generation: u64,
+        expansion: Expansion,
+        comparison: Comparison,
+        projection: Projection,
+    ) -> Self {
+        Self {
+            doc,
+            slot,
+            generation,
+            revision: 0,
+            expansion,
+            comparison,
+            projection,
+            list_rows: ListRows::default(),
+            inline: RefCell::default(),
+        }
+    }
+
     pub fn unit(&self, file: u32) -> u32 {
         self.slot + file
     }

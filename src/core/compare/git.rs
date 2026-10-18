@@ -13,7 +13,10 @@ use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::spec::CompareSpec;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result};
-use crate::core::vcs::git::{GitService, WORKDIR_REF};
+use crate::core::compare::spec::RendererKind;
+use crate::core::vcs::git::status::status_items_from_entry_with_old_path;
+use crate::core::vcs::git::{GitService, INDEX_REF, StatusItem, StatusScope, WORKDIR_REF};
+use crate::core::vcs::model::ChangeBucket;
 
 const LOADING_FILE_EMIT_STRIDE: usize = 16;
 const LINE_STATS_MAX_WORKERS: usize = 8;
@@ -38,6 +41,228 @@ pub fn compare(
         changes = collect_gix_changes(&mut repo, &left, &right, None, true)?;
     }
     output_from_gix_changes(&repo, &changes, reporter)
+}
+
+pub fn worktree_items(git: &GitService) -> Result<Vec<StatusItem>> {
+    let mut items: Vec<StatusItem> = git
+        .status_entries()?
+        .into_iter()
+        .flat_map(|(path, old_path, status)| {
+            status_items_from_entry_with_old_path(path, old_path, status)
+        })
+        .collect();
+    items.sort_by(|a, b| {
+        scope_rank(a.scope)
+            .cmp(&scope_rank(b.scope))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(items)
+}
+
+fn scope_rank(scope: StatusScope) -> u8 {
+    match scope {
+        StatusScope::Staged => 0,
+        StatusScope::Unstaged => 1,
+        StatusScope::Untracked => 2,
+    }
+}
+
+pub fn bucket_of(scope: StatusScope) -> ChangeBucket {
+    match scope {
+        StatusScope::Staged => ChangeBucket::Staged,
+        StatusScope::Unstaged => ChangeBucket::Unstaged,
+        StatusScope::Untracked => ChangeBucket::Untracked,
+    }
+}
+
+pub fn scope_of(bucket: ChangeBucket) -> StatusScope {
+    match bucket {
+        ChangeBucket::Staged => StatusScope::Staged,
+        ChangeBucket::Untracked => StatusScope::Untracked,
+        ChangeBucket::Unstaged | ChangeBucket::WorkingCopy | ChangeBucket::Conflicted => {
+            StatusScope::Unstaged
+        }
+    }
+}
+
+pub fn bucket_refs(bucket: ChangeBucket) -> (Option<&'static str>, &'static str) {
+    match scope_of(bucket) {
+        StatusScope::Staged => (Some("HEAD"), INDEX_REF),
+        StatusScope::Unstaged => (Some(INDEX_REF), WORKDIR_REF),
+        StatusScope::Untracked => (None, WORKDIR_REF),
+    }
+}
+
+fn item_status(item: &StatusItem) -> FileStatus {
+    match item.status.as_str() {
+        "A" | "U" => FileStatus::Added,
+        "D" => FileStatus::Deleted,
+        "R" => FileStatus::Renamed,
+        "C" => FileStatus::Copied,
+        _ => FileStatus::Modified,
+    }
+}
+
+fn item_paths(item: &StatusItem) -> (Option<&str>, Option<&str>) {
+    match item_status(item) {
+        FileStatus::Added => (None, Some(item.path.as_str())),
+        FileStatus::Deleted => (Some(item.path.as_str()), None),
+        _ => (
+            Some(item.old_path.as_deref().unwrap_or(&item.path)),
+            Some(item.path.as_str()),
+        ),
+    }
+}
+
+pub fn worktree_entry(item: &StatusItem) -> CompareEntry {
+    let (old, new) = item_paths(item);
+    CompareEntry::deferred(old, new, item_status(item)).with_bucket(bucket_of(item.scope))
+}
+
+pub fn compare_worktree(
+    git: &GitService,
+    renderer: RendererKind,
+    reporter: Option<&dyn ProgressSink>,
+) -> Result<CompareOutput> {
+    if let Some(r) = reporter {
+        r.phase(ComparePhase::EnumeratingChanges);
+    }
+    let items = worktree_items(git)?;
+    if items.len() > COMPARE_SUMMARY_FILE_LIMIT {
+        return Ok(CompareOutput::deferred(
+            items.iter().map(worktree_entry).collect(),
+        ));
+    }
+    let staged = bucket_documents(git, StatusScope::Staged, &items)?;
+    let unstaged = bucket_documents(git, StatusScope::Unstaged, &items)?;
+    let total = items.len() as u32;
+    let mut output = CompareOutput::default();
+    for (index, item) in items.iter().enumerate() {
+        if let Some(r) = reporter
+            && (index.is_multiple_of(LOADING_FILE_EMIT_STRIDE) || index + 1 == items.len())
+        {
+            r.phase(ComparePhase::LoadingFiles {
+                files_seen: index as u32 + 1,
+                files_total: total,
+            });
+        }
+        let from_patch = match item.scope {
+            StatusScope::Staged => staged.get(&item.path),
+            StatusScope::Unstaged => unstaged.get(&item.path),
+            StatusScope::Untracked => None,
+        };
+        let doc = match from_patch {
+            Some(doc) if renderer == RendererKind::Builtin => Some(doc.clone()),
+            patch => worktree_document(git, item, renderer, patch.map(|doc| doc.files().meta[0].clone()))?,
+        };
+        let Some(doc) = doc else {
+            output.push_entry(worktree_entry(item));
+            continue;
+        };
+        let mut entry = CompareEntry::from_document(&doc, 0).with_bucket(bucket_of(item.scope));
+        entry.paths = worktree_entry(item).paths;
+        output.entries.push(entry);
+        output.documents.resize(output.entries.len() - 1, None);
+        output.documents.push(Some(Arc::new(doc)));
+    }
+    output.documents.resize(output.entries.len(), None);
+    Ok(output)
+}
+
+pub fn compare_worktree_entry(
+    git: &GitService,
+    entry: &CompareEntry,
+    renderer: RendererKind,
+) -> Result<Option<DiffDocument>> {
+    let Some(bucket) = entry.bucket else {
+        return Ok(None);
+    };
+    let item = StatusItem {
+        path: entry.path().into_owned(),
+        old_path: entry
+            .paths
+            .old_path()
+            .filter(|old| *old != entry.path())
+            .map(|old| old.into_owned()),
+        scope: scope_of(bucket),
+        status: match entry.status() {
+            FileStatus::Added if bucket == ChangeBucket::Untracked => "U",
+            FileStatus::Added => "A",
+            FileStatus::Deleted => "D",
+            FileStatus::Renamed => "R",
+            FileStatus::Copied => "C",
+            FileStatus::Modified => "M",
+        }
+        .to_owned(),
+    };
+    let meta = if item.scope == StatusScope::Untracked {
+        None
+    } else {
+        let patch = CompareOutput::from_patch_bytes(&git.status_item_exact_patch(&item)?)?;
+        match patch.document(0) {
+            Some(doc) if renderer == RendererKind::Builtin => return Ok(Some((**doc).clone())),
+            Some(doc) => Some(doc.files().meta[0].clone()),
+            None => None,
+        }
+    };
+    worktree_document(git, &item, renderer, meta)
+}
+
+fn bucket_documents(
+    git: &GitService,
+    scope: StatusScope,
+    items: &[StatusItem],
+) -> Result<std::collections::HashMap<String, DiffDocument>> {
+    let mut docs = std::collections::HashMap::new();
+    if !items.iter().any(|item| item.scope == scope) {
+        return Ok(docs);
+    }
+    let raw = git.diff_for_commit(scope == StatusScope::Staged)?;
+    let output = CompareOutput::from_patch(&raw)?;
+    for (index, entry) in output.entries.iter().enumerate() {
+        if let Some(doc) = output.document(index) {
+            docs.insert(entry.path().into_owned(), (**doc).clone());
+        }
+    }
+    Ok(docs)
+}
+
+fn worktree_document(
+    git: &GitService,
+    item: &StatusItem,
+    renderer: RendererKind,
+    meta: Option<FileMeta>,
+) -> Result<Option<DiffDocument>> {
+    let (old_ref, new_ref) = bucket_refs(bucket_of(item.scope));
+    let (old_path, new_path) = item_paths(item);
+    let read = |reference: Option<&str>, path: Option<&str>| match (reference, path) {
+        (Some(reference), Some(path)) => git.read_file_bytes_at(reference, path).map(Some),
+        _ => Ok(None),
+    };
+    let old = read(old_ref, old_path)?;
+    let new = read(Some(new_ref), new_path)?;
+    let meta = meta.unwrap_or_else(|| FileMeta {
+        old_path: old.as_ref().and(old_path).map(Arc::from),
+        new_path: new.as_ref().and(new_path).map(Arc::from),
+        status: item_status(item),
+        ..FileMeta::default()
+    });
+    let (old, new) = (old.unwrap_or_default(), new.unwrap_or_default());
+    #[cfg(feature = "difftastic")]
+    if renderer == RendererKind::Difftastic {
+        let changed = crate::core::compare::semantic::ChangedPath {
+            status: meta.status,
+            old_path: meta.old_path.as_deref().map(str::to_owned),
+            new_path: meta.new_path.as_deref().map(str::to_owned),
+            old_content: old,
+            new_content: new,
+        };
+        let mut doc = crate::core::compare::semantic::document_from_changed(&changed)?;
+        doc.set_identity(0, (meta.old_id.clone(), meta.new_id.clone()), (meta.old_mode.clone(), meta.new_mode.clone()));
+        return Ok(Some(doc));
+    }
+    let _ = renderer;
+    document_from_bytes(meta, &old, &new).map(Some)
 }
 
 pub fn compare_path(

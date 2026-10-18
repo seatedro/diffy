@@ -409,8 +409,9 @@ impl InteractionController {
     fn outcome(&mut self, outcome: DiffOutcome) -> Reduction {
         match outcome {
             DiffOutcome::Unchanged => Reduction::default(),
-            DiffOutcome::Changed | DiffOutcome::OpenFull { .. } | DiffOutcome::Annotate { .. } => {
-                Reduction::changed()
+            DiffOutcome::Changed | DiffOutcome::OpenFull { .. } => Reduction::changed(),
+            DiffOutcome::Annotate { anchor } => {
+                Reduction::changed().intent(Intent::RequestAnnotation(source_target(&anchor)))
             }
             DiffOutcome::Copy(text) if text.is_empty() => Reduction::default(),
             DiffOutcome::Copy(text) => Reduction::default().effect(ShellEffect::SetClipboard(text)),
@@ -733,8 +734,12 @@ impl Controller for InteractionController {
         Reduction::default()
     }
 
-    fn apply_intent(&mut self, intent: &Intent, _cx: &SharedContext) -> Reduction {
+    fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
         let changed = match intent {
+            Intent::OpenTextCompare => {
+                let open = InteractionAction::SetTextCompareView(TextCompareView::Edit);
+                return self.reduce_action(open, cx);
+            }
             Intent::Startup(startup) => {
                 self.apply_viewport_settings(&startup.settings.viewport, true)
             }

@@ -519,3 +519,50 @@ fn large_diff_frame_and_handler_times() {
         ui.app().interaction.search_summary().matches,
     );
 }
+
+#[test]
+fn open_text_compare_intent_enters_the_editors() {
+    let mut ui = loaded(Host::new());
+    ui.app_mut().intent(Intent::OpenTextCompare);
+    ui.frame();
+    assert!(ui.app().interaction.text_compare().active);
+    assert_eq!(
+        ui.app().interaction.text_compare().view,
+        TextCompareView::Edit
+    );
+    ui.find(By::test_id("text-compare"));
+}
+
+#[test]
+fn annotate_requests_a_review_annotation_at_the_line() {
+    let mut ui = loaded(Host::new());
+    let event = diffy_ui::DiffEvent::Annotate {
+        file: 0,
+        side: Side::New,
+        line: 10,
+    };
+    let action = crate::contracts::viewport::interaction::InteractionAction::Diff(
+        crate::contracts::viewport::interaction::DiffInput(event),
+    );
+    let reduction = ui
+        .app_mut()
+        .interaction
+        .reduce_action(action, &Default::default());
+    let requested: Vec<_> = reduction
+        .intents
+        .iter()
+        .filter_map(|intent| match intent {
+            Intent::RequestAnnotation(target) => Some(target.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        requested,
+        [SourceTarget {
+            file: FileKey(1),
+            revision: FileRevision(1),
+            side: Side::New,
+            lines: 10..11,
+        }]
+    );
+}

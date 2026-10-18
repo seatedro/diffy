@@ -10,11 +10,11 @@ use crate::contracts::viewport::PipelineEvent;
 use crate::contracts::viewport::pipeline::{
     CompareIntent, CompareJob, CompareManifestSnapshot, CompareResult, CompareWorkPriority,
     FileLoadRequest, FileStat, FileStats, FileStatsRequest, FileTarget, ManifestFile,
-    PipelineEffect, PipelineFailure, PreparedDiff, TextCompareRequest,
+    PipelineEffect, PipelineFailure, PreparedDiff,
 };
 use crate::core::compare::{CompareEntry, ComparePhase};
 
-pub type ViewportInstall = crate::contracts::viewport::pipeline::ViewportInstall;
+pub use crate::contracts::viewport::interaction::ViewportInstall;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PipelineStatus {
@@ -41,7 +41,6 @@ struct ActiveCompare {
 pub struct PipelineController {
     last_generation: u64,
     active: Option<ActiveCompare>,
-    text_generation: Option<CompareGeneration>,
     status: PipelineStatus,
     installs: Vec<ViewportInstall>,
 }
@@ -65,13 +64,6 @@ impl PipelineController {
 
     pub fn prepared(&self, key: FileKey) -> Option<&PreparedDiff> {
         self.active.as_ref()?.loaded.get(&key)
-    }
-
-    pub fn request_text_compare(&mut self, mut request: TextCompareRequest) -> Reduction {
-        let generation = self.next_generation();
-        request.generation = generation;
-        self.text_generation = Some(generation);
-        Reduction::changed().effect(PipelineEffect::RunTextCompare(Box::new(request)))
     }
 
     fn next_generation(&mut self) -> CompareGeneration {
@@ -384,20 +376,14 @@ impl Controller for PipelineController {
                 generation,
                 prepared,
             } => {
-                if self.text_generation != Some(generation) || prepared.generation() != generation {
+                if prepared.generation() != generation {
                     return stale(generation);
                 }
                 self.installs
                     .push(ViewportInstall::TextCompare { prepared });
                 Reduction::changed()
             }
-            PipelineEvent::TextCompareFailed {
-                generation,
-                failure,
-            } => {
-                if self.text_generation != Some(generation) {
-                    return stale(generation);
-                }
+            PipelineEvent::TextCompareFailed { failure, .. } => {
                 Reduction::changed().intent(Intent::Toast(ToastUpdate::Show {
                     id: None,
                     kind: ToastKind::Error,

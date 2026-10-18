@@ -289,8 +289,8 @@ mod tests {
         assert_eq!(files[1].key, key_at(1));
         assert_eq!(files[1].revision, FileRevision(4));
         assert_eq!(files[1].stats, DiffStats::Pending);
-        assert_eq!(files[1].content, ContentChange::Unchanged);
-        assert!(files[1].summary().is_rename_only());
+        assert_eq!(result.entries[1].summary.content, ContentChange::Unchanged);
+        assert!(result.entries[1].summary.is_rename_only());
         assert_eq!(
             result.manifest.file(key_at(1)).unwrap().status,
             FileStatus::Renamed

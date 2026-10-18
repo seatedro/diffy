@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
 
-use carbon::{Anchor, DiffSide, FileDiff, LineRange};
+use std::ops::Range;
+
+use diffy_diff::{DiffDocument, ObjectId};
 use serde::{Deserialize, Serialize};
 
+use crate::contracts::shared::{FileKey, FileRevision, Side, SourceTarget};
+use crate::core::compare::stats::CompareFilePaths;
 use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::{
     CreatePullRequestReview, CreatePullRequestReviewDraftComment, GitHubPullRequestReviewData,
@@ -85,11 +89,20 @@ impl From<ReviewSide> for GitHubReviewSide {
     }
 }
 
-impl From<ReviewSide> for DiffSide {
+impl From<ReviewSide> for Side {
     fn from(side: ReviewSide) -> Self {
         match side {
             ReviewSide::Old => Self::Old,
             ReviewSide::New => Self::New,
+        }
+    }
+}
+
+impl From<Side> for ReviewSide {
+    fn from(side: Side) -> Self {
+        match side {
+            Side::Old => Self::Old,
+            Side::New => Self::New,
         }
     }
 }
@@ -132,6 +145,18 @@ impl ReviewLineRange {
 
     pub const fn github_start_line(self) -> Option<u32> {
         if self.len > 1 { Some(self.start) } else { None }
+    }
+
+    pub fn source_lines(self) -> Range<u32> {
+        let start = self.start.saturating_sub(1);
+        start..start.saturating_add(self.len.max(1))
+    }
+
+    pub fn from_source_lines(lines: &Range<u32>) -> Self {
+        Self {
+            start: lines.start.saturating_add(1),
+            len: lines.end.saturating_sub(lines.start).max(1),
+        }
     }
 }
 
@@ -236,32 +261,71 @@ impl ReviewAnchor {
         self.line_range.or(self.original_line_range)
     }
 
-    pub fn to_carbon_anchor(&self, file: &FileDiff) -> Option<Anchor> {
-        let matches_old = file.old_path.as_deref() == Some(self.path.as_str());
-        let matches_new = file.new_path.as_deref() == Some(self.path.as_str());
-        if !matches_old && !matches_new {
-            return None;
+    pub fn from_source_target(path: impl Into<String>, target: &SourceTarget) -> Self {
+        Self::inline(
+            path,
+            target.side.into(),
+            ReviewLineRange::from_source_lines(&target.lines),
+        )
+    }
+
+    pub fn matches_paths(&self, paths: &CompareFilePaths) -> bool {
+        paths.old_path().as_deref() == Some(self.path.as_str())
+            || paths.new_path().as_deref() == Some(self.path.as_str())
+    }
+
+    pub fn source_side(&self, paths: &CompareFilePaths) -> Option<Side> {
+        let matches_old = paths.old_path().as_deref() == Some(self.path.as_str());
+        let matches_new = paths.new_path().as_deref() == Some(self.path.as_str());
+        match self.side {
+            Some(ReviewSide::Old) if matches_old || matches_new => Some(Side::Old),
+            Some(ReviewSide::New) if matches_old || matches_new => Some(Side::New),
+            None if matches_new => Some(Side::New),
+            None if matches_old => Some(Side::Old),
+            _ => None,
         }
+    }
 
-        let side = match self.side {
-            Some(ReviewSide::Old) => Some(DiffSide::Old),
-            Some(ReviewSide::New) => Some(DiffSide::New),
-            None if matches_new && !matches_old => Some(DiffSide::New),
-            None if matches_old && !matches_new => Some(DiffSide::Old),
-            None => None,
+    pub fn lands_in(&self, document: &DiffDocument, file: u32, target: &SourceTarget) -> bool {
+        let last = target.lines.end.max(target.lines.start.saturating_add(1)) - 1;
+        document
+            .store_line(file, target.side, target.lines.start)
+            .is_some()
+            && document.store_line(file, target.side, last).is_some()
+    }
+
+    pub fn hunk_in(
+        &self,
+        document: &DiffDocument,
+        file: u32,
+        target: &SourceTarget,
+    ) -> Option<u32> {
+        document.hunk_at(file, target.side, target.lines.start)
+    }
+
+    pub fn commit_matches(&self, head: &str) -> bool {
+        let Some(head) = ObjectId::parse(head) else {
+            return true;
         };
-        let line_range = self
-            .active_line_range()
-            .map(|range| LineRange::new(range.start, range.len))
-            .unwrap_or_default();
+        self.commit_id
+            .as_deref()
+            .and_then(ObjectId::parse)
+            .is_none_or(|commit| commit.matches(&head))
+    }
 
-        Some(Anchor {
-            file_id: file.id,
+    pub fn to_source_target(
+        &self,
+        file: FileKey,
+        revision: FileRevision,
+        paths: &CompareFilePaths,
+    ) -> Option<SourceTarget> {
+        let side = self.source_side(paths)?;
+        let lines = self.active_line_range()?.source_lines();
+        Some(SourceTarget {
+            file,
+            revision,
             side,
-            line_range,
-            byte_range: None,
-            old_oid: file.old_oid.clone(),
-            new_oid: file.new_oid.clone(),
+            lines,
         })
     }
 }
@@ -1009,23 +1073,205 @@ mod tests {
         assert_eq!(thread.anchor.as_ref().unwrap().path, "src/lib.rs");
     }
 
+    fn paths(old: &str, new: &str) -> CompareFilePaths {
+        CompareFilePaths::from_paths(Some(old), Some(new))
+    }
+
     #[test]
-    fn github_anchor_maps_to_carbon_anchor() {
+    fn github_anchor_maps_to_zero_based_source_target() {
         let anchor = ReviewAnchor::from_github_comment(&github_comment(1, None, "root")).unwrap();
-        let carbon_file = FileDiff {
-            id: carbon::FileId(7),
-            new_path: Some("src/lib.rs".to_owned()),
-            old_path: Some("src/lib.rs".to_owned()),
-            old_oid: Some(carbon::ObjectId("base".to_owned())),
-            new_oid: Some(carbon::ObjectId("head".to_owned())),
-            ..FileDiff::default()
+
+        let target = anchor
+            .to_source_target(
+                FileKey(7),
+                FileRevision(3),
+                &paths("src/lib.rs", "src/lib.rs"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            target,
+            SourceTarget {
+                file: FileKey(7),
+                revision: FileRevision(3),
+                side: Side::New,
+                lines: 9..12,
+            }
+        );
+    }
+
+    #[test]
+    fn sideless_anchor_takes_the_side_its_path_names() {
+        let mut anchor =
+            ReviewAnchor::inline("old.rs", ReviewSide::New, ReviewLineRange::new(5, 1));
+        anchor.side = None;
+
+        assert_eq!(
+            anchor.source_side(&paths("old.rs", "new.rs")),
+            Some(Side::Old)
+        );
+        anchor.path = "new.rs".to_owned();
+        assert_eq!(
+            anchor.source_side(&paths("old.rs", "new.rs")),
+            Some(Side::New)
+        );
+        anchor.path = "other.rs".to_owned();
+        assert_eq!(
+            anchor.to_source_target(FileKey(1), FileRevision(1), &paths("old.rs", "new.rs")),
+            None
+        );
+    }
+
+    #[test]
+    fn file_level_anchor_matches_paths_without_a_source_target() {
+        let anchor = ReviewAnchor {
+            path: "src/lib.rs".to_owned(),
+            side: None,
+            line_range: None,
+            original_line_range: None,
+            subject: ReviewSubject::File,
+            commit_id: None,
+            original_commit_id: None,
+        };
+        let paths = paths("src/lib.rs", "src/lib.rs");
+
+        assert!(anchor.matches_paths(&paths));
+        assert_eq!(
+            anchor.to_source_target(FileKey(1), FileRevision(1), &paths),
+            None
+        );
+    }
+
+    #[test]
+    fn outdated_anchor_targets_its_original_lines() {
+        let mut comment = github_comment(1, None, "root");
+        comment.line = None;
+        comment.start_line = None;
+        let anchor = ReviewAnchor::from_github_comment(&comment).unwrap();
+
+        assert!(anchor.is_outdated());
+        let target = anchor
+            .to_source_target(
+                FileKey(2),
+                FileRevision(1),
+                &paths("src/lib.rs", "src/lib.rs"),
+            )
+            .unwrap();
+        assert_eq!(target.lines, 9..12);
+    }
+
+    #[test]
+    fn source_target_round_trips_through_an_inline_anchor() {
+        let target = SourceTarget {
+            file: FileKey(4),
+            revision: FileRevision(2),
+            side: Side::Old,
+            lines: 4..6,
         };
 
-        let carbon_anchor = anchor.to_carbon_anchor(&carbon_file).unwrap();
+        let anchor = ReviewAnchor::from_source_target("src/lib.rs", &target);
 
-        assert_eq!(carbon_anchor.file_id, carbon::FileId(7));
-        assert_eq!(carbon_anchor.side, Some(DiffSide::New));
-        assert_eq!(carbon_anchor.line_range, LineRange::new(10, 3));
+        assert_eq!(anchor.side, Some(ReviewSide::Old));
+        assert_eq!(anchor.line_range, Some(ReviewLineRange::new(5, 2)));
+        assert_eq!(anchor.line_range.unwrap().github_line(), 6);
+        assert_eq!(
+            anchor.to_source_target(
+                FileKey(4),
+                FileRevision(2),
+                &paths("src/lib.rs", "src/lib.rs")
+            ),
+            Some(target)
+        );
+    }
+
+    #[test]
+    fn anchors_resolve_against_document_coordinates() {
+        let document = diffy_diff::parse_unified(
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d\n e\n",
+        )
+        .unwrap();
+        let anchor =
+            ReviewAnchor::inline("src/lib.rs", ReviewSide::New, ReviewLineRange::new(11, 2));
+        let target = anchor
+            .to_source_target(
+                FileKey(0),
+                FileRevision(0),
+                &paths("src/lib.rs", "src/lib.rs"),
+            )
+            .unwrap();
+        let outside = SourceTarget {
+            lines: 40..41,
+            ..target.clone()
+        };
+
+        assert!(anchor.lands_in(&document, 0, &target));
+        assert_eq!(anchor.hunk_in(&document, 0, &target), Some(0));
+        assert!(!anchor.lands_in(&document, 0, &outside));
+        assert_eq!(anchor.hunk_in(&document, 0, &outside), None);
+    }
+
+    #[test]
+    fn commit_ids_match_by_prefix() {
+        let mut anchor = ReviewAnchor::inline("a.rs", ReviewSide::New, ReviewLineRange::new(1, 1));
+        assert!(anchor.commit_matches("abc123"));
+        anchor.commit_id = Some("ABC123def".to_owned());
+        assert!(anchor.commit_matches("abc123"));
+        assert!(!anchor.commit_matches("fff000"));
+    }
+
+    #[test]
+    fn persisted_session_format_still_loads() {
+        let json = r#"{
+            "target": {"forge": "GitHub", "owner": "owner", "repo": "repo", "number": 42},
+            "pull_request": {
+                "title": "Review me", "state": "open", "author_login": "author", "number": 42,
+                "additions": 1, "deletions": 0, "changed_files": 1,
+                "base_branch": "main", "head_branch": "feature",
+                "base_sha": "base", "head_sha": "head",
+                "base_repo_url": "", "head_repo_url": ""
+            },
+            "status": "Ready",
+            "status_message": null,
+            "metadata": null,
+            "reviews": [],
+            "threads": [],
+            "drafts": {
+                "3": {
+                    "id": 3,
+                    "kind": "InlineComment",
+                    "anchor": {
+                        "path": "src/lib.rs",
+                        "side": "New",
+                        "line_range": {"start": 10, "len": 2},
+                        "original_line_range": null,
+                        "subject": "Line",
+                        "commit_id": null,
+                        "original_commit_id": null
+                    },
+                    "body": "Note",
+                    "state": "Pending"
+                }
+            },
+            "next_draft_id": 4
+        }"#;
+
+        let session: ReviewSession = serde_json::from_str(json).unwrap();
+
+        let draft = &session.drafts[&ReviewDraftId(3)];
+        assert_eq!(draft.body, "Note");
+        let target = draft
+            .anchor
+            .as_ref()
+            .unwrap()
+            .to_source_target(
+                FileKey(1),
+                FileRevision(1),
+                &paths("src/lib.rs", "src/lib.rs"),
+            )
+            .unwrap();
+        assert_eq!(target.lines, 9..11);
+        let mut resumed = session.clone();
+        assert_eq!(resumed.create_general_draft("next"), ReviewDraftId(4));
     }
 
     #[test]

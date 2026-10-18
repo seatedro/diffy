@@ -68,7 +68,42 @@ impl GrammarStore {
                 listeners: Mutex::default(),
                 #[cfg(feature = "download")]
                 fetcher: Mutex::default(),
+                #[cfg(feature = "download")]
+                legacy_fetcher: Mutex::default(),
             })),
+        }
+    }
+
+    pub fn retry(&self, tag: &str) -> bool {
+        #[cfg(feature = "engine")]
+        if let Some(inner) = &self.inner {
+            let tag = tag.to_ascii_lowercase();
+            let mut state = lock(&inner.state);
+            #[cfg(feature = "download")]
+            if inner.config.legacy.is_some()
+                && let Some(language) = crate::legacy_pack::language_for_tag(&tag)
+            {
+                return crate::legacy_pack::retry(&mut state, language);
+            }
+            if !matches!(state.tags.get(&tag), Some(Tag::Unavailable)) {
+                return false;
+            }
+            state.tags.remove(&tag);
+            #[cfg(feature = "download")]
+            state.remote.invalidate();
+            return true;
+        }
+        let _ = tag;
+        false
+    }
+
+    #[cfg(feature = "download")]
+    pub fn legacy_status(&self) -> Vec<crate::legacy_pack::GrammarStatus> {
+        match &self.inner {
+            Some(inner) if inner.config.legacy.is_some() => {
+                crate::legacy_pack::status(&lock(&inner.state))
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -400,6 +435,8 @@ pub struct StoreConfig {
     deferred: Vec<String>,
     #[cfg(feature = "download")]
     pub(crate) downloads: Option<crate::download::Downloads>,
+    #[cfg(feature = "download")]
+    pub(crate) legacy: Option<crate::legacy_pack::LegacyPacks>,
 }
 
 #[cfg(feature = "engine")]
@@ -434,6 +471,12 @@ impl StoreConfig {
         self.downloads = Some(downloads);
         self
     }
+
+    #[cfg(feature = "download")]
+    pub fn legacy_packs(mut self, legacy: crate::legacy_pack::LegacyPacks) -> Self {
+        self.legacy = Some(legacy);
+        self
+    }
 }
 
 #[cfg(feature = "engine")]
@@ -456,6 +499,8 @@ pub(crate) struct Inner {
     listeners: Mutex<Vec<Listener>>,
     #[cfg(feature = "download")]
     pub(crate) fetcher: Mutex<Option<std::sync::mpsc::Sender<String>>>,
+    #[cfg(feature = "download")]
+    pub(crate) legacy_fetcher: Mutex<Option<std::sync::mpsc::Sender<&'static str>>>,
 }
 
 #[cfg(feature = "engine")]
@@ -467,13 +512,15 @@ pub(crate) struct State {
     local: Option<HashMap<String, (PathBuf, Arc<PackManifest>)>>,
     /// Grammars by pack directory, so a language's aliases share one load.
     /// `None` records a pack that failed to load.
-    loaded: HashMap<PathBuf, Option<Arc<Grammar>>>,
+    pub(crate) loaded: HashMap<PathBuf, Option<Arc<Grammar>>>,
     /// [`StoreConfig::defer`]red packs have been released.
     released: bool,
     /// Tags left pending by [`StoreConfig::defer`].
     deferred: Vec<String>,
     #[cfg(feature = "download")]
     pub(crate) remote: crate::download::Remote,
+    #[cfg(feature = "download")]
+    pub(crate) legacy: crate::legacy_pack::LegacyState,
 }
 
 #[cfg(feature = "engine")]
@@ -508,6 +555,12 @@ impl Inner {
             return load(state, &dir, &manifest);
         }
         #[cfg(feature = "download")]
+        if let Some(legacy) = &self.config.legacy
+            && let Some(language) = crate::legacy_pack::language_for_tag(tag)
+        {
+            return crate::legacy_pack::resolve(self, legacy, state, language);
+        }
+        #[cfg(feature = "download")]
         if let Some(downloads) = &self.config.downloads {
             return crate::download::resolve(self, downloads, state, tag);
         }
@@ -522,15 +575,25 @@ impl Inner {
 /// Loads (once per directory) the pack in `dir`.
 #[cfg(feature = "engine")]
 pub(crate) fn load(state: &mut State, dir: &Path, manifest: &PackManifest) -> Tag {
-    let grammar = state.loaded.entry(dir.to_path_buf()).or_insert_with(|| {
-        match Grammar::load(dir, manifest) {
+    load_with(state, dir, || Grammar::load(dir, manifest))
+}
+
+#[cfg(feature = "engine")]
+pub(crate) fn load_with(
+    state: &mut State,
+    dir: &Path,
+    load: impl FnOnce() -> Result<Grammar, pack::PackError>,
+) -> Tag {
+    let grammar = state
+        .loaded
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| match load() {
             Ok(grammar) => Some(Arc::new(grammar)),
             Err(error) => {
                 tracing::warn!(pack = %dir.display(), %error, "syntax pack failed to load");
                 None
             }
-        }
-    });
+        });
     match grammar {
         Some(grammar) => Tag::Ready(grammar.clone()),
         None => Tag::Unavailable,

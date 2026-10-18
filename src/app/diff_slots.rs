@@ -1,5 +1,8 @@
+use std::rc::Rc;
+
 use diffy_ui::diff_view::decorator::{
-    AnnotationContext, DiffDecorator, GutterContext, HeaderContext, HeaderSlot, SeparatorContext,
+    AnnotationContext, DiffDecorator, GutterContext, HeaderContext, HeaderSlot, LineContext,
+    LineMark, SeparatorContext,
 };
 use quark::view;
 use quark_ui::element::*;
@@ -7,41 +10,68 @@ use quark_ui::style::Styled;
 
 use crate::app::tokens::Sp;
 
-#[derive(Debug, Default)]
+type SlotKey = (u64, u64, *const (), *const (), u32);
+
+#[derive(Default)]
 pub struct DiffSlots {
     revision: u64,
-    sources: Option<(u64, u64)>,
+    cached: Option<(SlotKey, Rc<AppDiffDecorator>)>,
+    empty: Option<Rc<NoDecorations>>,
 }
 
 impl DiffSlots {
-    pub fn decorator<'a>(
+    pub fn decorator(
         &mut self,
-        review: &'a dyn DiffDecorator,
-        mutations: &'a dyn DiffDecorator,
+        review: Rc<dyn DiffDecorator>,
+        mutations: Rc<dyn DiffDecorator>,
         scale: f32,
-    ) -> AppDiffDecorator<'a> {
-        let sources = Some((review.revision(), mutations.revision()));
-        if self.sources != sources {
-            self.sources = sources;
-            self.revision = self.revision.wrapping_add(1);
+    ) -> Rc<dyn DiffDecorator> {
+        let key = (
+            review.revision(),
+            mutations.revision(),
+            Rc::as_ptr(&review).cast::<()>(),
+            Rc::as_ptr(&mutations).cast::<()>(),
+            scale.to_bits(),
+        );
+        if let Some((cached, decorator)) = &self.cached
+            && *cached == key
+        {
+            return decorator.clone();
         }
-        AppDiffDecorator {
+        self.revision = self.revision.wrapping_add(1);
+        let decorator = Rc::new(AppDiffDecorator {
             revision: self.revision,
             review,
             mutations,
             scale,
-        }
+        });
+        self.cached = Some((key, decorator.clone()));
+        decorator
+    }
+
+    pub fn empty(&mut self) -> Rc<dyn DiffDecorator> {
+        self.empty
+            .get_or_insert_with(|| Rc::new(NoDecorations))
+            .clone()
     }
 }
 
-pub struct AppDiffDecorator<'a> {
+pub struct NoDecorations;
+
+impl DiffDecorator for NoDecorations {
+    fn revision(&self) -> u64 {
+        0
+    }
+}
+
+pub struct AppDiffDecorator {
     revision: u64,
-    review: &'a dyn DiffDecorator,
-    mutations: &'a dyn DiffDecorator,
+    review: Rc<dyn DiffDecorator>,
+    mutations: Rc<dyn DiffDecorator>,
     scale: f32,
 }
 
-impl AppDiffDecorator<'_> {
+impl AppDiffDecorator {
     fn both(&self, first: Option<AnyElement>, second: Option<AnyElement>) -> Option<AnyElement> {
         match (first, second) {
             (Some(first), Some(second)) => {
@@ -58,7 +88,7 @@ impl AppDiffDecorator<'_> {
     }
 }
 
-impl DiffDecorator for AppDiffDecorator<'_> {
+impl DiffDecorator for AppDiffDecorator {
     fn revision(&self) -> u64 {
         self.revision
     }
@@ -91,5 +121,11 @@ impl DiffDecorator for AppDiffDecorator<'_> {
             self.mutations.gutter_utility(cx),
             self.review.gutter_utility(cx),
         )
+    }
+
+    fn line_mark(&self, cx: &LineContext) -> Option<LineMark> {
+        self.mutations
+            .line_mark(cx)
+            .or_else(|| self.review.line_mark(cx))
     }
 }

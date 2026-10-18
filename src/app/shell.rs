@@ -229,6 +229,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 true
             }
             Intent::Startup(_)
+            | Intent::OpenPullRequest { .. }
             | Intent::RequestCompare(_)
             | Intent::InvalidateRepository
             | Intent::GrammarAvailable(_)
@@ -359,9 +360,10 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             };
             navigation::view(&mut self.controllers.navigation, &slot, cx)
         });
+        let mutations = self.slots.empty();
         let decorator = self.slots.decorator(
             self.controllers.review.presentation(),
-            self.controllers.mutations.presentation(),
+            mutations,
             tokens::ui_scale(theme),
         );
         let slot = Slot {
@@ -369,10 +371,10 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             width: main_w,
             height,
         };
-        let main = viewport::interaction::view(
+        let main = viewport::interaction::view_shared(
             &mut self.controllers.viewport.interaction,
             &slot,
-            &decorator,
+            decorator,
             cx,
         );
         let content = match files {
@@ -449,6 +451,12 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
     fn init(&mut self, cx: &mut UiContext) {
         self.tick(cx);
         self.dispatcher.attach(cx.sender::<AppMessage>());
+        self.controllers
+            .review
+            .set_syntax_wake(self.dispatcher.syntax_wake());
+        if let Some(wake) = self.dispatcher.syntax_wake() {
+            self.controllers.viewport.interaction.set_syntax_wake(wake);
+        }
         if let Some(startup) = self.startup.take() {
             self.reduce(Reduction::default().intent(Intent::Startup(startup)));
             self.flush(cx);
@@ -473,6 +481,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             width,
             height,
         };
+        let review_overlay = review::overlay(&self.controllers.review, &slot, cx);
         let overlays = commands::overlays(&mut self.controllers.commands, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
         view! {
@@ -480,6 +489,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 {title}
                 {body}
                 {status}
+                {?review_overlay}
                 {?overlays}
                 {?toasts}
             </div>
@@ -543,9 +553,13 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             shared: &self.shared,
             now_ms: self.clock_ms,
         };
-        self.controllers
+        let outcome = self
+            .controllers
             .edit_text(target, command, &cx)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let reduction = self.controllers.after_edit(target, &self.shared);
+        self.reduce(reduction);
+        outcome
     }
 
     fn set_preedit(&mut self, target: FocusId, text: String, cursor: Option<(usize, usize)>) {
@@ -564,5 +578,10 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             now_ms: self.clock_ms,
         };
         self.controllers.set_text_value(target, value, &text_cx);
+        let reduction = self.controllers.after_edit(target, &self.shared);
+        if self.reduce(reduction) {
+            cx.window.request_redraw();
+        }
+        self.flush(cx);
     }
 }

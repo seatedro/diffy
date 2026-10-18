@@ -1271,7 +1271,6 @@ name = "diffy"
 version = "0.1.12"
 dependencies = [
  "arboard",
- "carbon",
  "clap",
  "difftastic",
  "diffy-diff",

@@ -61,6 +61,8 @@
 mod download;
 #[cfg(feature = "engine")]
 mod engine;
+#[cfg(feature = "download")]
+pub mod legacy_pack;
 #[cfg(feature = "engine")]
 pub mod pack;
 mod store;
@@ -73,6 +75,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "download")]
 pub use download::{Downloads, default_cache_dir};
+#[cfg(feature = "download")]
+pub use legacy_pack::{GrammarState, GrammarStatus, LegacyPacks};
 #[cfg(feature = "download")]
 pub use quark_update::PublicKey;
 #[cfg(feature = "engine")]

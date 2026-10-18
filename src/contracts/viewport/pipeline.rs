@@ -2,10 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub use diffy_diff::DiffStats as FileStats;
-use diffy_diff::{
-    ChangeSummary, ContentChange, DiffDocument, FileDiffSnapshot, FileStatus, SourcePurpose,
-    SourceRemap,
-};
+use diffy_diff::{ChangeSummary, DiffDocument, FileDiffSnapshot, FileStatus, SourcePurpose};
 
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision};
 use crate::contracts::shell::{Action, AppEvent, Effect};
@@ -51,8 +48,6 @@ pub struct ManifestFile {
     pub status: FileStatus,
     pub binary: bool,
     pub stats: FileStats,
-    pub content: ContentChange,
-    pub mode_changed: bool,
 }
 
 impl ManifestFile {
@@ -64,17 +59,6 @@ impl ManifestFile {
             status: entry.summary.status,
             binary: entry.summary.binary,
             stats: entry.stats,
-            content: entry.summary.content,
-            mode_changed: entry.summary.mode_changed,
-        }
-    }
-
-    pub fn summary(&self) -> ChangeSummary {
-        ChangeSummary {
-            status: self.status,
-            binary: self.binary,
-            content: self.content,
-            mode_changed: self.mode_changed,
         }
     }
 }
@@ -322,34 +306,6 @@ pub struct CompareResult {
     pub entries: Arc<[CompareEntry]>,
     pub prepared: Arc<[PreparedDiff]>,
     pub notice: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ViewportInstall {
-    Begin {
-        generation: CompareGeneration,
-    },
-    File {
-        prepared: PreparedDiff,
-        remap: Option<SourceRemap>,
-    },
-    Failed {
-        generation: CompareGeneration,
-        key: FileKey,
-        revision: FileRevision,
-        message: String,
-    },
-    Remove {
-        key: FileKey,
-        revision: FileRevision,
-    },
-    Order {
-        generation: CompareGeneration,
-        files: Arc<[FileKey]>,
-    },
-    TextCompare {
-        prepared: PreparedDiff,
-    },
 }
 
 #[derive(Debug, Clone)]

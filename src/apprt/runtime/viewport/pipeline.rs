@@ -75,8 +75,6 @@ impl PipelineRuntime {
             }
             PipelineEffect::RunTextCompare(request) => {
                 let generation = request.generation;
-                self.queue.set_epoch(generation);
-                let queue = Arc::clone(&self.queue);
                 thread::spawn(move || {
                     let event = match services.run_text_compare(&request) {
                         Ok(prepared) => PipelineEvent::TextCompareFinished {
@@ -88,7 +86,7 @@ impl PipelineRuntime {
                             failure,
                         },
                     };
-                    queue.send_current(generation, &events, event);
+                    events.send(event);
                 });
             }
             PipelineEffect::SupersedeCompare(generation) => self.queue.set_epoch(generation),

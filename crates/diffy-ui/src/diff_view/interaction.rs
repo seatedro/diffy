@@ -41,8 +41,15 @@ impl DiffViewState {
         if presentation == self.presentation {
             return;
         }
-        let columns_moved = (presentation.numbers, presentation.markers)
-            != (self.presentation.numbers, self.presentation.markers);
+        let columns_moved = (
+            presentation.numbers,
+            presentation.markers,
+            presentation.wrap_column,
+        ) != (
+            self.presentation.numbers,
+            self.presentation.markers,
+            self.presentation.wrap_column,
+        );
         let bands_moved = (presentation.separators, presentation.headers)
             != (self.presentation.separators, self.presentation.headers);
         self.presentation = presentation;
@@ -54,6 +61,7 @@ impl DiffViewState {
         if columns_moved && self.style.wrap {
             // Wrapped rows were measured for the old text width.
             self.painted.clear();
+            self.list.invalidate_all();
         }
         if bands_moved {
             // Header and separator rows change height.

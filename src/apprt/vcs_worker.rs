@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -14,10 +14,11 @@ use crate::core::vcs::{
     backend::VcsRepository,
     discovery,
     model::{
-        FileChange, FileOperation, PublishAction, PublishPlan, PullFastForwardOutcome,
-        RepoLocation, VcsOperation, VcsSnapshot,
+        CommitRecord, FileChange, FileOperation, PublishAction, PublishPlan,
+        PullFastForwardOutcome, RepoLocation, VcsOperation, VcsSnapshot,
     },
     mutation::{self, PatchSelection},
+    worktree::{PendingSnapshot, WorktreeSnapshot},
 };
 
 const VCS_DIRTY_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -44,6 +45,7 @@ pub(crate) enum VcsWorkerEvent {
     FileOperationApplied {
         job: JobId,
         path: PathBuf,
+        undo: Option<Arc<WorktreeSnapshot>>,
     },
     FileOperationFailed {
         job: JobId,
@@ -53,6 +55,30 @@ pub(crate) enum VcsWorkerEvent {
     CommitCreated {
         job: JobId,
         path: PathBuf,
+        commit: CommitRecord,
+    },
+    LastCommitLoaded {
+        path: PathBuf,
+        commit: Option<CommitRecord>,
+    },
+    LastCommitFailed {
+        message: String,
+    },
+    CommitUndone {
+        job: JobId,
+        path: PathBuf,
+    },
+    CommitUndoFailed {
+        job: JobId,
+        message: String,
+    },
+    DiscardRestored {
+        job: JobId,
+        path: PathBuf,
+    },
+    DiscardRestoreFailed {
+        job: JobId,
+        message: String,
     },
     CommitFailed {
         job: JobId,
@@ -182,6 +208,19 @@ pub(crate) enum VcsCommand {
         job: JobId,
         path: PathBuf,
         message: String,
+        amend: bool,
+    },
+    LastCommit {
+        path: PathBuf,
+    },
+    UndoCommit {
+        job: JobId,
+        path: PathBuf,
+        sha: String,
+    },
+    RestoreDiscard {
+        job: JobId,
+        snapshot: Arc<WorktreeSnapshot>,
     },
     RunOperation {
         job: JobId,
@@ -376,9 +415,10 @@ fn run_command(state: &mut VcsWorkerState, emitter: &Emitter, command: VcsComman
             file_change,
             operation,
         } => {
+            let pending = discard_snapshot(&path, std::slice::from_ref(&file_change), operation);
             let result = discovery::open_repository(&path)
                 .and_then(|mut repo| repo.apply_file_operation(&file_change, operation));
-            finish_file_operation(state, emitter, job, path, result);
+            finish_file_operation(state, emitter, job, path, result, pending);
         }
         VcsCommand::ApplyBatchOperation {
             job,
@@ -386,9 +426,10 @@ fn run_command(state: &mut VcsWorkerState, emitter: &Emitter, command: VcsComman
             file_changes,
             operation,
         } => {
+            let pending = discard_snapshot(&path, &file_changes, operation);
             let result = discovery::open_repository(&path)
                 .and_then(|mut repo| repo.apply_batch_file_operation(&file_changes, operation));
-            finish_file_operation(state, emitter, job, path, result);
+            finish_file_operation(state, emitter, job, path, result, pending);
         }
         VcsCommand::LoadMutationSource { key } => load_mutation_source(emitter, key),
         VcsCommand::ApplyPatch {
@@ -397,8 +438,52 @@ fn run_command(state: &mut VcsWorkerState, emitter: &Emitter, command: VcsComman
             selection,
             operation,
         } => apply_patch_operation(state, emitter, job, &source, &selection, operation),
-        VcsCommand::Commit { job, path, message } => {
-            apply_commit(state, emitter, job, path, &message)
+        VcsCommand::Commit {
+            job,
+            path,
+            message,
+            amend,
+        } => apply_commit(state, emitter, job, path, &message, amend),
+        VcsCommand::LastCommit { path } => {
+            let event =
+                match discovery::open_repository(&path).and_then(|mut repo| repo.last_commit()) {
+                    Ok(commit) => VcsWorkerEvent::LastCommitLoaded { path, commit },
+                    Err(error) => VcsWorkerEvent::LastCommitFailed {
+                        message: error.user_message(),
+                    },
+                };
+            emitter.emit(event);
+        }
+        VcsCommand::UndoCommit { job, path, sha } => {
+            match discovery::open_repository(&path).and_then(|mut repo| repo.undo_commit(&sha)) {
+                Ok(()) => {
+                    emitter.emit(VcsWorkerEvent::CommitUndone {
+                        job,
+                        path: path.clone(),
+                    });
+                    sync_repository_forced(state, emitter, path, RepositorySyncReason::Dirty);
+                }
+                Err(error) => emitter.emit(VcsWorkerEvent::CommitUndoFailed {
+                    job,
+                    message: error.user_message(),
+                }),
+            }
+        }
+        VcsCommand::RestoreDiscard { job, snapshot } => {
+            let path = snapshot.root().to_path_buf();
+            match snapshot.restore() {
+                Ok(()) => {
+                    emitter.emit(VcsWorkerEvent::DiscardRestored {
+                        job,
+                        path: path.clone(),
+                    });
+                    sync_repository_forced(state, emitter, path, RepositorySyncReason::Dirty);
+                }
+                Err(error) => emitter.emit(VcsWorkerEvent::DiscardRestoreFailed {
+                    job,
+                    message: error.user_message(),
+                }),
+            }
         }
         VcsCommand::RunOperation {
             job,
@@ -427,12 +512,27 @@ fn run_command(state: &mut VcsWorkerState, emitter: &Emitter, command: VcsComman
     }
 }
 
+fn discard_snapshot(
+    root: &Path,
+    changes: &[FileChange],
+    operation: FileOperation,
+) -> Option<PendingSnapshot> {
+    if operation != FileOperation::Discard {
+        return None;
+    }
+    let paths = changes
+        .iter()
+        .flat_map(|change| std::iter::once(change.path.as_str()).chain(change.old_path.as_deref()));
+    PendingSnapshot::capture(root, paths)
+}
+
 fn finish_file_operation(
     state: &mut VcsWorkerState,
     emitter: &Emitter,
     job: JobId,
     path: PathBuf,
     result: crate::core::error::Result<()>,
+    pending: Option<PendingSnapshot>,
 ) {
     if let Err(error) = result {
         emitter.emit(VcsWorkerEvent::FileOperationFailed {
@@ -446,6 +546,7 @@ fn finish_file_operation(
     emitter.emit(VcsWorkerEvent::FileOperationApplied {
         job,
         path: path.clone(),
+        undo: pending.and_then(PendingSnapshot::finish).map(Arc::new),
     });
     sync_repository_forced(state, emitter, path, RepositorySyncReason::Dirty);
 }
@@ -473,6 +574,7 @@ fn apply_patch_operation(
     operation: FileOperation,
 ) {
     let path = source.repo_path().to_path_buf();
+    let pending = discard_snapshot(&path, std::slice::from_ref(source.change()), operation);
     let result = discovery::open_repository(&path).and_then(|mut repo| {
         mutation::apply_selection(
             repo.as_mut(),
@@ -504,6 +606,7 @@ fn apply_patch_operation(
     emitter.emit(VcsWorkerEvent::FileOperationApplied {
         job,
         path: path.clone(),
+        undo: pending.and_then(PendingSnapshot::finish).map(Arc::new),
     });
     sync_repository_forced(state, emitter, path, RepositorySyncReason::Dirty);
 }
@@ -514,21 +617,26 @@ fn apply_commit(
     job: JobId,
     path: PathBuf,
     message: &str,
+    amend: bool,
 ) {
-    if let Err(error) =
-        discovery::open_repository(&path).and_then(|mut repo| repo.create_commit(message))
+    let commit = match discovery::open_repository(&path)
+        .and_then(|mut repo| repo.create_commit(message, amend))
     {
-        emitter.emit(VcsWorkerEvent::CommitFailed {
-            job,
-            path,
-            message: error.user_message(),
-        });
-        return;
-    }
+        Ok(commit) => commit,
+        Err(error) => {
+            emitter.emit(VcsWorkerEvent::CommitFailed {
+                job,
+                path,
+                message: error.user_message(),
+            });
+            return;
+        }
+    };
 
     emitter.emit(VcsWorkerEvent::CommitCreated {
         job,
         path: path.clone(),
+        commit,
     });
     sync_repository_forced(state, emitter, path, RepositorySyncReason::Dirty);
 }

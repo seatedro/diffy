@@ -6,10 +6,11 @@ use crate::contracts::navigation::RepositoryRevision;
 use crate::contracts::review::Secret;
 use crate::contracts::shared::{FileKey, FileRevision, HunkTarget, JobId, SourceTarget};
 use crate::core::vcs::model::{
-    ChangeBucket, FileChange, FileOperation, PublishAction, PublishPlan, VcsOperation,
+    ChangeBucket, CommitRecord, FileChange, FileOperation, PublishAction, PublishPlan, VcsOperation,
 };
 use crate::core::vcs::mutation::{MutationMaterial, PatchSelection, SideRange};
 use crate::core::vcs::source::SourceIdentity;
+use crate::core::vcs::worktree::WorktreeSnapshot;
 use crate::platform::secrets::AiKeyKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,19 +42,44 @@ pub enum MutationsAction {
     RunOperation(VcsOperation),
     FetchRemote(String),
     FetchAllRemotes,
-    Push { force_with_lease: bool },
+    Push {
+        force_with_lease: bool,
+    },
     PublishDefault,
     OpenPublishMenu,
     Publish(Box<PublishAction>),
     PullCurrentBranch,
-    SetAiKey { kind: AiKeyKind, value: Secret },
-    ClearAiKey { kind: AiKeyKind },
-    SetAiKeyEditing { kind: AiKeyKind, editing: bool },
+    SetAiKey {
+        kind: AiKeyKind,
+        value: Secret,
+    },
+    ClearAiKey {
+        kind: AiKeyKind,
+    },
+    SetAiKeyEditing {
+        kind: AiKeyKind,
+        editing: bool,
+    },
     GenerateCommitMessage,
     ApplyConfirmed(ConfirmedMutation),
     RunConfirmedOperation(VcsOperation),
     OpenCommitComposer,
-    CloseCommitComposer,
+    StartAmend,
+    CancelAmend,
+    ToggleCommitMenu,
+    CloseCommitMenu,
+    CancelGeneration,
+    UndoCommit(JobId),
+    UndoDiscard(JobId),
+    ForgetUndo(JobId),
+    ApplyFiles {
+        files: Vec<FileKey>,
+        operation: FileOperation,
+    },
+    ApplyBucket {
+        bucket: ChangeBucket,
+        operation: FileOperation,
+    },
     ScrollCommitMessage(i32),
     ClosePublishMenu,
     SaveAiKeyField(AiKeyKind),
@@ -215,6 +241,19 @@ pub enum MutationsEffect {
         job: JobId,
         repo_path: PathBuf,
         message: String,
+        amend: bool,
+    },
+    LoadLastCommit {
+        repo_path: PathBuf,
+    },
+    UndoCommit {
+        job: JobId,
+        repo_path: PathBuf,
+        sha: String,
+    },
+    RestoreDiscard {
+        job: JobId,
+        snapshot: Arc<WorktreeSnapshot>,
     },
     RunOperation {
         job: JobId,
@@ -269,6 +308,7 @@ pub enum MutationsEvent {
     FileOperationApplied {
         job: JobId,
         path: PathBuf,
+        undo: Option<Arc<WorktreeSnapshot>>,
     },
     FileOperationFailed {
         job: JobId,
@@ -278,6 +318,30 @@ pub enum MutationsEvent {
     CommitCreated {
         job: JobId,
         path: PathBuf,
+        commit: CommitRecord,
+    },
+    LastCommitLoaded {
+        path: PathBuf,
+        commit: Option<CommitRecord>,
+    },
+    LastCommitFailed {
+        message: String,
+    },
+    CommitUndone {
+        job: JobId,
+        path: PathBuf,
+    },
+    CommitUndoFailed {
+        job: JobId,
+        message: String,
+    },
+    DiscardRestored {
+        job: JobId,
+        path: PathBuf,
+    },
+    DiscardRestoreFailed {
+        job: JobId,
+        message: String,
     },
     CommitFailed {
         job: JobId,

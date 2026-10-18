@@ -10,10 +10,11 @@ use quark_ui::element::*;
 use quark_ui::style::Styled;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 
-use super::presentation::action_buttons;
+use super::controls::{self as mutation_controls, Chrome};
 use super::{MutationsController, panel, view};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{TextCx, TextHost};
+use crate::contracts::commands::CommandSource;
 use crate::contracts::commands::{CommandsAction, ToastUpdate};
 use crate::contracts::mutations::{
     ConfirmedMutation, MutationSelection, MutationSource, MutationSourceKey, MutationsAction,
@@ -92,6 +93,7 @@ fn manifest(revision: FileRevision) -> Rc<CompareManifestSnapshot> {
                 diffy_diff::FileStatus::Modified,
             )
         }]),
+        working_tree: true,
         ..CompareManifestSnapshot::default()
     })
 }
@@ -183,6 +185,7 @@ fn hunk_operations_load_exact_sources_lazily_then_apply() {
         MutationsEvent::FileOperationApplied {
             job: request.job,
             path: PathBuf::from("/repo"),
+            undo: None,
         },
         &cx,
     );
@@ -236,30 +239,47 @@ fn stale_targets_and_sources_are_rejected() {
 }
 
 #[test]
-fn discards_need_confirmation_through_the_commands_host() {
-    let cx = shared();
+fn discards_run_immediately_and_only_untracked_deletion_confirms() {
+    let mut cx = shared();
     let mut controller = MutationsController::default();
     let reduction = controller.reduce_action(MutationsAction::DiscardHunkAt(hunk()), &cx);
-    assert!(reduction.effects.is_empty());
+    assert!(reduction.intents.is_empty());
+    let effects = mutation_effects(&reduction);
+    let [MutationsEffect::LoadMutationSource(key)] = effects.as_slice() else {
+        panic!("expected a source load, got {:?}", reduction.intents);
+    };
+    assert_eq!(key.change.bucket, ChangeBucket::Unstaged);
+
+    cx.repository = Some(repository(
+        1,
+        &[ChangeBucket::Untracked],
+        RepoCapabilities::git(),
+    ));
+    cx.manifest = Some(Rc::new(CompareManifestSnapshot {
+        files: Arc::from(vec![ManifestFile {
+            buckets: vec![ChangeBucket::Untracked],
+            ..ManifestFile::new(
+                FILE,
+                REVISION,
+                CompareFilePaths::from_paths(None, Some("f.txt")),
+                diffy_diff::FileStatus::Added,
+            )
+        }]),
+        working_tree: true,
+        ..CompareManifestSnapshot::default()
+    }));
+    let mut controller = MutationsController::default();
+    let reduction = controller.reduce_action(MutationsAction::DiscardFile(FILE), &cx);
     let [Intent::RequestConfirmation(request)] = reduction.intents.as_slice() else {
         panic!("expected a confirmation, got {:?}", reduction.intents);
     };
     assert!(request.destructive);
     assert_eq!(
         *request.confirm,
-        Action::Mutations(MutationsAction::ApplyConfirmed(
-            ConfirmedMutation::Selection(MutationSelection::Hunks(vec![hunk()]))
-        ))
+        Action::Mutations(MutationsAction::ApplyConfirmed(ConfirmedMutation::Files(
+            vec![FILE]
+        )))
     );
-    let Action::Mutations(confirmed) = *request.confirm.clone() else {
-        unreachable!()
-    };
-    let reduction = controller.reduce_action(confirmed, &cx);
-    let effects5 = mutation_effects(&reduction);
-    let [MutationsEffect::LoadMutationSource(key)] = effects5.as_slice() else {
-        panic!("expected a source load");
-    };
-    assert_eq!(key.change.bucket, ChangeBucket::Unstaged);
 }
 
 #[test]
@@ -498,6 +518,7 @@ fn commits_need_a_message_and_committable_changes() {
         MutationsEvent::CommitCreated {
             job: *job,
             path: PathBuf::from("/repo"),
+            commit: commit_record("Add parser"),
         },
         &cx,
     );
@@ -596,10 +617,30 @@ impl UiApp for Host {
         let status = view(&mut self.controller, &slot, cx);
         let panel = panel(&mut self.controller, &slot, cx);
         let presentation = self.controller.presentation();
-        let hunk = action_buttons(presentation.hunk_actions(&hunk()), 4.0);
+        let chrome = Chrome::from_theme(cx.theme);
+        let hunk = mutation_controls::row(presentation.hunk_actions(&hunk()), &chrome);
+        let sidebar = Slot {
+            shared: &self.shared,
+            width: width * 0.4,
+            height,
+        };
+        let commit = super::commit_box(&mut self.controller, &sidebar, cx);
+        let body = Slot {
+            shared: &self.shared,
+            width,
+            height: height - status_h,
+        };
+        let bar = super::selection_bar(&mut self.controller, &body, cx);
         quark::view! {
             <div w={width} h={height} class="flex-col relative">
-                <div class="flex-1">{hunk}</div>
+                <div class="flex-1 flex-row relative">
+                    <div class="flex-col" w={width * 0.4}>
+                        <div class="flex-1" />
+                        {?commit}
+                    </div>
+                    <div class="flex-1">{hunk}</div>
+                    {?bar}
+                </div>
                 {status}
                 {?panel}
             </div>
@@ -644,59 +685,86 @@ fn stage_hunk_control_requests_the_exact_source() {
 }
 
 #[test]
-fn selected_line_controls_unstage_and_confirm_discard() {
+fn selection_bar_stages_and_discards_lines() {
     let mut ui = harness();
-    assert!(ui.try_find(By::name("Unstage selected lines")).is_none());
+    assert!(ui.try_find(By::name("Selected lines")).is_none());
     ui.send_message(HostMessage::Action(MutationsAction::ToggleLineSelection(
         target(Side::New, 1..3),
     )));
-    assert!(ui.painted_text().contains("2 lines selected"));
-    ui.click_node(By::role_name(Role::Button, "Discard selected lines"));
-    assert!(matches!(
-        ui.app().intents().as_slice(),
-        [Intent::RequestConfirmation(_)]
-    ));
-    ui.click_node(By::role_name(Role::Button, "Unstage selected lines"));
+    assert!(ui.painted_text().contains("2 lines"));
+    assert!(ui.painted_text().contains("selected in f.txt"));
+    ui.click_node(By::role_name(Role::Button, "Discard"));
+    assert!(ui.app().intents().is_empty());
     assert!(matches!(
         ui.app().effects().as_slice(),
-        [MutationsEffect::LoadMutationSource(key)] if key.change.bucket == ChangeBucket::Staged
+        [MutationsEffect::LoadMutationSource(key)] if key.change.bucket == ChangeBucket::Unstaged
     ));
-    assert!(ui.try_find(By::name("Unstage selected lines")).is_none());
+    assert!(ui.try_find(By::name("Selected lines")).is_none());
 }
 
 #[test]
-fn commit_message_editor_takes_typing_and_generates() {
+fn commit_box_generates_then_commits() {
     let mut ui = harness();
-    ui.click_node(By::role_name(Role::Button, "Commit"));
-    ui.click_node(By::role_name(Role::MultilineTextInput, "Commit message"));
-    ui.type_text("Fix parser");
-    assert_eq!(ui.app().controller.commit_text(), "Fix parser");
-    assert_eq!(
-        ui.find(By::name("Commit message")).value.as_deref(),
-        Some("Fix parser")
-    );
-
+    assert!(ui.try_find(By::role_name(Role::Button, "Commit")).is_none());
     ui.send_message(HostMessage::Action(MutationsAction::SetAiKey {
         kind: AiKeyKind::OpenAi,
         value: crate::contracts::review::Secret::new("key"),
     }));
-    ui.click_node(By::role_name(Role::Button, "Generate commit message"));
+    ui.click_node(By::role_name(Role::Button, "Generate"));
     let effects = ui.app().effects();
     let Some(MutationsEffect::GenerateCommitMessage(request)) = effects.last() else {
         panic!("expected a generation, got {effects:?}");
     };
-    assert_eq!(request.subject_override.as_deref(), Some("Fix parser"));
     let generation = request.generation;
-    ui.send_message(HostMessage::Event(chunk(generation, "Body text")));
+    assert!(
+        ui.try_find(By::role_name(Role::Button, "Generating\u{2026}"))
+            .is_some()
+    );
+    ui.send_message(HostMessage::Event(chunk(generation, "Fix parser")));
+    ui.send_message(HostMessage::Event(MutationsEvent::CommitMessageFinished {
+        generation,
+        repository: RepositoryRevision(1),
+    }));
     assert_eq!(
         ui.find(By::name("Commit message")).value.as_deref(),
-        Some("Fix parser\nBody text")
+        Some("Fix parser")
     );
-    ui.click_node(By::role_name(Role::Button, "Create commit"));
+    ui.click_node(By::role_name(Role::MultilineTextInput, "Commit message"));
+    ui.type_text(" now");
+    ui.click_node(By::role_name(Role::Button, "Commit"));
     assert!(matches!(
         ui.app().effects().last(),
-        Some(MutationsEffect::CreateCommit { message, .. }) if message == "Fix parser\nBody text"
+        Some(MutationsEffect::CreateCommit { message, amend: false, .. }) if message == "Fix parser now"
     ));
+}
+
+#[test]
+fn commit_menu_amends_with_a_banner_and_restores_the_draft() {
+    let mut ui = harness();
+    ui.click_node(By::role_name(Role::MultilineTextInput, "Commit message"));
+    ui.type_text("draft");
+    ui.click_node(By::role_name(Role::Button, "More commit actions"));
+    ui.click_node(By::role_name(Role::Button, "Amend last commit"));
+    assert!(matches!(
+        ui.app().effects().last(),
+        Some(MutationsEffect::LoadLastCommit { .. })
+    ));
+    ui.send_message(HostMessage::Event(MutationsEvent::LastCommitLoaded {
+        path: PathBuf::from("/repo"),
+        commit: Some(commit_record("Old subject")),
+    }));
+    assert!(ui.painted_text().contains("Amending"));
+    assert_eq!(
+        ui.find(By::name("Commit message")).value.as_deref(),
+        Some("Old subject")
+    );
+    assert!(ui.try_find(By::role_name(Role::Button, "Amend")).is_some());
+    ui.click_node(By::role_name(Role::Button, "Stop amending"));
+    assert_eq!(
+        ui.find(By::name("Commit message")).value.as_deref(),
+        Some("draft")
+    );
+    assert!(ui.try_find(By::role_name(Role::Button, "Commit")).is_some());
 }
 
 #[test]
@@ -772,9 +840,9 @@ fn presentation_marks_selected_lines_and_offers_hunk_controls() {
     let labels: Vec<_> = presentation
         .hunk_actions(&hunk())
         .into_iter()
-        .map(|(label, _)| label)
+        .map(|control| control.label)
         .collect();
-    assert_eq!(labels, ["Stage hunk", "Unstage hunk", "Discard hunk"]);
+    assert_eq!(labels, ["Stage hunk", "Discard hunk", "Unstage hunk"]);
     let same = controller.presentation();
     assert!(Rc::ptr_eq(&presentation, &same));
 }
@@ -872,24 +940,120 @@ fn clankers_settings_save_keys_and_prompt() {
         ui.app().commands.last(),
         Some(&CommandsAction::SetAiSteeringPrompt("Be brief".to_owned()))
     );
-    ui.click_node(By::role_name(Role::Button, "Reset to default"));
-    assert_eq!(
-        ui.app().commands.last(),
-        Some(&CommandsAction::SetAiSteeringPrompt(String::new()))
-    );
 }
 
 #[test]
 fn mutation_controls_are_keyboard_reachable() {
     let mut ui = harness();
-    ui.click_node(By::role_name(Role::Button, "Commit"));
     ui.click_node(By::role_name(Role::MultilineTextInput, "Commit message"));
     ui.type_text("Fix");
     ui.key("tab");
     let focused = ui.focused().expect("focus moved");
     assert_eq!(focused.role, Some(Role::Button));
-    ui.key("escape");
-    assert!(!ui.app().controller.composer_open());
+    ui.key("enter");
+    assert!(!ui.app().effects().is_empty() || ui.app().controller.commit_menu_open());
+}
+
+#[test]
+fn nothing_mutates_outside_working_tree_compares() {
+    let mut cx = shared();
+    let mut manifest = (*manifest(REVISION)).clone();
+    manifest.working_tree = false;
+    cx.manifest = Some(Rc::new(manifest));
+    let mut controller = MutationsController::default();
+    controller.apply_intent(&Intent::PublishManifest(cx.manifest.clone().unwrap()), &cx);
+    assert!(controller.presentation().hunk_actions(&hunk()).is_empty());
+    let staged = controller.reduce_action(MutationsAction::StageHunkAt(hunk()), &cx);
+    assert!(staged.effects.is_empty());
+    let mut commands = Vec::new();
+    controller.commands(&cx, &mut commands);
+    assert!(commands.iter().all(|command| !matches!(
+        command.id,
+        "mutations.stage" | "mutations.discard" | "mutations.commit" | "mutations.publish"
+    )));
+    assert!(super::file_row_actions(&cx.manifest.as_ref().unwrap().files[0], &cx).is_empty());
+}
+
+#[test]
+fn undo_toasts_restore_discards_and_commits() {
+    let cx = shared();
+    let mut controller = MutationsController::default();
+    let reduction = controller.reduce_action(MutationsAction::DiscardFile(FILE), &cx);
+    let effects = mutation_effects(&reduction);
+    let [MutationsEffect::ApplyFileOperation(request)] = effects.as_slice() else {
+        panic!("expected a file discard");
+    };
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("f.txt"), b"before").unwrap();
+    let pending =
+        crate::core::vcs::worktree::PendingSnapshot::capture(dir.path(), ["f.txt"]).unwrap();
+    std::fs::write(dir.path().join("f.txt"), b"after").unwrap();
+    let snapshot = Arc::new(pending.finish().unwrap());
+    let applied = controller.reduce_event(
+        MutationsEvent::FileOperationApplied {
+            job: request.job,
+            path: PathBuf::from("/repo"),
+            undo: Some(snapshot.clone()),
+        },
+        &cx,
+    );
+    assert!(matches!(applied.intents.as_slice(), [Intent::Toast(_)]));
+    assert!(controller.can_undo(request.job));
+    let undo = controller.reduce_action(MutationsAction::UndoDiscard(request.job), &cx);
+    assert!(matches!(
+        mutation_effects(&undo).as_slice(),
+        [MutationsEffect::RestoreDiscard { snapshot: restored, .. }] if Arc::ptr_eq(restored, &snapshot)
+    ));
+    assert!(!controller.can_undo(request.job));
+
+    controller.commit_editor_mut().set_text("Add parser");
+    let commit = controller.reduce_action(MutationsAction::SubmitCommit, &cx);
+    let effects = mutation_effects(&commit);
+    let [MutationsEffect::CreateCommit { job, .. }] = effects.as_slice() else {
+        panic!("expected a commit");
+    };
+    controller.reduce_event(
+        MutationsEvent::CommitCreated {
+            job: *job,
+            path: PathBuf::from("/repo"),
+            commit: commit_record("Add parser"),
+        },
+        &cx,
+    );
+    let mut commands = Vec::new();
+    controller.commands(&cx, &mut commands);
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.id == "mutations.undo_commit")
+    );
+    let undo = controller.reduce_action(MutationsAction::UndoCommit(*job), &cx);
+    let effects = mutation_effects(&undo);
+    let [
+        MutationsEffect::UndoCommit {
+            job: undo_job, sha, ..
+        },
+    ] = effects.as_slice()
+    else {
+        panic!("expected an undo");
+    };
+    assert_eq!(sha, "abc1234def");
+    controller.reduce_event(
+        MutationsEvent::CommitUndone {
+            job: *undo_job,
+            path: PathBuf::from("/repo"),
+        },
+        &cx,
+    );
+    assert_eq!(controller.commit_text(), "Add parser");
+}
+
+fn commit_record(message: &str) -> crate::core::vcs::model::CommitRecord {
+    crate::core::vcs::model::CommitRecord {
+        sha: "abc1234def".to_owned(),
+        short: "abc1234".to_owned(),
+        message: message.to_owned(),
+    }
 }
 
 #[test]
@@ -909,6 +1073,7 @@ fn line_operations_bind_to_displayed_buckets_and_objects() {
                     diffy_diff::FileStatus::Modified,
                 )
             }]),
+            working_tree: true,
             ..CompareManifestSnapshot::default()
         })
     };

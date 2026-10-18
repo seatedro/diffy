@@ -188,7 +188,7 @@ fn run_system_git_progress(
         .spawn()
         .map_err(|e| git_error_fatal(git_command_label(args), format!("failed to run git: {e}")))?;
 
-    let mut last_line = String::new();
+    let mut lines = Vec::new();
     if let Some(stderr) = child.stderr.take() {
         let mut reader = BufReader::new(stderr);
         let mut buf = Vec::new();
@@ -199,7 +199,9 @@ fn run_system_git_progress(
                 if let Some((current, total, bytes)) = parse_objects_progress(line, phase) {
                     on_progress(current, total, bytes);
                 }
-                last_line = line.to_owned();
+                if parse_objects_progress(line, phase).is_none() {
+                    lines.push(line.to_owned());
+                }
             }
             buf.clear();
         }
@@ -211,11 +213,9 @@ fn run_system_git_progress(
     if status.success() {
         return Ok(());
     }
-    let detail = if last_line.is_empty() {
-        format!("git exited with {status}")
-    } else {
-        last_line
-    };
+    let detail = failure_line(lines.iter().map(String::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("git exited with {status}"));
     let command = git_command_label(args);
     if failure_is_network(&detail) {
         return Err(DiffyError::network(format!(
@@ -280,6 +280,19 @@ fn parse_transfer_bytes(rest: &str) -> Option<usize> {
     Some((value * unit) as usize)
 }
 
+fn failure_line<'a>(lines: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let lines: Vec<&str> = lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines
+        .iter()
+        .find(|line| line.starts_with("fatal:"))
+        .or_else(|| lines.iter().find(|line| line.starts_with("error:")))
+        .or_else(|| lines.last())
+        .copied()
+}
+
 fn run_system_git_inner(
     repo_path: &Path,
     args: &[OsString],
@@ -301,11 +314,8 @@ fn run_system_git_inner(
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = stderr
-        .trim()
-        .lines()
-        .last()
-        .or_else(|| stdout.trim().lines().last())
+    let detail = failure_line(stderr.lines())
+        .or_else(|| failure_line(stdout.lines()))
         .map(str::to_owned)
         .unwrap_or_else(|| format!("git exited with {}", output.status));
     let command = git_command_label(args);
@@ -1520,16 +1530,69 @@ impl GitService {
         Ok(Path::new(&self.repo_path))
     }
 
-    pub fn commit(&self, message: &str) -> Result<String> {
-        run_system_git(
+    pub fn commit(&self, message: &str, amend: bool) -> Result<String> {
+        let mut args = vec![
+            OsString::from("commit"),
+            OsString::from("--cleanup=whitespace"),
+            OsString::from("-m"),
+            OsString::from(message),
+        ];
+        if amend {
+            args.push(OsString::from("--amend"));
+        }
+        run_system_git(self.repo_path_ref()?, &args)?;
+        self.resolve_ref("HEAD")
+    }
+
+    pub fn last_commit(&self) -> Result<Option<(String, String, String)>> {
+        let Ok(head) = self.resolve_commit_oid("HEAD") else {
+            return Ok(None);
+        };
+        let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
-                OsString::from("commit"),
-                OsString::from("-m"),
-                OsString::from(message),
+                OsString::from("log"),
+                OsString::from("-1"),
+                OsString::from("--format=%h%x00%B"),
+                OsString::from(head.as_str()),
             ],
         )?;
-        self.resolve_ref("HEAD")
+        let text = String::from_utf8_lossy(&output.stdout);
+        let (short, message) = text.split_once('\0').unwrap_or((head.as_str(), ""));
+        Ok(Some((
+            head.clone(),
+            short.trim().to_owned(),
+            message.trim_end().to_owned(),
+        )))
+    }
+
+    pub fn soft_reset_commit(&self, sha: &str) -> Result<()> {
+        let head = self.resolve_commit_oid("HEAD")?;
+        if !head.eq_ignore_ascii_case(sha) {
+            return Err(git_error(
+                "undo commit",
+                "HEAD moved since the commit was created",
+            ));
+        }
+        let repo_path = self.repo_path_ref()?;
+        match first_parent(self.repo()?, &head) {
+            Some(parent) => run_system_git(
+                repo_path,
+                &[
+                    OsString::from("reset"),
+                    OsString::from("--soft"),
+                    OsString::from(parent),
+                ],
+            ),
+            None => run_system_git(
+                repo_path,
+                &[
+                    OsString::from("update-ref"),
+                    OsString::from("-d"),
+                    OsString::from("HEAD"),
+                ],
+            ),
+        }
     }
 
     fn stage_paths<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
@@ -2051,6 +2114,17 @@ mod tests {
             .iter()
             .map(|entry| (entry.path().unwrap_or_default().to_owned(), entry.status()))
             .collect()
+    }
+
+    #[test]
+    fn failures_prefer_the_fatal_line() {
+        let stderr = "fatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n";
+        assert_eq!(
+            super::failure_line(stderr.lines()),
+            Some("fatal: 'origin' does not appear to be a git repository")
+        );
+        assert_eq!(super::failure_line("hint: a\nlast".lines()), Some("last"));
+        assert_eq!(super::failure_line("".lines()), None);
     }
 
     #[test]

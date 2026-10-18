@@ -7,7 +7,7 @@ use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark_ui::FocusId;
 use quark_ui::text_input::{Editor, EditorMode, TextEditCommand, TextEditOutcome, TextField};
 
-use super::presentation::{MutationPresentation, PresentationStyle};
+use super::presentation::{MutationPresentation, PresentationStyle, mutable_buckets};
 use crate::ai::{DEFAULT_STEERING_PROMPT, Provider};
 use crate::app::text_targets::{
     COMMIT_MESSAGE, SETTINGS_ANTHROPIC_KEY, SETTINGS_OPENAI_KEY, SETTINGS_STEERING_PROMPT, TextCx,
@@ -32,6 +32,7 @@ use crate::core::vcs::model::{
     VcsOperation, VcsRef,
 };
 use crate::core::vcs::source::SourceIdentity;
+use crate::core::vcs::worktree::WorktreeSnapshot;
 use crate::platform::secrets::AiKeyKind;
 
 const JOB_BASE: u64 = 0xE << 48;
@@ -47,6 +48,8 @@ pub struct LineKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Job {
+    UndoCommit(String),
+    RestoreDiscard,
     Patch,
     Files,
     Commit,
@@ -96,6 +99,25 @@ pub struct AiState {
     pub anthropic_editing: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmendState {
+    pub sha: String,
+    pub short: String,
+    draft: String,
+}
+
+#[derive(Debug, Clone)]
+enum UndoEntry {
+    Commit {
+        repo_path: PathBuf,
+        sha: String,
+        message: String,
+    },
+    Discard(Arc<WorktreeSnapshot>),
+}
+
+const MAX_UNDO: usize = 8;
+
 #[derive(Debug, Default)]
 pub struct PublishMenu {
     pub loading: bool,
@@ -111,7 +133,10 @@ pub struct MutationsController {
     jobs: HashMap<JobId, Job>,
     next_job: u64,
     commit: Editor,
-    composer_open: bool,
+    commit_menu: bool,
+    amend: Option<AmendState>,
+    amend_loading: bool,
+    undo: Vec<(JobId, UndoEntry)>,
     ai: AiState,
     publish: Option<PublishMenu>,
     openai_field: TextField,
@@ -125,7 +150,7 @@ impl std::fmt::Debug for MutationsController {
         f.debug_struct("MutationsController")
             .field("selection", &self.selection.len())
             .field("jobs", &self.jobs)
-            .field("composer_open", &self.composer_open)
+            .field("amend", &self.amend)
             .finish_non_exhaustive()
     }
 }
@@ -141,7 +166,10 @@ impl Default for MutationsController {
             jobs: HashMap::new(),
             next_job: JOB_BASE,
             commit: Editor::new(EditorMode::ProseInput),
-            composer_open: false,
+            commit_menu: false,
+            amend: None,
+            amend_loading: false,
+            undo: Vec::new(),
             ai: AiState::default(),
             publish: None,
             openai_field: TextField::new(""),
@@ -180,6 +208,26 @@ fn progress(id: JobId, message: impl Into<String>) -> Intent {
         message: message.into(),
         completed: 0,
         total: 0,
+    })
+}
+
+pub fn working_tree(cx: &SharedContext) -> bool {
+    cx.manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.working_tree)
+}
+
+fn undo_toast(id: JobId, message: impl Into<String>, undo: MutationsAction) -> Intent {
+    Intent::Toast(ToastUpdate::Show {
+        id: Some(id),
+        kind: ToastKind::Success,
+        message: message.into(),
+        description: Some(match undo {
+            MutationsAction::UndoCommit(_) => {
+                "Undo Last Commit is in the command palette.".to_owned()
+            }
+            _ => "Undo Discard is in the command palette.".to_owned(),
+        }),
     })
 }
 
@@ -292,8 +340,36 @@ impl MutationsController {
         &mut self.commit
     }
 
-    pub fn composer_open(&self) -> bool {
-        self.composer_open
+    pub fn commit_menu_open(&self) -> bool {
+        self.commit_menu
+    }
+
+    pub fn amending(&self) -> Option<&AmendState> {
+        self.amend.as_ref()
+    }
+
+    pub fn can_undo(&self, job: JobId) -> bool {
+        self.undo.iter().any(|(id, _)| *id == job)
+    }
+
+    fn remember_undo(&mut self, job: JobId, entry: UndoEntry) {
+        if self.undo.len() >= MAX_UNDO {
+            self.undo.remove(0);
+        }
+        self.undo.push((job, entry));
+    }
+
+    fn take_undo(&mut self, job: JobId) -> Option<UndoEntry> {
+        let index = self.undo.iter().position(|(id, _)| *id == job)?;
+        Some(self.undo.remove(index).1)
+    }
+
+    fn latest_undo(&self, commit: bool) -> Option<JobId> {
+        self.undo
+            .iter()
+            .rev()
+            .find(|(_, entry)| matches!(entry, UndoEntry::Commit { .. }) == commit)
+            .map(|(id, _)| *id)
     }
 
     pub fn ai(&self) -> &AiState {
@@ -322,12 +398,11 @@ impl MutationsController {
     }
 
     fn refresh_presentation(&mut self, cx: &SharedContext) {
-        let capabilities = capabilities(cx);
         let next = MutationPresentation::new(
             self.presentation.revision().wrapping_add(1),
             self.presentation.style(),
-            capabilities.is_some_and(|c| c.staging_area),
-            capabilities.is_some_and(|c| c.partial_hunk_mutation),
+            capabilities(cx).is_some_and(|c| c.partial_hunk_mutation),
+            mutable_buckets(cx.manifest.as_deref()),
             self.selection.clone(),
         );
         if !self.presentation.same_content(&next) {
@@ -394,30 +469,20 @@ impl MutationsController {
         &mut self,
         selection: MutationSelection,
         operation: FileOperation,
-        confirmed: bool,
         cx: &SharedContext,
     ) -> Reduction {
         let Some(capabilities) = capabilities(cx) else {
             return error("Open a repository before changing lines.");
         };
+        if !working_tree(cx) {
+            return error("Only working-tree changes can be staged or discarded.");
+        }
         if !capabilities.partial_hunk_mutation {
             return error("This repository backend does not support line operations.");
         }
         let Some((file, revision)) = selection.file() else {
             return error("Select lines from one file at a time.");
         };
-        if operation == FileOperation::Discard && !confirmed {
-            return Reduction::default().intent(Intent::RequestConfirmation(ConfirmationRequest {
-                title: "Discard changes?".to_owned(),
-                message: "The selected changes will be removed from your working tree.".to_owned(),
-                confirm_label: "Discard".to_owned(),
-                destructive: true,
-                confirm: Box::new(Action::from(MutationsAction::ApplyConfirmed(
-                    ConfirmedMutation::Selection(selection),
-                ))),
-                return_focus: Some(LogicalFocus::Viewport),
-            }));
-        }
         if self.busy() {
             return Reduction::default();
         }
@@ -551,35 +616,42 @@ impl MutationsController {
         let Some(capabilities) = capabilities(cx) else {
             return error("Open a repository before changing files.");
         };
+        if !working_tree(cx) {
+            return error("Only working-tree changes can be staged or discarded.");
+        }
         if operation != FileOperation::Discard && !capabilities.staging_area {
             return error("This repository backend does not support staging.");
         }
         if files.is_empty() || self.busy() {
             return Reduction::default();
         }
-        if operation == FileOperation::Discard && !confirmed {
-            let message = if files.len() == 1 {
-                "All changes to this file will be lost.".to_owned()
+        let mut changes = Vec::with_capacity(files.len());
+        for file in &files {
+            match self.display_binding(cx, *file, operation) {
+                Ok(binding) => changes.push(binding.change),
+                Err(message) => return error(message),
+            }
+        }
+        let deletes = changes
+            .iter()
+            .filter(|change| change.bucket == ChangeBucket::Untracked)
+            .count();
+        if operation == FileOperation::Discard && deletes > 0 && !confirmed {
+            let message = if deletes == 1 {
+                "The untracked file will be deleted from disk.".to_owned()
             } else {
-                format!("All changes to {} files will be lost.", files.len())
+                format!("{deletes} untracked files will be deleted from disk.")
             };
             return Reduction::default().intent(Intent::RequestConfirmation(ConfirmationRequest {
-                title: "Discard changes?".to_owned(),
+                title: "Delete untracked files?".to_owned(),
                 message,
-                confirm_label: "Discard".to_owned(),
+                confirm_label: "Delete".to_owned(),
                 destructive: true,
                 confirm: Box::new(Action::from(MutationsAction::ApplyConfirmed(
                     ConfirmedMutation::Files(files),
                 ))),
                 return_focus: Some(LogicalFocus::Viewport),
             }));
-        }
-        let mut changes = Vec::with_capacity(files.len());
-        for file in files {
-            match self.display_binding(cx, file, operation) {
-                Ok(binding) => changes.push(binding.change),
-                Err(message) => return error(message),
-            }
         }
         self.bucket_operation(changes, operation, cx)
     }
@@ -614,6 +686,9 @@ impl MutationsController {
         if !capabilities(cx).is_some_and(|c| c.staging_area) {
             return error("This repository backend does not support staging.");
         }
+        if !working_tree(cx) {
+            return error("Only working-tree changes can be staged or discarded.");
+        }
         let changes = cx
             .repository
             .as_ref()
@@ -629,18 +704,12 @@ impl MutationsController {
         self.bucket_operation(changes, operation, cx)
     }
 
-    fn selection_operation(
-        &mut self,
-        operation: FileOperation,
-        confirmed: bool,
-        cx: &SharedContext,
-    ) -> Reduction {
+    fn selection_operation(&mut self, operation: FileOperation, cx: &SharedContext) -> Reduction {
         if self.selection.is_empty() {
             return error("Select changed lines first.");
         }
         let targets = line_ranges(self.selection.iter().copied());
-        let reduction =
-            self.request_patch(MutationSelection::Lines(targets), operation, confirmed, cx);
+        let reduction = self.request_patch(MutationSelection::Lines(targets), operation, cx);
         if !reduction.effects.is_empty() || !self.pending.is_empty() {
             self.selection.clear();
             self.anchor = None;
@@ -700,11 +769,13 @@ impl MutationsController {
         if message.is_empty() {
             return error("Write a commit message first.");
         }
-        if !repo
-            .snapshot
-            .file_changes
-            .iter()
-            .any(|change| committable(change.bucket, capabilities.staging_area))
+        let amend = self.amend.is_some();
+        if !amend
+            && !repo
+                .snapshot
+                .file_changes
+                .iter()
+                .any(|change| committable(change.bucket, capabilities.staging_area))
         {
             return error(if capabilities.staging_area {
                 "Stage changes before committing."
@@ -721,8 +792,16 @@ impl MutationsController {
                 job,
                 repo_path: repo.snapshot.path.clone(),
                 message,
+                amend,
             })
-            .intent(progress(job, "Committing\u{2026}"))
+            .intent(progress(
+                job,
+                if amend {
+                    "Amending\u{2026}"
+                } else {
+                    "Committing\u{2026}"
+                },
+            ))
     }
 
     fn generate_commit_message(&mut self, cx: &SharedContext) -> Reduction {
@@ -785,7 +864,7 @@ impl MutationsController {
         self.ai.checks = 0;
         self.ai.finished = false;
         self.ai.buffered.clear();
-        self.composer_open = true;
+        self.commit_menu = false;
         Reduction::changed().effect(MutationsEffect::GenerateCommitMessage(Box::new(
             GenerateCommitMessageRequest {
                 generation: self.ai.generation,
@@ -1112,7 +1191,88 @@ impl MutationsController {
         self.jobs.remove(&job)
     }
 
+    fn cancel_generation(&mut self) -> Reduction {
+        if !self.ai.active {
+            return Reduction::default();
+        }
+        self.ai.generation = self.ai.generation.wrapping_add(1);
+        self.ai.active = false;
+        self.ai.buffered.clear();
+        self.ai.checks = 0;
+        Reduction::changed()
+    }
+
+    fn start_amend(&mut self, cx: &SharedContext) -> Reduction {
+        self.commit_menu = false;
+        let Some(repo) = cx.repository.as_ref() else {
+            return error("Open a repository before amending.");
+        };
+        if !repo.snapshot.capabilities.staging_area || !working_tree(cx) {
+            return error("Amend is only available for Git working trees.");
+        }
+        if self.amend.is_some() || self.amend_loading {
+            return Reduction::changed();
+        }
+        self.amend_loading = true;
+        Reduction::changed().effect(MutationsEffect::LoadLastCommit {
+            repo_path: repo.snapshot.path.clone(),
+        })
+    }
+
+    fn cancel_amend(&mut self) -> Reduction {
+        self.amend_loading = false;
+        let Some(amend) = self.amend.take() else {
+            return Reduction::default();
+        };
+        self.commit.set_text(&amend.draft);
+        Reduction::changed()
+    }
+
+    fn undo_commit(&mut self, id: JobId) -> Reduction {
+        match self.take_undo(id) {
+            Some(UndoEntry::Commit {
+                repo_path,
+                sha,
+                message,
+            }) => {
+                let job = self.job(Job::UndoCommit(message));
+                Reduction::changed()
+                    .intent(Intent::Toast(ToastUpdate::Dismiss(id)))
+                    .effect(MutationsEffect::UndoCommit {
+                        job,
+                        repo_path,
+                        sha,
+                    })
+            }
+            Some(entry) => {
+                self.undo.push((id, entry));
+                Reduction::default()
+            }
+            None => error("That commit can no longer be undone."),
+        }
+    }
+
+    fn undo_discard(&mut self, id: JobId) -> Reduction {
+        match self.take_undo(id) {
+            Some(UndoEntry::Discard(snapshot)) => {
+                let job = self.job(Job::RestoreDiscard);
+                Reduction::changed()
+                    .intent(Intent::Toast(ToastUpdate::Dismiss(id)))
+                    .effect(MutationsEffect::RestoreDiscard { job, snapshot })
+            }
+            Some(entry) => {
+                self.undo.push((id, entry));
+                Reduction::default()
+            }
+            None => error("Those changes can no longer be restored."),
+        }
+    }
+
     fn reset(&mut self) {
+        self.undo.clear();
+        self.amend = None;
+        self.amend_loading = false;
+        self.commit_menu = false;
         self.selection.clear();
         self.anchor = None;
         self.sources.clear();
@@ -1170,31 +1330,25 @@ impl Controller for MutationsController {
                     _ => FileOperation::Discard,
                 };
                 match cx.selection.clone() {
-                    Some(target) => self.request_patch(
-                        MutationSelection::HunksAt(vec![target]),
-                        operation,
-                        false,
-                        cx,
-                    ),
+                    Some(target) => {
+                        self.request_patch(MutationSelection::HunksAt(vec![target]), operation, cx)
+                    }
                     None => error("Move the cursor into a hunk first."),
                 }
             }
             A::StageHunkAt(target) => self.request_patch(
                 MutationSelection::Hunks(vec![target]),
                 FileOperation::Stage,
-                false,
                 cx,
             ),
             A::UnstageHunkAt(target) => self.request_patch(
                 MutationSelection::Hunks(vec![target]),
                 FileOperation::Unstage,
-                false,
                 cx,
             ),
             A::DiscardHunkAt(target) => self.request_patch(
                 MutationSelection::Hunks(vec![target]),
                 FileOperation::Discard,
-                false,
                 cx,
             ),
             A::SelectLines(target) => {
@@ -1230,11 +1384,11 @@ impl Controller for MutationsController {
                 self.refresh_presentation(cx);
                 Reduction::changed()
             }
-            A::StageSelectedLines => self.selection_operation(FileOperation::Stage, false, cx),
-            A::UnstageSelectedLines => self.selection_operation(FileOperation::Unstage, false, cx),
-            A::DiscardSelectedLines => self.selection_operation(FileOperation::Discard, false, cx),
+            A::StageSelectedLines => self.selection_operation(FileOperation::Stage, cx),
+            A::UnstageSelectedLines => self.selection_operation(FileOperation::Unstage, cx),
+            A::DiscardSelectedLines => self.selection_operation(FileOperation::Discard, cx),
             A::ApplyConfirmed(ConfirmedMutation::Selection(selection)) => {
-                self.request_patch(selection, FileOperation::Discard, true, cx)
+                self.request_patch(selection, FileOperation::Discard, cx)
             }
             A::ApplyConfirmed(ConfirmedMutation::Files(files)) => {
                 self.file_operation(files, FileOperation::Discard, true, cx)
@@ -1297,12 +1451,28 @@ impl Controller for MutationsController {
                 }
             }
             A::GenerateCommitMessage => self.generate_commit_message(cx),
-            A::OpenCommitComposer => {
-                self.composer_open = true;
-                Reduction::changed().effect(crate::contracts::shell::ShellEffect::Focus(Some(
-                    LogicalFocus::CommitMessage,
-                )))
+            A::OpenCommitComposer => Reduction::changed().effect(
+                crate::contracts::shell::ShellEffect::Focus(Some(LogicalFocus::CommitMessage)),
+            ),
+            A::StartAmend => self.start_amend(cx),
+            A::CancelAmend => self.cancel_amend(),
+            A::ToggleCommitMenu => {
+                self.commit_menu = !self.commit_menu;
+                Reduction::changed()
             }
+            A::CloseCommitMenu => {
+                self.commit_menu = false;
+                Reduction::changed()
+            }
+            A::CancelGeneration => self.cancel_generation(),
+            A::UndoCommit(id) => self.undo_commit(id),
+            A::UndoDiscard(id) => self.undo_discard(id),
+            A::ForgetUndo(id) => {
+                self.take_undo(id);
+                Reduction::default()
+            }
+            A::ApplyFiles { files, operation } => self.file_operation(files, operation, false, cx),
+            A::ApplyBucket { bucket, operation } => self.all_in(&[bucket], operation, cx),
             A::ScrollCommitMessage(lines) => {
                 let step = self.commit.scroll_line_height_px();
                 self.commit.scroll(lines as f32 * step);
@@ -1314,12 +1484,6 @@ impl Controller for MutationsController {
                 self.steering.scroll(lines as f32 * step);
                 Reduction::changed()
             }
-            A::CloseCommitComposer => {
-                self.composer_open = false;
-                Reduction::changed().effect(crate::contracts::shell::ShellEffect::Focus(Some(
-                    LogicalFocus::Viewport,
-                )))
-            }
         }
     }
 
@@ -1328,9 +1492,92 @@ impl Controller for MutationsController {
         match event {
             E::MutationSourceReady { source } => self.source_ready(source),
             E::MutationSourceFailed { key, message } => self.source_failed(key, message),
-            E::FileOperationApplied { job, .. } => {
+            E::FileOperationApplied { job, undo, .. } => {
+                if self.finish(job).is_none() {
+                    return Reduction::default();
+                }
+                match undo {
+                    Some(snapshot) => {
+                        let count = snapshot.paths().count();
+                        let message = match snapshot.paths().next() {
+                            Some(path) if count == 1 => {
+                                format!("Discarded changes in {}", path.display())
+                            }
+                            _ => format!("Discarded changes in {count} files"),
+                        };
+                        self.remember_undo(job, UndoEntry::Discard(snapshot));
+                        Reduction::changed().intent(undo_toast(
+                            job,
+                            message,
+                            MutationsAction::UndoDiscard(job),
+                        ))
+                    }
+                    None => Reduction::changed(),
+                }
+            }
+            E::LastCommitLoaded { commit, .. } => {
+                if !self.amend_loading {
+                    return Reduction::default();
+                }
+                self.amend_loading = false;
+                let Some(commit) = commit else {
+                    return error("There is no commit to amend yet.");
+                };
+                let draft = self.commit.text().to_owned();
+                self.commit.set_text(&commit.message);
+                self.amend = Some(AmendState {
+                    sha: commit.sha,
+                    short: commit.short,
+                    draft,
+                });
+                Reduction::changed().effect(crate::contracts::shell::ShellEffect::Focus(Some(
+                    LogicalFocus::CommitMessage,
+                )))
+            }
+            E::LastCommitFailed { message } => {
+                self.amend_loading = false;
+                Reduction::changed().intent(failure(
+                    None,
+                    "Could not load the last commit",
+                    message,
+                ))
+            }
+            E::CommitUndone { job, .. } => {
+                let Some(Job::UndoCommit(message)) = self.finish(job) else {
+                    return Reduction::default();
+                };
+                if self.commit.text().trim().is_empty() {
+                    self.commit.set_text(&message);
+                }
+                Reduction::changed().intent(toast(
+                    ToastKind::Info,
+                    Some(job),
+                    "Commit undone; its changes are staged again.",
+                ))
+            }
+            E::CommitUndoFailed { job, message } => {
                 self.finish(job);
-                Reduction::changed()
+                Reduction::changed().intent(failure(
+                    Some(job),
+                    "Could not undo the commit",
+                    message,
+                ))
+            }
+            E::DiscardRestored { job, .. } => {
+                self.finish(job);
+                Reduction::changed().intent(toast(
+                    ToastKind::Info,
+                    Some(job),
+                    "Restored the discarded changes.",
+                ))
+            }
+            E::DiscardRestoreFailed { job, message } => {
+                self.finish(job);
+                Reduction::changed().intent(failure(
+                    Some(job),
+                    "Could not restore the changes",
+                    message,
+                ))
             }
             E::FileOperationFailed { job, message, .. } => {
                 if self.finish(job).is_none() {
@@ -1338,14 +1585,39 @@ impl Controller for MutationsController {
                 }
                 Reduction::changed().intent(Intent::Toast(ToastUpdate::error(message)))
             }
-            E::CommitCreated { job, .. } => {
+            E::CommitCreated { job, path, commit } => {
                 if self.finish(job).is_none() {
                     return Reduction::default();
                 }
+                let amended = self.amend.take().is_some();
                 self.commit.set_text("");
-                self.composer_open = false;
                 self.ai.active = false;
-                Reduction::changed().intent(toast(ToastKind::Success, Some(job), "Commit created."))
+                let message = if amended {
+                    format!("Amended {}", commit.short)
+                } else {
+                    format!("Committed {}", commit.short)
+                };
+                self.remember_undo(
+                    job,
+                    UndoEntry::Commit {
+                        repo_path: path,
+                        sha: commit.sha,
+                        message: commit.message,
+                    },
+                );
+                if amended {
+                    self.take_undo(job);
+                    return Reduction::changed().intent(toast(
+                        ToastKind::Success,
+                        Some(job),
+                        message,
+                    ));
+                }
+                Reduction::changed().intent(undo_toast(
+                    job,
+                    message,
+                    MutationsAction::UndoCommit(job),
+                ))
             }
             E::CommitFailed { job, message, .. } => {
                 if self.finish(job).is_none() {
@@ -1602,7 +1874,6 @@ impl Controller for MutationsController {
             }
             Intent::ActivateWorkspace { .. } => {
                 self.reset();
-                self.composer_open = false;
                 self.commit.set_text("");
                 self.refresh_presentation(cx);
                 Reduction::changed()
@@ -1728,6 +1999,57 @@ impl TextHost for MutationsController {
 
 impl CommandSource for MutationsController {
     fn commands(&self, cx: &SharedContext, out: &mut Vec<CommandDescriptor>) {
+        let start = out.len();
+        self.repository_commands(cx, out);
+        let working = working_tree(cx);
+        let buckets: Vec<ChangeBucket> = cx
+            .selected_file
+            .and_then(|file| {
+                cx.manifest
+                    .as_ref()?
+                    .files
+                    .iter()
+                    .find(|entry| entry.key == file.key)
+                    .map(|entry| entry.buckets.clone())
+            })
+            .unwrap_or_default();
+        let has = |wanted: &[ChangeBucket]| buckets.iter().any(|bucket| wanted.contains(bucket));
+        let keep = |id: &str| match id {
+            "mutations.stage_file" => has(&[ChangeBucket::Unstaged, ChangeBucket::Untracked]),
+            "mutations.unstage_file" => has(&[ChangeBucket::Staged]),
+            "mutations.discard_file" => has(&[
+                ChangeBucket::Unstaged,
+                ChangeBucket::Untracked,
+                ChangeBucket::WorkingCopy,
+            ]),
+            "mutations.fetch" | "mutations.pull" => true,
+            id if id.starts_with("mutations.jj.") => true,
+            _ => working,
+        };
+        let mut index = 0;
+        out.retain(|command| {
+            index += 1;
+            index <= start || keep(command.id)
+        });
+        if let Some(job) = self.latest_undo(true) {
+            out.push(CommandDescriptor::new(
+                "mutations.undo_commit",
+                "Undo Last Commit",
+                MutationsAction::UndoCommit(job),
+            ));
+        }
+        if let Some(job) = self.latest_undo(false) {
+            out.push(CommandDescriptor::new(
+                "mutations.undo_discard",
+                "Undo Discard",
+                MutationsAction::UndoDiscard(job),
+            ));
+        }
+    }
+}
+
+impl MutationsController {
+    fn repository_commands(&self, cx: &SharedContext, out: &mut Vec<CommandDescriptor>) {
         let Some(capabilities) = capabilities(cx) else {
             return;
         };
@@ -1856,6 +2178,13 @@ impl CommandSource for MutationsController {
                 )
                 .enabled(!self.ai.active),
             );
+            if capabilities.staging_area {
+                out.push(CommandDescriptor::new(
+                    "mutations.amend",
+                    "Amend Last Commit",
+                    MutationsAction::StartAmend,
+                ));
+            }
         }
         if capabilities.remotes {
             out.push(

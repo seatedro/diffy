@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use diffy_diff::RowKind;
 use diffy_ui::diff_view::decorator::{
@@ -6,23 +6,26 @@ use diffy_ui::diff_view::decorator::{
     SeparatorContext,
 };
 use quark::view;
-use quark_components::{Button, ButtonSize};
 use quark_ui::element::*;
+use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
 use quark_ui::theme::{Color, Theme};
 
+use super::controls::{self, Chrome, Control, Tone};
 use super::state::LineKey;
 use crate::app::tokens::{self, Sp};
 use crate::app::viewport::interaction::hunk_target;
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::shared::{FileKey, FileRevision, HunkTarget, Side, SourceTarget};
+use crate::contracts::viewport::CompareManifestSnapshot;
+use crate::core::vcs::model::ChangeBucket;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PresentationStyle {
     pub code_size: f32,
     pub muted: Color,
-    pub gap: f32,
     pub inset: f32,
+    pub chrome: Chrome,
 }
 
 impl PresentationStyle {
@@ -31,8 +34,8 @@ impl PresentationStyle {
         Self {
             code_size: theme.metrics.mono_font_size,
             muted: theme.colors.text_muted,
-            gap: tokens::scaled(Sp::XS, scale),
             inset: tokens::scaled(Sp::SM, scale),
+            chrome: Chrome::from_theme(theme),
         }
     }
 }
@@ -47,8 +50,8 @@ impl Default for PresentationStyle {
 pub struct MutationPresentation {
     revision: u64,
     style: PresentationStyle,
-    staging: bool,
     partial: bool,
+    buckets: HashMap<FileKey, Vec<ChangeBucket>>,
     selection: BTreeSet<LineKey>,
 }
 
@@ -56,19 +59,154 @@ fn file_revision(source: FileSource) -> FileRevision {
     FileRevision(source.revision.0)
 }
 
+pub fn mutable_buckets(
+    manifest: Option<&CompareManifestSnapshot>,
+) -> HashMap<FileKey, Vec<ChangeBucket>> {
+    manifest
+        .filter(|manifest| manifest.working_tree)
+        .map(|manifest| {
+            manifest
+                .files
+                .iter()
+                .filter(|file| !file.buckets.is_empty())
+                .map(|file| (file.key, file.buckets.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn file_controls(file: FileKey, buckets: &[ChangeBucket]) -> Vec<Control> {
+    let id = |name: &str| format!("mutations.file.{}.{name}", file.0);
+    let mut controls: Vec<Control> = Vec::new();
+    for bucket in buckets {
+        let next = match bucket {
+            ChangeBucket::Unstaged => vec![
+                Control::new(
+                    id("stage"),
+                    "Stage file",
+                    MutationsAction::StageFile(file),
+                    Tone::Secondary,
+                )
+                .icon(lucide::PLUS)
+                .shortcut("S"),
+                Control::new(
+                    id("discard"),
+                    "Discard\u{2026}",
+                    MutationsAction::DiscardFile(file),
+                    Tone::Destructive,
+                )
+                .icon(lucide::CORNER_UP_LEFT),
+            ],
+            ChangeBucket::Staged => vec![
+                Control::new(
+                    id("unstage"),
+                    "Unstage file",
+                    MutationsAction::UnstageFile(file),
+                    Tone::Secondary,
+                )
+                .icon(lucide::MINUS),
+            ],
+            ChangeBucket::Untracked => vec![
+                Control::new(
+                    id("stage"),
+                    "Stage file",
+                    MutationsAction::StageFile(file),
+                    Tone::Secondary,
+                )
+                .icon(lucide::PLUS)
+                .shortcut("S"),
+                Control::new(
+                    id("delete"),
+                    "Delete\u{2026}",
+                    MutationsAction::DiscardFile(file),
+                    Tone::Destructive,
+                )
+                .icon(lucide::X),
+            ],
+            ChangeBucket::WorkingCopy => vec![
+                Control::new(
+                    id("discard"),
+                    "Discard\u{2026}",
+                    MutationsAction::DiscardFile(file),
+                    Tone::Destructive,
+                )
+                .icon(lucide::CORNER_UP_LEFT),
+            ],
+            ChangeBucket::Conflicted => Vec::new(),
+        };
+        for control in next {
+            if !controls.iter().any(|existing| existing.id == control.id) {
+                controls.push(control);
+            }
+        }
+    }
+    controls
+}
+
+pub fn hunk_controls(target: &HunkTarget, buckets: &[ChangeBucket]) -> Vec<Control> {
+    let key = format!(
+        "mutations.hunk.{}.{}.{}",
+        target.source.file.0, target.source.revision.0, target.source.lines.start
+    );
+    let mut controls: Vec<Control> = Vec::new();
+    for bucket in buckets {
+        let next = match bucket {
+            ChangeBucket::Unstaged => vec![
+                Control::new(
+                    format!("{key}.stage"),
+                    "Stage hunk",
+                    MutationsAction::StageHunkAt(target.clone()),
+                    Tone::Secondary,
+                ),
+                Control::new(
+                    format!("{key}.discard"),
+                    "Discard hunk",
+                    MutationsAction::DiscardHunkAt(target.clone()),
+                    Tone::Destructive,
+                ),
+            ],
+            ChangeBucket::Staged => vec![Control::new(
+                format!("{key}.unstage"),
+                "Unstage hunk",
+                MutationsAction::UnstageHunkAt(target.clone()),
+                Tone::Secondary,
+            )],
+            ChangeBucket::Untracked => vec![Control::new(
+                format!("{key}.stage"),
+                "Stage hunk",
+                MutationsAction::StageHunkAt(target.clone()),
+                Tone::Secondary,
+            )],
+            ChangeBucket::WorkingCopy => vec![Control::new(
+                format!("{key}.discard"),
+                "Discard hunk",
+                MutationsAction::DiscardHunkAt(target.clone()),
+                Tone::Destructive,
+            )],
+            ChangeBucket::Conflicted => Vec::new(),
+        };
+        for control in next {
+            if !controls.iter().any(|existing| existing.id == control.id) {
+                controls.push(control);
+            }
+        }
+    }
+    controls
+}
+
 impl MutationPresentation {
     pub fn new(
         revision: u64,
         style: PresentationStyle,
-        staging: bool,
         partial: bool,
+        buckets: HashMap<FileKey, Vec<ChangeBucket>>,
         selection: BTreeSet<LineKey>,
     ) -> Self {
         Self {
             revision,
             style,
-            staging,
             partial,
+            buckets,
             selection,
         }
     }
@@ -81,46 +219,28 @@ impl MutationPresentation {
         Self {
             revision: self.revision.wrapping_add(1),
             style,
-            staging: self.staging,
             partial: self.partial,
+            buckets: self.buckets.clone(),
             selection: self.selection.clone(),
         }
     }
 
     pub fn same_content(&self, other: &Self) -> bool {
         self.style == other.style
-            && self.staging == other.staging
             && self.partial == other.partial
+            && self.buckets == other.buckets
             && self.selection == other.selection
     }
 
-    pub fn hunk_actions(&self, target: &HunkTarget) -> Vec<(&'static str, MutationsAction)> {
+    pub fn buckets(&self, file: FileKey) -> &[ChangeBucket] {
+        self.buckets.get(&file).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn hunk_actions(&self, target: &HunkTarget) -> Vec<Control> {
         if !self.partial {
             return Vec::new();
         }
-        let mut actions = Vec::with_capacity(3);
-        if self.staging {
-            actions.push(("Stage hunk", MutationsAction::StageHunkAt(target.clone())));
-            actions.push((
-                "Unstage hunk",
-                MutationsAction::UnstageHunkAt(target.clone()),
-            ));
-        }
-        actions.push((
-            "Discard hunk",
-            MutationsAction::DiscardHunkAt(target.clone()),
-        ));
-        actions
-    }
-
-    pub fn file_actions(&self, file: FileKey) -> Vec<(&'static str, MutationsAction)> {
-        let mut actions = Vec::with_capacity(3);
-        if self.staging {
-            actions.push(("Stage file", MutationsAction::StageFile(file)));
-            actions.push(("Unstage file", MutationsAction::UnstageFile(file)));
-        }
-        actions.push(("Discard file", MutationsAction::DiscardFile(file)));
-        actions
+        hunk_controls(target, self.buckets(target.source.file))
     }
 
     pub fn is_selected(&self, source: FileSource, side: Side, line: u32) -> bool {
@@ -130,16 +250,6 @@ impl MutationPresentation {
             side,
             line,
         })
-    }
-}
-
-pub fn action_buttons(actions: Vec<(&'static str, MutationsAction)>, gap: f32) -> AnyElement {
-    view! {
-        <div class="flex-row items-center shrink-0" gap={gap}>
-            for (label, action) in actions key={label} {
-                <div>{Button::new(action).label(label).size(ButtonSize::Compact)}</div>
-            }
-        </div>
     }
 }
 
@@ -157,7 +267,11 @@ impl DiffDecorator for MutationPresentation {
             return None;
         }
         let source = cx.source?;
-        Some(action_buttons(self.file_actions(source.id), self.style.gap))
+        let controls = file_controls(source.id, self.buckets(source.id));
+        if controls.is_empty() {
+            return None;
+        }
+        Some(controls::row(controls, &self.style.chrome))
     }
 
     fn separator(&self, cx: &SeparatorContext) -> Option<AnyElement> {
@@ -191,7 +305,7 @@ impl DiffDecorator for MutationPresentation {
                 <div class="flex-1" min_w={0.0}>
                     <text size={style.code_size} color={style.muted} class="truncate font-mono">{title}</text>
                 </div>
-                {action_buttons(actions, style.gap)}
+                {controls::row(actions, &style.chrome)}
             </div>
         })
     }
@@ -201,20 +315,41 @@ impl DiffDecorator for MutationPresentation {
             return None;
         }
         let source = cx.source?;
+        if self.buckets(source.id).is_empty() {
+            return None;
+        }
         let target = SourceTarget {
             file: source.id,
             revision: file_revision(source),
             side: cx.side,
             lines: cx.line..cx.line + 1,
         };
-        let label = if self.is_selected(source, cx.side, cx.line) {
-            "Deselect line"
+        let selected = self.is_selected(source, cx.side, cx.line);
+        let (label, action) = if selected {
+            (
+                "Deselect line",
+                MutationsAction::ToggleLineSelection(target),
+            )
         } else {
-            "Select line"
+            ("Select line", MutationsAction::SelectLines(target))
         };
+        let control = Control::new(
+            format!("mutations.line.{}.{:?}.{}", source.id.0, cx.side, cx.line),
+            label,
+            action,
+            if selected { Tone::Primary } else { Tone::Ghost },
+        )
+        .icon_only(if selected {
+            lucide::CHECK
+        } else {
+            lucide::PLUS
+        });
+        let mut chrome = self.style.chrome;
+        chrome.height = cx.height.min(chrome.height);
+        chrome.muted = chrome.accent;
         Some(view! {
-            <div w={cx.width} h={cx.height} class="flex-row items-center justify-center">
-                {Button::new(MutationsAction::ToggleLineSelection(target)).label(label).size(ButtonSize::Compact)}
+            <div w={cx.width} h={cx.height} class="flex-row items-center justify-end">
+                {controls::render(control, &chrome)}
             </div>
         })
     }

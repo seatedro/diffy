@@ -479,3 +479,10 @@ pub struct VcsSnapshot {
     pub operation_log: Vec<VcsOperationLogEntry>,
     pub file_changes: Vec<FileChange>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitRecord {
+    pub sha: String,
+    pub short: String,
+    pub message: String,
+}

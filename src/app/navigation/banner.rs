@@ -46,6 +46,10 @@ impl PartialEq for CommitBanner {
     }
 }
 
+pub fn short_sha(id: &str) -> &str {
+    &id[..id.len().min(7)]
+}
+
 pub fn banner_height(theme: &Theme) -> f32 {
     let scale = tokens::ui_scale(theme);
     tokens::scaled(Sp::MD, scale) * 3.0
@@ -111,16 +115,19 @@ impl NavigationController {
 
     fn banner_model(&self, review: &ReviewController, unified: bool) -> Option<CommitBanner> {
         let selected = self.history().selected.as_deref()?;
-        let commit = self
-            .history_commits()?
-            .iter()
-            .find(|c| c.revision.id.starts_with(selected) || c.short_revision == selected)?;
+        let commit = self.find_commit(selected)?;
         let age = relative_age(now_secs(), commit.timestamp);
-        let byline = if age.is_empty() {
+        let mut byline = if age.is_empty() {
             format!("{} committed", commit.author_name)
         } else {
             format!("{} committed {age} ago", commit.author_name)
         };
+        let parents: Vec<&str> = commit.parents.iter().map(|p| short_sha(p)).collect();
+        match parents.as_slice() {
+            [] => {}
+            [parent] => byline.push_str(&format!(" \u{00B7} parent {parent}")),
+            many => byline.push_str(&format!(" \u{00B7} parents {}", many.join(", "))),
+        }
         let (files, totals) = self
             .manifest()
             .map(|m| {
@@ -143,7 +150,7 @@ impl NavigationController {
             files,
             totals,
             unified,
-            image: review.author_face(""),
+            image: review.author_face(commit.author_email.as_deref().unwrap_or_default()),
         })
     }
 }

@@ -759,7 +759,12 @@ fn history(
             if names.len() > MAX_TAG_PILLS {
                 pills.push(pill(&format!("+{}", names.len() - MAX_TAG_PILLS), theme));
             }
-            let avatar = author_avatar(review, &commit.author_name, "").size(Layout::AVATAR_SM);
+            let avatar = author_avatar(
+                review,
+                &commit.author_name,
+                commit.author_email.as_deref().unwrap_or_default(),
+            )
+            .size(Layout::AVATAR_SM);
             let age = relative_age(now, commit.timestamp);
             let meta = [commit.short_revision.as_str(), commit.author_name.as_str(), age.as_str()]
                 .into_iter()
@@ -779,6 +784,7 @@ fn history(
                     cursor={CursorHint::Pointer}
                     key={revision.clone()}
                     id={format!("commit:{revision}")}
+                    test_id={format!("commit:{revision}")}
                     accessibility_role={AccessibilityRole::ListBoxOption}
                     aria-label={commit.summary.clone()}
                     aria-selected={is_selected}

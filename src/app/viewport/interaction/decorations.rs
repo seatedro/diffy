@@ -315,4 +315,8 @@ impl DiffDecorator for Decorations {
     fn hunk_actions(&self, cx: &SeparatorContext) -> Option<AnyElement> {
         self.inner.hunk_actions(cx)
     }
+
+    fn banner(&self, width: f32) -> Option<(f32, AnyElement)> {
+        self.inner.banner(width)
+    }
 }

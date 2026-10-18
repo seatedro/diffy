@@ -490,7 +490,7 @@ mod tests {
         // Of 27 hidden lines, 7 are left.
         ui.app_mut().diff.scroll_to_row(10);
         ui.frame();
-        let gap = By::role_name(Role::Label, "7 unchanged lines    @@ -40,3 +40,3 @@");
+        let gap = By::role_name(Role::Group, "7 unchanged lines    @@ -40,3 +40,3 @@");
         let label_y = ui.find(gap.clone()).bounds.y;
         let all = ui
             .find_all(By::role_name(Role::Button, "Show all unchanged lines"))
@@ -711,6 +711,10 @@ mod tests {
 
     fn has_label(ui: &UiTestHarness<Demo>, label: &str) -> bool {
         names(ui, Role::Label).iter().any(|n| n == label)
+    }
+
+    fn has_separator(ui: &UiTestHarness<Demo>, label: &str) -> bool {
+        names(ui, Role::Group).iter().any(|n| n == label)
     }
 
     const FILE: FileId = FileId(0);
@@ -1085,7 +1089,10 @@ diff --git a/f.txt b/f.txt
         ui.frame();
         assert!(ui.try_find(line("line 50")).is_some());
         ui.key("end");
-        assert!(has_label(&ui, "87 unchanged lines    @@ -190,3 +190,3 @@"));
+        assert!(has_separator(
+            &ui,
+            "87 unchanged lines    @@ -190,3 +190,3 @@"
+        ));
     }
 
     // Catches search reading only rendered rows, or moving to a match
@@ -1279,7 +1286,7 @@ diff --git a/f.txt b/f.txt
             .diff
             .set_annotations(vec![note(1, Side::New, 25)]);
         ui.frame();
-        assert!(has_label(
+        assert!(has_separator(
             &ui,
             "27 unchanged lines, 1 annotation    @@ -40,3 +40,3 @@"
         ));

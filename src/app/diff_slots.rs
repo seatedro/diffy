@@ -142,6 +142,12 @@ impl DiffDecorator for AppDiffDecorator {
             .or_else(|| self.review.hunk_scope(cx))
     }
 
+    fn banner(&self, width: f32) -> Option<(f32, AnyElement)> {
+        self.review
+            .banner(width)
+            .or_else(|| self.mutations.banner(width))
+    }
+
     fn hunk_actions(&self, cx: &SeparatorContext) -> Option<AnyElement> {
         self.both(
             self.mutations.hunk_actions(cx),

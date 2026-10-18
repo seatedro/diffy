@@ -1,9 +1,12 @@
 use std::rc::Rc;
 
+use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark_app::testing::{By, UiTestHarness};
 use quark_app::winit::keyboard::ModifiersState;
 use quark_app::{InputEvent, KeyChord, KeyKind};
 use quark_ui::accessibility::AccessibilityRole as Role;
+use quark_ui::element::{AnyElement, IntoAnyElement, div};
+use quark_ui::style::Styled;
 
 use super::fixtures::*;
 use crate::app::text_targets::{SEARCH, TEXT_COMPARE_LEFT, VIEWPORT};
@@ -814,5 +817,38 @@ fn escape_clears_the_text_selection() {
             .interaction
             .diff()
             .is_some_and(|d| d.selection().is_none())
+    );
+}
+
+struct Banner;
+
+impl DiffDecorator for Banner {
+    fn revision(&self) -> u64 {
+        1
+    }
+
+    fn banner(&self, width: f32) -> Option<(f32, AnyElement)> {
+        Some((
+            40.0,
+            div()
+                .w(width)
+                .h(40.0)
+                .accessibility_role(Role::Banner)
+                .accessibility_label("Commit header")
+                .into_any(),
+        ))
+    }
+}
+
+#[test]
+fn a_decorator_banner_sits_above_the_rows() {
+    let mut ui = loaded(Host::with_decorator(Rc::new(Banner)));
+    ui.frame();
+    let banner = ui.find(By::test_id("diff.banner")).bounds;
+    let list = ui.find(By::role_name(Role::List, "Diff")).bounds;
+    assert_eq!(banner.height, 40.0);
+    assert!(
+        list.y >= banner.y + banner.height - 0.5,
+        "{banner:?} {list:?}"
     );
 }

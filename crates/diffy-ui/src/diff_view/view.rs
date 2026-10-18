@@ -1402,6 +1402,10 @@ fn separator(
             border_t={colors.border}
             border_b={colors.border}
             bg={colors.separator}
+            @when {env.accessible} {
+                accessibility_role={Role::Group}
+                aria-label={paint.title.to_string()}
+            }
         >
             <div w={gutter_w} h={height} class="flex-row items-center justify-center shrink-0" gap={pad * 0.25}>
                 if let Some(gap) = controls {

@@ -214,6 +214,7 @@ fn build(
             Some((slot, column, side, content_w, origin, laid_w))
         });
     let split = frame.columns.mode == Mode::Split;
+    let sticky = frame.sticky_header.as_ref().map(|row| row.key);
     // Split rows with no line on a side: one fill across that side's
     // gutter and text, outside the sideways scroll.
     let empty_sides = frame
@@ -329,7 +330,7 @@ fn build(
                 for row in frame
                     .rows
                     .iter()
-                    .filter(|r| !r.paint.kind.is_line() && r.height > 0.0) {
+                    .filter(|r| !r.paint.kind.is_line() && r.height > 0.0 && Some(r.key) != sticky) {
                     <div
                         class="absolute left-0"
                         top={row.top}
@@ -342,6 +343,16 @@ fn build(
                 }
                 for row in frame.rows.iter().filter(|r| r.focused && r.height > 0.0) {
                     {focus_overlay(frame, row, look, deco)}
+                }
+                if let Some(row) = &frame.sticky_header {
+                    <div
+                        class="absolute left-0 top-0"
+                        w={width}
+                        h={row.height}
+                        @when {let Some(id) = band_id(frame, row, deco)} { test_id={id} }
+                    >
+                        {band(frame, row, look, deco, on_event)}
+                    </div>
                 }
             </div>
         </div>

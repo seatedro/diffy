@@ -663,3 +663,22 @@ fn expanding_a_patch_only_file_requests_its_sources() {
     );
     assert!(interaction.take_source_requests().is_empty());
 }
+
+#[test]
+fn scrolled_file_keeps_its_header_pinned() {
+    let mut ui = harness(Host::new(), SHORT);
+    ui.app_mut().install(ViewportInstall::File {
+        prepared: prepared(1, 1, "long.rs", "", &numbered(0..200)),
+        remap: None,
+    });
+    ui.frame();
+    focus_diff(&mut ui);
+    ui.key("shift+g");
+    ui.frame();
+    let header = ui.find(By::test_id("diffy.diff.file.1.1"));
+    let list = ui.find(By::role_name(Role::List, "Diff"));
+    assert!(
+        (header.bounds.y - list.bounds.y).abs() < 1.0,
+        "{header:?} {list:?}"
+    );
+}

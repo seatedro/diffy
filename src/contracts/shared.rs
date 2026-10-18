@@ -45,6 +45,7 @@ pub struct SharedContext {
     pub settings: Rc<SettingsSnapshot>,
     pub repository: Option<Rc<RepositoryContext>>,
     pub manifest: Option<Rc<CompareManifestSnapshot>>,
+    pub selected_file: Option<crate::contracts::navigation::SelectedFile>,
     pub selection: Option<SourceTarget>,
     pub review: Option<Rc<ReviewContext>>,
 }

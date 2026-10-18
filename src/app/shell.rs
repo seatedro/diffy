@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::path::Path;
+use std::rc::Rc;
 
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
@@ -20,11 +21,13 @@ use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::ToastUpdate;
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
-    Action, AppMessage, Effect, Intent, Reduction, ShellAction, ShellEffect, ShellEvent,
+    Action, AppMessage, AppStartup, Effect, Intent, Reduction, ShellAction, ShellEffect, ShellEvent,
 };
 
 pub trait EffectDispatcher: 'static {
     fn attach(&mut self, _sender: UiSender<AppMessage>) {}
+
+    fn syntax_wake_handled(&mut self) {}
 
     fn dispatch(&mut self, effect: Effect, workspace: WorkspaceEpoch);
 }
@@ -86,6 +89,7 @@ pub struct DiffyApp<D> {
     shell: ShellState,
     slots: DiffSlots,
     deferred: Vec<ShellEffect>,
+    startup: Option<Rc<AppStartup>>,
     clock_ms: u64,
 }
 
@@ -98,8 +102,14 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             shell: ShellState::new(display_name.into()),
             slots: DiffSlots::default(),
             deferred: Vec::new(),
+            startup: None,
             clock_ms: 0,
         }
+    }
+
+    pub fn with_startup(mut self, startup: AppStartup) -> Self {
+        self.startup = Some(Rc::new(startup));
+        self
     }
 
     pub fn shared(&self) -> &SharedContext {
@@ -175,6 +185,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 shared.workspace = WorkspaceEpoch(shared.workspace.0 + 1);
                 shared.repository = None;
                 shared.manifest = None;
+                shared.selected_file = None;
                 shared.selection = None;
                 shared.review = None;
                 self.shell.set_workspace(path);
@@ -183,6 +194,11 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             Intent::PublishManifest(manifest) => {
                 shared.manifest = Some(manifest.clone());
                 true
+            }
+            Intent::SelectFile(file) => {
+                let changed = shared.selected_file != *file;
+                shared.selected_file = file.clone();
+                changed
             }
             Intent::SelectSource(target) => {
                 let changed = shared.selection != *target;
@@ -205,7 +221,8 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 shared.settings = settings.clone();
                 true
             }
-            Intent::RequestCompare(_)
+            Intent::Startup(_)
+            | Intent::RequestCompare(_)
             | Intent::InvalidateRepository
             | Intent::GrammarAvailable(_)
             | Intent::RequestConfirmation(_)
@@ -262,8 +279,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             }
             ShellEvent::RepositoryDialogClosed { path: None } => Reduction::default(),
             ShellEvent::BrowserOpenFailed { message } => {
-                tracing::warn!(%message, "opening the browser failed");
-                Reduction::default().intent(Intent::Toast(ToastUpdate {}))
+                Reduction::default().intent(Intent::Toast(ToastUpdate::error(message)))
             }
         }
     }
@@ -425,6 +441,10 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
     fn init(&mut self, cx: &mut UiContext) {
         self.tick(cx);
         self.dispatcher.attach(cx.sender::<AppMessage>());
+        if let Some(startup) = self.startup.take() {
+            self.reduce(Reduction::default().intent(Intent::Startup(startup)));
+            self.flush(cx);
+        }
     }
 
     fn view(&mut self, cx: &mut ViewContext) -> AnyElement {
@@ -488,7 +508,10 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                     cx.window.request_redraw();
                 }
             }
-            AppMessage::SyntaxWake => cx.window.request_redraw(),
+            AppMessage::SyntaxWake => {
+                self.dispatcher.syntax_wake_handled();
+                cx.window.request_redraw();
+            }
         }
     }
 

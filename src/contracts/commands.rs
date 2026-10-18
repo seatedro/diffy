@@ -50,7 +50,6 @@ pub enum ContextMenuEntry {
     Separator,
 }
 
-impl Eq for ContextMenuEntry {}
 
 impl ContextMenuEntry {
     pub fn item(label: impl Into<String>, action: impl Into<Action>) -> Self {
@@ -64,7 +63,7 @@ impl ContextMenuEntry {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CommandsAction {
     OpenCommandPalette,
     OpenRepoPicker,

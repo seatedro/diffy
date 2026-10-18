@@ -5,6 +5,7 @@ pub mod mutations;
 pub mod navigation;
 pub mod review;
 pub mod route;
+pub mod runtime;
 pub mod shell;
 #[cfg(test)]
 pub mod testing;
@@ -44,11 +45,45 @@ impl Default for RunOptions {
     }
 }
 
+pub fn start() -> Result<(), Box<dyn std::error::Error>> {
+    let options = crate::platform::startup::StartupOptions::load();
+    crate::platform::logging::init_logging(options.log_debug);
+    let settings_store = crate::platform::persistence::SettingsStore::new_default();
+    let settings = settings_store.load()?;
+    let dispatcher = runtime::RuntimeDispatcher::new(
+        crate::apprt::services::AppServices::new(settings_store),
+        crate::apprt::runtime::RuntimeOptions {
+            keyring_enabled: options.keyring_enabled,
+            github_token_store: options.github_token_store,
+        },
+    );
+    let run_options = RunOptions {
+        theme_name: settings.theme_name.clone(),
+        theme_mode: Some(match settings.theme_mode {
+            crate::core::theme_types::ThemeMode::Dark => ThemeMode::Dark,
+            crate::core::theme_types::ThemeMode::Light => ThemeMode::Light,
+        }),
+        ui_scale: f32::from(settings.ui_scale_pct) / 100.0,
+        ..RunOptions::default()
+    };
+    let startup = crate::contracts::shell::AppStartup { options, settings };
+    run_with(
+        run_options,
+        DiffyApp::new(dispatcher, crate::platform::startup::app_display_name())
+            .with_startup(startup),
+    )?;
+    Ok(())
+}
+
 pub fn run<D: EffectDispatcher>(options: RunOptions, dispatcher: D) -> Result<(), RunError> {
+    let app = DiffyApp::new(dispatcher, options.title.clone());
+    run_with(options, app)
+}
+
+fn run_with<D: EffectDispatcher>(options: RunOptions, app: DiffyApp<D>) -> Result<(), RunError> {
     let registry = crate::core::themes::ThemeRegistry::load();
     let themes = ThemePair::load(&registry, &options.theme_name, options.ui_scale);
     let window = window_options(&options, &themes.dark);
-    let app = DiffyApp::new(dispatcher, options.title.clone());
     quark_app::run(
         adapter(app, &options.title, themes, options.theme_mode),
         window,

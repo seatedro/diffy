@@ -3,10 +3,8 @@
     windows_subsystem = "windows"
 )]
 
-use diffy::ui;
-
 fn main() {
-    if let Err(error) = ui::run() {
+    if let Err(error) = diffy::app::start() {
         eprintln!("native startup failed: {error}");
         std::process::exit(1);
     }

@@ -43,6 +43,9 @@ pub enum LogicalFocus {
     ReviewComposer,
     TextCompareLeft,
     TextCompareRight,
+    SettingsOpenAiKey,
+    SettingsAnthropicKey,
+    SettingsSteeringPrompt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,8 +106,16 @@ pub enum AppMessage {
     SyntaxWake,
 }
 
+#[derive(Debug)]
+pub struct AppStartup {
+    pub options: crate::platform::startup::StartupOptions,
+    pub settings: crate::platform::persistence::Settings,
+}
+
 #[derive(Debug, Clone)]
 pub enum Intent {
+    Startup(Rc<AppStartup>),
+    SelectFile(Option<crate::contracts::navigation::SelectedFile>),
     ActivateWorkspace { path: PathBuf },
     RequestCompare(CompareIntent),
     PublishManifest(Rc<CompareManifestSnapshot>),

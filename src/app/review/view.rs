@@ -32,7 +32,9 @@ pub fn default_card_width(width: f32, theme: &Theme) -> f32 {
 
 pub fn prepare(review: &mut ReviewController, width: f32, cx: &mut ViewContext) {
     let default = default_card_width(width, cx.theme);
-    if review.host.prepare(cx, default) {
+    let prepared = review.host.prepare(cx, default);
+    let measured = review.presentation().measure(cx);
+    if prepared || measured {
         review.bump_presentation();
     }
 }

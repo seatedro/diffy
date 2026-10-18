@@ -1925,3 +1925,72 @@ fn sign_in_modal_closes_with_cancel_or_escape() {
     ui.key("enter");
     ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
 }
+
+fn assert_card_heights(ui: &UiTestHarness<App>) {
+    let width = default_card_width(1100.0, ui.theme());
+    let presentation = ui.app().driver.review.presentation();
+    let mut checked = 0;
+    for card in presentation.cards() {
+        let Some(node) = ui.try_find(By::test_id(&card.test_id)) else {
+            continue;
+        };
+        let height = presentation
+            .card_height(&card.key, width)
+            .unwrap_or_else(|| panic!("{} unmeasured", card.test_id));
+        assert!(
+            (height - node.bounds.height).abs() < 0.5,
+            "{}: reported {height}, laid out {}",
+            card.test_id,
+            node.bounds.height
+        );
+        checked += 1;
+    }
+    assert!(checked > 0);
+}
+
+#[test]
+fn card_height_matches_the_laid_out_card() {
+    let mut sample = harness(sample_driver());
+    assert_card_heights(&sample);
+    sample.click_node(By::role_name(Role::Button, "Collapse thread"));
+    assert_card_heights(&sample);
+
+    let mut ui = harness(Driver::signed_in_with_pr());
+    assert_card_heights(&ui);
+    ui.click_node(By::role_name(Role::Button, "Reply"));
+    ui.type_text(&"a reply that wraps onto more lines ".repeat(8));
+    assert_card_heights(&ui);
+}
+
+#[test]
+fn card_height_is_unknown_until_measured_at_that_width() {
+    let ui = harness(Driver::signed_in_with_pr());
+    let presentation = ui.app().driver.review.presentation();
+    let key = presentation.cards()[0].key.clone();
+
+    assert!(presentation.card_height(&key, 333.0).is_none());
+    assert!(
+        presentation
+            .card_height(&CardKey::NewComment, 333.0)
+            .is_none()
+    );
+}
+
+#[test]
+fn request_annotation_opens_the_composer_at_the_target() {
+    let mut driver = Driver::signed_in_with_pr();
+
+    driver.intent(Intent::RequestAnnotation(target(3..4)));
+
+    let card = driver
+        .review
+        .presentation()
+        .card(&CardKey::NewComment)
+        .cloned()
+        .unwrap();
+    assert_eq!(card.target, Some(target(3..4)));
+    assert_eq!(
+        driver.focus.last(),
+        Some(&Some(LogicalFocus::ReviewComposer))
+    );
+}

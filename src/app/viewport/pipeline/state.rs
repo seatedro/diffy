@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use diffy_diff::{Placeholder, SlotState, SourceCoverage, SourcePurpose};
 
-use crate::contracts::commands::{ToastKind, ToastUpdate};
+use crate::contracts::commands::{SettingsSnapshot, ToastKind, ToastUpdate};
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, SharedContext};
 use crate::contracts::shell::{Controller, Intent, Reduction};
 use crate::contracts::viewport::PipelineAction;
@@ -22,6 +22,7 @@ pub use crate::contracts::viewport::pipeline::{
 use crate::core::compare::git::bucket_refs;
 use crate::core::compare::{CompareEntry, ComparePhase};
 use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
+use crate::platform::persistence::{PersistedCompare, Settings};
 
 pub use crate::contracts::viewport::interaction::ViewportInstall;
 
@@ -212,7 +213,8 @@ impl PipelineController {
             return stale(generation);
         }
         let mut manifest = (*result.manifest).clone();
-        if matches!(active.intent.request.spec, VcsCompareSpec::WorkingCopy) {
+        manifest.working_tree = matches!(active.intent.request.spec, VcsCompareSpec::WorkingCopy);
+        if manifest.working_tree {
             tag_buckets(&mut manifest, cx);
         }
         let manifest = Rc::new(manifest);
@@ -755,7 +757,7 @@ impl Controller for PipelineController {
     type Action = PipelineAction;
     type Event = PipelineEvent;
 
-    fn reduce_action(&mut self, action: Self::Action, _cx: &SharedContext) -> Reduction {
+    fn reduce_action(&mut self, action: Self::Action, cx: &SharedContext) -> Reduction {
         let reduction = match action {
             PipelineAction::SetRenderer(renderer) => {
                 let current = self
@@ -763,13 +765,31 @@ impl Controller for PipelineController {
                     .as_ref()
                     .map(|active| active.intent.clone())
                     .filter(|intent| intent.request.renderer != renderer);
-                match current {
+                let mut reduction = match current {
                     Some(mut intent) => {
                         intent.request.renderer = renderer;
                         self.start_compare(intent)
                     }
                     None => Reduction::default(),
+                };
+                let settings = &cx.settings;
+                let saved = settings.settings.last_compare.as_ref();
+                if saved.map(|compare| compare.renderer) != Some(renderer) {
+                    let last_compare = PersistedCompare {
+                        renderer,
+                        ..saved.cloned().unwrap_or_default()
+                    };
+                    reduction =
+                        reduction.intent(Intent::SettingsChanged(Rc::new(SettingsSnapshot {
+                            revision: settings.revision + 1,
+                            settings: Settings {
+                                last_compare: Some(last_compare),
+                                ..settings.settings.clone()
+                            },
+                        })));
+                    reduction.changed = true;
                 }
+                reduction
             }
             PipelineAction::RequestFiles { files, priority } => {
                 let mut reduction = Reduction::default();

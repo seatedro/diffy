@@ -11,20 +11,21 @@ use crate::apprt::services::open_compare_repository;
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision};
 use crate::contracts::viewport::interaction::ViewportInstall;
 use crate::contracts::viewport::pipeline::{
-    CompareJob, CompareManifestSnapshot, CompareResult, FileLoadRequest, FileStat,
-    FileStatsRequest, ManifestFile, PipelineFailure, PipelineInstall, Preparation, PreparedDiff,
-    SlotUpdate, SourceLoadRequest, StatusDiffRequest, TextCompareRequest, TotalStatsRequest,
-    WORKING_SET_FILES, WORKING_SET_LINES,
+    CompareJob, CompareManifestSnapshot, CompareResult, DiffSize, DiffSizeRequest, FileLoadRequest,
+    FileStat, FileStatsRequest, ManifestFile, PipelineFailure, PipelineInstall, Preparation,
+    PreparedDiff, SlotUpdate, SourceLoadRequest, StatusDiffRequest, TextCompareRequest,
+    TotalStatsRequest, WORKING_SET_FILES, WORKING_SET_LINES,
 };
 use crate::core::compare::git::{compare_worktree, compare_worktree_entry};
 use crate::core::compare::service::matching_document;
 use crate::core::compare::{
     CompareEntry, CompareOutput, ComparePhase, ProgressSink, RendererKind, compare_text,
 };
+use crate::core::compare::{CompareMode, LayoutMode};
 use crate::core::error::DiffyError;
 use crate::core::vcs::git::GitService;
 use crate::core::vcs::model::RevisionId;
-use crate::core::vcs::model::{VcsCompareSpec, VcsKind};
+use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec, VcsKind};
 use crate::core::vcs::source::SourceText;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -166,6 +167,7 @@ pub fn compare_result(
             resolved_right: resolved.1,
             files,
             totals: output.totals(),
+            working_tree: false,
         }),
         entries: output.entries.into(),
         positions,
@@ -195,6 +197,8 @@ fn unchanged_document(path: &str, text: &str) -> Result<Arc<DiffDocument>, Pipel
         .map_err(invalid)?;
     Ok(Arc::new(builder.build()))
 }
+
+pub const DIFF_SIZE_COMMIT_LIMIT: usize = 1_000;
 
 fn is_git_worktree(kind: VcsKind, spec: &VcsCompareSpec) -> bool {
     kind == VcsKind::GIT && matches!(spec, VcsCompareSpec::WorkingCopy)
@@ -256,6 +260,45 @@ impl PipelineServices {
         };
         let revision = file_revision(request.generation);
         prepare(key_at(0), request.generation, revision, doc)
+    }
+
+    pub fn diff_size(&self, request: &DiffSizeRequest) -> Result<DiffSize, PipelineFailure> {
+        let refs = [request.left.as_str(), request.right.as_str()];
+        let mut repo = open_compare_repository(&request.repo_path, refs).map_err(failed)?;
+        let spec = match request.mode {
+            CompareMode::ThreeDot => VcsCompareSpec::MergeBaseRange {
+                base: request.left.clone(),
+                head: request.right.clone(),
+            },
+            CompareMode::TwoDot | CompareMode::SingleCommit => VcsCompareSpec::Range {
+                from: request.left.clone(),
+                to: request.right.clone(),
+            },
+        };
+        let compare = VcsCompareRequest {
+            spec,
+            layout: LayoutMode::Unified,
+            renderer: RendererKind::Builtin,
+        };
+        let (additions, deletions) = repo.compare_stats(&compare).map_err(failed)?;
+        let history = repo
+            .compare_history(&request.left, &request.right, DIFF_SIZE_COMMIT_LIMIT + 1)
+            .map_err(failed)?;
+        let files = if repo.location().kind == VcsKind::GIT {
+            let (left, right) = repo.resolve_compare_request(&compare).map_err(failed)?;
+            let git = open_git(&request.repo_path)?;
+            let entries = git.diff_name_status(&left, &right, None).map_err(failed)?;
+            Some(u32::try_from(entries.len()).unwrap_or(u32::MAX))
+        } else {
+            None
+        };
+        Ok(DiffSize {
+            files,
+            additions: u32::try_from(additions).unwrap_or(0),
+            deletions: u32::try_from(deletions).unwrap_or(0),
+            commits: history.len().min(DIFF_SIZE_COMMIT_LIMIT) as u32,
+            commits_capped: history.len() > DIFF_SIZE_COMMIT_LIMIT,
+        })
     }
 
     pub fn load_total_stats(
@@ -667,5 +710,61 @@ mod tests {
                 Some("two")
             );
         }
+    }
+
+    #[test]
+    fn diff_size_counts_files_lines_and_commits_between_refs() {
+        use crate::contracts::viewport::pipeline::DiffSizeRequest;
+        use crate::core::compare::CompareMode;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let commit = crate::core::compare::service::tests::commit_file;
+        let base = commit(&repo, "a.rs", "one\n", "a");
+        commit(&repo, "a.rs", "one\ntwo\n", "b");
+        let head = commit(&repo, "b.rs", "x\ny\n", "c");
+        let size = PipelineServices
+            .diff_size(&DiffSizeRequest {
+                token: 1,
+                repo_path: dir.path().to_path_buf(),
+                left: base,
+                right: head,
+                mode: CompareMode::TwoDot,
+            })
+            .unwrap();
+        assert_eq!(size.files, Some(2));
+        assert_eq!((size.additions, size.deletions), (3, 0));
+        assert_eq!(size.commits, 2);
+        assert!(!size.commits_capped);
+    }
+
+    #[test]
+    fn a_clean_working_copy_compares_to_an_empty_manifest() {
+        use crate::contracts::viewport::pipeline::{CompareIntent, CompareJob};
+        use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        crate::core::compare::service::tests::commit_file(&repo, "a.rs", "one\n", "a");
+        let result = PipelineServices
+            .run_compare(
+                &CompareJob {
+                    generation: CompareGeneration(3),
+                    intent: CompareIntent {
+                        repo_path: dir.path().to_path_buf(),
+                        request: VcsCompareRequest {
+                            spec: VcsCompareSpec::WorkingCopy,
+                            layout: LayoutMode::Unified,
+                            renderer: RendererKind::Builtin,
+                        },
+                    },
+                    preparation: None,
+                },
+                &Phases,
+            )
+            .unwrap();
+        assert!(result.manifest.files.is_empty());
+        assert_eq!(result.manifest.totals.known(), Some((0, 0)));
+        assert_eq!(result.installs.len(), 1);
     }
 }

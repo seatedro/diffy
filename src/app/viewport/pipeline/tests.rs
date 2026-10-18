@@ -262,9 +262,21 @@ fn pending_stats_are_requested_once_and_republished() {
 }
 
 #[test]
-fn renderer_changes_rerun_the_current_compare() {
+fn renderer_changes_rerun_the_current_compare_and_persist() {
     let cx = SharedContext::default();
     let mut controller = PipelineController::default();
+    let persisted = |reduction: &Reduction| {
+        reduction.intents.iter().find_map(|intent| match intent {
+            Intent::SettingsChanged(snapshot) => snapshot
+                .settings
+                .last_compare
+                .as_ref()
+                .map(|compare| compare.renderer),
+            _ => None,
+        })
+    };
+    let idle = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
+    assert!(pipeline_effects(&idle).is_empty());
     let first = request(&mut controller);
     let rerun =
         controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
@@ -275,8 +287,58 @@ fn renderer_changes_rerun_the_current_compare() {
         }
         other => panic!("expected a new compare, got {other:?}"),
     }
+    let saved = std::rc::Rc::new(crate::contracts::commands::SettingsSnapshot {
+        revision: 1,
+        settings: crate::platform::persistence::Settings {
+            last_compare: Some(crate::platform::persistence::PersistedCompare {
+                renderer: RendererKind::Difftastic,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    });
+    let cx = SharedContext {
+        settings: saved,
+        ..SharedContext::default()
+    };
     let same = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
     assert!(pipeline_effects(&same).is_empty());
+    assert_eq!(persisted(&same), None);
+    let back = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Builtin), &cx);
+    assert_eq!(persisted(&back), Some(RendererKind::Builtin));
+    assert_eq!(persisted(&idle), Some(RendererKind::Difftastic));
+    assert_eq!(persisted(&rerun), Some(RendererKind::Difftastic));
+}
+
+#[test]
+fn an_empty_compare_publishes_an_empty_manifest_and_finishes() {
+    let cx = SharedContext::default();
+    let mut controller = PipelineController::default();
+    let generation = request(&mut controller);
+    controller.take_batch();
+    let done = controller.reduce_event(
+        PipelineEvent::CompareFinished {
+            generation,
+            request: intent(RendererKind::Builtin).request,
+            result: compare_result(
+                generation,
+                ("l".into(), "r".into()),
+                CompareOutput::default(),
+                None,
+            )
+            .unwrap(),
+        },
+        &cx,
+    );
+    assert_eq!(published(&done), Some(0));
+    assert_eq!(controller.status(), &PipelineStatus::Ready);
+    assert!(controller.manifest().unwrap().working_tree);
+    assert!(matches!(
+        controller.take_batch().as_slice(),
+        [PipelineInstall::View(ViewportInstall::Order { generation: g, files })]
+            if *g == generation && files.is_empty()
+    ));
+    assert!(pipeline_effects(&done).is_empty());
 }
 
 fn big(generation: CompareGeneration, key: u64, lines: usize) -> PreparedDiff {

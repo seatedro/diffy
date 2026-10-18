@@ -115,6 +115,7 @@ pub struct CompareManifestSnapshot {
     pub resolved_right: String,
     pub files: Arc<[ManifestFile]>,
     pub totals: FileStats,
+    pub working_tree: bool,
 }
 
 impl CompareManifestSnapshot {
@@ -246,6 +247,24 @@ pub enum PipelineAction {
         file: FileKey,
         purpose: SourcePurpose,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffSizeRequest {
+    pub token: u64,
+    pub repo_path: PathBuf,
+    pub left: String,
+    pub right: String,
+    pub mode: crate::core::compare::CompareMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DiffSize {
+    pub files: Option<u32>,
+    pub additions: u32,
+    pub deletions: u32,
+    pub commits: u32,
+    pub commits_capped: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

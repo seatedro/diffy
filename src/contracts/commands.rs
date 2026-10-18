@@ -1,5 +1,4 @@
 use std::rc::Rc;
-use std::sync::Arc;
 
 use quark_components::PaletteEvent;
 
@@ -185,8 +184,8 @@ pub enum CommandsEvent {
         message: String,
     },
     FontCatalogReady {
-        ui: Arc<[FontFamilyEntry]>,
-        mono: Arc<[FontFamilyEntry]>,
+        ui: &'static [FontFamilyEntry],
+        mono: &'static [FontFamilyEntry],
     },
 }
 

@@ -1,13 +1,12 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use quark_components::{
     CommandPalette, ContextMenuOutcome, ContextMenuState, PALETTE_INPUT, PaletteOutcome,
 };
 use quark_ui::FocusId;
-use quark_ui::element::Binding;
+use quark_ui::element::{Binding, ScrollHandle};
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 
 use super::keymap;
@@ -64,13 +63,14 @@ pub struct SettingsPage {
     pub section: SettingsSection,
     pub capture: Option<ShortcutCommand>,
     pub notice: Option<String>,
+    pub scroll: ScrollHandle,
     return_focus: Option<FocusId>,
 }
 
 #[derive(Debug, Clone)]
 struct FontCatalog {
-    ui: Arc<[FontFamilyEntry]>,
-    mono: Arc<[FontFamilyEntry]>,
+    ui: &'static [FontFamilyEntry],
+    mono: &'static [FontFamilyEntry],
 }
 
 pub struct CommandsController {
@@ -497,8 +497,11 @@ impl CommandsController {
         }
         match &mut self.settings_page {
             Some(page) => {
-                if let Some(section) = section {
+                if let Some(section) = section
+                    && page.section != section
+                {
                     page.section = section;
+                    page.scroll.set_offset(0.0, 0.0);
                 }
                 page.capture = None;
             }
@@ -507,6 +510,7 @@ impl CommandsController {
                     section: section.unwrap_or_default(),
                     capture: None,
                     notice: None,
+                    scroll: ScrollHandle::new(),
                     return_focus: self.view_focus,
                 });
             }
@@ -1105,7 +1109,10 @@ impl Controller for CommandsController {
             A::CloseSettings => self.close_settings(),
             A::SetSettingsSection(section) => match &mut self.settings_page {
                 Some(page) => {
-                    page.section = section;
+                    if page.section != section {
+                        page.section = section;
+                        page.scroll.set_offset(0.0, 0.0);
+                    }
                     page.capture = None;
                     page.notice = None;
                     Reduction::changed()

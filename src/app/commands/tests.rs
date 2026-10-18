@@ -440,6 +440,38 @@ fn foreign_settings_changes_are_adopted_and_persisted() {
 }
 
 #[test]
+fn keymap_list_scrolls_to_its_last_binding() {
+    let mut ui = cmd_harness(Settings::default());
+    ui.resize(900.0, 420.0);
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenKeymaps);
+    let last = |ui: &Cmd| {
+        ui.find_all(Role::Button)
+            .into_iter()
+            .filter(|n| n.name.as_deref().is_some_and(|n| n.starts_with("Rebind ")))
+            .last()
+            .unwrap()
+    };
+    let before = last(&ui).bounds;
+    assert!(before.y > 420.0);
+    let content = ui.find(By::test_id("settings.content")).bounds;
+    ui.pointer_move((
+        content.x + content.width / 2.0,
+        content.y + content.height / 2.0,
+    ));
+    ui.wheel(0.0, 100_000.0);
+    let after = last(&ui).bounds;
+    assert!(after.y + after.height <= 420.0);
+    ui.run(CommandsAction::SetSettingsSection(
+        crate::contracts::commands::SettingsSection::Appearance,
+    ));
+    ui.run(CommandsAction::SetSettingsSection(
+        crate::contracts::commands::SettingsSection::Keymaps,
+    ));
+    assert_eq!(last(&ui).bounds.y, before.y);
+}
+
+#[test]
 fn keymap_rebinding_rejects_conflicts_and_saves_overrides() {
     let mut ui = cmd_harness(Settings::default());
     focus_anchor(&mut ui);

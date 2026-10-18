@@ -346,7 +346,16 @@ fn settings_page(
                 <text size={TextStyle::HeadingLg.font_size(theme)} class="font-semibold" color={tc.text_strong}>
                     {page.section.label()}
                 </text>
-                {content}
+                <div
+                    class="flex-col w-full flex-1 overflow-y-scroll"
+                    min_h={0.0}
+                    track_scroll={&page.scroll}
+                    accessibility_role={AccessibilityRole::Group}
+                    aria-label={format!("{} settings", page.section.label())}
+                    test_id="settings.content"
+                >
+                    {content}
+                </div>
             </div>
         </div>
     }
@@ -631,7 +640,7 @@ fn keymaps(settings: &Settings, page: &SettingsPage, theme: &Theme) -> AnyElemen
         }
     });
     view! {
-        <div class="flex-col w-full flex-1 overflow-y-scroll" min_h={0.0}>
+        <div class="flex-col w-full shrink-0">
             {?notice}
             {...rows}
         </div>

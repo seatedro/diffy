@@ -19,6 +19,7 @@ pub enum MutationsAction {
     DiscardSelectedFile,
     StageFile(FileKey),
     UnstageFile(FileKey),
+    DiscardFile(FileKey),
     StageAllFiles,
     UnstageAllFiles,
     StageHunk,
@@ -49,6 +50,29 @@ pub enum MutationsAction {
     ClearAiKey { kind: AiKeyKind },
     SetAiKeyEditing { kind: AiKeyKind, editing: bool },
     GenerateCommitMessage,
+    ApplyConfirmed(ConfirmedMutation),
+    RunConfirmedOperation(VcsOperation),
+    OpenCommitComposer,
+    CloseCommitComposer,
+    ScrollCommitMessage(i32),
+    ClosePublishMenu,
+    SetAiProvider(Option<Provider>),
+    SaveAiKeyField(AiKeyKind),
+    SaveSteeringPrompt,
+    ResetSteeringPrompt,
+    ScrollSteeringPrompt(i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StagedDigest(pub u64);
+
+impl StagedDigest {
+    pub fn of(diff: &[u8]) -> Self {
+        use std::hash::{DefaultHasher, Hasher};
+        let mut hasher = DefaultHasher::new();
+        hasher.write(diff);
+        Self(hasher.finish())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -115,6 +139,7 @@ impl MutationSource {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MutationSelection {
     Hunks(Vec<HunkTarget>),
+    HunksAt(Vec<SourceTarget>),
     Lines(Vec<SourceTarget>),
 }
 
@@ -122,14 +147,17 @@ impl MutationSelection {
     pub fn targets(&self) -> impl Iterator<Item = &SourceTarget> {
         let (hunks, lines): (&[HunkTarget], &[SourceTarget]) = match self {
             Self::Hunks(hunks) => (hunks, &[]),
-            Self::Lines(lines) => (&[], lines),
+            Self::HunksAt(lines) | Self::Lines(lines) => (&[], lines),
         };
         hunks.iter().map(|hunk| &hunk.source).chain(lines)
     }
 
-    pub fn is_for(&self, file: FileKey, revision: FileRevision) -> bool {
+    pub fn file(&self) -> Option<(FileKey, FileRevision)> {
+        let first = self.targets().next()?;
+        let (file, revision) = (first.file, first.revision);
         self.targets()
             .all(|target| target.file == file && target.revision == revision)
+            .then_some((file, revision))
     }
 
     pub fn patch_selection(&self) -> PatchSelection {
@@ -141,9 +169,16 @@ impl MutationSelection {
             Self::Hunks(hunks) => {
                 PatchSelection::Hunks(hunks.iter().map(|h| range(&h.source)).collect())
             }
+            Self::HunksAt(lines) => PatchSelection::HunksAt(lines.iter().map(range).collect()),
             Self::Lines(lines) => PatchSelection::Lines(lines.iter().map(range).collect()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmedMutation {
+    Selection(MutationSelection),
+    Files(Vec<FileKey>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,6 +260,11 @@ pub enum MutationsEffect {
         kind: AiKeyKind,
     },
     GenerateCommitMessage(Box<GenerateCommitMessageRequest>),
+    CheckStagedDiff {
+        generation: u64,
+        repo_path: PathBuf,
+        has_staged: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -340,6 +380,14 @@ pub enum MutationsEvent {
     },
     AiKeySaveFailed {
         message: String,
+    },
+    CommitMessageStarted {
+        generation: u64,
+        staged: StagedDigest,
+    },
+    StagedDiffChecked {
+        generation: u64,
+        staged: Option<StagedDigest>,
     },
     CommitMessageChunk {
         generation: u64,

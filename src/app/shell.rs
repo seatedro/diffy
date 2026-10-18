@@ -230,6 +230,8 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             }
             Intent::Startup(_)
             | Intent::OpenPullRequest { .. }
+            | Intent::RequestAnnotation(_)
+            | Intent::OpenTextCompare
             | Intent::RequestCompare(_)
             | Intent::InvalidateRepository
             | Intent::GrammarAvailable(_)
@@ -375,10 +377,9 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             };
             navigation::view(&mut self.controllers.navigation, &slot, cx)
         });
-        let mutations = self.slots.empty();
         let decorator = self.slots.decorator(
             self.controllers.review.presentation(),
-            mutations,
+            self.controllers.mutations.presentation(),
             tokens::ui_scale(theme),
         );
         let slot = Slot {
@@ -496,6 +497,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             width,
             height,
         };
+        let mutation_panel = mutations::panel(&mut self.controllers.mutations, &slot, cx);
         let review_overlay = review::overlay(&self.controllers.review, &slot, cx);
         let overlays = commands::overlays(&mut self.controllers.commands, &slot, None, cx);
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
@@ -505,6 +507,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 {title}
                 {body}
                 {status}
+                {?mutation_panel}
                 {?review_overlay}
                 {?overlays}
                 {?languages}

@@ -10,6 +10,7 @@ use quark_ui::theme::{Color, Theme};
 use super::ReviewController;
 use super::state::{AuthStatus, ReviewOverlay};
 use crate::app::shell::Slot;
+use crate::app::text_targets::{REVIEW_ACCOUNT, REVIEW_DIALOG};
 use crate::app::tokens::{self, Ico, Rad, Shadow, Sp, Sz, TextStyle};
 use crate::contracts::review::ReviewAction;
 use crate::contracts::shell::ShellAction;
@@ -62,17 +63,18 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
             }
             parts.join(" \u{b7} ")
         });
-        let submit = counts
-            .filter(|(_, pending, failed)| pending + failed > 0)
-            .map(|_| {
-                let button = Button::new(action(ReviewAction::SubmitReview {
-                    decision: ReviewDecision::Comment,
-                }))
+        let submit = counts.filter(|_| review.signed_in()).map(|(_, pending, failed)| {
+            let style = if pending + failed > 0 {
+                ButtonStyle::Filled
+            } else {
+                ButtonStyle::Subtle
+            };
+            let button = Button::new(action(ReviewAction::OpenSubmitMenu))
                 .label("Submit review")
-                .style(ButtonStyle::Filled)
+                .style(style)
                 .size(ButtonSize::Compact);
-                view! { <div test_id="review.submit">{button}</div> }
-            });
+            view! { <div test_id="review.submit">{button}</div> }
+        });
         let open = Button::new(action(ReviewAction::OpenPullRequestInBrowser))
             .icon(lucide::EXTERNAL_LINK)
             .tooltip("Open on GitHub")
@@ -92,7 +94,8 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
     });
     let account = account_view(review, theme);
     view! { scale,
-        <div h={slot.height} class="flex-row items-center shrink-0" gap={Sp::SM} test_id="title.review">
+        <div h={slot.height} class="flex-row items-center shrink-0" gap={Sp::SM} test_id="title.review"
+             on:key:escape={action(ReviewAction::CloseOverlay)}>
             {?pull_request}
             {account}
         </div>
@@ -102,12 +105,28 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
 fn account_view(review: &ReviewController, theme: &Theme) -> AnyElement {
     let scale = tokens::ui_scale(theme);
     if !review.signed_in() {
-        let button = Button::new(action(ReviewAction::OpenAuthModal))
-            .icon(lucide::KEY)
-            .label("Sign in to GitHub")
-            .style(ButtonStyle::Subtle)
-            .size(ButtonSize::Compact);
-        return view! { <div test_id="review.sign_in">{button}</div> };
+        let tc = &theme.colors;
+        let small = TextStyle::BodySmall.font_size(theme);
+        return view! { scale,
+            <div
+                class="flex-row items-center shrink-0"
+                gap={Sp::XS}
+                px={Sp::SM}
+                py={Sp::XXS}
+                rounded={Rad::MD}
+                bg={tc.element_background}
+                hover_bg={tc.element_hover}
+                cursor={CursorHint::Pointer}
+                focus_ring={REVIEW_ACCOUNT}
+                accessibility_role={AccessibilityRole::Button}
+                aria-label="Sign in to GitHub"
+                test_id="review.sign_in"
+                on:click={action(ReviewAction::OpenAuthModal)}
+            >
+                <icon svg={lucide::KEY} size={small} color={tc.text_muted} />
+                <text size={small} class="font-medium" color={tc.text}>"Sign in to GitHub"</text>
+            </div>
+        };
     }
     let account = review.account();
     let login = account
@@ -124,6 +143,7 @@ fn account_view(review: &ReviewController, theme: &Theme) -> AnyElement {
             p={Sp::XXS}
             accessibility_role={AccessibilityRole::Button}
             aria-label="GitHub account"
+            focus_ring={REVIEW_ACCOUNT}
             test_id="review.account"
             on:click={action(ReviewAction::OpenAccountMenu)}
         >
@@ -137,6 +157,7 @@ pub fn overlay(review: &ReviewController, slot: &Slot, cx: &mut ViewContext) -> 
     match review.overlay_open()? {
         ReviewOverlay::Auth => Some(auth_modal(review, slot, theme)),
         ReviewOverlay::AccountMenu => Some(account_menu(review, slot, theme)),
+        ReviewOverlay::SubmitReview => Some(submit_menu(review, slot, theme)),
     }
 }
 
@@ -215,7 +236,14 @@ fn auth_modal(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEleme
             }
         }
     };
-    Modal::new(
+    let cancel = Button::new(action(ReviewAction::CloseOverlay))
+        .label(if review.signed_in() {
+            "Close"
+        } else {
+            "Cancel"
+        })
+        .style(ButtonStyle::Ghost);
+    let modal = Modal::new(
         "Sign in to GitHub",
         "Connect your account to load pull requests and review diffs.",
         lucide::GITHUB_MARK,
@@ -225,7 +253,14 @@ fn auth_modal(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEleme
         action(ReviewAction::CloseOverlay),
     )
     .body_child(body)
-    .into_any()
+    .footer_child(cancel);
+    view! {
+        <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
+             focus_ring={REVIEW_DIALOG}
+             on:key:escape={action(ReviewAction::CloseOverlay)}>
+            {modal}
+        </div>
+    }
 }
 
 fn account_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElement {
@@ -260,6 +295,7 @@ fn account_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEle
                  shadow_preset={Shadow::DROPDOWN}
                  accessibility_role={AccessibilityRole::Menu}
                  aria-label="GitHub account"
+                 focus_ring={REVIEW_DIALOG}
                  test_id="review.account_menu"
                  on:click={quark_ui::element::NoopAction}>
                 <div class="flex-row items-center" gap={Sp::SM} p={Sp::SM}>
@@ -273,6 +309,65 @@ fn account_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEle
                 </div>
                 <div class="w-full" h={Sz::SEPARATOR_W} bg={tc.border_variant} />
                 {sign_out}
+            </div>
+        </div>
+    }
+}
+
+fn submit_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let width = tokens::scaled(Sz::CARD_SM, scale).min(slot.width);
+    let left = (slot.width - width - tokens::scaled(Sp::MD, scale)).max(0.0);
+    let top = theme.metrics.title_bar_height + tokens::scaled(Sp::XS, scale);
+    let (pending, failed) = review
+        .review_counts()
+        .map_or((0, 0), |(_, pending, failed)| (pending, failed));
+    let summary = match (pending, failed) {
+        (0, 0) => "No pending comments".to_owned(),
+        (pending, 0) => format!("{pending} pending comments will be submitted"),
+        (pending, failed) => format!("{pending} pending, {failed} to retry"),
+    };
+    let presentation = review.presentation();
+    let summary_card = presentation.general_composer().and_then(|card| {
+        presentation.card_element(&card.key, width - tokens::scaled(Sp::MD, scale))
+    });
+    let add_summary = summary_card.is_none().then(|| {
+        Button::new(action(ReviewAction::OpenComposer))
+            .label("Add summary")
+            .style(ButtonStyle::Ghost)
+            .size(ButtonSize::Compact)
+    });
+    let decision = |label: &str, decision: ReviewDecision, style: ButtonStyle| {
+        Button::new(action(ReviewAction::SubmitReview { decision }))
+            .label(label)
+            .style(style)
+            .size(ButtonSize::Compact)
+    };
+    view! { scale,
+        <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
+             bg={Color::TRANSPARENT}
+             on:click={action(ReviewAction::CloseOverlay)}
+             on:key:escape={action(ReviewAction::CloseOverlay)}>
+            <div class="absolute flex-col" left={left} top={top} w={width} p={Sp::SM} gap={Sp::SM}
+                 bg={tc.elevated_surface} border={tc.border} rounded={Rad::XL}
+                 shadow_preset={Shadow::DROPDOWN}
+                 accessibility_role={AccessibilityRole::Dialog}
+                 aria-label="Submit review"
+                 focus_ring={REVIEW_DIALOG}
+                 test_id="review.submit_menu"
+                 on:click={quark_ui::element::NoopAction}>
+                <text size={small} class="font-medium" color={tc.text_strong}>"Submit review"</text>
+                <text size={small} color={tc.text_muted}>{summary}</text>
+                {?summary_card}
+                {?add_summary}
+                <div class="flex-row items-center" gap={Sp::XS}>
+                    <spacer />
+                    {decision("Comment", ReviewDecision::Comment, ButtonStyle::Subtle)}
+                    {decision("Request changes", ReviewDecision::RequestChanges, ButtonStyle::Danger)}
+                    {decision("Approve", ReviewDecision::Approve, ButtonStyle::Filled)}
+                </div>
             </div>
         </div>
     }

@@ -1,19 +1,121 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::thread;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::apprt::services::ReviewServices;
 use crate::apprt::transport::ScopedEventSender;
-use crate::contracts::review::{ReviewEffect, ReviewEvent};
+use crate::contracts::review::{ReviewEffect, ReviewEvent, ReviewScope};
+use crate::core::review::ReviewSession;
 use crate::platform::startup::GitHubTokenStore;
+
+pub(crate) const DRAFT_SAVE_DEBOUNCE: Duration = Duration::from_millis(400);
+
+struct DraftSave {
+    scope: ReviewScope,
+    session: Box<ReviewSession>,
+    events: ScopedEventSender,
+    immediate: bool,
+}
+
+struct DraftSaver {
+    sender: Option<Sender<DraftSave>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl DraftSaver {
+    fn new(services: ReviewServices) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("diffy-review-drafts".to_owned())
+            .spawn(move || draft_save_loop(&services, &receiver))
+            .ok();
+        Self {
+            sender: Some(sender),
+            worker,
+        }
+    }
+
+    fn save(&self, request: DraftSave) {
+        let rejected = match &self.sender {
+            Some(sender) => sender.send(request).err().map(|error| error.0),
+            None => Some(request),
+        };
+        if let Some(request) = rejected {
+            request.events.send(ReviewEvent::SessionSaveFailed {
+                scope: request.scope,
+                key: request.session.key(),
+                message: "review draft writer stopped".to_owned(),
+            });
+        }
+    }
+}
+
+impl Drop for DraftSaver {
+    fn drop(&mut self) {
+        self.sender = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn draft_save_loop(services: &ReviewServices, receiver: &Receiver<DraftSave>) {
+    let mut pending: HashMap<String, DraftSave> = HashMap::new();
+    loop {
+        let next = if pending.is_empty() {
+            receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            receiver.recv_timeout(DRAFT_SAVE_DEBOUNCE)
+        };
+        match next {
+            Ok(request) => {
+                let immediate = request.immediate;
+                pending.insert(request.session.key().storage_key(), request);
+                if immediate {
+                    write_drafts(services, &mut pending);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => write_drafts(services, &mut pending),
+            Err(RecvTimeoutError::Disconnected) => {
+                write_drafts(services, &mut pending);
+                return;
+            }
+        }
+    }
+}
+
+fn write_drafts(services: &ReviewServices, pending: &mut HashMap<String, DraftSave>) {
+    for (_, request) in pending.drain() {
+        let DraftSave {
+            scope,
+            session,
+            events,
+            ..
+        } = request;
+        let event = match services.save_session(&session) {
+            Ok(key) => ReviewEvent::SessionSaved { scope, key },
+            Err(error) => ReviewEvent::SessionSaveFailed {
+                scope,
+                key: session.key(),
+                message: error.user_message(),
+            },
+        };
+        events.send(event);
+    }
+}
 
 pub struct ReviewRuntime {
     services: ReviewServices,
     token_store: GitHubTokenStore,
+    drafts: DraftSaver,
 }
 
 impl ReviewRuntime {
     pub fn new(services: ReviewServices, token_store: GitHubTokenStore) -> Self {
         Self {
+            drafts: DraftSaver::new(services.clone()),
             services,
             token_store,
         }
@@ -145,20 +247,18 @@ impl ReviewRuntime {
                     events.send(event);
                 });
             }
-            ReviewEffect::SaveSession { scope, session } => {
-                let services = self.services.clone();
-                thread::spawn(move || {
-                    let event = match services.save_session(&session) {
-                        Ok(key) => ReviewEvent::SessionSaved { scope, key },
-                        Err(error) => ReviewEvent::SessionSaveFailed {
-                            scope,
-                            key: session.key(),
-                            message: error.user_message(),
-                        },
-                    };
-                    events.send(event);
-                });
-            }
+            ReviewEffect::SaveSession { scope, session } => self.drafts.save(DraftSave {
+                scope,
+                session,
+                events,
+                immediate: true,
+            }),
+            ReviewEffect::SaveSessionDraft { scope, session } => self.drafts.save(DraftSave {
+                scope,
+                session,
+                events,
+                immediate: false,
+            }),
             ReviewEffect::FetchAvatar { url } => {
                 let services = self.services.clone();
                 thread::spawn(move || {
@@ -176,5 +276,124 @@ impl ReviewRuntime {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+    use crate::apprt::services::LiveGitHub;
+    use crate::apprt::transport::RuntimeEventSender;
+    use crate::contracts::shared::{AccountEpoch, JobId, WorkspaceEpoch};
+    use crate::contracts::shell::{AppEvent, AppMessage};
+    use crate::core::forge::github::PullRequestInfo;
+    use crate::core::review::{ReviewAnchor, ReviewLineRange, ReviewSide, ReviewTarget};
+    use crate::platform::persistence::SettingsStore;
+    use crate::platform::review_store::ReviewStore;
+
+    fn session(body: &str) -> Box<ReviewSession> {
+        let mut session = ReviewSession::new(
+            ReviewTarget::github("owner", "repo", 42),
+            PullRequestInfo {
+                head_sha: "head".to_owned(),
+                ..PullRequestInfo::default()
+            },
+        );
+        session.create_inline_draft(
+            ReviewAnchor::inline("a.rs", ReviewSide::New, ReviewLineRange::new(1, 1)),
+            body,
+        );
+        Box::new(session)
+    }
+
+    fn runtime(dir: &std::path::Path) -> ReviewRuntime {
+        let store = ReviewStore::open(dir.join("review-sessions.json")).unwrap();
+        let services = ReviewServices::new(
+            SettingsStore::new_in(dir.join("settings.json")),
+            store.clone(),
+            Arc::new(LiveGitHub::new(store)),
+        );
+        ReviewRuntime::new(services, GitHubTokenStore::Disabled)
+    }
+
+    fn saved_body(dir: &std::path::Path) -> Option<String> {
+        let store = ReviewStore::open(dir.join("review-sessions.json")).unwrap();
+        let session = store
+            .load_session(&ReviewTarget::github("owner", "repo", 42), "head")
+            .unwrap()?;
+        session
+            .drafts
+            .values()
+            .next()
+            .map(|draft| draft.body.clone())
+    }
+
+    fn scope(request: u64) -> ReviewScope {
+        ReviewScope {
+            account: AccountEpoch(0),
+            request: JobId(request),
+        }
+    }
+
+    #[test]
+    fn draft_saves_coalesce_and_flush_when_the_runtime_stops() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sender, messages) = mpsc::channel::<AppMessage>();
+        let events = RuntimeEventSender::from_channel(sender);
+        let runtime = runtime(dir.path());
+        for (n, body) in ["a", "ab", "abc"].into_iter().enumerate() {
+            runtime.dispatch(
+                ReviewEffect::SaveSessionDraft {
+                    scope: scope(n as u64),
+                    session: session(body),
+                },
+                events.scoped(WorkspaceEpoch(1)),
+            );
+        }
+        assert_eq!(saved_body(dir.path()), None);
+
+        drop(runtime);
+
+        assert_eq!(saved_body(dir.path()).as_deref(), Some("abc"));
+        let saved = messages
+            .try_iter()
+            .filter(|message| match message {
+                AppMessage::Runtime(envelope) => matches!(
+                    envelope.event,
+                    AppEvent::Review(ReviewEvent::SessionSaved { .. })
+                ),
+                AppMessage::SyntaxWake => false,
+            })
+            .count();
+        assert_eq!(saved, 1);
+    }
+
+    #[test]
+    fn an_immediate_save_supersedes_a_pending_draft_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let (sender, _messages) = mpsc::channel::<AppMessage>();
+        let events = RuntimeEventSender::from_channel(sender);
+        let runtime = runtime(dir.path());
+        runtime.dispatch(
+            ReviewEffect::SaveSessionDraft {
+                scope: scope(1),
+                session: session("typing"),
+            },
+            events.scoped(WorkspaceEpoch(1)),
+        );
+        runtime.dispatch(
+            ReviewEffect::SaveSession {
+                scope: scope(2),
+                session: session("submitted"),
+            },
+            events.scoped(WorkspaceEpoch(1)),
+        );
+        thread::sleep(DRAFT_SAVE_DEBOUNCE * 2);
+
+        assert_eq!(saved_body(dir.path()).as_deref(), Some("submitted"));
+        drop(runtime);
+        assert_eq!(saved_body(dir.path()).as_deref(), Some("submitted"));
     }
 }

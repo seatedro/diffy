@@ -46,6 +46,8 @@ pub enum LogicalFocus {
     SettingsOpenAiKey,
     SettingsAnthropicKey,
     SettingsSteeringPrompt,
+    ReviewAccount,
+    ReviewDialog,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +127,8 @@ pub enum Intent {
     InvalidateRepository,
     SetReviewTarget(Option<Rc<ReviewContext>>),
     OpenPullRequest { url: String },
+    RequestAnnotation(SourceTarget),
+    OpenTextCompare,
     AccountChanged,
     GrammarAvailable(GrammarAvailability),
     SettingsChanged(Rc<SettingsSnapshot>),

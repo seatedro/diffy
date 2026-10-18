@@ -191,6 +191,17 @@ impl MutationsRuntime {
                     }
                 });
             }
+            MutationsEffect::CheckStagedDiff {
+                generation,
+                repo_path,
+                has_staged,
+            } => {
+                let services = self.services;
+                thread::spawn(move || {
+                    let staged = services.staged_digest(&repo_path, has_staged).ok();
+                    events.send(MutationsEvent::StagedDiffChecked { generation, staged });
+                });
+            }
             MutationsEffect::GenerateCommitMessage(request) => {
                 let services = self.services;
                 thread::spawn(move || {

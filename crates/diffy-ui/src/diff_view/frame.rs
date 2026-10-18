@@ -485,6 +485,7 @@ impl DiffViewState {
             RowRef::Fact { seg, .. } => self.segments[seg as usize].generation.hash(&mut h),
             RowRef::Annotation { index } => self.annotations.entry(index).hash(&mut h),
             RowRef::More { hidden } => hidden.hash(&mut h),
+            RowRef::Pending { seg } => self.segments[seg as usize].generation.hash(&mut h),
         }
         h.finish()
     }
@@ -587,6 +588,28 @@ impl DiffViewState {
                             hidden_rows: hidden,
                         },
                         0,
+                    )
+                }
+            }
+            RowRef::Pending { seg } => {
+                let segment = &self.segments[seg as usize];
+                let header = segment.projection.file_rows.first().copied().unwrap_or(0);
+                let (state, estimated_lines) = segment
+                    .pending
+                    .unwrap_or((diffy_diff::SlotState::Unloaded, 1));
+                RowPaint {
+                    kind: PreparedKind::Pending {
+                        state,
+                        estimated_lines,
+                    },
+                    ..self.build_line_row(
+                        seg as usize,
+                        header,
+                        stamp,
+                        text,
+                        layouts,
+                        scale,
+                        columns,
                     )
                 }
             }

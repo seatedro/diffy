@@ -726,6 +726,24 @@ mod tests {
         assert_eq!(state.session().order(), [FileId(1), FileId(2), FileId(3)]);
         let evicted = shown(&mut state, &mut text);
         assert_eq!(evicted, before[before.len() / 2..]);
+        let bands: Vec<_> = state
+            .frame()
+            .unwrap()
+            .rows
+            .iter()
+            .filter_map(|row| match row.paint.kind {
+                crate::diff_view::prepared::PreparedKind::Pending {
+                    state,
+                    estimated_lines,
+                } => Some((state, estimated_lines, row.paint.title.to_string())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bands.len(), 2);
+        assert_eq!(bands[0].0, SlotState::Evicted);
+        assert_eq!(bands[0].1, estimate);
+        assert_eq!(bands[1], (SlotState::Unloaded, 40, bands[1].2.clone()));
+        assert!(bands[1].2.contains("g.txt"));
         state
             .apply_update(DiffUpdate::Upsert {
                 file: file(1),

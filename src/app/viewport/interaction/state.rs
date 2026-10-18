@@ -16,6 +16,7 @@ use quark_ui::FocusId;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
 use super::decorations::{Decorations, HeaderControls, Plain, is_generated};
+use super::scopes::SharedScopes;
 use super::syntax::{SyntaxWake, ViewportSyntax};
 use super::targets::{hunk_target, source_anchor, source_target};
 use super::text_compare::TextCompare;
@@ -82,6 +83,8 @@ pub struct InteractionController {
     pub(super) decorations: Option<Rc<Decorations>>,
     pub(super) plain: Rc<dyn DiffDecorator>,
     pub(super) seeded: HashSet<FileKey>,
+    pub(super) scopes: SharedScopes,
+    pub(super) scope_revision: u64,
 }
 
 struct Pending {
@@ -127,6 +130,8 @@ impl Default for InteractionController {
             decorations: None,
             plain: Rc::new(Plain),
             seeded: HashSet::new(),
+            scopes: SharedScopes::default(),
+            scope_revision: 0,
         }
     }
 }
@@ -253,19 +258,43 @@ impl InteractionController {
         theme: &quark_ui::theme::Theme,
     ) -> Rc<dyn DiffDecorator> {
         let inner = inner.unwrap_or_else(|| self.plain.clone());
+        if self.scopes.borrow_mut().poll() {
+            self.scope_revision += 1;
+        }
         let controls = HeaderControls {
             layout: self.layout,
             wrap: self.wrap,
             search_open: self.search.open,
+            scopes: self.scope_revision,
         };
         if let Some(current) = &self.decorations
             && current.matches(&inner, controls, theme)
         {
             return current.clone();
         }
-        let decorations = Rc::new(Decorations::new(inner, controls, theme));
+        let decorations = Rc::new(Decorations::new(
+            inner,
+            controls,
+            self.scopes.clone(),
+            theme,
+        ));
         self.decorations = Some(decorations.clone());
         decorations
+    }
+
+    fn request_scopes(&mut self, keys: &[FileKey]) {
+        let Some(diff) = &self.diff else {
+            return;
+        };
+        let mut scopes = self.scopes.borrow_mut();
+        if !scopes.has_worker() {
+            scopes.set_worker(self.syntax.scope_worker());
+        }
+        for key in keys {
+            if let Some(snapshot) = diff.session().file(*key) {
+                scopes.request(snapshot);
+            }
+        }
     }
 
     fn collapse_generated(&mut self, keys: &[FileKey]) {
@@ -351,6 +380,7 @@ impl InteractionController {
         self.shown_file = None;
         self.review_revision = None;
         self.seeded.clear();
+        self.scopes.borrow_mut().clear();
         self.phase = Phase::Loading;
     }
 
@@ -475,6 +505,7 @@ impl InteractionController {
         }
         self.refresh_sources();
         self.collapse_generated(&installed);
+        self.request_scopes(&installed);
         if let Some(selected) = cx.selected_file
             && selected.origin != SelectionOrigin::Viewport
             && installed.contains(&selected.key)

@@ -14,6 +14,7 @@ use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
 use quark_ui::theme::{Color, Theme};
 
+use super::scopes::SharedScopes;
 use crate::app::tokens::{self, Sp};
 use crate::contracts::commands::{CommandsAction, ContextMenuEntry};
 use crate::contracts::shell::{Action, ShellAction};
@@ -25,6 +26,7 @@ pub struct HeaderControls {
     pub layout: LayoutMode,
     pub wrap: bool,
     pub search_open: bool,
+    pub scopes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,11 +72,17 @@ pub struct Decorations {
     inner: Rc<dyn DiffDecorator>,
     controls: HeaderControls,
     palette: Palette,
+    scopes: SharedScopes,
     revision: u64,
 }
 
 impl Decorations {
-    pub fn new(inner: Rc<dyn DiffDecorator>, controls: HeaderControls, theme: &Theme) -> Self {
+    pub fn new(
+        inner: Rc<dyn DiffDecorator>,
+        controls: HeaderControls,
+        scopes: SharedScopes,
+        theme: &Theme,
+    ) -> Self {
         let palette = Palette::new(theme);
         let mut hasher = std::hash::DefaultHasher::new();
         inner.revision().hash(&mut hasher);
@@ -82,6 +90,7 @@ impl Decorations {
             controls.layout == LayoutMode::Split,
             controls.wrap,
             controls.search_open,
+            controls.scopes,
         )
             .hash(&mut hasher);
         palette.key().hash(&mut hasher);
@@ -90,6 +99,7 @@ impl Decorations {
             inner,
             controls,
             palette,
+            scopes,
         }
     }
 
@@ -295,7 +305,11 @@ impl DiffDecorator for Decorations {
     }
 
     fn hunk_scope(&self, cx: &SeparatorContext) -> Option<Arc<[Arc<str>]>> {
-        self.inner.hunk_scope(cx)
+        let own = cx
+            .source
+            .zip(cx.hunk.as_ref())
+            .and_then(|(source, hunk)| self.scopes.borrow().label(source, hunk.hunk));
+        own.or_else(|| self.inner.hunk_scope(cx))
     }
 
     fn hunk_actions(&self, cx: &SeparatorContext) -> Option<AnyElement> {

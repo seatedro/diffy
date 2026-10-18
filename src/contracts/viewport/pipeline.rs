@@ -63,8 +63,6 @@ pub struct CompareManifestSnapshot {
     pub files: Arc<[ManifestFile]>,
 }
 
-/// Sendable worker output for one file revision. Equality is identity: the same key,
-/// generation and revision always describe the same document.
 #[derive(Debug, Clone)]
 pub struct PreparedDiff {
     key: FileKey,

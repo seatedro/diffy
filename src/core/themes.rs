@@ -115,8 +115,8 @@ fn parse_hex(s: &str) -> Rgba {
     let s = s.strip_prefix('#').unwrap_or(s);
     let bytes = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).unwrap_or(0);
     match s.len() {
-        8 => Rgba::rgba(bytes(0), bytes(2), bytes(4), bytes(6)),
-        6 => Rgba::rgba(bytes(0), bytes(2), bytes(4), 255),
+        8 => Rgba::new(bytes(0), bytes(2), bytes(4), bytes(6)),
+        6 => Rgba::new(bytes(0), bytes(2), bytes(4), 255),
         _ => Rgba::BLACK,
     }
 }

@@ -328,7 +328,7 @@ pub enum GitHubResponse {
 pub enum ReviewEffect {
     GitHub {
         scope: ReviewScope,
-        request: GitHubRequest,
+        request: Box<GitHubRequest>,
     },
     StartDeviceFlow {
         flow: JobId,
@@ -368,7 +368,7 @@ pub struct AvatarImage {
 pub enum ReviewEvent {
     GitHub {
         scope: ReviewScope,
-        response: GitHubResponse,
+        response: Box<GitHubResponse>,
     },
     DeviceFlowStarted {
         flow: JobId,

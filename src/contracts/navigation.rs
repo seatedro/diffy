@@ -58,7 +58,9 @@ pub struct RepositorySnapshot {
     pub changes: Vec<VcsChange>,
     pub operation_log: Vec<VcsOperationLogEntry>,
     pub file_changes: Vec<FileChange>,
-    /// Computed against this exact snapshot so plan and refs update atomically.
+    /// The publish plan computed against this exact snapshot, so plan and
+    /// refs update atomically. `None` when the backend has nothing
+    /// publishable (no remotes, nothing described).
     pub publish_plan: Option<PublishPlan>,
 }
 
@@ -80,7 +82,6 @@ impl RepositorySnapshot {
     }
 }
 
-/// Monotonic per runtime; a snapshot with a lower revision never replaces a newer one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct RepositoryRevision(pub u64);
 
@@ -139,7 +140,6 @@ pub enum NavigationAction {
 pub struct SyncRepositoryRequest {
     pub path: PathBuf,
     pub reason: RepositorySyncReason,
-    /// Repository-open phases are reported against this compare generation.
     pub progress: Option<CompareGeneration>,
 }
 

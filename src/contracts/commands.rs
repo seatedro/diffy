@@ -38,11 +38,11 @@ impl SettingsSection {
     ];
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ContextMenuEntry {
     Item {
         label: String,
-        action: Action,
+        action: Box<Action>,
         shortcut: Option<String>,
         destructive: bool,
         disabled: bool,
@@ -50,11 +50,13 @@ pub enum ContextMenuEntry {
     Separator,
 }
 
+impl Eq for ContextMenuEntry {}
+
 impl ContextMenuEntry {
     pub fn item(label: impl Into<String>, action: impl Into<Action>) -> Self {
         Self::Item {
             label: label.into(),
-            action: action.into(),
+            action: Box::new(action.into()),
             shortcut: None,
             destructive: false,
             disabled: false,
@@ -130,7 +132,7 @@ pub struct SettingsSnapshot {
     pub settings: Settings,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConfirmationRequest {
     pub title: String,
     pub message: String,
@@ -150,7 +152,7 @@ pub enum ToastKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToastUpdate {
     Show {
-        id: JobId,
+        id: Option<JobId>,
         kind: ToastKind,
         message: String,
         description: Option<String>,
@@ -162,6 +164,17 @@ pub enum ToastUpdate {
         total: u64,
     },
     Dismiss(JobId),
+}
+
+impl ToastUpdate {
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::Show {
+            id: None,
+            kind: ToastKind::Error,
+            message: message.into(),
+            description: None,
+        }
+    }
 }
 
 #[cfg(test)]

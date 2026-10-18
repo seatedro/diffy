@@ -17,10 +17,10 @@ pub struct Rgba {
 }
 
 impl Rgba {
-    pub const BLACK: Self = Self::rgba(0, 0, 0, 255);
-    pub const WHITE: Self = Self::rgba(255, 255, 255, 255);
+    pub const BLACK: Self = Self::new(0, 0, 0, 255);
+    pub const WHITE: Self = Self::new(255, 255, 255, 255);
 
-    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+    pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
     }
 

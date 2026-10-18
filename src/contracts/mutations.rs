@@ -42,7 +42,7 @@ pub enum MutationsAction {
     Push { force_with_lease: bool },
     PublishDefault,
     OpenPublishMenu,
-    Publish(PublishAction),
+    Publish(Box<PublishAction>),
     PullCurrentBranch,
     SetAiKey { kind: AiKeyKind, value: Secret },
     ClearAiKey { kind: AiKeyKind },
@@ -50,8 +50,6 @@ pub enum MutationsAction {
     GenerateCommitMessage,
 }
 
-/// Exact bytes a mutation applies, bound to the repository state they were read from.
-/// The owner revalidates the binding immediately before applying.
 #[derive(Clone, PartialEq, Eq)]
 pub struct MutationSource {
     repo_path: PathBuf,
@@ -175,7 +173,7 @@ pub enum MutationsEffect {
     Publish {
         job: JobId,
         repo_path: PathBuf,
-        action: Option<PublishAction>,
+        action: Option<Box<PublishAction>>,
     },
     LoadPublishPlan {
         job: Option<JobId>,
@@ -274,7 +272,7 @@ pub enum MutationsEvent {
     PublishPlanReady {
         job: Option<JobId>,
         path: PathBuf,
-        plan: PublishPlan,
+        plan: Box<PublishPlan>,
     },
     PublishPlanFailed {
         job: Option<JobId>,

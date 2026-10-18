@@ -64,7 +64,6 @@ pub enum DeliveryEvent {
     },
 }
 
-/// Highlighters drop cached results whose availability revision is older than this one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GrammarAvailability {
     pub revision: u64,

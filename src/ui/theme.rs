@@ -482,9 +482,9 @@ impl SemanticPalette {
         // toolbar slots) — the element renders as the parent bg + overlay.
         // Dark themes brighten with white, light themes darken with black.
         let overlay = if d {
-            Rgba::rgba(255, 255, 255, 255)
+            Rgba::new(255, 255, 255, 255)
         } else {
-            Rgba::rgba(0, 0, 0, 255)
+            Rgba::new(0, 0, 0, 255)
         };
 
         let element_hover = s.panel.lerp(overlay, if d { 0.12 } else { 0.08 });
@@ -548,12 +548,12 @@ impl SemanticPalette {
             selection_bg: c(s.selection_bg),
 
             overlay_scrim: c(if d {
-                Rgba::rgba(0, 0, 0, 180)
+                Rgba::new(0, 0, 0, 180)
             } else {
-                Rgba::rgba(0, 0, 0, 80)
+                Rgba::new(0, 0, 0, 80)
             }),
             scrollbar_thumb: c(if d {
-                Rgba::rgba(255, 255, 255, 100)
+                Rgba::new(255, 255, 255, 100)
             } else {
                 s.text_muted
             }),

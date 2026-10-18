@@ -10,6 +10,7 @@ use quark_components::{Axis, Pane, Split, SplitEvent, SplitState};
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
+use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 use quark_ui::theme::Theme;
@@ -17,7 +18,7 @@ use quark_ui::theme::Theme;
 use crate::app::diff_slots::DiffSlots;
 use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
 use crate::app::text_targets::{self, TextCx};
-use crate::app::tokens::{self, Sp, TextStyle};
+use crate::app::tokens::{self, Ico, Sp, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, ToastUpdate};
@@ -26,7 +27,8 @@ use crate::contracts::shell::{
     Action, AppMessage, AppStartup, Effect, Intent, Reduction, ShellAction, ShellEffect, ShellEvent,
 };
 use crate::contracts::viewport::ViewportAction;
-use crate::core::compare::LayoutMode;
+use crate::core::compare::{LayoutMode, RendererKind};
+use crate::core::vcs::model::RefKind;
 
 pub trait EffectDispatcher: 'static {
     fn attach(&mut self, _sender: UiSender<AppMessage>) {}
@@ -460,6 +462,19 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         let changes = mutations::view(&mut self.controllers.mutations, &slot, cx);
         let delivery = delivery::view(&mut self.controllers.delivery, &slot, cx);
         let viewing = navigation::viewing_status(&self.controllers.navigation, theme);
+        let small = TextStyle::BodySmall.font_size(theme);
+        let branch = branch_status(&self.shared, theme);
+        let engine = match self
+            .shared
+            .settings
+            .settings
+            .last_compare
+            .as_ref()
+            .map(|compare| compare.renderer)
+        {
+            Some(RendererKind::Difftastic) => "Difftastic",
+            _ => "Git diff",
+        };
         view! {
             <div
                 w={width}
@@ -473,9 +488,11 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 aria-label="Status"
                 test_id="status"
             >
+                {?branch}
                 <div class="flex-1 flex-row items-center" min_w={0.0}>{compare}</div>
                 {?viewing}
                 {changes}
+                <text size={small} color={tc.text_muted}>{engine}</text>
                 {delivery}
             </div>
         }
@@ -688,4 +705,29 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         }
         self.flush(cx);
     }
+}
+
+fn branch_status(shared: &SharedContext, theme: &Theme) -> Option<AnyElement> {
+    let repository = shared.repository.as_ref()?;
+    let active = repository.snapshot.refs.iter().find(|reference| {
+        reference.active && matches!(reference.kind, RefKind::Branch | RefKind::Bookmark)
+    })?;
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let sync = active.ahead_behind.map(|(ahead, behind)| {
+        view! { <text size={small} class="font-mono" color={tc.text_muted}>{format!("↑{ahead} ↓{behind}")}</text> }
+    });
+    Some(view! {
+        <div
+            class="flex-row items-center shrink-0"
+            gap={tokens::scaled(Sp::XS, scale)}
+            aria-label={format!("Branch {}", active.name)}
+            test_id="status.branch"
+        >
+            <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={tc.text_muted} />
+            <text size={small} color={tc.text}>{active.name.clone()}</text>
+            {?sync}
+        </div>
+    })
 }

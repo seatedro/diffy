@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::model::{DiffDocument, IntegrityError};
+use crate::model::{DiffDocument, FileMeta, IntegrityError};
 use crate::remap::SourceRemap;
 use crate::source::{FileSources, HydrationError, SourceCoverage};
 
@@ -53,6 +53,67 @@ impl FileDiffSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SlotState {
+    Unloaded,
+    Loading,
+    Failed,
+    Evicted,
+}
+
+#[derive(Debug, Clone)]
+pub struct Placeholder {
+    pub revision: Revision,
+    pub state: SlotState,
+    pub estimated_lines: u32,
+    header: Arc<DiffDocument>,
+}
+
+impl Placeholder {
+    pub fn new(revision: Revision, state: SlotState, estimated_lines: u32, meta: FileMeta) -> Self {
+        let mut header = DiffDocument::default();
+        header.begin_file(meta, true);
+        Self {
+            revision,
+            state,
+            estimated_lines,
+            header: Arc::new(header),
+        }
+    }
+
+    pub fn with_state(&self, state: SlotState) -> Self {
+        Self {
+            state,
+            ..self.clone()
+        }
+    }
+
+    pub fn header(&self) -> &Arc<DiffDocument> {
+        &self.header
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Slot<'a> {
+    Live(&'a FileDiffSnapshot),
+    Pending(&'a Placeholder),
+}
+
+impl FileDiffSnapshot {
+    pub fn estimated_lines(&self) -> u32 {
+        let h = self.diff.hunks();
+        let hunks = self.diff.files().hunks[0].clone();
+        let lines: u32 = hunks
+            .clone()
+            .map(|hunk| {
+                let i = hunk as usize;
+                h.old_len[i].max(h.new_len[i]).saturating_add(1)
+            })
+            .sum();
+        lines.saturating_add(1)
+    }
+}
+
 /// Why sources are wanted, so the app can prioritize loading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourcePurpose {
@@ -96,6 +157,15 @@ pub enum DiffUpdate {
         revision: Revision,
         sources: FileSources,
     },
+    Placeholder {
+        file: FileId,
+        placeholder: Placeholder,
+    },
+    Evict {
+        file: FileId,
+        revision: Revision,
+        estimated_lines: u32,
+    },
 }
 
 /// What an applied [`DiffUpdate`] changed. Indices are positions in
@@ -116,6 +186,12 @@ pub enum UpdateOutcome {
     },
     Reordered,
     Hydrated {
+        index: u32,
+    },
+    Loaded {
+        index: u32,
+    },
+    Pending {
         index: u32,
     },
 }
@@ -172,6 +248,7 @@ impl std::error::Error for UpdateError {}
 #[derive(Debug, Clone)]
 enum Record {
     Live(FileDiffSnapshot),
+    Pending(Placeholder),
     /// Removed at this revision.
     Tombstone(Revision),
 }
@@ -213,7 +290,7 @@ impl DiffSession {
     pub fn file(&self, id: FileId) -> Option<&FileDiffSnapshot> {
         match self.records.get(&id)? {
             Record::Live(snapshot) => Some(snapshot),
-            Record::Tombstone(_) => None,
+            Record::Pending(_) | Record::Tombstone(_) => None,
         }
     }
 
@@ -224,6 +301,25 @@ impl DiffSession {
     /// The file at `index` of the order.
     pub fn at(&self, index: u32) -> Option<&FileDiffSnapshot> {
         self.file(*self.order.get(index as usize)?)
+    }
+
+    pub fn slot(&self, id: FileId) -> Option<Slot<'_>> {
+        match self.records.get(&id)? {
+            Record::Live(snapshot) => Some(Slot::Live(snapshot)),
+            Record::Pending(placeholder) => Some(Slot::Pending(placeholder)),
+            Record::Tombstone(_) => None,
+        }
+    }
+
+    pub fn slot_at(&self, index: u32) -> Option<Slot<'_>> {
+        self.slot(*self.order.get(index as usize)?)
+    }
+
+    pub fn loaded_len(&self) -> u32 {
+        self.order
+            .iter()
+            .filter(|id| matches!(self.records.get(id), Some(Record::Live(_))))
+            .count() as u32
     }
 
     /// Whether `id` was removed.
@@ -253,6 +349,12 @@ impl DiffSession {
                 revision,
                 sources,
             } => self.hydrate(file, revision, sources),
+            DiffUpdate::Placeholder { file, placeholder } => self.placeholder(file, placeholder),
+            DiffUpdate::Evict {
+                file,
+                revision,
+                estimated_lines,
+            } => self.evict(file, revision, estimated_lines),
         };
         debug_assert_eq!(self.verify_integrity(), Ok(()));
         outcome
@@ -273,7 +375,26 @@ impl DiffSession {
                 Ok(UpdateOutcome::Inserted { index })
             }
             Some(&Record::Tombstone(revision)) => Err(UpdateError::Removed { file: id, revision }),
+            Some(Record::Pending(placeholder)) => {
+                if file.revision < placeholder.revision {
+                    return Err(UpdateError::Stale {
+                        file: Some(id),
+                        current: placeholder.revision,
+                        received: file.revision,
+                    });
+                }
+                self.records.insert(id, Record::Live(file));
+                Ok(UpdateOutcome::Loaded {
+                    index: self.index[&id],
+                })
+            }
             Some(Record::Live(current)) => {
+                if file.revision == current.revision && hydrates(current, &file) {
+                    self.records.insert(id, Record::Live(file));
+                    return Ok(UpdateOutcome::Hydrated {
+                        index: self.index[&id],
+                    });
+                }
                 if file.revision <= current.revision {
                     return Err(UpdateError::Stale {
                         file: Some(id),
@@ -300,6 +421,7 @@ impl DiffSession {
     fn remove(&mut self, id: FileId, revision: Revision) -> Result<UpdateOutcome, UpdateError> {
         let current = match self.records.get(&id) {
             Some(Record::Live(snapshot)) => Some(snapshot.revision),
+            Some(Record::Pending(placeholder)) => Some(placeholder.revision),
             Some(&Record::Tombstone(revision)) => {
                 return Err(UpdateError::Removed { file: id, revision });
             }
@@ -340,7 +462,7 @@ impl DiffSession {
             match self.records.get(&id) {
                 None => return Err(UpdateError::UnknownFile { file: id }),
                 Some(Record::Tombstone(_)) => continue,
-                Some(Record::Live(_)) => {}
+                Some(Record::Live(_) | Record::Pending(_)) => {}
             }
             if listed.insert(id, ()).is_some() {
                 return Err(UpdateError::DuplicateInOrder { file: id });
@@ -366,6 +488,13 @@ impl DiffSession {
     ) -> Result<UpdateOutcome, UpdateError> {
         let current = match self.records.get(&id) {
             Some(Record::Live(snapshot)) => snapshot,
+            Some(Record::Pending(placeholder)) => {
+                return Err(UpdateError::Stale {
+                    file: Some(id),
+                    current: placeholder.revision,
+                    received: revision,
+                });
+            }
             Some(&Record::Tombstone(revision)) => {
                 return Err(UpdateError::Removed { file: id, revision });
             }
@@ -393,6 +522,70 @@ impl DiffSession {
         })
     }
 
+    fn placeholder(
+        &mut self,
+        id: FileId,
+        placeholder: Placeholder,
+    ) -> Result<UpdateOutcome, UpdateError> {
+        let current = match self.records.get(&id) {
+            None => {
+                let index = self.order.len() as u32;
+                self.order.push(id);
+                self.index.insert(id, index);
+                self.records.insert(id, Record::Pending(placeholder));
+                return Ok(UpdateOutcome::Inserted { index });
+            }
+            Some(&Record::Tombstone(revision)) => {
+                return Err(UpdateError::Removed { file: id, revision });
+            }
+            Some(Record::Live(snapshot)) => snapshot.revision,
+            Some(Record::Pending(held)) => held.revision,
+        };
+        let live = matches!(self.records.get(&id), Some(Record::Live(_)));
+        let newer = placeholder.revision > current;
+        let same =
+            placeholder.revision == current && (!live || placeholder.state == SlotState::Evicted);
+        if !newer && !same {
+            return Err(UpdateError::Stale {
+                file: Some(id),
+                current,
+                received: placeholder.revision,
+            });
+        }
+        self.records.insert(id, Record::Pending(placeholder));
+        Ok(UpdateOutcome::Pending {
+            index: self.index[&id],
+        })
+    }
+
+    fn evict(
+        &mut self,
+        id: FileId,
+        revision: Revision,
+        estimated_lines: u32,
+    ) -> Result<UpdateOutcome, UpdateError> {
+        match self.records.get(&id) {
+            Some(Record::Live(snapshot)) if snapshot.revision == revision => {
+                let meta = snapshot.diff.files().meta[0].clone();
+                let placeholder =
+                    Placeholder::new(revision, SlotState::Evicted, estimated_lines, meta);
+                self.placeholder(id, placeholder)
+            }
+            Some(Record::Live(snapshot)) => Err(UpdateError::Stale {
+                file: Some(id),
+                current: snapshot.revision,
+                received: revision,
+            }),
+            Some(Record::Pending(held)) => Err(UpdateError::Stale {
+                file: Some(id),
+                current: held.revision,
+                received: revision,
+            }),
+            Some(&Record::Tombstone(revision)) => Err(UpdateError::Removed { file: id, revision }),
+            None => Err(UpdateError::UnknownFile { file: id }),
+        }
+    }
+
     fn reindex(&mut self, from: usize) {
         for (i, id) in self.order.iter().enumerate().skip(from) {
             self.index.insert(*id, i as u32);
@@ -406,24 +599,41 @@ impl DiffSession {
         let live = self
             .records
             .values()
-            .filter(|r| matches!(r, Record::Live(_)))
+            .filter(|r| matches!(r, Record::Live(_) | Record::Pending(_)))
             .count();
         if live != self.order.len() || self.index.len() != self.order.len() {
             return Err(SessionIntegrityError::OrderCount);
         }
         for (i, id) in self.order.iter().enumerate() {
-            let Some(Record::Live(snapshot)) = self.records.get(id) else {
-                return Err(SessionIntegrityError::NotLive(*id));
+            let snapshot = match self.records.get(id) {
+                Some(Record::Live(snapshot)) => Some(snapshot),
+                Some(Record::Pending(_)) => None,
+                _ => return Err(SessionIntegrityError::NotLive(*id)),
             };
             if self.index.get(id) != Some(&(i as u32)) {
                 return Err(SessionIntegrityError::Index(*id));
             }
-            if snapshot.id != *id || snapshot.diff.file_count() != 1 {
+            if snapshot.is_some_and(|s| s.id != *id || s.diff.file_count() != 1) {
                 return Err(SessionIntegrityError::Snapshot(*id));
             }
         }
         Ok(())
     }
+}
+
+fn hydrates(current: &FileDiffSnapshot, file: &FileDiffSnapshot) -> bool {
+    if current.coverage() != SourceCoverage::PatchOnly || file.coverage() != SourceCoverage::Full {
+        return false;
+    }
+    let (a, b) = (current.diff.hunks(), file.diff.hunks());
+    current.diff.files().meta == file.diff.files().meta
+        && a.old_start == b.old_start
+        && a.old_len == b.old_len
+        && a.new_start == b.new_start
+        && a.new_len == b.new_len
+        && current.diff.blocks().kind == file.diff.blocks().kind
+        && current.diff.blocks().old_len == file.diff.blocks().old_len
+        && current.diff.blocks().new_len == file.diff.blocks().new_len
 }
 
 /// A broken [`DiffSession`] invariant.
@@ -490,6 +700,8 @@ mod tests {
             Ok(UpdateOutcome::Removed { index }) => format!("removed {index:?}"),
             Ok(UpdateOutcome::Reordered) => "reordered".into(),
             Ok(UpdateOutcome::Hydrated { index }) => format!("hydrated {index}"),
+            Ok(UpdateOutcome::Loaded { index }) => format!("loaded {index}"),
+            Ok(UpdateOutcome::Pending { index }) => format!("pending {index}"),
             Err(UpdateError::Stale { .. }) => "stale".into(),
             Err(UpdateError::Removed { .. }) => "gone".into(),
             Err(UpdateError::UnknownFile { file }) => format!("unknown {}", file.0),
@@ -606,6 +818,82 @@ mod tests {
             session.source_request(FileId(7), SourcePurpose::ExpandContext),
             None
         );
+    }
+
+    #[test]
+    fn placeholders_keep_identity_and_order_through_loading_and_eviction() {
+        use super::{Placeholder, Slot, SlotState};
+        let pending = |id, revision, state| DiffUpdate::Placeholder {
+            file: FileId(id),
+            placeholder: Placeholder::new(Revision(revision), state, 7, Default::default()),
+        };
+        let evict = |id, revision| DiffUpdate::Evict {
+            file: FileId(id),
+            revision: Revision(revision),
+            estimated_lines: 9,
+        };
+        let state = |session: &DiffSession, id| match session.slot(FileId(id)) {
+            Some(Slot::Live(s)) => format!("live@{}", s.revision.0),
+            Some(Slot::Pending(p)) => format!("{:?}@{}", p.state, p.revision.0),
+            None => "none".into(),
+        };
+        let mut session = DiffSession::new();
+        let steps = [
+            (pending(1, 1, SlotState::Unloaded), "inserted 0"),
+            (pending(2, 1, SlotState::Unloaded), "inserted 1"),
+            (order(1, &[2, 1]), "reordered"),
+            (pending(1, 1, SlotState::Loading), "pending 1"),
+            (upsert(1, 1), "loaded 1"),
+            (pending(1, 1, SlotState::Failed), "stale"),
+            (evict(1, 2), "stale"),
+            (evict(1, 1), "pending 1"),
+            (upsert(1, 1), "loaded 1"),
+            (pending(2, 1, SlotState::Failed), "pending 0"),
+            (upsert(2, 0), "stale"),
+        ];
+        for (i, (update, expected)) in steps.into_iter().enumerate() {
+            assert_eq!(outcome(session.apply(update)), expected, "step {i}");
+        }
+        assert_eq!(session.order(), [FileId(2), FileId(1)]);
+        assert_eq!(state(&session, 1), "live@1");
+        assert_eq!(state(&session, 2), "Failed@1");
+        assert_eq!(session.loaded_len(), 1);
+        assert!(session.file(FileId(2)).is_none());
+        assert_eq!(
+            session.source_request(FileId(2), SourcePurpose::ExpandContext),
+            None
+        );
+    }
+
+    #[test]
+    fn a_hydrated_snapshot_of_the_held_revision_replaces_it_in_place() {
+        let full = diff_texts(Some("f"), Some("f"), Some("a\nb\n"), Some("a\nc\n"), 0);
+        let patch = parse_unified(&write_unified(&full)).unwrap();
+        let first = FileDiffSnapshot::new(FileId(3), Revision(1), Arc::new(patch.clone())).unwrap();
+        let mut session = DiffSession::new();
+        session
+            .apply(DiffUpdate::Upsert {
+                file: first.clone(),
+                remap: None,
+            })
+            .unwrap();
+        let sources = FileSources {
+            old: Some(TextStore::new("a\nb\n")),
+            new: Some(TextStore::new("a\nc\n")),
+        };
+        let hydrated = patch.hydrate_file(0, sources).unwrap();
+        let whole = FileDiffSnapshot::new(FileId(3), Revision(1), Arc::new(hydrated)).unwrap();
+        let upsert = |file: &FileDiffSnapshot| DiffUpdate::Upsert {
+            file: file.clone(),
+            remap: None,
+        };
+        assert_eq!(outcome(session.apply(upsert(&whole))), "hydrated 0");
+        assert_eq!(
+            session.file(FileId(3)).unwrap().coverage(),
+            SourceCoverage::Full
+        );
+        assert_eq!(outcome(session.apply(upsert(&whole))), "stale");
+        assert_eq!(outcome(session.apply(upsert(&first))), "stale");
     }
 
     #[test]

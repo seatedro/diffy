@@ -23,9 +23,11 @@
 //! highlighted once they are visible, and sides an update leaves unchanged
 //! keep their colors.
 
+use std::sync::Arc;
+
 use diffy_diff::{
     ComparisonOptions, ContextPolicy, DiffLimits, DiffSession, DiffUpdate, GapId, InlineOptions,
-    LineMap, Mode, Reveal, Side, SourceRemap, UpdateError, UpdateOutcome,
+    LineMap, Mode, Reveal, Side, Slot, SlotState, SourceRemap, UpdateError, UpdateOutcome,
 };
 use quark::selection::{Selection, SelectionPoint};
 use quark_ui::FocusId;
@@ -34,6 +36,12 @@ use diffy_diff::RowKind;
 
 use super::navigation::FileId;
 use super::prepared_update::{Preparation, PreparedSegment, segment_for};
+
+struct SlotParts {
+    doc: Arc<diffy_diff::DiffDocument>,
+    revision: diffy_diff::Revision,
+    pending: Option<(SlotState, u32)>,
+}
 use super::selection::{block_key, decode_key};
 #[cfg(doc)]
 use super::session_interaction::diff_session_view;
@@ -76,8 +84,7 @@ impl DiffSessionViewState {
         view.files.session = true;
         let mut state = Self { view, session };
         for index in 0..state.session.len() {
-            let snapshot = state.session.at(index).expect("ordered file").clone();
-            state.insert_segment(index as usize, snapshot.id, snapshot, None);
+            state.insert_segment(index as usize, None);
         }
         state.view.rebuild_rows(None);
         state
@@ -138,30 +145,87 @@ impl DiffSessionViewState {
 
     pub fn install_prepared(
         &mut self,
-        prepared: PreparedSegment,
+        prepared: Arc<PreparedSegment>,
         remap: Option<SourceRemap>,
     ) -> Result<UpdateOutcome, UpdateError> {
         let file = prepared.snapshot().clone();
         self.apply(DiffUpdate::Upsert { file, remap }, Some(prepared))
     }
 
+    pub fn apply_updates(
+        &mut self,
+        updates: impl IntoIterator<Item = (DiffUpdate, Option<Arc<PreparedSegment>>)>,
+    ) -> Vec<Result<UpdateOutcome, UpdateError>> {
+        let mut anchor = self.view.anchor();
+        let mut changed = false;
+        let results = updates
+            .into_iter()
+            .map(|(update, prepared)| {
+                let (outcome, next) = self.apply_one(update, prepared, anchor)?;
+                anchor = next;
+                changed = true;
+                Ok(outcome)
+            })
+            .collect();
+        if changed {
+            self.finish(anchor);
+        }
+        results
+    }
+
+    pub fn set_solo(&mut self, file: Option<FileId>) -> bool {
+        let slot = file.and_then(|file| self.view.files.id_slots.get(&file).copied());
+        if file.is_some() && slot.is_none() || slot == self.view.files.solo {
+            return false;
+        }
+        let anchor = self.view.anchor();
+        self.view.files.solo = slot;
+        self.view.rebuild_rows(anchor);
+        true
+    }
+
+    pub fn solo(&self) -> Option<FileId> {
+        let slot = self.view.files.solo?;
+        self.view.files.slot_ids.get(slot as usize).copied()
+    }
+
+    pub fn slot_state(&self, file: FileId) -> Option<(SlotState, u32)> {
+        match self.session.slot(file)? {
+            Slot::Pending(placeholder) => Some((placeholder.state, placeholder.estimated_lines)),
+            Slot::Live(_) => None,
+        }
+    }
+
     fn apply(
         &mut self,
         update: DiffUpdate,
-        prepared: Option<PreparedSegment>,
+        prepared: Option<Arc<PreparedSegment>>,
     ) -> Result<UpdateOutcome, UpdateError> {
-        let outcome = self.session.apply(update)?;
         let anchor = self.view.anchor();
+        let (outcome, anchor) = self.apply_one(update, prepared, anchor)?;
+        self.finish(anchor);
+        Ok(outcome)
+    }
+
+    fn apply_one(
+        &mut self,
+        update: DiffUpdate,
+        prepared: Option<Arc<PreparedSegment>>,
+        anchor: Option<Anchor>,
+    ) -> Result<(UpdateOutcome, Option<Anchor>), UpdateError> {
+        let outcome = self.session.apply(update)?;
         let anchor = match &outcome {
             UpdateOutcome::Inserted { index } => {
-                let snapshot = self.session.at(*index).expect("inserted file").clone();
-                self.insert_segment(*index as usize, snapshot.id, snapshot, prepared);
+                self.insert_segment(*index as usize, prepared);
                 anchor
             }
             UpdateOutcome::Replaced { index, remap, .. } => {
                 self.replace_segment(*index as usize, remap.as_ref(), anchor, prepared)
             }
-            UpdateOutcome::Hydrated { index } => {
+            UpdateOutcome::Loaded { index } => {
+                self.replace_segment(*index as usize, None, anchor, prepared)
+            }
+            UpdateOutcome::Hydrated { index } | UpdateOutcome::Pending { index } => {
                 self.replace_segment(*index as usize, None, anchor, None)
             }
             UpdateOutcome::Removed { index } => {
@@ -175,30 +239,47 @@ impl DiffSessionViewState {
                 anchor
             }
         };
+        Ok((outcome, anchor))
+    }
+
+    fn finish(&mut self, anchor: Option<Anchor>) {
         let view = &mut self.view;
         // Line numbers may need another digit.
         view.metrics = None;
         view.rerun_search();
         view.rebuild_rows(anchor);
-        Ok(outcome)
+    }
+
+    fn slot_parts(&self, id: FileId) -> Option<SlotParts> {
+        Some(match self.session.slot(id)? {
+            Slot::Live(snapshot) => SlotParts {
+                doc: snapshot.diff.clone(),
+                revision: snapshot.revision,
+                pending: None,
+            },
+            Slot::Pending(placeholder) => SlotParts {
+                doc: placeholder.header().clone(),
+                revision: placeholder.revision,
+                pending: Some((placeholder.state, placeholder.estimated_lines)),
+            },
+        })
     }
 
     /// Adds a segment for a new file at `index`, with a fresh slot.
-    fn insert_segment(
-        &mut self,
-        index: usize,
-        id: FileId,
-        snapshot: diffy_diff::FileDiffSnapshot,
-        prepared: Option<PreparedSegment>,
-    ) {
+    fn insert_segment(&mut self, index: usize, prepared: Option<Arc<PreparedSegment>>) {
+        let id = self.session.order()[index];
+        let Some(parts) = self.slot_parts(id) else {
+            return;
+        };
         let view = &mut self.view;
         let slot = view.files.slot_ids.len() as u32;
         view.files.slot_ids.push(id);
         view.files.id_slots.insert(id, slot);
         view.files.slot_seg.push(NONE);
         view.generations += 1;
-        let mut segment = segment_for(view, &snapshot, slot, prepared);
-        segment.revision = snapshot.revision.0;
+        let mut segment = segment_for(view, &parts.doc, slot, prepared);
+        segment.revision = parts.revision.0;
+        segment.pending = parts.pending;
         view.segments.insert(index, segment);
         self.index_slots();
         self.view.recheck_annotations(id);
@@ -215,15 +296,19 @@ impl DiffSessionViewState {
         index: usize,
         remap: Option<&SourceRemap>,
         anchor: Option<Anchor>,
-        prepared: Option<PreparedSegment>,
+        prepared: Option<Arc<PreparedSegment>>,
     ) -> Option<Anchor> {
         let slot = self.view.segments[index].slot;
         let id = self.view.files.slot_ids[slot as usize];
-        let snapshot = self.session.file(id).expect("replaced file").clone();
+        let Some(parts) = self.slot_parts(id) else {
+            return anchor;
+        };
         let view = &mut self.view;
         let old_doc = view.segments[index].doc.clone();
-        let same_revision = view.segments[index].revision == snapshot.revision.0;
-        let new_doc = snapshot.diff.clone();
+        let same_revision = view.segments[index].revision == parts.revision.0
+            && view.segments[index].pending.is_none()
+            && parts.pending.is_none();
+        let new_doc = parts.doc.clone();
         // A line of the old document as a store index of the new one.
         let carry = |side: Side, store: u32| -> Option<u32> {
             let line = source_line(&old_doc, 0, side, store);
@@ -297,9 +382,9 @@ impl DiffSessionViewState {
         });
 
         view.generations += 1;
-        drop(new_doc);
-        let mut segment = segment_for(view, &snapshot, slot, prepared);
-        segment.revision = snapshot.revision.0;
+        let mut segment = segment_for(view, &new_doc, slot, prepared);
+        segment.revision = parts.revision.0;
+        segment.pending = parts.pending;
         if let Some(remap) = remap {
             carry_expansion(&view.segments[index], &mut segment, remap, view.mode);
         }
@@ -313,7 +398,7 @@ impl DiffSessionViewState {
         }
 
         // Annotations of this file.
-        let to = snapshot.revision;
+        let to = parts.revision;
         for entry in view.annotations.entries_mut() {
             let a = &mut entry.annotation.anchor;
             if a.file != id || a.revision == to {
@@ -520,7 +605,7 @@ mod tests {
         sendable(&segment);
         let outcome = std::thread::spawn(move || segment).join().unwrap();
         assert!(matches!(
-            prepared.install_prepared(outcome, None),
+            prepared.install_prepared(Arc::new(outcome), None),
             Ok(UpdateOutcome::Inserted { index: 0 })
         ));
         assert_eq!(
@@ -530,7 +615,7 @@ mod tests {
 
         let stale = PreparedSegment::prepare(snap(1, &base, &base), prepared.preparation());
         assert!(matches!(
-            prepared.install_prepared(stale, None),
+            prepared.install_prepared(Arc::new(stale), None),
             Err(UpdateError::Stale { .. })
         ));
         let mut other = prepared.preparation();
@@ -539,10 +624,260 @@ mod tests {
             Mode::Split => Mode::Unified,
         };
         let mismatched = PreparedSegment::prepare(snap(2, &base, &edited), other);
-        prepared.install_prepared(mismatched, None).unwrap();
+        prepared
+            .install_prepared(Arc::new(mismatched), None)
+            .unwrap();
         assert_eq!(
             shown(&mut prepared, &mut text),
             shown(&mut direct, &mut text)
+        );
+    }
+
+    #[test]
+    fn prepared_segments_switch_layouts_without_reprojecting() {
+        let base = numbered(0..30);
+        let edited = base
+            .replace("line 3\n", "three\nextra\n")
+            .replace("line 20\n", "");
+        let mut text = TextSystem::vendored_only(&Default::default());
+        let mut direct =
+            DiffSessionViewState::new("direct.diff", FocusId::new(1), DiffSession::new());
+        let mut prepared =
+            DiffSessionViewState::new("prepared.diff", FocusId::new(2), DiffSession::new());
+        for state in [&mut direct, &mut prepared] {
+            state.set_viewport(600.0, 4000.0);
+        }
+        direct
+            .apply_update(DiffUpdate::Upsert {
+                file: snap(1, &base, &edited),
+                remap: None,
+            })
+            .unwrap();
+        let segment = PreparedSegment::prepare(snap(1, &base, &edited), prepared.preparation());
+        prepared.install_prepared(Arc::new(segment), None).unwrap();
+        assert!(prepared.view.segments[0].alternate.is_some());
+        for mode in [Mode::Split, Mode::Unified, Mode::Split] {
+            direct.set_mode(mode);
+            prepared.set_mode(mode);
+            assert_eq!(
+                shown(&mut prepared, &mut text),
+                shown(&mut direct, &mut text),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn placeholders_keep_order_and_eviction_keeps_the_reader_in_place() {
+        use diffy_diff::{FileMeta, Placeholder, SlotState};
+        let base = numbered(0..60);
+        let edited = base.replace("line 30\n", "thirty\n");
+        let file = |id: u64| {
+            let doc = diff_texts(Some("f.txt"), Some("f.txt"), Some(&base), Some(&edited), 3);
+            FileDiffSnapshot::new(FileId(id), Revision(1), Arc::new(doc)).unwrap()
+        };
+        let mut state = DiffSessionViewState::new("p.diff", FocusId::new(3), DiffSession::new());
+        state.set_viewport(600.0, 4000.0);
+        let mut text = TextSystem::vendored_only(&Default::default());
+        let meta = FileMeta {
+            old_path: Some("g.txt".into()),
+            new_path: Some("g.txt".into()),
+            ..FileMeta::default()
+        };
+        let results = state.apply_updates([
+            (
+                DiffUpdate::Upsert {
+                    file: file(1),
+                    remap: None,
+                },
+                None,
+            ),
+            (
+                DiffUpdate::Placeholder {
+                    file: FileId(2),
+                    placeholder: Placeholder::new(Revision(1), SlotState::Unloaded, 40, meta),
+                },
+                None,
+            ),
+            (
+                DiffUpdate::Upsert {
+                    file: file(3),
+                    remap: None,
+                },
+                None,
+            ),
+        ]);
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(state.slot_state(FileId(2)), Some((SlotState::Unloaded, 40)));
+        assert_eq!(state.view.segments.len(), 3);
+        let before = shown(&mut state, &mut text);
+        let estimate = file(1).estimated_lines();
+        state
+            .apply_update(DiffUpdate::Evict {
+                file: FileId(1),
+                revision: Revision(1),
+                estimated_lines: estimate,
+            })
+            .unwrap();
+        assert_eq!(
+            state.slot_state(FileId(1)),
+            Some((SlotState::Evicted, estimate))
+        );
+        assert_eq!(state.session().order(), [FileId(1), FileId(2), FileId(3)]);
+        let evicted = shown(&mut state, &mut text);
+        assert_eq!(evicted, before[before.len() / 2..]);
+        state
+            .apply_update(DiffUpdate::Upsert {
+                file: file(1),
+                remap: None,
+            })
+            .unwrap();
+        assert_eq!(state.slot_state(FileId(1)), None);
+        assert_eq!(shown(&mut state, &mut text), before);
+    }
+
+    #[test]
+    fn solo_mode_shows_only_the_chosen_file() {
+        let base = numbered(0..10);
+        let edited = base.replace("line 5\n", "five\n");
+        let file = |id: u64| {
+            let doc = diff_texts(Some("f.txt"), Some("f.txt"), Some(&base), Some(&edited), 1);
+            FileDiffSnapshot::new(FileId(id), Revision(1), Arc::new(doc)).unwrap()
+        };
+        let mut state = DiffSessionViewState::new("s.diff", FocusId::new(4), DiffSession::new());
+        state.set_viewport(600.0, 4000.0);
+        let mut text = TextSystem::vendored_only(&Default::default());
+        state.apply_updates([1, 2].map(|id| {
+            (
+                DiffUpdate::Upsert {
+                    file: file(id),
+                    remap: None,
+                },
+                None,
+            )
+        }));
+        let both = shown(&mut state, &mut text);
+        assert!(state.set_solo(Some(FileId(2))));
+        assert!(!state.set_solo(Some(FileId(2))));
+        assert!(!state.set_solo(Some(FileId(9))));
+        assert_eq!(state.solo(), Some(FileId(2)));
+        let one = shown(&mut state, &mut text);
+        assert_eq!(one.len() * 2, both.len());
+        assert!(state.set_solo(None));
+        assert_eq!(shown(&mut state, &mut text), both);
+    }
+
+    fn rss_mib() -> f64 {
+        let pid = std::process::id().to_string();
+        std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid])
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .and_then(|text| text.trim().parse::<f64>().ok())
+            .map_or(0.0, |kib| kib / 1024.0)
+    }
+
+    #[test]
+    #[ignore = "measurement, prints a report"]
+    fn report_prepared_install_costs() {
+        use std::time::Instant;
+
+        use diffy_diff::{FileMeta, Placeholder, SlotState};
+
+        let lines = 100_000;
+        let old: String = (0..lines)
+            .map(|i| format!("let value_{i} = {i};\n"))
+            .collect();
+        let new: String = (0..lines)
+            .map(|i| {
+                if i % 97 == 0 {
+                    format!("let value_{i} = {} + 1;\n", i)
+                } else {
+                    format!("let value_{i} = {i};\n")
+                }
+            })
+            .collect();
+        let start = Instant::now();
+        let doc = diff_texts(Some("big.rs"), Some("big.rs"), Some(&old), Some(&new), 3);
+        let snapshot = FileDiffSnapshot::new(FileId(1), Revision(1), Arc::new(doc)).unwrap();
+        let diff_ms = start.elapsed().as_secs_f64() * 1e3;
+        let rss_doc = rss_mib();
+
+        let mut direct = DiffSessionViewState::new("d.diff", FocusId::new(1), DiffSession::new());
+        direct.set_viewport(1200.0, 900.0);
+        let start = Instant::now();
+        direct
+            .apply_update(DiffUpdate::Upsert {
+                file: snapshot.clone(),
+                remap: None,
+            })
+            .unwrap();
+        let direct_ms = start.elapsed().as_secs_f64() * 1e3;
+
+        let mut prepared = DiffSessionViewState::new("p.diff", FocusId::new(2), DiffSession::new());
+        prepared.set_viewport(1200.0, 900.0);
+        let preparation = prepared.preparation();
+        let start = Instant::now();
+        let segment = std::thread::spawn(move || PreparedSegment::prepare(snapshot, preparation))
+            .join()
+            .unwrap();
+        let worker_ms = start.elapsed().as_secs_f64() * 1e3;
+        let start = Instant::now();
+        prepared.install_prepared(Arc::new(segment), None).unwrap();
+        let install_ms = start.elapsed().as_secs_f64() * 1e3;
+        let start = Instant::now();
+        prepared.set_mode(Mode::Split);
+        let swap_ms = start.elapsed().as_secs_f64() * 1e3;
+        let start = Instant::now();
+        direct.set_mode(Mode::Split);
+        let reproject_ms = start.elapsed().as_secs_f64() * 1e3;
+        let rss_views = rss_mib();
+
+        let files = 5_000u64;
+        let mut sparse = DiffSessionViewState::new("s.diff", FocusId::new(3), DiffSession::new());
+        sparse.set_viewport(1200.0, 900.0);
+        let start = Instant::now();
+        let placeholders: Vec<_> = (0..files)
+            .map(|id| {
+                let path: std::sync::Arc<str> = format!("dir{}/file{id}.rs", id % 50).into();
+                let meta = FileMeta {
+                    old_path: Some(path.clone()),
+                    new_path: Some(path),
+                    ..FileMeta::default()
+                };
+                Placeholder::new(Revision(1), SlotState::Unloaded, 40, meta)
+            })
+            .collect();
+        let build_ms = start.elapsed().as_secs_f64() * 1e3;
+        let mut worst_batch_ms = 0.0f64;
+        let start = Instant::now();
+        for (chunk, batch) in placeholders.chunks(256).enumerate() {
+            let begin = Instant::now();
+            let base = chunk as u64 * 256;
+            sparse.apply_updates(batch.iter().enumerate().map(|(i, placeholder)| {
+                (
+                    DiffUpdate::Placeholder {
+                        file: FileId(base + i as u64),
+                        placeholder: placeholder.clone(),
+                    },
+                    None,
+                )
+            }));
+            worst_batch_ms = worst_batch_ms.max(begin.elapsed().as_secs_f64() * 1e3);
+        }
+        let sparse_ms = start.elapsed().as_secs_f64() * 1e3;
+        let rss_sparse = rss_mib();
+
+        println!(
+            "100k-line file: diff {diff_ms:.1} ms (rss {rss_doc:.0} MiB)\n\
+             UI install without preparation: {direct_ms:.1} ms\n\
+             worker preparation (both layouts): {worker_ms:.1} ms\n\
+             UI install of prepared segment: {install_ms:.1} ms\n\
+             layout switch: prepared swap {swap_ms:.2} ms, re-projection {reproject_ms:.1} ms\n\
+             rss after both views: {rss_views:.0} MiB\n\
+             {files} placeholders: build {build_ms:.1} ms (worker side), install {sparse_ms:.1} ms \
+             in 256-file batches, worst batch {worst_batch_ms:.2} ms, rss {rss_sparse:.0} MiB"
         );
     }
 }

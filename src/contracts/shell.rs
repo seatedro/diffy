@@ -46,6 +46,7 @@ pub enum LogicalFocus {
     SettingsOpenAiKey,
     SettingsAnthropicKey,
     SettingsSteeringPrompt,
+    ReviewAccount,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

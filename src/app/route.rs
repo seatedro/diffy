@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use quark_components::SplitEvent;
 
 use crate::app::commands::CommandsController;
@@ -6,6 +8,7 @@ use crate::app::mutations::MutationsController;
 use crate::app::navigation::NavigationController;
 use crate::app::review::ReviewController;
 use crate::app::viewport::ViewportController;
+use crate::contracts::commands::{CommandDescriptor, CommandSource, CommandsAction};
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, AppEvent, Controller, Intent, Reduction, ShellAction, ShellEvent,
@@ -53,6 +56,17 @@ impl Controllers {
         action: Action,
         cx: &SharedContext,
     ) -> Routed<ShellAction, Reduction> {
+        if matches!(action, Action::Commands(CommandsAction::OpenCommandPalette)) {
+            let commands = self.external_commands(cx);
+            let mut reduction = self
+                .commands
+                .reduce_action(CommandsAction::SetExternalCommands(commands), cx);
+            reduction.merge(
+                self.commands
+                    .reduce_action(CommandsAction::OpenCommandPalette, cx),
+            );
+            return Routed::Stream(reduction);
+        }
         Routed::Stream(match action {
             Action::Shell(action) => return Routed::Shell(action),
             Action::Viewport(action) => self.viewport.reduce_action(action, cx),
@@ -62,6 +76,12 @@ impl Controllers {
             Action::Mutations(action) => self.mutations.reduce_action(action, cx),
             Action::Delivery(action) => self.delivery.reduce_action(action, cx),
         })
+    }
+
+    fn external_commands(&self, cx: &SharedContext) -> Rc<[CommandDescriptor]> {
+        let mut out = Vec::new();
+        self.review.commands(cx, &mut out);
+        out.into()
     }
 
     pub fn route_event(

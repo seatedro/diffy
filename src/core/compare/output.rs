@@ -6,6 +6,7 @@ use diffy_diff::{
 };
 
 use crate::core::compare::stats::{CompareFilePaths, compact_paths_by};
+use crate::core::vcs::model::ChangeBucket;
 use crate::core::error::{DiffyError, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +18,7 @@ pub struct CompareEntry {
     pub new_mode: Option<Arc<str>>,
     pub summary: ChangeSummary,
     pub stats: DiffStats,
+    pub bucket: Option<ChangeBucket>,
 }
 
 impl CompareEntry {
@@ -32,7 +34,13 @@ impl CompareEntry {
                 ..ChangeSummary::default()
             },
             stats: DiffStats::Pending,
+            bucket: None,
         }
+    }
+
+    pub fn with_bucket(mut self, bucket: ChangeBucket) -> Self {
+        self.bucket = Some(bucket);
+        self
     }
 
     pub fn with_ids(mut self, old_id: Option<ObjectId>, new_id: Option<ObjectId>) -> Self {
@@ -79,6 +87,7 @@ impl CompareEntry {
             new_mode: meta.new_mode.clone(),
             summary: doc.summary(file),
             stats: doc.stats(file),
+            bucket: None,
         }
     }
 

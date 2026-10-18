@@ -397,6 +397,20 @@ impl DiffDocument {
         }
     }
 
+    pub fn set_identity(
+        &mut self,
+        file: u32,
+        (old_id, new_id): (Option<ObjectId>, Option<ObjectId>),
+        (old_mode, new_mode): (Option<Arc<str>>, Option<Arc<str>>),
+    ) {
+        if let Some(meta) = self.files.meta.get_mut(file as usize) {
+            meta.old_id = old_id.or(meta.old_id.take());
+            meta.new_id = new_id.or(meta.new_id.take());
+            meta.old_mode = old_mode.or(meta.old_mode.take());
+            meta.new_mode = new_mode.or(meta.new_mode.take());
+        }
+    }
+
     pub fn semantics(&self, file: u32) -> Option<&FileSemantics> {
         self.files.semantics.get(file as usize)?.as_deref()
     }

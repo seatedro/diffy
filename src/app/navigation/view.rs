@@ -739,11 +739,17 @@ fn history(
                     label: "Copy SHA".to_owned(),
                     action: ShellAction::CopyText(revision.clone()).into(),
                     destructive: false,
+                    icon: None,
+                    shortcut: None,
+                    test_id: "history.copy-sha".to_owned(),
                 },
                 RowAction {
                     label: "Compare with working tree".to_owned(),
                     action: NavigationAction::CompareWithWorkingTree(revision.clone()).into(),
                     destructive: false,
+                    icon: None,
+                    shortcut: None,
+                    test_id: "history.compare-working-tree".to_owned(),
                 },
             ];
             if let Some(caps) = capabilities {

@@ -8,3 +8,4 @@ pub mod model;
 pub mod mutation;
 pub mod patch;
 pub mod source;
+pub mod worktree;

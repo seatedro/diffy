@@ -81,6 +81,7 @@ impl Controllers {
     fn external_commands(&self, cx: &SharedContext) -> Rc<[CommandDescriptor]> {
         let mut out = Vec::new();
         self.review.commands(cx, &mut out);
+        self.mutations.commands(cx, &mut out);
         out.into()
     }
 

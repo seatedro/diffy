@@ -66,6 +66,7 @@ impl GrammarStore {
                 config,
                 state: Mutex::default(),
                 listeners: Mutex::default(),
+                status_listeners: Mutex::default(),
                 #[cfg(feature = "download")]
                 fetcher: Mutex::default(),
                 #[cfg(feature = "download")]
@@ -105,10 +106,28 @@ impl GrammarStore {
     #[cfg(feature = "download")]
     pub fn legacy_status(&self) -> Vec<crate::legacy_pack::GrammarStatus> {
         match &self.inner {
-            Some(inner) if inner.config.legacy.is_some() => {
-                crate::legacy_pack::status(&lock(&inner.state))
-            }
+            Some(inner) => match &inner.config.legacy {
+                Some(legacy) => crate::legacy_pack::status(legacy, &mut lock(&inner.state)),
+                None => Vec::new(),
+            },
             _ => Vec::new(),
+        }
+    }
+
+    pub fn subscribe_status(&self, listener: impl Fn() -> bool + Send + 'static) {
+        #[cfg(feature = "engine")]
+        if let Some(inner) = &self.inner {
+            lock(&inner.status_listeners).push(Box::new(listener));
+        }
+        #[cfg(not(feature = "engine"))]
+        let _ = listener;
+    }
+
+    #[cfg(feature = "engine")]
+    pub(crate) fn grammar(&self, language: &LanguageId) -> Tag {
+        match &self.inner {
+            Some(inner) => inner.lookup(language.as_str()),
+            None => Tag::Unavailable,
         }
     }
 
@@ -502,6 +521,7 @@ pub(crate) struct Inner {
     pub(crate) config: StoreConfig,
     pub(crate) state: Mutex<State>,
     listeners: Mutex<Vec<Listener>>,
+    status_listeners: Mutex<Vec<Listener>>,
     #[cfg(feature = "download")]
     pub(crate) fetcher: Mutex<Option<std::sync::mpsc::Sender<String>>>,
     #[cfg(feature = "download")]
@@ -543,8 +563,15 @@ impl Inner {
         if let Some(found) = state.tags.get(tag) {
             return found.clone();
         }
+        #[cfg(feature = "download")]
+        let before = state.legacy.status.revision;
         let found = self.resolve(&mut state, tag);
         state.tags.insert(tag.to_owned(), found.clone());
+        #[cfg(feature = "download")]
+        if state.legacy.status.revision != before {
+            drop(state);
+            self.notify_status();
+        }
         found
     }
 
@@ -574,6 +601,11 @@ impl Inner {
 
     pub(crate) fn notify(&self) {
         lock(&self.listeners).retain(|listener| listener());
+        self.notify_status();
+    }
+
+    pub(crate) fn notify_status(&self) {
+        lock(&self.status_listeners).retain(|listener| listener());
     }
 }
 

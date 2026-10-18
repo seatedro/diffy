@@ -447,21 +447,51 @@ pub(crate) struct LegacyState {
     index: Option<Arc<[LegacyEntry]>>,
     fetched: bool,
     index_error: Option<String>,
-    status: HashMap<&'static str, GrammarState>,
+    pub(crate) status: Statuses,
 }
 
-pub(crate) fn status(state: &State) -> Vec<GrammarStatus> {
+#[derive(Default)]
+pub(crate) struct Statuses {
+    states: HashMap<&'static str, GrammarState>,
+    pub(crate) revision: u64,
+}
+
+impl Statuses {
+    fn get(&self, language: &str) -> Option<&GrammarState> {
+        self.states.get(language)
+    }
+
+    fn insert(&mut self, language: &'static str, state: GrammarState) {
+        if self.states.get(language) != Some(&state) {
+            self.states.insert(language, state);
+            self.revision += 1;
+        }
+    }
+}
+
+pub(crate) fn status(legacy: &LegacyPacks, state: &mut State) -> Vec<GrammarStatus> {
+    let entries = state
+        .legacy
+        .index
+        .get_or_insert_with(|| read_cached_index(legacy))
+        .clone();
     LANGUAGES
         .iter()
         .filter_map(|language| {
-            state
+            let found = state
                 .legacy
                 .status
                 .get(language.name)
-                .map(|found| GrammarStatus {
-                    language: language.name,
-                    state: found.clone(),
-                })
+                .cloned()
+                .or_else(|| {
+                    find(&entries, language.name)
+                        .filter(|entry| legacy.pack_dir(entry).join(MANIFEST).is_file())
+                        .map(|_| GrammarState::Installed)
+                })?;
+            Some(GrammarStatus {
+                language: language.name,
+                state: found,
+            })
         })
         .collect()
 }

@@ -2,14 +2,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use diffy_ui::DiffEvent;
-use diffy_ui::diff_view::decorator::{DiffDecorator, DiffViewOptions};
+use diffy_ui::diff_view::decorator::{DiffDecorator, DiffViewOptions, LinePointer};
 use quark::view;
 use quark_app::ViewContext;
 use quark_components::search_field;
-use quark_components::{
-    Button, ButtonSize, ButtonStyle, CollectionEnv, DropdownItem, SegmentedControl, SegmentedItem,
-    dropdown, switch,
-};
+use quark_components::{Button, ButtonSize, ButtonStyle, CollectionEnv, DropdownItem, dropdown};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::style::Styled;
@@ -22,12 +19,10 @@ use crate::app::commands::keymap::WORKSPACE_CONTEXT;
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT};
 use crate::app::tokens::{self, Sp, TextStyle};
-use crate::contracts::commands::CommandsAction;
 use crate::contracts::shell::Action;
 use crate::contracts::viewport::interaction::{
-    DiffInput, InteractionAction, TextCompareLanguage, TextCompareSide, TextCompareView,
+    DiffInput, InteractionAction, LineInput, TextCompareLanguage, TextCompareSide, TextCompareView,
 };
-use crate::core::compare::LayoutMode;
 
 const SYNTAX_POLL: Duration = Duration::from_millis(50);
 
@@ -57,6 +52,10 @@ fn diff_event(event: DiffEvent) -> quark_ui::Action {
     act(InteractionAction::Diff(DiffInput(event)))
 }
 
+fn line_event(pointer: LinePointer) -> quark_ui::Action {
+    act(InteractionAction::Line(LineInput(pointer)))
+}
+
 fn row_height(theme: &Theme) -> f32 {
     theme.metrics.ui_row_height
 }
@@ -69,16 +68,20 @@ fn render(
 ) -> AnyElement {
     let theme = cx.theme;
     let (width, height) = (slot.width, slot.height);
-    let toolbar_h =
-        (row_height(theme) + tokens::scaled(Sp::XS, tokens::ui_scale(theme)) * 2.0).min(height);
+    let text_compare = interaction.text_compare.active;
+    let toolbar_h = if text_compare {
+        (row_height(theme) + tokens::scaled(Sp::XS, tokens::ui_scale(theme)) * 2.0).min(height)
+    } else {
+        0.0
+    };
     let body_h = (height - toolbar_h).max(0.0);
-    let toolbar = toolbar(interaction, width, toolbar_h, theme);
-    let editing =
-        interaction.text_compare.active && interaction.text_compare.view == TextCompareView::Edit;
+    let toolbar = text_compare.then(|| toolbar(interaction, width, toolbar_h, theme));
+    let editing = text_compare && interaction.text_compare.view == TextCompareView::Edit;
+    let decorator = interaction.decorations(decorator, theme);
     let body = if editing {
         text_compare_editors(interaction, width, body_h, cx)
     } else {
-        diff_area(interaction, width, body_h, decorator, cx)
+        diff_area(interaction, width, body_h, Some(decorator), cx)
     };
     let theme = cx.theme;
     view! {
@@ -91,7 +94,7 @@ fn render(
             aria-label="Diff"
             test_id="diff"
         >
-            {toolbar}
+            {?toolbar}
             {body}
         </div>
     }
@@ -113,7 +116,7 @@ fn toolbar(
             .active(active)
             .into_any()
     };
-    let controls: Vec<AnyElement> = if interaction.text_compare.active {
+    let controls: Vec<AnyElement> = {
         let text = &interaction.text_compare;
         let editing = text.view == TextCompareView::Edit;
         let languages = TextCompareLanguage::OPTIONS
@@ -159,35 +162,6 @@ fn toolbar(
                 .style(ButtonStyle::Filled)
                 .into_any(),
         ]
-    } else {
-        let unified = interaction.layout == LayoutMode::Unified;
-        let layout = SegmentedControl::new(vec![
-            SegmentedItem::new(
-                "Unified",
-                CommandsAction::SetLayout(LayoutMode::Unified),
-                unified,
-            ),
-            SegmentedItem::new(
-                "Split",
-                CommandsAction::SetLayout(LayoutMode::Split),
-                !unified,
-            ),
-        ])
-        .id("diff.layout");
-        vec![
-            view! { <div class="shrink-0">{layout}</div> },
-            view! {
-                <div class="shrink-0">
-                    {switch(interaction.wrap).label("Wrap").on_toggle(CommandsAction::ToggleWrap)}
-                </div>
-            },
-            toggle("Expand context", false, InteractionAction::ExpandAllContext),
-            toggle(
-                "Find",
-                interaction.search.open,
-                InteractionAction::OpenSearch,
-            ),
-        ]
     };
     view! {
         <div
@@ -197,7 +171,6 @@ fn toolbar(
             px={tokens::scaled(Sp::SM, scale)}
             gap={tokens::scaled(Sp::XS, scale)}
             border_b={tc.border_variant}
-            key_context={WORKSPACE_CONTEXT}
             accessibility_role={AccessibilityRole::Toolbar}
             aria-label="Diff toolbar"
             test_id="diff.toolbar"
@@ -225,8 +198,8 @@ fn diff_area(
                 "Nothing to compare",
                 "Open a repository to review its changes",
             ),
-            Phase::Loading => ("Loading diff", "Comparing files"),
-            Phase::Ready => ("No changes", "Both sides are identical"),
+            Phase::Loading => ("Loading diff", "Comparing revisions"),
+            Phase::Ready => ("No changes", "Nothing differs between these revisions"),
             Phase::Failed(message) => ("Couldn't load the diff", message.as_str()),
         };
         let state = empty_state(title, detail, theme);
@@ -246,6 +219,7 @@ fn diff_area(
         decorator,
         sources: Some(interaction.sources.clone()),
         keys: Some(keys::DIFF),
+        on_line: Some(line_event),
     };
     let poll = !interaction.syntax.has_wake();
     let Some(diff) = interaction.diff.as_mut() else {
@@ -269,6 +243,7 @@ fn diff_area(
         .w(width)
         .h(list_h)
         .key_context(WORKSPACE_CONTEXT)
+        .on_key("escape", act(InteractionAction::ClearSelection))
         .test_id("diff.lines")
         .child(list);
     view! {

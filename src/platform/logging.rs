@@ -1,18 +1,5 @@
 fn log_dir() -> Option<std::path::PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        dirs::home_dir().map(|h| h.join("Library/Logs/diffy"))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        dirs::state_dir()
-            .or_else(dirs::data_local_dir)
-            .map(|base| base.join("diffy"))
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        dirs::data_local_dir().map(|base| base.join("diffy").join("logs"))
-    }
+    crate::platform::startup::app_log_dir()
 }
 
 fn logging_env_base() -> String {

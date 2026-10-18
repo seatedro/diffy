@@ -89,6 +89,11 @@ fn typed(text: &str) -> Vec<InputEvent> {
         .collect()
 }
 
+fn click_first(ui: &mut UiTestHarness<Host>, by: By) {
+    let node = ui.find_all(by).into_iter().next().expect("a matching node");
+    ui.click(node.center());
+}
+
 fn line_names(ui: &UiTestHarness<Host>) -> Vec<String> {
     ui.find_all(By::role(Role::ListItem))
         .into_iter()
@@ -126,13 +131,14 @@ fn installed_files_render_with_identity_test_ids() {
     ui.find(By::test_id("diffy.diff.gap.1.1.0"));
     ui.find(By::test_id("diffy.diff.gap.1.1.1"));
     assert!(line_names(&ui).iter().any(|n| n == "changed ten"));
-    ui.find(By::role_name(Role::Button, "Expand context"));
+    ui.find_all(By::role_name(Role::Button, "More file actions"));
+    ui.find_all(By::role_name(Role::Button, "Collapse file"));
 }
 
 #[test]
 fn split_layout_shows_both_sides() {
     let mut ui = loaded(Host::new());
-    ui.click_node(By::role_name(Role::RadioButton, "Split"));
+    click_first(&mut ui, By::role_name(Role::RadioButton, "Split"));
     let names = line_names(&ui);
     assert!(names.iter().any(|n| n == "line 10"));
     assert!(names.iter().any(|n| n == "changed ten"));
@@ -198,8 +204,8 @@ fn sidebar_selection_reveals_the_file_without_echoing_back() {
 fn drag_selects_lines_publishes_a_source_target_and_copies() {
     let mut ui = loaded(Host::new());
     focus_diff(&mut ui);
-    let from = ui.find(By::role_name(Role::ListItem, "line 8")).bounds;
-    let to = ui.find(By::role_name(Role::ListItem, "line 9")).bounds;
+    let from = ui.find_all(By::role_name(Role::ListItem, "line 8"))[0].bounds;
+    let to = ui.find_all(By::role_name(Role::ListItem, "line 9"))[0].bounds;
     ui.drag(
         (from.x + 1.0, from.y + from.height / 2.0),
         (to.x + to.width - 1.0, to.y + to.height / 2.0),
@@ -261,7 +267,7 @@ fn workspace_shortcuts_drive_the_focused_diff() {
 fn layout_survives_unrelated_settings_changes() {
     let mut ui = loaded(Host::new());
     ui.app_mut().update_settings(|_| {});
-    ui.click_node(By::role_name(Role::RadioButton, "Split"));
+    click_first(&mut ui, By::role_name(Role::RadioButton, "Split"));
     assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
     ui.app_mut().update_settings(|s| s.ui_scale_pct = 110);
     assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
@@ -320,7 +326,7 @@ fn wrap_and_wrap_column_rewrap_long_lines() {
             .map_or(0.0, |d| d.content_height())
     };
     let unwrapped = height(&ui);
-    ui.click_node(By::role_name(Role::Switch, "Wrap"));
+    click_first(&mut ui, By::role_name(Role::Button, "Wrap lines"));
     let wrapped = height(&ui);
     assert!(wrapped > unwrapped, "{wrapped} > {unwrapped}");
     assert!(ui.accessibility_tree().contains("Wrap"));
@@ -338,7 +344,11 @@ fn expand_context_reveals_hidden_lines() {
         .interaction
         .diff()
         .map_or(0.0, |d| d.content_height());
-    ui.click_node(By::role_name(Role::Button, "Expand context"));
+    ui.app_mut().interaction.reduce_action(
+        crate::contracts::viewport::interaction::InteractionAction::ExpandAllContext,
+        &Default::default(),
+    );
+    ui.frame();
     let after = ui
         .app()
         .interaction
@@ -662,4 +672,147 @@ fn expanding_a_patch_only_file_requests_its_sources() {
         [(key, diffy_diff::SourcePurpose::ExpandContext)]
     );
     assert!(interaction.take_source_requests().is_empty());
+}
+
+#[test]
+fn scrolled_file_keeps_its_header_pinned() {
+    let mut ui = harness(Host::new(), SHORT);
+    ui.app_mut().install(ViewportInstall::File {
+        prepared: prepared(1, 1, "long.rs", "", &numbered(0..200)),
+        remap: None,
+    });
+    ui.frame();
+    focus_diff(&mut ui);
+    ui.key("shift+g");
+    ui.frame();
+    let header = ui.find(By::test_id("diffy.diff.file.1.1"));
+    let list = ui.find(By::role_name(Role::List, "Diff"));
+    assert!(
+        (header.bounds.y - list.bounds.y).abs() < 1.0,
+        "{header:?} {list:?}"
+    );
+}
+
+#[test]
+fn find_steps_reveal_matches_in_other_files_in_single_file_mode() {
+    let mut host = Host::new();
+    host.update_settings(|s| s.continuous_scroll = false);
+    let mut ui = loaded(host);
+    focus_diff(&mut ui);
+    ui.key("mod+f");
+    ui.type_text("changed");
+    assert_eq!(ui.app().interaction.search_summary().matches, 2);
+    ui.key("enter");
+    assert_eq!(ui.app().interaction.search_summary().active, Some(1));
+    ui.key("mod+a");
+    ui.type_text("needle");
+    ui.frame();
+    assert!(ui.try_find(By::test_id("diffy.diff.file.2.1")).is_some());
+    assert_eq!(
+        ui.app().shared.selected_file.map(|s| s.key),
+        Some(FileKey(2))
+    );
+    assert!(line_names(&ui).iter().any(|n| n == "needle five"));
+}
+
+#[test]
+fn find_matches_removed_lines_once() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    ui.key("mod+f");
+    ui.type_text("line 10");
+    let summary = ui.app().interaction.search_summary();
+    assert_eq!((summary.old_matches, summary.new_matches), (1, 1));
+}
+
+#[test]
+fn an_empty_compare_shows_no_changes() {
+    let mut ui = harness(Host::new(), SIZE);
+    ui.app_mut().install(ViewportInstall::Begin {
+        generation: GENERATION,
+    });
+    ui.app_mut().install(ViewportInstall::Order {
+        generation: GENERATION,
+        files: std::sync::Arc::from([]),
+    });
+    ui.frame();
+    assert!(ui.painted_text().contains("No changes"));
+}
+
+fn gutter_of(ui: &UiTestHarness<Host>, name: &str) -> (f32, f32) {
+    let line = ui.find_all(By::role_name(Role::ListItem, name))[0].bounds;
+    (line.x - 12.0, line.y + line.height / 2.0)
+}
+
+#[test]
+fn gutter_presses_and_drags_select_changed_lines() {
+    use crate::contracts::mutations::MutationsAction as M;
+
+    let mut ui = loaded(Host::new());
+    let target = |line: u32| SourceTarget {
+        file: FileKey(1),
+        revision: FileRevision(1),
+        side: Side::New,
+        lines: line..line + 1,
+    };
+    let ten = gutter_of(&ui, "changed ten");
+    ui.click(ten);
+    assert_eq!(ui.app().line_actions, [M::SelectLines(target(10))]);
+
+    ui.send_event(InputEvent::ModifiersChanged(ModifiersState::SUPER));
+    ui.click(ten);
+    ui.send_event(InputEvent::ModifiersChanged(ModifiersState::SHIFT));
+    ui.click(ten);
+    ui.send_event(InputEvent::ModifiersChanged(ModifiersState::empty()));
+    assert_eq!(
+        ui.app().line_actions[1..],
+        [
+            M::ToggleLineSelection(target(10)),
+            M::ExtendLineSelection(target(10))
+        ]
+    );
+
+    let before = ui.app().line_actions.len();
+    ui.click(gutter_of(&ui, "line 12"));
+    assert_eq!(
+        ui.app().line_actions.len(),
+        before,
+        "unchanged lines are not selectable"
+    );
+}
+
+#[test]
+fn row_cursor_moves_between_changed_lines_and_publishes_them() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    ui.key("shift+j");
+    let target = selections(&ui).last().cloned().expect("a published line");
+    assert_eq!(
+        (target.file, target.side, target.lines.clone()),
+        (FileKey(1), Side::Old, 10..11)
+    );
+    ui.key("shift+j");
+    let target = selections(&ui).last().cloned().expect("a published line");
+    assert_eq!(target.lines, 10..11);
+    assert_eq!(target.side, Side::New);
+}
+
+#[test]
+fn escape_clears_the_text_selection() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    ui.key("mod+a");
+    assert!(
+        ui.app()
+            .interaction
+            .diff()
+            .is_some_and(|d| d.selection().is_some())
+    );
+    ui.key("escape");
+    assert!(
+        ui.app()
+            .interaction
+            .diff()
+            .is_some_and(|d| d.selection().is_none())
+    );
 }

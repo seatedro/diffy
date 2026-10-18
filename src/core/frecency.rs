@@ -159,8 +159,8 @@ impl FrecencyStore {
 }
 
 pub fn open_default_store() -> Option<FrecencyStore> {
-    let base = dirs::config_dir()?;
-    let path = base.join("diffy").join(STORE_FILE_NAME);
+    let base = crate::platform::startup::app_config_dir()?;
+    let path = base.join(STORE_FILE_NAME);
     match FrecencyStore::open(&path) {
         Ok(store) => Some(store),
         Err(error) => {

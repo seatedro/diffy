@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-usage: scripts/install-macos-dev-app.sh [options] [-- diffy-args...]
+usage: scripts/install-macos-dev-app.sh [options] [REPO | -- diffy-args...]
 
 Build and install a local "Diffy Dev.app" bundle for Computer Use and
 accessibility testing. The bundle is separate from /Applications/Diffy.app.
@@ -13,6 +13,8 @@ options:
   --release           package target/release/diffy instead of target/debug/diffy
   --install-dir PATH  install under PATH (default: ~/Applications)
   --app-path PATH     install to an exact .app path
+  --bundle-dir PATH   install under PATH and keep the app's settings in PATH/config
+  --bundle-suffix S   append S to the bundle id and app name (io.github.seatedro.diffy.dev.S)
   -h, --help          show this help
 USAGE
 }
@@ -27,6 +29,8 @@ APP_NAME="${DIFFY_DEV_APP_NAME:-Diffy Dev}"
 BUNDLE_ID="${DIFFY_DEV_BUNDLE_ID:-io.github.seatedro.diffy.dev}"
 INSTALL_DIR="${DIFFY_DEV_INSTALL_DIR:-$HOME/Applications}"
 APP_PATH="${DIFFY_DEV_APP_PATH:-}"
+BUNDLE_DIR=""
+BUNDLE_SUFFIX=""
 PROFILE="debug"
 LAUNCH=1
 
@@ -78,6 +82,20 @@ while [[ $# -gt 0 ]]; do
       APP_PATH="$2"
       shift 2
       ;;
+    --bundle-dir)
+      [[ $# -ge 2 ]] || { echo "install-macos-dev-app: --bundle-dir needs a path" >&2; exit 64; }
+      BUNDLE_DIR="$2"
+      INSTALL_DIR="$2"
+      shift 2
+      ;;
+    --bundle-suffix)
+      [[ $# -ge 2 && "$2" =~ ^[a-z0-9][a-z0-9-]*$ ]] || {
+        echo "install-macos-dev-app: --bundle-suffix needs lowercase letters, digits or -" >&2
+        exit 64
+      }
+      BUNDLE_SUFFIX="$2"
+      shift 2
+      ;;
     --)
       shift
       break
@@ -91,6 +109,26 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ $# -gt 0 && "$1" != -* && -d "$1" ]]; then
+  set -- --repo "$1" "${@:2}"
+fi
+
+if [[ -n "$BUNDLE_SUFFIX" ]]; then
+  BUNDLE_ID="$BUNDLE_ID.$BUNDLE_SUFFIX"
+  APP_NAME="$APP_NAME $BUNDLE_SUFFIX"
+fi
+
+if [[ -n "$BUNDLE_DIR" ]]; then
+  mkdir -p "$BUNDLE_DIR"
+  BUNDLE_DIR="$(cd "$BUNDLE_DIR" && pwd)"
+  INSTALL_DIR="$BUNDLE_DIR"
+  CONFIG_DIR="$BUNDLE_DIR/config"
+elif [[ -n "$BUNDLE_SUFFIX" ]]; then
+  CONFIG_DIR="$HOME/Library/Application Support/diffy-dev-$BUNDLE_SUFFIX"
+else
+  CONFIG_DIR="$HOME/Library/Application Support/diffy-dev"
+fi
 
 if [[ -z "$APP_PATH" ]]; then
   APP_PATH="$INSTALL_DIR/$APP_NAME.app"
@@ -126,6 +164,7 @@ export DIFFY_APP_DISPLAY_NAME="\${DIFFY_APP_DISPLAY_NAME:-$APP_NAME}"
 export DIFFY_WINDOW_TITLE_PREFIX="\${DIFFY_WINDOW_TITLE_PREFIX:-diffy dev}"
 export DIFFY_DISABLE_KEYRING="\${DIFFY_DISABLE_KEYRING:-1}"
 export DIFFY_DEV_GITHUB_TOKEN_FILE="\${DIFFY_DEV_GITHUB_TOKEN_FILE:-1}"
+export DIFFY_CONFIG_DIR="\${DIFFY_CONFIG_DIR:-$CONFIG_DIR}"
 exec "\$DIR/diffy-bin" "\$@"
 EOF
 chmod +x "$MACOS_DIR/diffy-dev"
@@ -187,6 +226,7 @@ fi
 echo "installed $APP_PATH"
 echo "bundle id: $BUNDLE_ID"
 echo "window title prefix: diffy dev"
+echo "config dir: $CONFIG_DIR"
 
 if [[ "$LAUNCH" == "1" ]]; then
   /usr/bin/open -n "$APP_PATH" --args "$@"

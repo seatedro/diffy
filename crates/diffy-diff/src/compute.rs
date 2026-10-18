@@ -107,7 +107,7 @@ pub(crate) fn line_changes_with(old: &TextStore, new: &TextStore, budget: Budget
 
 /// Splits changes into hunks: a change starts a new hunk when more than
 /// `2 * context` equal lines separate it from the previous one.
-fn hunk_groups(changes: &[Change], context: u32) -> impl Iterator<Item = &[Change]> {
+pub(crate) fn hunk_groups(changes: &[Change], context: u32) -> impl Iterator<Item = &[Change]> {
     let mut rest = changes;
     std::iter::from_fn(move || {
         if rest.is_empty() {

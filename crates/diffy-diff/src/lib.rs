@@ -25,6 +25,7 @@
 //! Coordinates: source lines are zero-based, byte offsets are UTF-8 bytes,
 //! ranges are half-open; display line numbers are one-based.
 
+mod build;
 mod compare;
 mod compute;
 #[doc(hidden)]
@@ -36,6 +37,7 @@ pub mod myers;
 mod patch;
 mod projection;
 mod remap;
+mod semantic;
 mod session;
 mod source;
 mod text;
@@ -43,6 +45,7 @@ mod text;
 #[cfg(test)]
 mod tests;
 
+pub use build::{BuildError, DocumentBuilder, FileBuilder, diff_from_changes};
 pub use compare::{
     Comparison, ComparisonError, ComparisonOptions, LinePair, MAX_PAIRING_COMPARISONS,
     PAIRING_COMPARISONS_PER_LINE, PairingMode, SIMILARITY_SCAN_BYTES, WhitespaceMode,
@@ -57,8 +60,8 @@ pub use limits::{
     diff_texts_checked, line_detail, parse_unified_checked,
 };
 pub use model::{
-    BlockKind, BlockTable, DiffDocument, FileFacts, FileMeta, FileStatus, FileSummary, FileTable,
-    HunkTable, IntegrityError, Side,
+    BlockKind, BlockTable, ChangeSummary, ContentChange, DiffDocument, DiffStats, FileFacts,
+    FileMeta, FileStatus, FileSummary, FileTable, HunkTable, IntegrityError, ObjectId, Side,
 };
 pub use patch::{ApplyError, PatchError, apply, parse_unified, write_unified};
 pub use projection::{
@@ -66,9 +69,10 @@ pub use projection::{
     REVEAL_STEP, Reveal, RowKind,
 };
 pub use remap::{LineMap, RemapError, SourceRemap};
+pub use semantic::{AlignedRow, ChangeIntensity, FileSemantics, SemanticError, SemanticSpan};
 pub use session::{
     DiffSession, DiffUpdate, FileDiffSnapshot, FileId, Revision, SessionIntegrityError,
     SourcePurpose, SourceRequest, UpdateError, UpdateOutcome,
 };
 pub use source::{ContextLen, FileSources, HydrationError, SourceCoverage};
-pub use text::TextStore;
+pub use text::{ByteEscapes, TextStore};

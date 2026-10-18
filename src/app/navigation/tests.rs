@@ -10,6 +10,7 @@ use quark_ui::element::AnyElement;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 
 use super::NavigationController;
+use super::state::ListMetrics;
 use crate::app::commands::fixtures::{self, REPO};
 use crate::app::commands::harness::{self, effects, no_args, startup};
 use crate::app::shell::Slot;
@@ -22,9 +23,12 @@ use crate::contracts::shared::{CompareGeneration, FileKey, SharedContext, Worksp
 use crate::contracts::shell::{
     Action, Controller, Effect, Intent, Reduction, ShellAction, ShellEffect,
 };
-use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, FileStats};
+use crate::contracts::viewport::ViewportAction;
+use crate::contracts::viewport::pipeline::{
+    CompareManifestSnapshot, CompareWorkPriority, FileStats, PipelineAction,
+};
 use crate::core::compare::CompareMode;
-use crate::core::vcs::model::VcsCompareSpec;
+use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
 use crate::platform::persistence::Settings;
 
 #[derive(Default)]
@@ -301,9 +305,9 @@ fn manifest_rows_render_with_stats_and_pending_never_reads_as_zero() {
     };
     open(&mut ui, files);
 
-    ui.find(By::role_name(Role::List, "Changed files"));
+    ui.find(By::role_name(Role::ListBox, "Changed files"));
     let row = ui.find(file_node(1));
-    assert_eq!(row.name.as_deref(), Some("src/a.rs"));
+    assert_eq!(row.name.as_deref(), Some("src/a.rs, modified"));
     let painted = ui.painted_text();
     assert!(painted.contains("+3"));
     assert!(!painted.contains("+0") && !painted.contains("-0"));
@@ -434,13 +438,13 @@ fn large_manifests_only_build_visible_rows() {
         .map(|i| fixtures::file(i + 1, &format!("dir{}/file{i}.rs", i % 50)))
         .collect();
     open(&mut ui, files);
-    let rows = ui.find_all(By::role(Role::ListItem));
+    let rows = ui.find_all(By::role(Role::ListBoxOption));
     assert!(
         !rows.is_empty() && rows.len() < 80,
         "{} rows built",
         rows.len()
     );
-    let list = ui.find(By::role_name(Role::List, "Changed files"));
+    let list = ui.find(By::role_name(Role::ListBox, "Changed files"));
     ui.pointer_move(list.center());
     ui.wheel(0.0, 20.0);
     let scrolled = ui.app().nav.scroll_px();
@@ -486,7 +490,7 @@ fn history_tab_loads_range_commits_and_drills_into_one() {
         .into(),
     });
     ui.frame();
-    ui.click_node(By::role_name(Role::ListItem, "Add tests"));
+    ui.click_node(By::role_name(Role::ListBoxOption, "Add tests"));
     let compare = ui.app().nav.compare().clone();
     assert_eq!(compare.mode, CompareMode::SingleCommit);
     assert_eq!(compare.left, "e5aaaa");
@@ -498,6 +502,122 @@ fn history_tab_loads_range_commits_and_drills_into_one() {
     ui.click_node(By::role_name(Role::Button, "Back to comparison"));
     assert_eq!(ui.app().nav.compare().mode, CompareMode::TwoDot);
     assert_eq!(ui.app().nav.compare().left, "main");
+}
+
+#[test]
+fn file_rows_are_labeled_selectable_options() {
+    let mut ui = nav_harness();
+    let mut files = three_files();
+    files[0].stats = FileStats::Known {
+        additions: 77,
+        deletions: 216,
+    };
+    open(&mut ui, files);
+    ui.find(By::role_name(Role::ListBox, "Changed files"));
+    ui.find(By::role_name(Role::ListBoxOption, "src/b.rs, modified"));
+    ui.click_node(By::role_name(
+        Role::ListBoxOption,
+        "src/a.rs, modified, +77 \u{2212}216",
+    ));
+    assert_eq!(ui.app().nav.selected_key(), Some(FileKey(1)));
+}
+
+#[test]
+fn working_tree_files_group_by_staging_bucket() {
+    let mut ui = nav_harness();
+    let mut files = three_files();
+    files[0].buckets = vec![ChangeBucket::Unstaged];
+    files[1].buckets = vec![ChangeBucket::Staged];
+    files[2].buckets = vec![ChangeBucket::Untracked];
+    open(&mut ui, files);
+
+    let staged = ui.find(By::role_name(Role::Heading, "Staged, 1 file"));
+    let unstaged = ui.find(By::role_name(Role::Heading, "Unstaged, 1 file"));
+    ui.find(By::role_name(Role::Heading, "Untracked, 1 file"));
+    let b = ui.find(file_node(2));
+    let a = ui.find(file_node(1));
+    assert!(staged.bounds.y < b.bounds.y && b.bounds.y < unstaged.bounds.y);
+    assert!(unstaged.bounds.y < a.bounds.y);
+
+    ui.click_node(file_node(2));
+    ui.key("arrowdown");
+    assert_eq!(ui.app().nav.selected_key(), Some(FileKey(1)));
+}
+
+#[test]
+fn operation_rows_expose_their_actions() {
+    let mut ui = nav_harness();
+    let app = ui.app_mut();
+    app.inject(Intent::ActivateWorkspace {
+        path: PathBuf::from(REPO),
+    });
+    app.event(fixtures::snapshot_ready(
+        1,
+        fixtures::snapshot(RepositorySyncReason::Open, true),
+    ));
+    app.inject(Intent::PublishManifest(fixtures::manifest(
+        1,
+        three_files(),
+    )));
+    ui.frame();
+    ui.click_node(By::role_name(Role::Tab, "Operation log"));
+    ui.click_node(By::role_name(Role::ListBoxOption, "snapshot working copy"));
+    ui.find(By::role_name(Role::Button, "Undo last operation"));
+}
+
+#[test]
+fn new_text_compare_hands_off_to_the_viewport() {
+    let mut nav = NavigationController::default();
+    let reduction = nav.reduce_action(NavigationAction::NewTextCompare, &SharedContext::default());
+    assert!(
+        reduction
+            .intents
+            .iter()
+            .any(|i| matches!(i, Intent::OpenTextCompare))
+    );
+}
+
+#[test]
+fn visible_rows_request_their_stats_once() {
+    let mut nav = NavigationController::default();
+    nav.set_metrics(ListMetrics {
+        row_height: 20.0,
+        viewport: 200.0,
+    });
+    let shared = SharedContext::default();
+    let files: Vec<_> = (0..200)
+        .map(|i| fixtures::file(i + 1, &format!("f{i:03}.rs")))
+        .collect();
+    nav.apply_intent(
+        &Intent::PublishManifest(fixtures::manifest(1, files)),
+        &shared,
+    );
+    let requested = |nav: &NavigationController| -> Vec<FileKey> {
+        nav.take_dispatch()
+            .into_iter()
+            .flat_map(|action| match action {
+                Action::Viewport(ViewportAction::Pipeline(PipelineAction::RequestStats {
+                    files,
+                    priority: CompareWorkPriority::VisibleSidebarStats,
+                })) => files,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect()
+    };
+    let first = requested(&nav);
+    assert!(!first.is_empty() && first.len() < 200);
+    assert_eq!(first[0], FileKey(1));
+
+    nav.apply_intent(&Intent::SelectFile(None), &shared);
+    assert!(
+        requested(&nav).is_empty(),
+        "already requested rows are not asked again"
+    );
+
+    nav.reduce_action(NavigationAction::ScrollFilesTo(u32::MAX), &shared);
+    let after = requested(&nav);
+    assert!(after.contains(&FileKey(200)));
+    assert!(!after.iter().any(|key| first.contains(key)));
 }
 
 #[test]

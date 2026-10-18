@@ -1,11 +1,11 @@
 use std::rc::Rc;
-use std::sync::Arc;
 
 use quark_components::PaletteEvent;
 
 use crate::contracts::navigation::CompareField;
 use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{Action, LogicalFocus};
+use crate::core::compare::LayoutMode;
 use crate::core::keymap::ShortcutCommand;
 use crate::core::theme_types::ThemeMode;
 use crate::fonts::FontFamilyEntry;
@@ -122,6 +122,7 @@ pub enum CommandsAction {
     OpenMonoFontPicker,
     ShowKeyboardShortcuts,
     CloseOverlay,
+    DismissOverlays,
     MoveOverlaySelection(i32),
     SelectOverlayEntry(usize),
     ConfirmOverlaySelection,
@@ -147,6 +148,7 @@ pub enum CommandsAction {
     CloseSettings,
     SetSettingsSection(SettingsSection),
     ToggleWrap,
+    SetLayout(LayoutMode),
     SetWrapColumn(u32),
     SetSidebarWidth(u32),
     IncreaseUiScale,
@@ -160,6 +162,8 @@ pub enum CommandsAction {
     SetWheelScrollLines(u8),
     ToggleContinuousScroll,
     ToggleAutoUpdate,
+    SetAiSteeringPrompt(String),
+    SetAiProvider(Option<crate::ai::Provider>),
     BeginKeymapRebind(ShortcutCommand),
     ApplyKeymapBinding {
         command: ShortcutCommand,
@@ -170,6 +174,32 @@ pub enum CommandsAction {
     ShowAbout,
     OpenProjectPage,
     Quit,
+}
+
+impl CommandsAction {
+    pub fn blocked_by_modal(&self) -> bool {
+        matches!(
+            self,
+            Self::OpenCommandPalette
+                | Self::OpenRepoPicker
+                | Self::OpenRefPicker(_)
+                | Self::OpenCompareMenu
+                | Self::OpenPullRequestPicker
+                | Self::OpenThemePicker
+                | Self::OpenUiFontPicker
+                | Self::OpenMonoFontPicker
+                | Self::ShowKeyboardShortcuts
+                | Self::Shortcut(_)
+                | Self::OpenContextMenu { .. }
+                | Self::OpenSettings
+                | Self::OpenKeymaps
+                | Self::ShowAbout
+        )
+    }
+
+    pub fn wants_external_commands(&self) -> bool {
+        matches!(self, Self::OpenCommandPalette | Self::Shortcut(_))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,8 +215,8 @@ pub enum CommandsEvent {
         message: String,
     },
     FontCatalogReady {
-        ui: Arc<[FontFamilyEntry]>,
-        mono: Arc<[FontFamilyEntry]>,
+        ui: &'static [FontFamilyEntry],
+        mono: &'static [FontFamilyEntry],
     },
 }
 

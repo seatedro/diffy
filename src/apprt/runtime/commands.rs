@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::apprt::services::CommandsServices;
 use crate::apprt::transport::ScopedEventSender;
 use crate::contracts::commands::{CommandsEffect, CommandsEvent};
+use crate::fonts::{FontRole, font_family_entries};
 use crate::platform::persistence::Settings;
 
 pub(crate) const SETTINGS_SAVE_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -40,10 +41,9 @@ impl CommandsRuntime {
             }
             CommandsEffect::LoadFontCatalog => {
                 thread::spawn(move || {
-                    let (ui, mono) = crate::fonts::scan_font_catalog();
                     events.send(CommandsEvent::FontCatalogReady {
-                        ui: ui.into(),
-                        mono: mono.into(),
+                        ui: font_family_entries(FontRole::Ui),
+                        mono: font_family_entries(FontRole::Mono),
                     });
                 });
             }

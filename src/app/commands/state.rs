@@ -1,13 +1,12 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use quark_components::{
     CommandPalette, ContextMenuOutcome, ContextMenuState, PALETTE_INPUT, PaletteOutcome,
 };
 use quark_ui::FocusId;
-use quark_ui::element::Binding;
+use quark_ui::element::{Binding, ScrollHandle};
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 
 use super::keymap;
@@ -27,6 +26,7 @@ use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, Controller, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
 };
+use crate::core::compare::LayoutMode;
 use crate::core::frecency::{FrecencyStore, recent_repo_paths};
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
 use crate::core::theme_types::ThemeMode;
@@ -64,13 +64,14 @@ pub struct SettingsPage {
     pub section: SettingsSection,
     pub capture: Option<ShortcutCommand>,
     pub notice: Option<String>,
+    pub scroll: ScrollHandle,
     return_focus: Option<FocusId>,
 }
 
 #[derive(Debug, Clone)]
 struct FontCatalog {
-    ui: Arc<[FontFamilyEntry]>,
-    mono: Arc<[FontFamilyEntry]>,
+    ui: &'static [FontFamilyEntry],
+    mono: &'static [FontFamilyEntry],
 }
 
 pub struct CommandsController {
@@ -199,16 +200,31 @@ impl CommandsController {
     }
 
     pub fn commands(&self) -> Vec<CommandDescriptor> {
+        let external = &self.external;
         let mut commands = builtin_commands(&self.settings.settings);
-        commands.extend(self.external.iter().cloned());
+        commands.retain(|c| !external.iter().any(|e| e.id == c.id));
+        for command in &mut commands {
+            if command
+                .shortcut
+                .is_some_and(|s| external.iter().any(|e| e.shortcut == Some(s)))
+            {
+                command.shortcut = None;
+            }
+        }
+        commands.extend(external.iter().cloned());
         commands
     }
 
     pub(super) fn command_by_id(&self, id: &str) -> Option<CommandDescriptor> {
-        builtin_commands(&self.settings.settings)
-            .into_iter()
-            .chain(self.external.iter().cloned())
+        self.external
+            .iter()
             .find(|command| command.id == id)
+            .cloned()
+            .or_else(|| {
+                builtin_commands(&self.settings.settings)
+                    .into_iter()
+                    .find(|command| command.id == id)
+            })
     }
 
     fn request(&self, request: PlatformRequest) {
@@ -227,18 +243,28 @@ impl CommandsController {
         }
     }
 
-    fn push_layer(&mut self, kind: LayerKind) {
-        let return_focus = self.current_focus();
-        self.layers.retain(|layer| layer.kind != kind);
+    pub fn modal_open(&self) -> bool {
+        self.top_layer() == Some(LayerKind::Confirmation)
+    }
+
+    fn admit(&mut self, kind: LayerKind) -> Option<Option<FocusId>> {
+        if self.modal_open() && kind != LayerKind::Confirmation {
+            return None;
+        }
+        let mut return_focus = self.current_focus();
+        while let Some(layer) = self.layers.pop() {
+            self.clear_layer(layer.kind);
+            return_focus = layer.return_focus;
+        }
+        Some(return_focus)
+    }
+
+    fn push_layer(&mut self, kind: LayerKind, return_focus: Option<FocusId>) {
         self.layers.push(Layer { kind, return_focus });
         self.focus(Some(layer_focus(kind)));
     }
 
-    fn pop_layer(&mut self, kind: LayerKind) -> bool {
-        let Some(index) = self.layers.iter().rposition(|layer| layer.kind == kind) else {
-            return false;
-        };
-        let layer = self.layers.remove(index);
+    fn clear_layer(&mut self, kind: LayerKind) {
         match kind {
             LayerKind::Palette => {
                 self.palette.close();
@@ -250,6 +276,27 @@ impl CommandsController {
                 self.context_entries.clear();
             }
         }
+    }
+
+    fn dismiss_overlays(&mut self) -> Reduction {
+        if self.modal_open() {
+            return Reduction::default();
+        }
+        match self.top_layer() {
+            Some(kind) => {
+                self.pop_layer(kind);
+                Reduction::changed()
+            }
+            None => Reduction::default(),
+        }
+    }
+
+    fn pop_layer(&mut self, kind: LayerKind) -> bool {
+        let Some(index) = self.layers.iter().rposition(|layer| layer.kind == kind) else {
+            return false;
+        };
+        let layer = self.layers.remove(index);
+        self.clear_layer(kind);
         if index == self.layers.len() {
             self.focus(layer.return_focus);
         }
@@ -291,10 +338,14 @@ impl CommandsController {
     }
 
     fn open_palette(&mut self, cx: &SharedContext) -> Reduction {
+        let Some(return_focus) = self.admit(LayerKind::Palette) else {
+            return Reduction::default();
+        };
         let saved = &self.settings.settings.keymap_overrides;
         self.palette_source.commands = self
             .commands()
             .into_iter()
+            .filter(|descriptor| descriptor.id != ids::PALETTE)
             .map(|descriptor| PaletteCommand {
                 binding: descriptor
                     .shortcut
@@ -333,8 +384,6 @@ impl CommandsController {
                 .collect();
             self.palette.set_recent(recent);
         }
-        let return_focus = self.current_focus();
-        self.layers.retain(|layer| layer.kind != LayerKind::Palette);
         self.layers.push(Layer {
             kind: LayerKind::Palette,
             return_focus,
@@ -373,8 +422,11 @@ impl CommandsController {
             self.focus(Some(PICKER));
             return Reduction::changed();
         }
+        let Some(return_focus) = self.admit(LayerKind::Picker) else {
+            return Reduction::default();
+        };
         self.picker = Some(PickerState::new(kind, candidates));
-        self.push_layer(LayerKind::Picker);
+        self.push_layer(LayerKind::Picker, return_focus);
         Reduction::changed()
     }
 
@@ -492,13 +544,19 @@ impl CommandsController {
     }
 
     fn open_settings(&mut self, section: Option<SettingsSection>) -> Reduction {
+        if self.modal_open() {
+            return Reduction::default();
+        }
         while let Some(kind) = self.top_layer() {
             self.pop_layer(kind);
         }
         match &mut self.settings_page {
             Some(page) => {
-                if let Some(section) = section {
+                if let Some(section) = section
+                    && page.section != section
+                {
                     page.section = section;
+                    page.scroll.set_offset(0.0, 0.0);
                 }
                 page.capture = None;
             }
@@ -507,6 +565,7 @@ impl CommandsController {
                     section: section.unwrap_or_default(),
                     capture: None,
                     notice: None,
+                    scroll: ScrollHandle::new(),
                     return_focus: self.view_focus,
                 });
             }
@@ -563,10 +622,7 @@ impl CommandsController {
 
     fn install_keymap(&self, settings: &Settings) {
         let saved = &settings.keymap_overrides;
-        self.request(PlatformRequest::KeyBindings(keymap::key_bindings(
-            saved,
-            &self.external,
-        )));
+        self.request(PlatformRequest::KeyBindings(keymap::key_bindings(saved)));
         let commands = builtin_commands(settings);
         self.request(PlatformRequest::Menus(platform::menus(&commands, |c| {
             if c.id == ids::QUIT {
@@ -601,6 +657,9 @@ impl CommandsController {
 
     fn shortcut(&mut self, command: ShortcutCommand, cx: &SharedContext) -> Reduction {
         if let Some(external) = self.external.iter().find(|d| d.shortcut == Some(command)) {
+            if !external.enabled {
+                return Reduction::default();
+            }
             let action = external.action.clone();
             return self.run(action, cx);
         }
@@ -636,6 +695,12 @@ impl CommandsController {
     }
 
     fn open_context_menu(&mut self, entries: Vec<ContextMenuEntry>, x: i32, y: i32) -> Reduction {
+        if entries.is_empty() {
+            return Reduction::default();
+        }
+        let Some(return_focus) = self.admit(LayerKind::ContextMenu) else {
+            return Reduction::default();
+        };
         self.context_entries.clear();
         let mut items = Vec::with_capacity(entries.len());
         for entry in entries {
@@ -668,7 +733,7 @@ impl CommandsController {
             }
         }
         self.context_menu.open(items, x as f32, y as f32);
-        self.push_layer(LayerKind::ContextMenu);
+        self.push_layer(LayerKind::ContextMenu, return_focus);
         Reduction::changed()
     }
 
@@ -888,6 +953,20 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
         )
         .shortcut(S::ToggleWrap),
         D::new(
+            "view.unified",
+            "Unified Diff View",
+            CommandsAction::SetLayout(LayoutMode::Unified),
+        )
+        .shortcut(S::UnifiedView)
+        .enabled(settings.viewport.layout != LayoutMode::Unified),
+        D::new(
+            "view.split",
+            "Split Diff View",
+            CommandsAction::SetLayout(LayoutMode::Split),
+        )
+        .shortcut(S::SplitView)
+        .enabled(settings.viewport.layout != LayoutMode::Split),
+        D::new(
             ids::TOGGLE_CONTINUOUS,
             if settings.continuous_scroll {
                 "Disable Continuous Scroll"
@@ -993,6 +1072,7 @@ impl Controller for CommandsController {
                 self.open_settings(Some(SettingsSection::Keymaps))
             }
             A::CloseOverlay => self.close_top(),
+            A::DismissOverlays => self.dismiss_overlays(),
             A::MoveOverlaySelection(delta) => match &mut self.picker {
                 Some(picker) => {
                     picker.move_selection(delta, self.row_stride);
@@ -1050,7 +1130,6 @@ impl Controller for CommandsController {
             }
             A::SetExternalCommands(commands) => {
                 self.external = commands;
-                self.install_keymap(&self.settings.settings);
                 Reduction::default()
             }
             A::RunCommand(id) => self.run_command(id, cx),
@@ -1105,7 +1184,10 @@ impl Controller for CommandsController {
             A::CloseSettings => self.close_settings(),
             A::SetSettingsSection(section) => match &mut self.settings_page {
                 Some(page) => {
-                    page.section = section;
+                    if page.section != section {
+                        page.section = section;
+                        page.scroll.set_offset(0.0, 0.0);
+                    }
                     page.capture = None;
                     page.notice = None;
                     Reduction::changed()
@@ -1116,6 +1198,7 @@ impl Controller for CommandsController {
                 self.update_settings(|s| s.viewport.wrap_enabled = !s.viewport.wrap_enabled)
             }
             A::SetWrapColumn(column) => self.update_settings(|s| s.viewport.wrap_column = column),
+            A::SetLayout(layout) => self.update_settings(|s| s.viewport.layout = layout),
             A::SetSidebarWidth(width) => self.update_settings(|s| s.sidebar_width_px = Some(width)),
             A::IncreaseUiScale => self.update_settings(|s| {
                 s.ui_scale_pct = step_scale(s.ui_scale_pct, i32::from(UI_SCALE_STEP_PCT))
@@ -1143,6 +1226,10 @@ impl Controller for CommandsController {
                 self.update_settings(|s| s.continuous_scroll = !s.continuous_scroll)
             }
             A::ToggleAutoUpdate => self.update_settings(|s| s.auto_update = !s.auto_update),
+            A::SetAiSteeringPrompt(prompt) => {
+                self.update_settings(|s| s.ai_steering_prompt = prompt)
+            }
+            A::SetAiProvider(provider) => self.update_settings(|s| s.ai_provider = provider),
             A::BeginKeymapRebind(command) => match &mut self.settings_page {
                 Some(page) => {
                     page.capture = Some(command);
@@ -1233,11 +1320,11 @@ impl Controller for CommandsController {
                 Reduction::changed()
             }
             Intent::RequestConfirmation(request) => {
-                if self.has_layer(LayerKind::Confirmation) {
-                    self.pop_layer(LayerKind::Confirmation);
-                }
+                let Some(return_focus) = self.admit(LayerKind::Confirmation) else {
+                    return Reduction::default();
+                };
                 self.confirmation = Some(request.clone());
-                self.push_layer(LayerKind::Confirmation);
+                self.push_layer(LayerKind::Confirmation, return_focus);
                 Reduction::changed()
             }
             _ => Reduction::default(),

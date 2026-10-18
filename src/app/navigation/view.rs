@@ -13,14 +13,18 @@ use super::NavigationController;
 use super::rows::{self, Row};
 use super::state::{ListMetrics, RepoStatus};
 use crate::app::commands::keymap::WORKSPACE_CONTEXT;
+use crate::app::mutations::{RowAction, change_actions, context_menu, operation_log_actions};
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SIDEBAR, SIDEBAR_FILTER};
 use crate::app::tokens::{self, Ico, Sp, TextStyle};
+use crate::contracts::commands::CommandsAction;
 use crate::contracts::navigation::{
     NavigationAction, SelectedFile, SelectionOrigin, SidebarMode, SidebarTab,
 };
 use crate::contracts::shell::{Action, LogicalFocus, ShellAction};
 use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
+use crate::core::vcs::model::ChangeBucket;
+use crate::core::vcs::model::VcsChange;
 use diffy_diff::FileStatus;
 
 const OVERSCAN_ROWS: usize = 8;
@@ -235,6 +239,7 @@ fn files(nav: &mut NavigationController, height: f32, focused: bool, theme: &The
                     theme,
                 )
             }
+            Row::Section { bucket, files } => section_row(*bucket, *files, theme),
         })
         .collect();
     let tc = &theme.colors;
@@ -250,7 +255,7 @@ fn files(nav: &mut NavigationController, height: f32, focused: bool, theme: &The
             key_context={WORKSPACE_CONTEXT}
             on:key:arrowdown={NavigationAction::SelectNextFile}
             on:key:arrowup={NavigationAction::SelectPreviousFile}
-            accessibility_role={if tree { AccessibilityRole::Tree } else { AccessibilityRole::List }}
+            accessibility_role={if tree { AccessibilityRole::Tree } else { AccessibilityRole::ListBox }}
             aria-label="Changed files"
             test_id="file-list"
             @when {focused} { border={tc.focus_border} }
@@ -301,6 +306,7 @@ fn file_row(
     let key = file.key;
     let indent = tokens::scaled(Sp::LG, scale) * f32::from(depth);
     let small = TextStyle::BodySmall.font_size(theme);
+    let label = row_label(&path, file, stats);
     let viewed_label = if viewed {
         "Mark unviewed"
     } else {
@@ -319,8 +325,8 @@ fn file_row(
             key={format!("file:{}", key.0)}
             id={format!("file:{}", key.0)}
             test_id={format!("file:{}", key.0)}
-            accessibility_role={if tree { AccessibilityRole::TreeItem } else { AccessibilityRole::ListItem }}
-            aria-label={path.clone()}
+            accessibility_role={if tree { AccessibilityRole::TreeItem } else { AccessibilityRole::ListBoxOption }}
+            aria-label={label}
             aria-selected={selected}
             on:click={NavigationAction::SelectFile(SelectedFile { key, origin: SelectionOrigin::Sidebar })}
         >
@@ -360,6 +366,45 @@ fn file_row(
                 />
             </div>
         </div>
+    }
+}
+
+fn section_row(bucket: ChangeBucket, files: u32, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let label = rows::section_label(bucket);
+    let noun = if files == 1 { "file" } else { "files" };
+    view! {
+        <div
+            class="flex-row items-center w-full shrink-0"
+            h={theme.metrics.ui_row_height.round()}
+            px={tokens::scaled(Sp::SM, scale)}
+            gap={tokens::scaled(Sp::XS, scale)}
+            key={format!("section:{label}")}
+            accessibility_role={AccessibilityRole::Heading}
+            aria-label={format!("{label}, {files} {noun}")}
+        >
+            <text size={TextStyle::BodySmall.font_size(theme)} class="font-medium" color={tc.text_muted}>{label}</text>
+            <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>{files.to_string()}</text>
+        </div>
+    }
+}
+
+fn row_label(path: &str, file: &ManifestFile, stats: Option<(u32, u32)>) -> String {
+    let status = if file.binary {
+        "binary"
+    } else {
+        match file.status {
+            FileStatus::Added => "added",
+            FileStatus::Deleted => "deleted",
+            FileStatus::Modified => "modified",
+            FileStatus::Renamed => "renamed",
+            FileStatus::Copied => "copied",
+        }
+    };
+    match stats {
+        Some((add, del)) => format!("{path}, {status}, +{add} \u{2212}{del}"),
+        None => format!("{path}, {status}"),
     }
 }
 
@@ -409,8 +454,18 @@ fn history(nav: &mut NavigationController, height: f32, theme: &Theme) -> AnyEle
         return empty_state("No commits", "This comparison has no commits", theme);
     }
     let row_height = theme.metrics.ui_row_height.round();
+    let capabilities = nav.repository().map(|repo| repo.snapshot.capabilities);
+    let is_selected = |commit: &VcsChange| {
+        selected
+            .as_deref()
+            .is_some_and(|s| commit.revision.id.starts_with(s) || s == commit.short_revision)
+    };
+    let bar = capabilities
+        .zip(commits.iter().find(|c| is_selected(c)))
+        .and_then(|(caps, commit)| action_bar(&change_actions(commit, caps), theme));
     let back_h = if drilled { row_height } else { 0.0 };
-    let list_h = (height - back_h).max(0.0);
+    let bar_h = if bar.is_some() { row_height } else { 0.0 };
+    let list_h = (height - back_h - bar_h).max(0.0);
     let window = virtual_list_window(
         commits.len(),
         scroll,
@@ -423,7 +478,12 @@ fn history(nav: &mut NavigationController, height: f32, theme: &Theme) -> AnyEle
         .iter()
         .map(|commit| {
             let revision = commit.revision.id.clone();
-            let is_selected = selected.as_deref().is_some_and(|s| revision.starts_with(s) || s == commit.short_revision);
+            let is_selected = is_selected(commit);
+            let menu = row_menu(
+                capabilities
+                    .map(|caps| change_actions(commit, caps))
+                    .unwrap_or_default(),
+            );
             view! {
                 <div
                     class="flex-row items-center w-full shrink-0"
@@ -435,10 +495,11 @@ fn history(nav: &mut NavigationController, height: f32, theme: &Theme) -> AnyEle
                     cursor={CursorHint::Pointer}
                     key={revision.clone()}
                     id={format!("commit:{revision}")}
-                    accessibility_role={AccessibilityRole::ListItem}
+                    accessibility_role={AccessibilityRole::ListBoxOption}
                     aria-label={commit.summary.clone()}
                     aria-selected={is_selected}
                     on:click={NavigationAction::SelectHistoryCommit(revision.clone())}
+                    on:context_menu={menu}
                 >
                     <text size={TextStyle::MonoSmall.font_size(theme)} color={tc.text_accent}>{commit.short_revision.clone()}</text>
                     <text size={TextStyle::Body.font_size(theme)} class="truncate" color={tc.text}>{commit.summary.clone()}</text>
@@ -468,6 +529,7 @@ fn history(nav: &mut NavigationController, height: f32, theme: &Theme) -> AnyEle
     view! {
         <div class="w-full flex-col" h={height}>
             {?back}
+            {?bar}
             <div
                 class="w-full flex-col overflow-hidden"
                 h={list_h}
@@ -475,7 +537,7 @@ fn history(nav: &mut NavigationController, height: f32, theme: &Theme) -> AnyEle
                 scroll_total={window.total_extent}
                 on:scroll={ScrollActionBuilder::new(|lines| Action::from(NavigationAction::ScrollHistory(lines)).into())}
                 key_context={WORKSPACE_CONTEXT}
-                accessibility_role={AccessibilityRole::List}
+                accessibility_role={AccessibilityRole::ListBox}
                 aria-label="Commits"
             >
                 <div class="w-full shrink-0" h={window.top_spacer} />
@@ -506,11 +568,22 @@ fn operations(nav: &NavigationController, height: f32, theme: &Theme) -> AnyElem
     }
     let selected = nav.selected_operation();
     let row_height = theme.metrics.ui_row_height.round();
+    let caps = repository.snapshot.capabilities;
+    let bar = log
+        .iter()
+        .enumerate()
+        .find(|(_, entry)| selected == Some(entry.operation_id.as_str()))
+        .and_then(|(index, entry)| {
+            action_bar(&operation_log_actions(entry, index == 0, caps), theme)
+        });
+    let list_h = (height - if bar.is_some() { row_height } else { 0.0 }).max(0.0);
     let rows: Vec<AnyElement> = log
         .iter()
-        .take((height / row_height.max(1.0)).ceil() as usize + OVERSCAN_ROWS)
-        .map(|entry| {
+        .enumerate()
+        .take((list_h / row_height.max(1.0)).ceil() as usize + OVERSCAN_ROWS)
+        .map(|(index, entry)| {
             let is_selected = selected == Some(entry.operation_id.as_str());
+            let menu = row_menu(operation_log_actions(entry, index == 0, caps));
             let detail = [entry.user.as_str(), entry.time.as_str()]
                 .into_iter()
                 .filter(|s| !s.is_empty())
@@ -527,10 +600,11 @@ fn operations(nav: &NavigationController, height: f32, theme: &Theme) -> AnyElem
                     cursor={CursorHint::Pointer}
                     key={entry.operation_id.clone()}
                     id={format!("operation:{}", entry.operation_id)}
-                    accessibility_role={AccessibilityRole::ListItem}
+                    accessibility_role={AccessibilityRole::ListBoxOption}
                     aria-label={entry.description.clone()}
                     aria-selected={is_selected}
                     on:click={NavigationAction::SelectOperation(entry.operation_id.clone())}
+                    on:context_menu={menu}
                 >
                     <text size={TextStyle::MonoSmall.font_size(theme)} color={tc.text_accent}>{entry.short_operation_id.clone()}</text>
                     <div class="flex-1 flex-col" min_w={0.0}>
@@ -542,13 +616,76 @@ fn operations(nav: &NavigationController, height: f32, theme: &Theme) -> AnyElem
         })
         .collect();
     view! {
-        <div
-            class="w-full flex-col overflow-hidden"
-            h={height}
-            accessibility_role={AccessibilityRole::List}
-            aria-label="Operations"
-        >
-            {...rows}
+        <div class="w-full flex-col" h={height}>
+            {?bar}
+            <div
+                class="w-full flex-col overflow-hidden"
+                h={list_h}
+                accessibility_role={AccessibilityRole::ListBox}
+                aria-label="Operations"
+            >
+                {...rows}
+            </div>
         </div>
     }
+}
+
+fn row_menu(actions: Vec<RowAction>) -> impl Fn(ContextMenuEvent) -> quark_ui::Action + 'static {
+    let entries = context_menu(actions);
+    move |event| {
+        Action::from(CommandsAction::OpenContextMenu {
+            entries: entries.clone(),
+            x: event.x.round() as i32,
+            y: event.y.round() as i32,
+        })
+        .into()
+    }
+}
+
+fn action_bar(actions: &[RowAction], theme: &Theme) -> Option<AnyElement> {
+    if actions.is_empty() {
+        return None;
+    }
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let buttons: Vec<AnyElement> = actions
+        .iter()
+        .map(|row| {
+            view! {
+                <div
+                    class="flex-row items-center shrink-0"
+                    h={theme.metrics.ui_row_height.round() - tokens::scaled(Sp::XS, scale)}
+                    px={tokens::scaled(Sp::SM, scale)}
+                    rounded={theme.metrics.control_radius}
+                    bg={tc.element_background}
+                    hover_bg={tc.element_hover}
+                    cursor={CursorHint::Pointer}
+                    id={format!("row-action:{}", row.label)}
+                    role="button"
+                    aria-label={row.label.clone()}
+                    on:click={row.action.clone()}
+                >
+                    <text
+                        size={TextStyle::BodySmall.font_size(theme)}
+                        class="truncate"
+                        color={if row.destructive { tc.status_error } else { tc.text }}
+                    >
+                        {row.label.clone()}
+                    </text>
+                </div>
+            }
+        })
+        .collect();
+    Some(view! {
+        <div
+            class="flex-row items-center w-full shrink-0 overflow-hidden"
+            h={theme.metrics.ui_row_height.round()}
+            px={tokens::scaled(Sp::SM, scale)}
+            gap={tokens::scaled(Sp::XS, scale)}
+            accessibility_role={AccessibilityRole::Toolbar}
+            aria-label="Row actions"
+        >
+            {...buttons}
+        </div>
+    })
 }

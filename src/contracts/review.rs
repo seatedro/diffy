@@ -2,6 +2,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use quark_ui::document::DocumentEvent;
+
 use crate::contracts::shared::{AccountEpoch, JobId, SourceTarget};
 use crate::core::forge::github::{
     CreatePullRequestReview, CreatePullRequestReviewComment, CreatePullRequestReviewReply,
@@ -49,9 +51,17 @@ pub enum ComposerFormat {
     BulletList,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CardKey {
+    Thread(ReviewThreadId),
+    Draft(ReviewDraftId),
+    NewComment,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ReviewAction {
     OpenAuthModal,
+    CloseOverlay,
     StartDeviceFlow,
     OpenDeviceFlowBrowser,
     OpenAccountMenu,
@@ -72,6 +82,11 @@ pub enum ReviewAction {
     DiscardDrafts,
     ToggleThread(ReviewThreadId),
     SetThreadResolved { id: ReviewThreadId, resolved: bool },
+    EditDraft(ReviewDraftId),
+    DeleteDraft(ReviewDraftId),
+    CardDocument { card: CardKey, event: DocumentEvent },
+    CopyCardSelection(CardKey),
+    ScrollComposer(i32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

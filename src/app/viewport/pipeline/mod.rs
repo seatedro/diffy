@@ -3,5 +3,5 @@ mod state;
 mod tests;
 mod view;
 
-pub use state::PipelineController;
+pub use state::{PipelineController, PipelineInstall};
 pub use view::view;

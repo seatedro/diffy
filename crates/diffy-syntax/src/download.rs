@@ -80,7 +80,7 @@ impl Downloads {
     }
 }
 
-fn public_key_bytes(key: &PublicKey) -> [u8; 32] {
+pub(crate) fn public_key_bytes(key: &PublicKey) -> [u8; 32] {
     let bytes = pack::unhex(&key.to_hex()).unwrap_or_default();
     bytes.try_into().unwrap_or([0; 32])
 }
@@ -117,6 +117,13 @@ pub(crate) struct Remote {
     /// This session's index fetch finished (or failed). Until then a tag
     /// missing from `cached` may still be in the fresh index.
     fetched: bool,
+}
+
+impl Remote {
+    pub(crate) fn invalidate(&mut self) {
+        self.started = false;
+        self.fetched = false;
+    }
 }
 
 fn find<'a>(packs: &'a [Arc<PackManifest>], tag: &str) -> Option<&'a Arc<PackManifest>> {
@@ -303,7 +310,7 @@ fn fetch_index(
     Ok(verified.packs.into_iter().map(Arc::new).collect())
 }
 
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

@@ -137,3 +137,6 @@ mod tests {
         assert!(plan_application(ChangeBucket::WorkingCopy, FileOperation::Stage, false).is_err());
     }
 }
+
+#[cfg(test)]
+mod repo_tests;

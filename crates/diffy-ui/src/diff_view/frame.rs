@@ -4,7 +4,10 @@ use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use diffy_diff::{DiffDocument, FileStatus, InlineOptions, Mode, RowKind, Side, line_detail};
+use diffy_diff::{
+    ChangeIntensity, DiffDocument, FileStatus, InlineDetail, InlineMode, InlineOptions, Mode,
+    RowKind, Side, line_detail,
+};
 use quark_render::FontKind;
 use quark_text::{LayoutCache, TextParams, TextStyle, TextSystem};
 use quark_ui::virtual_list::VariableList;
@@ -727,6 +730,13 @@ impl DiffViewState {
     /// the pair's inline diff, shared by both unified rows that show it. A
     /// long pair's comes from the word thread; none until it lands.
     fn word_ranges(&self, segment: &Segment, row: u32) -> ([Vec<Range<usize>>; 2], WordDetail) {
+        let file = segment.projection.file[row as usize];
+        if self.inline_options.mode != InlineMode::Off && segment.doc.semantics(file).is_some() {
+            return (
+                semantic_words(segment, row, file),
+                WordDetail::Done(InlineDetail::Exact),
+            );
+        }
         let Some(pair) = segment.projection.line_pair(row) else {
             return (Default::default(), WordDetail::Unpaired);
         };
@@ -827,6 +837,21 @@ fn clip_ranges(ranges: &[Range<usize>], len: usize) -> Vec<Range<usize>> {
         .filter(|r| r.start < len)
         .map(|r| r.start..r.end.min(len))
         .collect()
+}
+
+fn semantic_words(segment: &Segment, row: u32, file: u32) -> [Vec<Range<usize>>; 2] {
+    let (doc, p) = (&segment.doc, &segment.projection);
+    [Side::Old, Side::New].map(|side| {
+        let Some(index) = p.line(row, side) else {
+            return Vec::new();
+        };
+        let line = source_line(doc, file, side, index);
+        doc.semantic_spans(file, side, line)
+            .iter()
+            .filter(|span| span.intensity != ChangeIntensity::UnchangedContext)
+            .map(|span| span.start as usize..span.end as usize)
+            .collect()
+    })
 }
 
 #[cfg(test)]
@@ -970,6 +995,67 @@ mod tests {
                 "fn f() { | fn f() {",
                 " |     log(\"x\");",
                 "    return a + b; |     return a + b[ * 2];",
+                "} | }",
+            ]
+        );
+    }
+
+    #[test]
+    fn semantic_spans_replace_word_highlights() {
+        use diffy_diff::{
+            AlignedRow, DocumentBuilder, FileMeta, SemanticSpan, SourceCoverage, TextStore,
+        };
+        let span = |start, end, intensity| SemanticSpan {
+            start,
+            end,
+            intensity,
+        };
+        let row = |old, new| AlignedRow { old, new };
+        let mut builder = DocumentBuilder::new();
+        let mut file = builder.file(
+            FileMeta {
+                old_path: Some("f.rs".into()),
+                new_path: Some("f.rs".into()),
+                status: FileStatus::Modified,
+                ..FileMeta::default()
+            },
+            SourceCoverage::Full,
+            TextStore::new("fn f() {\n    foo(1)\n}\n"),
+            TextStore::new("fn f() {\n    foo(2)\n    bar()\n}\n"),
+        );
+        file.structural(true)
+            .hunk(0, 0)
+            .context(1)
+            .change(1, 2)
+            .context(1)
+            .row(row(Some(0), Some(0)))
+            .row(row(Some(1), Some(1)))
+            .row(row(None, Some(2)))
+            .row(row(Some(2), Some(3)))
+            .spans(
+                Side::Old,
+                1,
+                &[
+                    span(4, 8, ChangeIntensity::UnchangedContext),
+                    span(8, 9, ChangeIntensity::NovelWord),
+                ],
+            )
+            .spans(Side::New, 1, &[span(8, 9, ChangeIntensity::Novel)])
+            .spans(Side::New, 2, &[span(4, 9, ChangeIntensity::Novel)]);
+        file.finish().unwrap();
+        let mut state = DiffViewState::new("test.diff", FocusId::new(1), builder.build());
+        state.set_mode(Mode::Split);
+        state.set_viewport(800.0, 400.0);
+        let mut text = TextSystem::vendored_only(&Default::default());
+        let mut layouts = LayoutCache::default();
+        state.prepare(&mut text, &mut layouts, 1.0, 0);
+
+        assert_eq!(
+            split_rows(&state),
+            [
+                "fn f() { | fn f() {",
+                "    foo([1]) |     foo([2])",
+                " |     [bar()]",
                 "} | }",
             ]
         );

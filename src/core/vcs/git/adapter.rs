@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
-use carbon::TextStore;
-
 use crate::contracts::navigation::{RepositoryChangeKind, RepositorySyncReason};
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
 use crate::core::compare::{
@@ -15,8 +13,8 @@ use crate::core::vcs::cache::VcsReadCache;
 use crate::core::vcs::git::service::is_full_hex_oid;
 use crate::core::vcs::git::status::StatusBits;
 use crate::core::vcs::git::{
-    BranchInfo, CommitInfo, GitService, PatchApplyTarget, PullOutcome, StatusItem, StatusOperation,
-    StatusScope, TagInfo, WORKDIR_REF, status::status_items_from_entry_with_old_path,
+    BranchInfo, CommitInfo, GitService, PullOutcome, StatusItem, StatusOperation, StatusScope,
+    TagInfo, WORKDIR_REF, status::status_items_from_entry_with_old_path,
 };
 use crate::core::vcs::model::{
     ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, FileOperation, PublishAction,
@@ -24,6 +22,9 @@ use crate::core::vcs::model::{
     RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_GIT, VcsChange, VcsCompareRequest,
     VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
 };
+use crate::core::vcs::mutation::{MutationMaterial, PatchApplication};
+use crate::core::vcs::patch::patch_identity;
+use crate::core::vcs::source::SourceText;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GitBackend;
@@ -388,12 +389,18 @@ impl VcsRepository for GitRepository {
             .apply_batch_status_operation(&items, status_operation_from_file_operation(operation))
     }
 
-    fn apply_patch_operation(&mut self, patch: &str, operation: FileOperation) -> Result<()> {
-        let target = match operation {
-            FileOperation::Discard => PatchApplyTarget::Workdir,
-            FileOperation::Stage | FileOperation::Unstage => PatchApplyTarget::Index,
-        };
-        self.service.apply_patch(patch, target)
+    fn mutation_material(&mut self, change: &FileChange) -> Result<MutationMaterial> {
+        let item = status_item_from_file_change(change);
+        let patch = self.service.status_item_exact_patch(&item)?;
+        let identity = patch_identity(&patch);
+        Ok(MutationMaterial {
+            patch: patch.into(),
+            identity,
+        })
+    }
+
+    fn apply_patch(&mut self, patch: &[u8], application: PatchApplication) -> Result<()> {
+        self.service.apply_patch(patch, application)
     }
 
     fn create_commit(&mut self, message: &str) -> Result<()> {
@@ -499,22 +506,27 @@ impl VcsRepository for GitRepository {
         )))
     }
 
-    fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore> {
+    fn read_file_source(&mut self, revision: &RevisionId, path: &str) -> Result<SourceText> {
         // Blob content at a fixed commit OID is immutable; workdir, index,
         // and symbolic refs are not and bypass the cache.
         let cacheable = is_full_hex_oid(&revision.id);
         let epoch = self.immutable_cache_epoch();
         if cacheable
             && let Ok(cache) = IMMUTABLE_READ_CACHE.lock()
-            && let Some(text) = cache.cached_file_text(Some(&epoch), revision, path)
+            && let Some(source) = cache.cached_file_source(Some(&epoch), revision, path)
         {
-            return Ok(text);
+            return Ok(source);
         }
-        let text = self.service.read_file_text_store_at(&revision.id, path)?;
+        let source = self.service.read_file_source_at(&revision.id, path)?;
         if cacheable && let Ok(mut cache) = IMMUTABLE_READ_CACHE.lock() {
-            cache.insert_file_text(Some(epoch), revision.clone(), path.to_owned(), text.clone());
+            cache.insert_file_source(
+                Some(epoch),
+                revision.clone(),
+                path.to_owned(),
+                source.clone(),
+            );
         }
-        Ok(text)
+        Ok(source)
     }
 }
 
@@ -1084,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn read_file_text_returns_content_at_revision() {
+    fn read_file_source_returns_content_at_revision() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let first = commit_file(&repo, "src/lib.rs", b"hello\nworld\n", "first");
@@ -1093,33 +1105,34 @@ mod tests {
         let mut adapter = open_adapter(repo_dir.path());
 
         let old_text = adapter
-            .read_file_text(&RevisionId::git(first), "src/lib.rs")
+            .read_file_source(&RevisionId::git(first), "src/lib.rs")
             .unwrap();
-        assert_eq!(old_text.as_str(), Some("hello\nworld\n"));
+        assert_eq!(old_text.bytes(), b"hello\nworld\n");
 
         let workdir_text = adapter
-            .read_file_text(&RevisionId::git(WORKDIR_REF), "src/lib.rs")
+            .read_file_source(&RevisionId::git(WORKDIR_REF), "src/lib.rs")
             .unwrap();
-        assert_eq!(workdir_text.as_str(), Some("changed\n"));
+        assert_eq!(workdir_text.bytes(), b"changed\n");
 
         assert!(
             adapter
-                .read_file_text(&RevisionId::git("HEAD"), "src/missing.rs")
+                .read_file_source(&RevisionId::git("HEAD"), "src/missing.rs")
                 .is_err()
         );
     }
 
     #[test]
-    fn read_file_text_rejects_binary_content() {
+    fn read_file_source_marks_binary_content() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let oid = commit_file(&repo, "blob.bin", b"\x00\x01\x02binary", "add binary");
 
         let mut adapter = open_adapter(repo_dir.path());
-        let error = adapter
-            .read_file_text(&RevisionId::git(oid), "blob.bin")
-            .expect_err("binary content rejected");
-        assert!(error.to_string().contains("binary"), "{error}");
+        let source = adapter
+            .read_file_source(&RevisionId::git(oid), "blob.bin")
+            .unwrap();
+        assert!(source.is_binary());
+        assert_eq!(source.bytes(), b"\x00\x01\x02binary");
     }
 
     #[test]

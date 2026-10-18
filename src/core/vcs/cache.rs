@@ -12,13 +12,13 @@
 //!
 //! [`clear`]: VcsReadCache::clear
 
-use carbon::TextStore;
-
 use crate::core::compare::CompareOutput;
 use crate::core::vcs::model::{RevisionId, VcsCompareRequest};
+use crate::core::vcs::source::SourceText;
 
 const MAX_DIFF_CACHE_ENTRIES: usize = 8;
-const MAX_FILE_TEXT_CACHE_ENTRIES: usize = 16;
+const MAX_FILE_SOURCE_CACHE_ENTRIES: usize = 16;
+const MAX_FILE_SOURCE_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_STATS_CACHE_ENTRIES: usize = 16;
 
 #[derive(Clone)]
@@ -37,11 +37,11 @@ struct StatsCacheEntry {
 }
 
 #[derive(Clone)]
-struct FileTextCacheEntry {
+struct FileSourceCacheEntry {
     epoch: Option<String>,
     revision: RevisionId,
     path: String,
-    text: TextStore,
+    source: SourceText,
 }
 
 /// Bounded diff, diff-stat, and file-text caches for a VCS repository
@@ -49,7 +49,8 @@ struct FileTextCacheEntry {
 #[derive(Default)]
 pub struct VcsReadCache {
     diffs: Vec<DiffCacheEntry>,
-    file_texts: Vec<FileTextCacheEntry>,
+    file_sources: Vec<FileSourceCacheEntry>,
+    file_source_bytes: usize,
     stats: Vec<StatsCacheEntry>,
 }
 
@@ -119,41 +120,51 @@ impl VcsReadCache {
         });
     }
 
-    pub fn cached_file_text(
+    pub fn cached_file_source(
         &self,
         epoch: Option<&str>,
         revision: &RevisionId,
         path: &str,
-    ) -> Option<TextStore> {
-        self.file_texts
+    ) -> Option<SourceText> {
+        self.file_sources
             .iter()
             .find(|entry| {
                 entry.epoch.as_deref() == epoch && entry.revision == *revision && entry.path == path
             })
-            .map(|entry| entry.text.clone())
+            .map(|entry| entry.source.clone())
     }
 
-    pub fn insert_file_text(
+    pub fn insert_file_source(
         &mut self,
         epoch: Option<String>,
         revision: RevisionId,
         path: String,
-        text: TextStore,
+        source: SourceText,
     ) {
-        if self.file_texts.len() >= MAX_FILE_TEXT_CACHE_ENTRIES {
-            self.file_texts.remove(0);
+        let len = source.len();
+        if len > MAX_FILE_SOURCE_CACHE_BYTES {
+            return;
         }
-        self.file_texts.push(FileTextCacheEntry {
+        while !self.file_sources.is_empty()
+            && (self.file_sources.len() >= MAX_FILE_SOURCE_CACHE_ENTRIES
+                || self.file_source_bytes + len > MAX_FILE_SOURCE_CACHE_BYTES)
+        {
+            let evicted = self.file_sources.remove(0);
+            self.file_source_bytes -= evicted.source.len();
+        }
+        self.file_source_bytes += len;
+        self.file_sources.push(FileSourceCacheEntry {
             epoch,
             revision,
             path,
-            text,
+            source,
         });
     }
 
     pub fn clear(&mut self) {
         self.diffs.clear();
-        self.file_texts.clear();
+        self.file_sources.clear();
+        self.file_source_bytes = 0;
         self.stats.clear();
     }
 }
@@ -219,28 +230,28 @@ mod tests {
     }
 
     #[test]
-    fn file_text_hits_require_matching_epoch_revision_and_path() {
+    fn file_source_hits_require_matching_epoch_revision_and_path() {
         let mut cache = VcsReadCache::new();
-        cache.insert_file_text(
+        cache.insert_file_source(
             Some("op-1".to_owned()),
             revision("abc"),
             "src/lib.rs".to_owned(),
-            TextStore::from_text("hello\n".to_owned()),
+            SourceText::from_bytes(b"hello\n".to_vec()),
         );
 
         assert!(
             cache
-                .cached_file_text(Some("op-1"), &revision("abc"), "src/lib.rs")
+                .cached_file_source(Some("op-1"), &revision("abc"), "src/lib.rs")
                 .is_some()
         );
         assert!(
             cache
-                .cached_file_text(Some("op-2"), &revision("abc"), "src/lib.rs")
+                .cached_file_source(Some("op-2"), &revision("abc"), "src/lib.rs")
                 .is_none()
         );
         assert!(
             cache
-                .cached_file_text(Some("op-1"), &revision("def"), "src/lib.rs")
+                .cached_file_source(Some("op-1"), &revision("def"), "src/lib.rs")
                 .is_none()
         );
     }
@@ -271,6 +282,31 @@ mod tests {
     }
 
     #[test]
+    fn file_source_cache_evicts_to_its_byte_budget() {
+        let mut cache = VcsReadCache::new();
+        let half = vec![b'a'; MAX_FILE_SOURCE_CACHE_BYTES / 2 + 1];
+        for name in ["a", "b"] {
+            cache.insert_file_source(
+                None,
+                revision(name),
+                "f".to_owned(),
+                SourceText::from_bytes(half.clone()),
+            );
+        }
+        assert!(
+            cache
+                .cached_file_source(None, &revision("a"), "f")
+                .is_none()
+        );
+        assert!(
+            cache
+                .cached_file_source(None, &revision("b"), "f")
+                .is_some()
+        );
+        assert_eq!(cache.file_source_bytes, half.len());
+    }
+
+    #[test]
     fn stats_hits_require_matching_epoch_and_request() {
         let mut cache = VcsReadCache::new();
         cache.insert_stats(Some("op-1".to_owned()), request("abc"), (3, 1));
@@ -288,18 +324,18 @@ mod tests {
     fn clear_drops_all_caches() {
         let mut cache = VcsReadCache::new();
         cache.insert_diff(None, request("abc"), None, CompareOutput::default());
-        cache.insert_file_text(
+        cache.insert_file_source(
             None,
             revision("abc"),
             "src/lib.rs".to_owned(),
-            TextStore::from_text(String::new()),
+            SourceText::default(),
         );
         cache.insert_stats(None, request("abc"), (1, 2));
         cache.clear();
         assert!(cache.cached_diff(None, &request("abc"), None).is_none());
         assert!(
             cache
-                .cached_file_text(None, &revision("abc"), "src/lib.rs")
+                .cached_file_source(None, &revision("abc"), "src/lib.rs")
                 .is_none()
         );
         assert!(cache.cached_stats(None, &request("abc")).is_none());

@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use carbon::TextStore;
-
 use crate::contracts::navigation::RepositorySyncReason;
 use crate::core::compare::{
     CompareFileStatsTarget, CompareFileSummary, CompareOutput, ProgressSink, RendererKind,
@@ -13,6 +11,8 @@ use crate::core::vcs::model::{
     RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsKind,
     VcsOperation, VcsSnapshot,
 };
+use crate::core::vcs::mutation::{MutationMaterial, PatchApplication};
+use crate::core::vcs::source::SourceText;
 
 fn unsupported_operation(location: &RepoLocation, op: &str) -> DiffyError {
     let backend = if location.kind == VcsKind::JJ {
@@ -108,7 +108,10 @@ pub trait VcsRepository: Send {
         }
         Ok(())
     }
-    fn apply_patch_operation(&mut self, _patch: &str, _operation: FileOperation) -> Result<()> {
+    fn mutation_material(&mut self, _change: &FileChange) -> Result<MutationMaterial> {
+        Err(unsupported_operation(self.location(), "line operation"))
+    }
+    fn apply_patch(&mut self, _patch: &[u8], _application: PatchApplication) -> Result<()> {
         Err(unsupported_operation(self.location(), "patch operation"))
     }
     fn create_commit(&mut self, _message: &str) -> Result<()> {
@@ -157,5 +160,5 @@ pub trait VcsRepository: Send {
         ))
     }
     fn compare_working_file(&mut self, path: &str) -> Result<CompareOutput>;
-    fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore>;
+    fn read_file_source(&mut self, revision: &RevisionId, path: &str) -> Result<SourceText>;
 }

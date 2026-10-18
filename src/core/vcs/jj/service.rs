@@ -2,10 +2,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use carbon::TextStore;
-
 use crate::contracts::navigation::RepositorySyncReason;
-use crate::core::compare::backends::compare_output_from_raw_patch;
 #[cfg(feature = "difftastic")]
 use crate::core::compare::backends::{DifftasticChangedPath, compare_changed_paths};
 use crate::core::compare::{
@@ -15,6 +12,7 @@ use crate::core::compare::{
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::cache::VcsReadCache;
+use crate::core::vcs::compare_port::{output_from_patch, summary_from_change};
 use crate::core::vcs::jj::cli::JjCli;
 use crate::core::vcs::jj::parse::{
     parse_bookmark_list, parse_change_log, parse_conflict_list, parse_diff_summary,
@@ -26,6 +24,9 @@ use crate::core::vcs::model::{
     RevisionId, VCS_PROFILE_JJ, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsOperation, VcsRef,
     VcsSnapshot,
 };
+use crate::core::vcs::mutation::{ApplyTarget, MutationMaterial, PatchApplication};
+use crate::core::vcs::patch::{parse_exact_patch, patch_identity};
+use crate::core::vcs::source::SourceText;
 
 const JJ_FILE_STATS_PATH_CHUNK: usize = 512;
 
@@ -171,10 +172,10 @@ impl JjRepository {
                 file_summaries: changes
                     .into_iter()
                     .map(|change| {
-                        CompareFileSummary::from_paths_status(
+                        summary_from_change(
                             change.old_path.as_deref(),
-                            Some(change.path.as_str()),
-                            carbon_status_from_file_change_status(change.status),
+                            &change.path,
+                            change.status,
                             true,
                         )
                     })
@@ -698,8 +699,8 @@ impl VcsRepository for JjRepository {
             return Ok(output);
         }
         let args = self.diff_args_for_spec(&request.spec)?;
-        let raw_diff = self.cli.run_ignored_wc(&args)?;
-        let output = compare_output_from_raw_patch(&raw_diff)?;
+        let raw_diff = self.cli.run_bytes_ignored_wc(&args)?;
+        let output = output_from_patch(&raw_diff)?;
         self.read_cache
             .insert_diff(operation_id, request.clone(), None, output.clone());
         Ok(output)
@@ -715,21 +716,12 @@ impl VcsRepository for JjRepository {
 
         let raw_diff = self
             .cli
-            .run_ignored_wc(&self.diff_args_for_spec(&request.spec)?)?;
-        let output = compare_output_from_raw_patch(&raw_diff)?;
-        let additions = output
-            .carbon
-            .files
-            .iter()
-            .map(|file| u32_to_i32_saturating(file.additions))
-            .sum();
-        let deletions = output
-            .carbon
-            .files
-            .iter()
-            .map(|file| u32_to_i32_saturating(file.deletions))
-            .sum();
-        Ok((additions, deletions))
+            .run_bytes_ignored_wc(&self.diff_args_for_spec(&request.spec)?)?;
+        Ok(patch_file_stats(&raw_diff)?
+            .into_iter()
+            .fold((0, 0), |(adds, dels), (_, (a, d))| {
+                (adds.saturating_add(a), dels.saturating_add(d))
+            }))
     }
 
     fn compare_file_stats(
@@ -745,17 +737,8 @@ impl VcsRepository for JjRepository {
                 let path = file.path();
                 (!path.is_empty()).then(|| OsString::from(format!("file:{path}")))
             }));
-            let raw_diff = self.cli.run_ignored_wc(&args)?;
-            let output = compare_output_from_raw_patch(&raw_diff)?;
-            for file in output.carbon.files {
-                let stats = (
-                    u32_to_i32_saturating(file.additions),
-                    u32_to_i32_saturating(file.deletions),
-                );
-                if let Some(path) = file.new_path.as_ref().or(file.old_path.as_ref()) {
-                    stats_by_path.insert(path.clone(), stats);
-                }
-            }
+            let raw_diff = self.cli.run_bytes_ignored_wc(&args)?;
+            stats_by_path.extend(patch_file_stats(&raw_diff)?);
         }
         Ok(files
             .iter()
@@ -796,8 +779,8 @@ impl VcsRepository for JjRepository {
 
         let mut args = self.diff_args_for_spec(&request.spec)?;
         args.push(jj_root_pathspec(path));
-        let raw_diff = self.cli.run_ignored_wc(&args)?;
-        let output = compare_output_from_raw_patch(&raw_diff)?;
+        let raw_diff = self.cli.run_bytes_ignored_wc(&args)?;
+        let output = output_from_patch(&raw_diff)?;
         self.read_cache.insert_diff(
             operation_id,
             request.clone(),
@@ -1250,43 +1233,130 @@ impl VcsRepository for JjRepository {
         {
             return Ok(output);
         }
-        let raw_diff = self.cli.run_ignored_wc(&[
+        let raw_diff = self.cli.run_bytes_ignored_wc(&[
             OsString::from("diff"),
             OsString::from("-r"),
             OsString::from("@"),
             OsString::from("--git"),
             jj_root_pathspec(path),
         ])?;
-        let output = compare_output_from_raw_patch(&raw_diff)?;
+        let output = output_from_patch(&raw_diff)?;
         self.read_cache
             .insert_diff(operation_id, request, Some(path.to_owned()), output.clone());
         Ok(output)
     }
 
-    fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore> {
+    fn read_file_source(&mut self, revision: &RevisionId, path: &str) -> Result<SourceText> {
         let operation_id = self.ensure_read_epoch()?;
-        if let Some(text) =
+        if let Some(source) =
             self.read_cache
-                .cached_file_text(operation_id.as_deref(), revision, path)
+                .cached_file_source(operation_id.as_deref(), revision, path)
         {
-            return Ok(text);
+            return Ok(source);
         }
-        let output = self.cli.run_ignored_wc(&[
+        let output = self.cli.run_bytes_ignored_wc(&[
             OsString::from("file"),
             OsString::from("show"),
             OsString::from("-r"),
             OsString::from(revision.id.as_str()),
             jj_root_pathspec(path),
         ])?;
-        let text = TextStore::from_text(output);
-        self.read_cache.insert_file_text(
+        let source = SourceText::from_bytes(output);
+        self.read_cache.insert_file_source(
             operation_id,
             revision.clone(),
             path.to_owned(),
-            text.clone(),
+            source.clone(),
         );
-        Ok(text)
+        Ok(source)
     }
+
+    fn mutation_material(&mut self, change: &FileChange) -> Result<MutationMaterial> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("-r"),
+            OsString::from("@"),
+            OsString::from("--git"),
+        ];
+        if let Some(old_path) = change.old_path.as_deref() {
+            args.push(jj_root_pathspec(old_path));
+        }
+        args.push(jj_root_pathspec(&change.path));
+        let patch = self.cli.run_bytes(&args)?;
+        self.clear_after_write();
+        let identity = patch_identity(&patch);
+        Ok(MutationMaterial {
+            patch: patch.into(),
+            identity,
+        })
+    }
+
+    fn apply_patch(&mut self, patch: &[u8], application: PatchApplication) -> Result<()> {
+        if application.target != ApplyTarget::Worktree {
+            return Err(jj_error_fatal(
+                "apply",
+                "jj has no staging area; only working-copy changes can be applied",
+            ));
+        }
+        apply_worktree_patch(self.cli.root(), patch, application.reverse)?;
+        self.clear_after_write();
+        Ok(())
+    }
+}
+
+fn apply_worktree_patch(root: &Path, patch: &[u8], reverse: bool) -> Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut command = Command::new("git");
+    command
+        .arg("apply")
+        .arg("--whitespace=nowarn")
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(parent) = root.parent() {
+        command.env("GIT_CEILING_DIRECTORIES", parent);
+    }
+    if reverse {
+        command.arg("--reverse");
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| jj_error_fatal("apply", format!("failed to run git apply: {error}")))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| jj_error_fatal("apply", "failed to open git apply stdin"))?
+        .write_all(patch)?;
+    let output = child.wait_with_output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(jj_error(
+        "apply",
+        String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    ))
+}
+
+fn patch_file_stats(raw_diff: &[u8]) -> Result<Vec<(String, (i32, i32))>> {
+    let bytes: std::sync::Arc<[u8]> = raw_diff.into();
+    let files = parse_exact_patch(&bytes).map_err(|error| DiffyError::Parse(error.to_string()))?;
+    Ok(files
+        .iter()
+        .filter_map(|file| {
+            let path = String::from_utf8_lossy(file.path()?).into_owned();
+            Some((
+                path,
+                (
+                    u32_to_i32_saturating(file.additions()),
+                    u32_to_i32_saturating(file.deletions()),
+                ),
+            ))
+        })
+        .collect())
 }
 
 fn jj_error(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
@@ -1308,27 +1378,14 @@ fn compare_summaries_from_jj_diff_summary(
     parse_diff_summary(output)
         .into_iter()
         .map(|change| {
-            CompareFileSummary::from_paths_status(
+            summary_from_change(
                 change.old_path.as_deref(),
-                Some(change.path.as_str()),
-                carbon_status_from_file_change_status(change.status),
+                &change.path,
+                change.status,
                 stats_deferred,
             )
         })
         .collect()
-}
-
-fn carbon_status_from_file_change_status(status: FileChangeStatus) -> carbon::FileStatus {
-    match status {
-        FileChangeStatus::Added | FileChangeStatus::Untracked => carbon::FileStatus::Added,
-        FileChangeStatus::Deleted => carbon::FileStatus::Deleted,
-        FileChangeStatus::Renamed => carbon::FileStatus::Renamed,
-        FileChangeStatus::TypeChanged => carbon::FileStatus::ModeChanged,
-        FileChangeStatus::Binary => carbon::FileStatus::Binary,
-        FileChangeStatus::Copied | FileChangeStatus::Modified | FileChangeStatus::Conflicted => {
-            carbon::FileStatus::Modified
-        }
-    }
 }
 
 fn parse_jj_diff_stat_total(output: &str) -> Option<(i32, i32)> {
@@ -1363,7 +1420,7 @@ pub fn jj_capabilities(colocated: bool) -> RepoCapabilities {
         pull_fast_forward: false,
         create_commit: true,
         partial_file_restore: true,
-        partial_hunk_mutation: false,
+        partial_hunk_mutation: true,
         operation_log: true,
         // PR comparisons run through the git backend against the colocated
         // .git store, so they are only available in colocated workspaces.
@@ -1578,8 +1635,9 @@ mod tests {
         parse_jj_diff_stat_total, parse_movable_bookmark_list,
     };
     use crate::contracts::navigation::RepositorySyncReason;
-    use crate::core::compare::{CompareFileStatsTarget, LayoutMode, RendererKind};
+    use crate::core::compare::{LayoutMode, RendererKind};
     use crate::core::vcs::backend::VcsBackend;
+    use crate::core::vcs::compare_port::summary_status;
     use crate::core::vcs::model::{
         ChangeBucket, FileChangeStatus, FileOperation, PublishActionKind, VcsCompareRequest,
         VcsCompareSpec, VcsKind,
@@ -1633,13 +1691,19 @@ mod tests {
 
         assert_eq!(summaries.len(), 3);
         assert_eq!(summaries[0].path(), "README.md");
-        assert_eq!(summaries[0].status, carbon::FileStatus::Added);
+        assert_eq!(summaries[0].status, summary_status(FileChangeStatus::Added));
         assert!(summaries[0].stats_deferred);
         assert_eq!(summaries[1].path(), "src/lib.rs");
-        assert_eq!(summaries[1].status, carbon::FileStatus::Modified);
+        assert_eq!(
+            summaries[1].status,
+            summary_status(FileChangeStatus::Modified)
+        );
         assert_eq!(summaries[2].paths.old_path().as_deref(), Some("src/old.rs"));
         assert_eq!(summaries[2].paths.new_path().as_deref(), Some("src/new.rs"));
-        assert_eq!(summaries[2].status, carbon::FileStatus::Renamed);
+        assert_eq!(
+            summaries[2].status,
+            summary_status(FileChangeStatus::Renamed)
+        );
     }
 
     #[test]
@@ -1681,8 +1745,9 @@ mod tests {
         }));
 
         let output = repo.compare_working_file("README.md").unwrap();
-        assert_eq!(output.carbon.files.len(), 1);
-        assert_eq!(output.carbon.files[0].path(), "README.md");
+        assert_eq!(output.file_count(), 1);
+        let summary = output.summary_at(0).unwrap();
+        assert_eq!(summary.path(), "README.md");
 
         let request = VcsCompareRequest {
             spec: VcsCompareSpec::Range {
@@ -1695,10 +1760,7 @@ mod tests {
         let (additions, deletions) = repo.compare_stats(&request).unwrap();
         assert_eq!((additions, deletions), (1, 0));
         let file_stats = repo
-            .compare_file_stats(
-                &request,
-                &[CompareFileStatsTarget::from_file(&output.carbon.files[0])],
-            )
+            .compare_file_stats(&request, &[summary.stats_target()])
             .unwrap();
         assert_eq!(file_stats, vec![(1, 0)]);
 

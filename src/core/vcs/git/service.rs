@@ -8,13 +8,16 @@ use std::time::Instant;
 use gix::bstr::ByteSlice;
 use serde::Serialize;
 
-use crate::core::compare::backends::{RENAME_DETECTION_LIMIT, compare_output_from_raw_patch};
+use crate::core::compare::backends::RENAME_DETECTION_LIMIT;
 use crate::core::compare::service::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::forge::github::{GitHubApi, PullRequestInfo, parse_pr_url};
+use crate::core::vcs::compare_port::output_from_patch;
 use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
+use crate::core::vcs::mutation::{ApplyTarget, PatchApplication};
+use crate::core::vcs::source::SourceText;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PullError {
@@ -46,12 +49,6 @@ impl std::error::Error for PullError {}
 pub enum PullOutcome {
     AlreadyUpToDate,
     FastForwarded { behind: usize },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PatchApplyTarget {
-    Index,
-    Workdir,
 }
 
 fn workdir_is_dirty(repo_path: &Path) -> Result<bool> {
@@ -143,25 +140,6 @@ fn prune_stale_pr_refs(repo_path: &Path, pr_number: i32, keep_base: &str, keep_h
             ],
         );
     }
-}
-
-fn split_lines(text: &str) -> Vec<String> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(idx) = rest.find('\n') {
-        let (head, tail) = rest.split_at(idx);
-        let line = head.strip_suffix('\r').unwrap_or(head);
-        out.push(line.to_owned());
-        rest = &tail[1..];
-    }
-    if !rest.is_empty() {
-        let line = rest.strip_suffix('\r').unwrap_or(rest);
-        out.push(line.to_owned());
-    }
-    out
 }
 
 fn git_workdir(repo: &gix::Repository) -> Result<PathBuf> {
@@ -848,39 +826,10 @@ impl GitService {
             .map_err(gix_error)
     }
 
-    fn validate_text_bytes(reference: &str, path: &str, bytes: &[u8]) -> Result<()> {
-        if bytes.contains(&0u8) {
-            return Err(git_error_fatal(
-                "read file",
-                format!("path {path} is binary at {reference}"),
-            ));
-        }
-
-        std::str::from_utf8(bytes).map_err(|e| {
-            git_error_fatal(
-                "read file",
-                format!("path {path} at {reference} is not valid UTF-8: {e}"),
-            )
-        })?;
-        Ok(())
-    }
-
-    pub fn read_file_text_store_at(
-        &self,
-        reference: &str,
-        path: &str,
-    ) -> Result<carbon::TextStore> {
-        let bytes = self.read_file_bytes_at(reference, path)?;
-        Self::validate_text_bytes(reference, path, &bytes)?;
-        Ok(carbon::TextStore::from_bytes(bytes))
-    }
-
-    pub fn read_file_lines_at(&self, reference: &str, path: &str) -> Result<Vec<String>> {
-        let bytes = self.read_file_bytes_at(reference, path)?;
-        Self::validate_text_bytes(reference, path, &bytes)?;
-        let text = std::str::from_utf8(&bytes).unwrap_or_default();
-
-        Ok(split_lines(text))
+    pub fn read_file_source_at(&self, reference: &str, path: &str) -> Result<SourceText> {
+        Ok(SourceText::from_bytes(
+            self.read_file_bytes_at(reference, path)?,
+        ))
     }
 
     /// Unified-diff patch text against HEAD suitable for feeding to an LLM
@@ -901,8 +850,7 @@ impl GitService {
     }
 
     pub fn diff_status_item(&self, item: &StatusItem) -> Result<CompareOutput> {
-        let patch = self.status_item_patch(item)?;
-        compare_output_from_raw_patch(&patch)
+        output_from_patch(&self.status_item_exact_patch(item)?)
     }
 
     pub fn status_item_patch(&self, item: &StatusItem) -> Result<String> {
@@ -928,6 +876,35 @@ impl GitService {
         args.extend(status_item_pathspecs(item).into_iter().map(OsString::from));
         let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    pub fn status_item_exact_patch(&self, item: &StatusItem) -> Result<Vec<u8>> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
+            OsString::from("--no-color"),
+            OsString::from("--full-index"),
+            OsString::from("--src-prefix=a/"),
+            OsString::from("--dst-prefix=b/"),
+        ];
+        match item.scope {
+            StatusScope::Staged => {
+                args.push(OsString::from("--cached"));
+                args.push(OsString::from("--find-renames"));
+            }
+            StatusScope::Unstaged => args.push(OsString::from("--no-renames")),
+            StatusScope::Untracked => {
+                args.push(OsString::from("--no-index"));
+                args.push(OsString::from("--"));
+                args.push(OsString::from("/dev/null"));
+                args.push(OsString::from(&item.path));
+                return Ok(run_system_git_allow_diff(self.repo_path_ref()?, &args)?.stdout);
+            }
+        }
+        args.push(OsString::from("--"));
+        args.extend(status_item_pathspecs(item).into_iter().map(OsString::from));
+        Ok(run_system_git_allow_diff(self.repo_path_ref()?, &args)?.stdout)
     }
 
     pub fn apply_status_operation(
@@ -1591,12 +1568,18 @@ impl GitService {
         Ok(())
     }
 
-    pub fn apply_patch(&self, patch_text: &str, target: PatchApplyTarget) -> Result<()> {
+    pub fn apply_patch(&self, patch: &[u8], application: PatchApplication) -> Result<()> {
+        let mut args = vec!["apply", "--whitespace=nowarn"];
+        match application.target {
+            ApplyTarget::Index => args.push("--cached"),
+            ApplyTarget::Worktree => {}
+            ApplyTarget::IndexAndWorktree => args.push("--index"),
+        }
+        if application.reverse {
+            args.push("--reverse");
+        }
         let mut child = Command::new("git")
-            .args(match target {
-                PatchApplyTarget::Index => ["apply", "--cached"].as_slice(),
-                PatchApplyTarget::Workdir => ["apply"].as_slice(),
-            })
+            .args(&args)
             .current_dir(self.repo_path_ref()?)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_OPTIONAL_LOCKS", "0")
@@ -1610,7 +1593,7 @@ impl GitService {
             .stdin
             .as_mut()
             .ok_or_else(|| git_error_fatal("apply", "failed to open git apply stdin"))?
-            .write_all(patch_text.as_bytes())?;
+            .write_all(patch)?;
         let output = child.wait_with_output()?;
         if output.status.success() {
             Ok(())
@@ -1991,9 +1974,8 @@ mod tests {
         local_remote_for_github_repo, parse_objects_progress, parse_porcelain_status,
         parse_shortstat, pr_ref_path,
     };
-    use crate::core::vcs::git::{
-        GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
-    };
+    use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
+    use crate::core::vcs::mutation::{ApplyTarget, PatchApplication};
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
         // Pin `core.autocrlf=false` on the test repo so LF content written
@@ -2298,26 +2280,33 @@ mod tests {
             " line3\n",
             "+extra\n",
         );
-        git.apply_patch(patch, PatchApplyTarget::Index).unwrap();
+        git.apply_patch(
+            patch.as_bytes(),
+            PatchApplication {
+                target: ApplyTarget::Index,
+                reverse: false,
+            },
+        )
+        .unwrap();
 
         let st = statuses(&repo);
         assert!(st[0].1.contains(Status::INDEX_MODIFIED));
     }
 
     #[test]
-    fn read_file_lines_at_reads_commit_blob() {
+    fn read_file_source_at_reads_commit_blob() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let head = commit_file(&repo, "src/lib.rs", "one\ntwo\nthree\n", "initial");
 
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        let lines = git.read_file_lines_at(&head, "src/lib.rs").unwrap();
-        assert_eq!(lines, vec!["one", "two", "three"]);
+        let source = git.read_file_source_at(&head, "src/lib.rs").unwrap();
+        assert_eq!(source.bytes(), b"one\ntwo\nthree\n");
     }
 
     #[test]
-    fn read_file_lines_at_reads_workdir() {
+    fn read_file_source_at_reads_workdir() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         commit_file(&repo, "src/lib.rs", "old\n", "initial");
@@ -2325,12 +2314,12 @@ mod tests {
 
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        let lines = git.read_file_lines_at(WORKDIR_REF, "src/lib.rs").unwrap();
-        assert_eq!(lines, vec!["a", "b", "c"]);
+        let source = git.read_file_source_at(WORKDIR_REF, "src/lib.rs").unwrap();
+        assert_eq!(source.bytes(), b"a\nb\nc");
     }
 
     #[test]
-    fn read_file_lines_at_reads_index() {
+    fn read_file_source_at_reads_index() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         commit_file(&repo, "src/lib.rs", "a\nb\n", "initial");
@@ -2340,12 +2329,12 @@ mod tests {
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
         git.stage_paths(["src/lib.rs"]).unwrap();
 
-        let lines = git.read_file_lines_at(INDEX_REF, "src/lib.rs").unwrap();
-        assert_eq!(lines, vec!["a", "b", "c"]);
+        let source = git.read_file_source_at(INDEX_REF, "src/lib.rs").unwrap();
+        assert_eq!(source.bytes(), b"a\nb\nc\n");
     }
 
     #[test]
-    fn read_file_lines_at_handles_crlf_and_missing_trailing_newline() {
+    fn read_file_source_at_handles_crlf_and_missing_trailing_newline() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         commit_file(&repo, "src/lib.rs", "old\n", "initial");
@@ -2353,12 +2342,16 @@ mod tests {
 
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        let lines = git.read_file_lines_at(WORKDIR_REF, "src/lib.rs").unwrap();
-        assert_eq!(lines, vec!["a", "b", "c"]);
+        let source = git.read_file_source_at(WORKDIR_REF, "src/lib.rs").unwrap();
+        assert_eq!(source.bytes(), b"a\r\nb\r\nc");
+        let text = source.text().unwrap();
+        assert_eq!(text.line(0), Some("a\r"));
+        assert_eq!(text.display_line(2), Some("c"));
+        assert!(text.no_newline_at_eof());
     }
 
     #[test]
-    fn read_file_lines_at_rejects_binary_file() {
+    fn read_file_source_at_keeps_binary_bytes() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         commit_file(&repo, "src/lib.rs", "old\n", "initial");
@@ -2366,14 +2359,13 @@ mod tests {
 
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        let err = git
-            .read_file_lines_at(WORKDIR_REF, "img.bin")
-            .expect_err("binary file should fail");
-        assert!(err.to_string().contains("binary"));
+        let source = git.read_file_source_at(WORKDIR_REF, "img.bin").unwrap();
+        assert!(source.is_binary());
+        assert_eq!(source.bytes(), [0u8, 1, 2, 0, 3]);
     }
 
     #[test]
-    fn read_file_lines_at_returns_error_when_path_missing_at_ref() {
+    fn read_file_source_at_returns_error_when_path_missing_at_ref() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let head = commit_file(&repo, "src/lib.rs", "x\n", "initial");
@@ -2381,7 +2373,7 @@ mod tests {
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
         let err = git
-            .read_file_lines_at(&head, "src/nope.rs")
+            .read_file_source_at(&head, "src/nope.rs")
             .expect_err("missing path should fail");
         assert!(err.to_string().contains("not present"));
     }
@@ -2409,8 +2401,14 @@ mod tests {
             "-ccc\n",
             "+bbb\n",
         );
-        git.apply_patch(reverse_patch, PatchApplyTarget::Index)
-            .unwrap();
+        git.apply_patch(
+            reverse_patch.as_bytes(),
+            PatchApplication {
+                target: ApplyTarget::Index,
+                reverse: false,
+            },
+        )
+        .unwrap();
 
         let st2 = statuses(&repo);
         assert!(st2[0].1.contains(Status::WT_MODIFIED));

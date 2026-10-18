@@ -1,5 +1,5 @@
-use std::cell::RefCell;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 use super::rows::{self, Row, RowCache};
 
 use crate::app::text_targets::{SIDEBAR_FILTER, TextCx, TextHost};
-use crate::contracts::commands::{SettingsSnapshot, ToastUpdate};
+use crate::contracts::commands::{CommandsAction, RefPickerRequest, SettingsSnapshot, ToastUpdate};
 use crate::contracts::navigation::{
     CompareField, HistoryRequest, NavigationAction, NavigationEffect, NavigationEvent,
     RepositoryChangeKind, RepositoryContext, RepositoryRevision, RepositorySnapshot,
@@ -26,7 +26,8 @@ use crate::contracts::viewport::pipeline::{
     CompareManifestSnapshot, CompareWorkPriority, FileStats, ManifestFile, PipelineAction,
 };
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
-use crate::core::vcs::model::{VcsChange, VcsCompareRequest, VcsCompareSpec};
+use crate::core::ref_catalog::WORKING_TREE_LABEL;
+use crate::core::vcs::model::{RefKind, VcsChange, VcsCompareRequest, VcsCompareSpec, VcsKind};
 use crate::platform::persistence::{PersistedCompare, Settings};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +146,7 @@ pub struct HistoryState {
 pub struct ListMetrics {
     pub row_height: f32,
     pub viewport: f32,
+    pub history_row: f32,
 }
 
 #[derive(Debug)]
@@ -174,6 +176,17 @@ pub struct NavigationController {
     stats_requested: HashSet<FileKey>,
     stats_generation: Option<CompareGeneration>,
     outbox: RefCell<Vec<Action>>,
+    marked: Vec<FileKey>,
+    anchor: Option<FileKey>,
+    modifiers: Cell<ClickModifiers>,
+    banner: RefCell<super::banner::BannerCache>,
+    tags: RefCell<(usize, Rc<HashMap<String, Vec<String>>>)>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClickModifiers {
+    pub extend: bool,
+    pub toggle: bool,
 }
 
 const STATS_OVERSCAN_ROWS: usize = 8;
@@ -207,6 +220,11 @@ impl Default for NavigationController {
             stats_requested: HashSet::new(),
             stats_generation: None,
             outbox: RefCell::new(Vec::new()),
+            marked: Vec::new(),
+            anchor: None,
+            modifiers: Cell::new(ClickModifiers::default()),
+            banner: RefCell::new(None),
+            tags: RefCell::new((0, Rc::default())),
         }
     }
 }
@@ -276,6 +294,128 @@ impl NavigationController {
         self.repository
             .as_ref()
             .is_some_and(|r| r.snapshot.capabilities.operation_log)
+    }
+
+    pub fn tags_by_target(&self) -> Rc<HashMap<String, Vec<String>>> {
+        let Some(repo) = &self.repository else {
+            return Rc::default();
+        };
+        let identity = Arc::as_ptr(&repo.snapshot) as usize;
+        let mut cache = self.tags.borrow_mut();
+        if cache.0 != identity {
+            let mut map: HashMap<String, Vec<String>> = HashMap::new();
+            for r in repo.snapshot.refs.iter().filter(|r| r.kind == RefKind::Tag) {
+                map.entry(r.target.id.clone())
+                    .or_default()
+                    .push(r.name.clone());
+            }
+            *cache = (identity, Rc::new(map));
+        }
+        cache.1.clone()
+    }
+
+    pub(super) fn banner_cache(&self) -> &RefCell<super::banner::BannerCache> {
+        &self.banner
+    }
+
+    pub fn observe_modifiers(&self, modifiers: ClickModifiers) {
+        self.modifiers.set(modifiers);
+    }
+
+    pub fn marked(&self) -> &[FileKey] {
+        &self.marked
+    }
+
+    pub fn is_marked(&self, key: FileKey) -> bool {
+        self.marked.contains(&key)
+    }
+
+    pub fn viewed_count(&self) -> (usize, usize) {
+        let files = self.files();
+        let viewed = files
+            .iter()
+            .filter(|f| self.viewed.contains(f.paths.display_path().as_ref()))
+            .count();
+        (viewed, files.len())
+    }
+
+    pub fn highlights(&self, file: u32) -> &[(usize, usize)] {
+        self.rows.highlights(file)
+    }
+
+    fn mark(&mut self, key: FileKey) {
+        let modifiers = self.modifiers.get();
+        let current = self.selection.as_ref().map(|s| s.key);
+        if modifiers.extend {
+            let anchor = self.anchor.or(current).unwrap_or(key);
+            self.ensure_rows();
+            let order: Vec<FileKey> = self
+                .rows
+                .file_rows()
+                .iter()
+                .filter_map(|&row| match self.rows.rows()[row] {
+                    Row::File { file, .. } => self.files().get(file as usize).map(|f| f.key),
+                    _ => None,
+                })
+                .collect();
+            let at = |k: FileKey| order.iter().position(|&o| o == k);
+            if let (Some(a), Some(b)) = (at(anchor), at(key)) {
+                let (lo, hi) = (a.min(b), a.max(b));
+                self.marked = order[lo..=hi].to_vec();
+            }
+            self.anchor = Some(anchor);
+            return;
+        }
+        if modifiers.toggle {
+            if self.marked.is_empty()
+                && let Some(current) = current
+            {
+                self.marked.push(current);
+            }
+            match self.marked.iter().position(|&k| k == key) {
+                Some(index) => {
+                    self.marked.remove(index);
+                }
+                None => self.marked.push(key),
+            }
+            self.anchor = Some(key);
+            return;
+        }
+        self.marked.clear();
+        self.anchor = Some(key);
+    }
+
+    pub fn compare_labels(&self) -> (String, String) {
+        if self.compare.working_copy {
+            let base = self
+                .repository
+                .as_ref()
+                .and_then(|repo| {
+                    repo.snapshot
+                        .refs
+                        .iter()
+                        .find(|r| r.active && matches!(r.kind, RefKind::Branch | RefKind::Bookmark))
+                        .map(|r| r.name.clone())
+                })
+                .unwrap_or_else(|| "HEAD".to_owned());
+            return (base, WORKING_TREE_LABEL.to_owned());
+        }
+        let shown = |reference: &str| match reference {
+            "" => String::new(),
+            r if is_working_copy_ref(r) => WORKING_TREE_LABEL.to_owned(),
+            r if r.len() >= 12 && r.bytes().all(|b| b.is_ascii_hexdigit()) => r[..7].to_owned(),
+            r => r.to_owned(),
+        };
+        if self.compare.mode == CompareMode::SingleCommit {
+            let commit = if self.compare.right.is_empty() {
+                &self.compare.left
+            } else {
+                &self.compare.right
+            };
+            let commit = shown(commit);
+            return (format!("{commit}^"), commit);
+        }
+        (shown(&self.compare.left), shown(&self.compare.right))
     }
 
     pub fn take_dispatch(&self) -> Vec<Action> {
@@ -421,6 +561,9 @@ impl NavigationController {
         let Some(index) = self.file_index(key) else {
             return Reduction::default();
         };
+        if origin == SelectionOrigin::Sidebar {
+            self.mark(key);
+        }
         let path = self.files()[index].paths.display_path().into_owned();
         self.selection = Some(Selection { key, path });
         self.reveal_selected();
@@ -564,7 +707,12 @@ impl NavigationController {
         }
         match self.compare.mode {
             CompareMode::TwoDot | CompareMode::ThreeDot if self.compare.refs_valid() => {
-                Some((self.compare.left.clone(), self.compare.right.clone()))
+                let right = if is_working_copy_ref(&self.compare.right) {
+                    "HEAD".to_owned()
+                } else {
+                    self.compare.right.clone()
+                };
+                Some((self.compare.left.clone(), right))
             }
             _ => None,
         }
@@ -803,6 +951,8 @@ impl NavigationController {
         self.rows.invalidate();
         if generation_changed {
             self.scroll_px = 0.0;
+            self.marked.clear();
+            self.anchor = None;
             if self.history.pre_drill.is_none() {
                 self.resolved = [
                     non_empty(&manifest.resolved_left),
@@ -882,7 +1032,7 @@ fn non_empty(value: &str) -> Option<String> {
 }
 
 fn is_working_copy_ref(reference: &str) -> bool {
-    matches!(reference, "" | "@" | "WORKTREE" | "worktree")
+    matches!(reference, "" | "@" | "@workdir" | "WORKTREE" | "worktree")
 }
 
 pub fn normalize_repository_path(path: PathBuf) -> PathBuf {
@@ -956,6 +1106,21 @@ impl NavigationController {
                 self.resolved[field_index(field)] = None;
                 self.compare.auto_select_mode();
                 Reduction::changed()
+            }
+            A::ChooseRef(side) => {
+                let (left, right) = self.compare_labels();
+                let request = RefPickerRequest {
+                    side,
+                    left,
+                    right,
+                    working_copy: self.compare.working_copy,
+                    mode: self.compare.mode,
+                    renderer: self.compare.renderer,
+                };
+                self.outbox
+                    .borrow_mut()
+                    .push(CommandsAction::ShowRefPicker(Box::new(request)).into());
+                Reduction::default()
             }
             A::SwapRefs => {
                 if self.compare.left.trim().is_empty() || self.compare.right.trim().is_empty() {
@@ -1117,9 +1282,23 @@ impl NavigationController {
             A::SetSidebarTab(tab) => self.set_tab(tab),
             A::SelectHistoryCommit(revision) => self.drill_into(revision),
             A::ClearHistoryCommit => self.restore_drill(cx),
+            A::CompareWithWorkingTree(revision) => {
+                let workdir = match &self.repository {
+                    Some(repo) if repo.snapshot.location.kind != VcsKind::GIT => "@",
+                    _ => crate::core::vcs::git::WORKDIR_REF,
+                };
+                self.history.pre_drill = None;
+                self.history.selected = None;
+                self.compare.working_copy = false;
+                self.compare.left = revision;
+                self.compare.right = workdir.to_owned();
+                self.compare.mode = CompareMode::TwoDot;
+                self.resolved = [None, None];
+                self.compare_intent(cx)
+            }
             A::ScrollHistory(lines) => {
                 let rows = self.history_commits().map_or(0, <[VcsChange]>::len) as f32;
-                let max = (rows * self.metrics.row_height - self.metrics.viewport).max(0.0);
+                let max = (rows * self.metrics.history_row - self.metrics.viewport).max(0.0);
                 self.history.scroll_px = (self.history.scroll_px
                     + lines as f32 * self.metrics.row_height)
                     .clamp(0.0, max);
@@ -1207,6 +1386,13 @@ impl NavigationController {
                 self.select(selected.key, SelectionOrigin::Viewport)
             }
             Intent::InvalidateRepository => self.sync(RepositorySyncReason::Dirty),
+            Intent::SettingsChanged(settings) => match settings.settings.last_compare.as_ref() {
+                Some(last) if last.renderer != self.compare.renderer => {
+                    self.compare.renderer = last.renderer;
+                    Reduction::changed()
+                }
+                _ => Reduction::default(),
+            },
             _ => Reduction::default(),
         }
     }

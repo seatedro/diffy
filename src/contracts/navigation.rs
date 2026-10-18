@@ -26,9 +26,9 @@ pub enum SidebarTab {
 impl SidebarTab {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Files => "Files",
+            Self::Files => "Changes",
             Self::Commits => "History",
-            Self::OperationLog => "Operation log",
+            Self::OperationLog => "Ops",
         }
     }
 }
@@ -130,6 +130,7 @@ pub enum NavigationAction {
     NewTextCompare,
     RefreshRepository,
     SetRef { field: CompareField, value: String },
+    ChooseRef(CompareField),
     SwapRefs,
     ResolveRef { field: CompareField, query: String },
     SetCompareMode(CompareMode),
@@ -155,6 +156,7 @@ pub enum NavigationAction {
     SetSidebarTab(SidebarTab),
     SelectHistoryCommit(String),
     ClearHistoryCommit,
+    CompareWithWorkingTree(String),
     ScrollHistory(i32),
     SelectOperation(String),
 }

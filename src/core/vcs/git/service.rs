@@ -167,6 +167,50 @@ fn run_system_git_capture(repo_path: &Path, args: &[OsString]) -> Result<GitOutp
     run_system_git_inner(repo_path, args, false)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefMetadata {
+    pub name: String,
+    pub oid: String,
+    pub subject: String,
+    pub author: String,
+    pub timestamp: i64,
+}
+
+/// Subject, author and date of every branch and tag tip in one
+/// `for-each-ref`, peeling annotated tags to their commit.
+pub fn ref_metadata(repo_path: &Path) -> Result<Vec<RefMetadata>> {
+    let output = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("for-each-ref"),
+            OsString::from(
+                "--format=%(refname:short)%00%(objectname)%00%(*objectname)%00%(subject)%00%(*subject)%00%(authorname)%00%(*authorname)%00%(committerdate:unix)%00%(*committerdate:unix)",
+            ),
+            OsString::from("refs/heads"),
+            OsString::from("refs/remotes"),
+            OsString::from("refs/tags"),
+        ],
+    )?;
+    let mut refs = Vec::new();
+    for line in output.stdout.split(|byte| *byte == b'\n') {
+        let fields: Vec<&[u8]> = line.split(|byte| *byte == 0).collect();
+        if fields.len() < 9 {
+            continue;
+        }
+        let pick = |direct: &[u8], peeled: &[u8]| {
+            String::from_utf8_lossy(if peeled.is_empty() { direct } else { peeled }).into_owned()
+        };
+        refs.push(RefMetadata {
+            name: String::from_utf8_lossy(fields[0]).into_owned(),
+            oid: pick(fields[1], fields[2]),
+            subject: pick(fields[3], fields[4]),
+            author: pick(fields[5], fields[6]),
+            timestamp: pick(fields[7], fields[8]).parse().unwrap_or(0),
+        });
+    }
+    Ok(refs)
+}
+
 /// Run git with stderr streamed live, invoking `on_progress` with
 /// `(current, total, bytes)` for each sideband update on the given phase
 /// (e.g. "Receiving objects" for fetch, "Writing objects" for push).

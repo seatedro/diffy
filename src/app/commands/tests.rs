@@ -18,8 +18,8 @@ use super::{CommandsController, LayerKind, PlatformRequest};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{self, PICKER, SETTINGS, SIDEBAR, TextCx, TextHost};
 use crate::contracts::commands::{
-    CommandDescriptor, CommandsAction, CommandsEffect, ConfirmationRequest, SettingsSnapshot,
-    ToastUpdate,
+    CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
+    RefPickerRequest, SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::navigation::{CompareField, NavigationAction, RepositorySyncReason};
 use crate::contracts::shared::{JobId, SharedContext};
@@ -57,6 +57,7 @@ impl CmdApp {
     }
 
     fn reduce(&mut self, reduction: Reduction) {
+        let events: Vec<CommandsEvent> = reduction.effects.iter().filter_map(run_worker).collect();
         self.effects.extend(reduction.effects);
         let mut queue = VecDeque::from(reduction.intents);
         while let Some(intent) = queue.pop_front() {
@@ -69,6 +70,10 @@ impl CmdApp {
             self.effects.extend(next.effects);
             queue.extend(next.intents);
             self.intents.push(intent);
+        }
+        for event in events {
+            let next = self.commands.reduce_event(event, &self.shared);
+            self.reduce(next);
         }
     }
 
@@ -154,6 +159,10 @@ impl UiApp for CmdApp {
     }
 
     fn event(&mut self, event: &InputEvent, cx: &mut UiContext) -> bool {
+        if let InputEvent::Focused(focused) = event {
+            self.commands.observe_window_focus(*focused);
+            return false;
+        }
         let InputEvent::KeyPress(chord) = event else {
             return false;
         };
@@ -183,9 +192,13 @@ impl UiApp for CmdApp {
             shared: &self.shared,
             now_ms: self.clock,
         };
-        self.commands
+        let outcome = self
+            .commands
             .edit_text(target, command, &cx)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let next = self.commands.after_edit(target, &self.shared);
+        self.reduce(next);
+        outcome
     }
 
     fn set_preedit(&mut self, target: FocusId, text: String, cursor: Option<(usize, usize)>) {
@@ -415,14 +428,15 @@ fn settings_open_from_the_shortcut_and_escape_returns_focus() {
     ui.click_node(By::role_name(Role::SearchInput, "Filter files"));
     let filter = ui.focus();
     ui.key("mod+,");
-    ui.find(By::role_name(Role::Region, "Settings"));
+    ui.find(By::role_name(Role::Dialog, "Settings"));
     assert_eq!(ui.focus(), Some(SETTINGS));
+    ui.find(By::role_name(Role::Navigation, "Files"));
 
-    ui.click_node(By::role_name(Role::Tab, "Editor"));
+    ui.click_node(By::role_name(Role::Tab, "Diff"));
     ui.find(By::role_name(Role::Switch, "Wrap lines"));
     ui.key("escape");
     assert!(
-        ui.try_find(By::role_name(Role::Region, "Settings"))
+        ui.try_find(By::role_name(Role::Dialog, "Settings"))
             .is_none()
     );
     assert_eq!(ui.focus(), filter);
@@ -433,9 +447,11 @@ fn settings_controls_update_and_persist_the_snapshot() {
     let mut ui = cmd_harness(Settings::default());
     focus_anchor(&mut ui);
     ui.run(CommandsAction::OpenSettings);
-    ui.click_node(By::role_name(Role::Button, "Increase interface scale"));
+    ui.find(By::test_id("settings.preview"));
+    ui.click_node(By::role_name(Role::RadioButton, "System"));
+    assert_eq!(settings(&ui).theme_mode, ThemeMode::System);
+    ui.run(CommandsAction::IncreaseUiScale);
     assert_eq!(settings(&ui).ui_scale_pct, 110);
-    ui.find(By::name("110%"));
     ui.run(CommandsAction::SetThemeMode(ThemeMode::Light));
     assert_eq!(settings(&ui).theme_mode, ThemeMode::Light);
     for _ in 0..20 {
@@ -560,7 +576,7 @@ fn keymap_rebinding_rejects_conflicts_and_saves_overrides() {
     let mut ui = cmd_harness(Settings::default());
     focus_anchor(&mut ui);
     ui.run(CommandsAction::OpenKeymaps);
-    ui.find(By::role_name(Role::Tab, "Keymaps"));
+    ui.find(By::role_name(Role::Tab, "Keyboard"));
     ui.click_node(By::role_name(Role::Button, "Rebind Next hunk"));
     ui.find(By::role_name(Role::Button, "Press keys for Next hunk"));
 
@@ -587,7 +603,7 @@ fn keymap_rebinding_rejects_conflicts_and_saves_overrides() {
         ui.try_find(By::role_name(Role::Button, "Press keys for Next file"))
             .is_none()
     );
-    ui.find(By::role_name(Role::Region, "Settings"));
+    ui.find(By::role_name(Role::Dialog, "Settings"));
 
     ui.click_node(By::role_name(Role::Button, "Reset Next hunk"));
     assert!(settings(&ui).keymap_overrides.is_empty());
@@ -668,10 +684,10 @@ fn menu_items_route_through_command_descriptors() {
         vec![Action::from(NavigationAction::OpenRepositoryDialog)]
     );
     ui.app_event(WindowEvent::Menu("app.about".to_owned()));
-    ui.find(By::role_name(Role::Tab, "About"));
+    ui.find(By::role_name(Role::Tab, "Updates"));
     assert_eq!(
         ui.app().commands.settings_page().map(|p| p.section),
-        Some(crate::contracts::commands::SettingsSection::About)
+        Some(crate::contracts::commands::SettingsSection::Updates)
     );
 }
 
@@ -725,10 +741,23 @@ fn confirming_dispatches_the_requested_action() {
     assert_eq!(ui.focus(), Some(SIDEBAR));
 }
 
-#[test]
-fn ref_picker_lists_repository_refs_and_commits_the_choice() {
-    let mut ui = cmd_harness(Settings::default());
-    focus_anchor(&mut ui);
+fn ref_request(side: CompareField, working_copy: bool) -> CommandsAction {
+    CommandsAction::ShowRefPicker(Box::new(RefPickerRequest {
+        side,
+        left: "main".to_owned(),
+        right: if working_copy {
+            "Working tree"
+        } else {
+            "feature"
+        }
+        .to_owned(),
+        working_copy,
+        mode: crate::core::compare::CompareMode::ThreeDot,
+        renderer: crate::core::compare::RendererKind::Builtin,
+    }))
+}
+
+fn with_repository(ui: &mut Cmd) {
     ui.inject(Intent::RepositoryChanged(Rc::new(
         crate::contracts::navigation::RepositoryContext {
             revision: crate::contracts::navigation::RepositoryRevision(1),
@@ -738,10 +767,34 @@ fn ref_picker_lists_repository_refs_and_commits_the_choice() {
             )),
         },
     )));
-    ui.run(CommandsAction::OpenRefPicker(CompareField::Right));
+}
+
+#[test]
+fn palette_ref_command_asks_navigation_for_the_compare() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenRefPicker(CompareField::Left));
+    assert_eq!(
+        ui.app().dispatched,
+        vec![Action::from(NavigationAction::ChooseRef(
+            CompareField::Left
+        ))]
+    );
+}
+
+#[test]
+fn ref_picker_groups_refs_and_commits_the_choice() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    with_repository(&mut ui);
+    ui.run(ref_request(CompareField::Right, false));
     ui.find(By::role_name(Role::Dialog, "Head ref"));
     assert_eq!(ui.focus(), Some(PICKER));
+    ui.find(By::role_name(Role::Heading, "Branches \u{00B7} 2"));
+    let current = ui.find(By::role_name(Role::ListBoxOption, "feature"));
+    assert!(current.bounds.height > 0.0);
     ui.type_text("feat");
+    ui.find(By::role_name(Role::Heading, "Branches \u{00B7} 1 match"));
     ui.key("enter");
     assert_eq!(
         ui.app().dispatched,
@@ -754,6 +807,87 @@ fn ref_picker_lists_repository_refs_and_commits_the_choice() {
         ]
     );
     assert_eq!(ui.focus(), Some(SIDEBAR));
+}
+
+#[test]
+fn ref_picker_tab_swaps_sides_and_footer_sets_mode_and_engine() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    with_repository(&mut ui);
+    ui.run(ref_request(CompareField::Left, false));
+    ui.find(By::role_name(Role::Dialog, "Base ref"));
+    ui.key("tab");
+    ui.find(By::role_name(Role::Dialog, "Head ref"));
+    assert_eq!(ui.focus(), Some(PICKER));
+    ui.click_node(By::role_name(Role::RadioButton, "Directly"));
+    ui.click_node(By::role_name(Role::RadioButton, "Difftastic"));
+    assert_eq!(
+        ui.app().dispatched,
+        vec![
+            Action::from(NavigationAction::SetCompareMode(
+                crate::core::compare::CompareMode::TwoDot
+            )),
+            Action::from(
+                crate::contracts::viewport::pipeline::PipelineAction::SetRenderer(
+                    crate::core::compare::RendererKind::Difftastic
+                )
+            ),
+        ]
+    );
+    ui.find(By::role_name(Role::Dialog, "Head ref"));
+}
+
+#[test]
+fn ref_picker_against_the_working_tree_keeps_the_worktree_side() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    with_repository(&mut ui);
+    ui.run(ref_request(CompareField::Left, true));
+    ui.type_text("feature");
+    ui.key("enter");
+    assert_eq!(
+        ui.app().dispatched[..2],
+        [
+            Action::from(NavigationAction::SetRef {
+                field: CompareField::Left,
+                value: "feature".to_owned()
+            }),
+            Action::from(NavigationAction::SetRef {
+                field: CompareField::Right,
+                value: crate::core::vcs::git::WORKDIR_REF.to_owned()
+            }),
+        ]
+    );
+}
+
+#[test]
+fn ref_picker_lays_out_only_visible_rows_for_thousands_of_refs() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    let mut snapshot = super::fixtures::snapshot(RepositorySyncReason::Open, false);
+    snapshot
+        .refs
+        .extend((0..10_000).map(|i| crate::core::vcs::model::VcsRef {
+            name: format!("tag-{i}"),
+            kind: crate::core::vcs::model::RefKind::Tag,
+            target: crate::core::vcs::model::RevisionId::git(format!("{i:07}")),
+            active: false,
+            upstream: None,
+            ahead_behind: None,
+        }));
+    ui.inject(Intent::RepositoryChanged(Rc::new(
+        crate::contracts::navigation::RepositoryContext {
+            revision: crate::contracts::navigation::RepositoryRevision(1),
+            snapshot: std::sync::Arc::new(snapshot),
+        },
+    )));
+    ui.run(ref_request(CompareField::Left, false));
+    let options = ui.find_all(Role::ListBoxOption).len();
+    assert!(options > 0 && options < 40, "{options} options laid out");
+    ui.key("pagedown");
+    ui.key("pagedown");
+    let selected = ui.app().commands.ref_picker().and_then(|p| p.selected);
+    assert!(selected.is_some_and(|row| row > 10));
 }
 
 #[test]
@@ -799,6 +933,32 @@ fn toasts_show_progress_and_dismiss() {
     );
 }
 
+fn run_worker(effect: &Effect) -> Option<CommandsEvent> {
+    match effect {
+        Effect::Commands(CommandsEffect::LoadRefCatalog(request)) => {
+            Some(CommandsEvent::RefCatalogReady {
+                generation: request.generation,
+                catalog: std::sync::Arc::new(crate::core::ref_catalog::build_catalog(
+                    &request.snapshot.refs,
+                    &request.snapshot.changes,
+                    &[],
+                    &request.recent,
+                    true,
+                )),
+            })
+        }
+        Effect::Commands(CommandsEffect::FilterRefs {
+            generation,
+            catalog,
+            query,
+        }) => Some(CommandsEvent::RefsFiltered {
+            generation: *generation,
+            results: std::sync::Arc::new(crate::core::ref_catalog::filter(catalog, query)),
+        }),
+        _ => None,
+    }
+}
+
 enum Pending {
     Action(Action),
     Intent(Intent),
@@ -819,4 +979,102 @@ impl Drive for Cmd {
         self.app_mut().pending.push(Pending::Intent(intent));
         self.send_message(());
     }
+}
+
+#[test]
+fn return_inserts_a_newline_in_multiline_editors() {
+    let mut ui = harness::harness();
+    ui.key("mod+k");
+    ui.type_text("new text compare");
+    ui.key("enter");
+    ui.click_node(By::test_id("text-compare.left"));
+    ui.type_text("one");
+    ui.key("enter");
+    ui.type_text("two");
+    let controllers = ui.app().0.controllers();
+    assert_eq!(
+        controllers.viewport.interaction.text_compare().left.text(),
+        "one\ntwo"
+    );
+}
+
+#[test]
+fn theme_picker_offers_and_selects_the_current_default_theme() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenThemePicker);
+    let current = ui.find(By::role_name(Role::ListBoxOption, "diffy-default"));
+    assert_eq!(
+        ui.find_all(Role::ListBoxOption)
+            .iter()
+            .filter(|n| n.name.as_deref() == Some("diffy-default"))
+            .count(),
+        1
+    );
+    assert!(current.bounds.height > 0.0);
+    ui.type_text("diffy-def");
+    ui.find(By::role_name(Role::ListBoxOption, "diffy-default"));
+}
+
+#[test]
+fn undo_toasts_dispatch_undo_or_expiry_once() {
+    let mut ui = cmd_harness(Settings::default());
+    let toast = |id| {
+        Intent::Toast(ToastUpdate::Undo {
+            id: JobId(id),
+            kind: crate::contracts::commands::ToastKind::Success,
+            message: "Discarded 3 lines".to_owned(),
+            undo: Box::new(NavigationAction::RefreshRepository.into()),
+            expires_ms: 8000,
+            expired: Some(Box::new(NavigationAction::StartCompare.into())),
+        })
+    };
+    ui.inject(toast(1));
+    assert!(ui.app().effects.iter().any(|e| matches!(
+        e,
+        Effect::Commands(CommandsEffect::ExpireToast {
+            id: JobId(1),
+            after_ms: 8000
+        })
+    )));
+    ui.click_node(By::role_name(Role::Button, "Undo"));
+    assert_eq!(
+        ui.app().dispatched,
+        vec![Action::from(NavigationAction::RefreshRepository)]
+    );
+    ui.inject(toast(2));
+    ui.click_node(By::role_name(Role::Button, "Dismiss"));
+    assert_eq!(
+        ui.app().dispatched[1..],
+        [Action::from(NavigationAction::StartCompare)]
+    );
+}
+
+#[test]
+fn settings_search_finds_rows_across_sections_and_keys() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenSettings);
+    ui.click_node(By::role_name(Role::SearchInput, "Search settings"));
+    ui.type_text("wrap");
+    ui.find(By::role_name(Role::Switch, "Wrap lines"));
+    ui.find(By::role_name(Role::Group, "Wrap column"));
+    assert!(ui.try_find(By::role_name(Role::Group, "Theme")).is_none());
+    ui.find(By::role_name(Role::Button, "Rebind Toggle line wrapping"));
+}
+
+#[test]
+fn activation_click_on_the_backdrop_keeps_the_palette_open() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenCommandPalette);
+    ui.send_event(InputEvent::Focused(true));
+    ui.run(CommandsAction::Palette(
+        quark_components::PaletteEvent::Dismiss,
+    ));
+    assert_eq!(ui.app().commands.top_layer(), Some(LayerKind::Palette));
+    ui.run(CommandsAction::Palette(
+        quark_components::PaletteEvent::Dismiss,
+    ));
+    assert_eq!(ui.app().commands.top_layer(), None);
 }

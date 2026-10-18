@@ -3,17 +3,21 @@ use quark_app::{InputEvent, UiContext, WindowOptions};
 use quark_ui::FocusId;
 use quark_ui::accessibility::Politeness;
 use quark_ui::key_context::KeyBindings;
-use quark_ui::theme::Theme;
+use quark_ui::text_input::TextEditCommand;
 
 use super::state::{CommandsController, LayerKind};
 use crate::app::route::Controllers;
-use crate::contracts::commands::{CommandDescriptor, CommandsAction};
+use crate::app::text_targets::{
+    COMMIT_MESSAGE, REVIEW_COMPOSER, SETTINGS_STEERING_PROMPT, TEXT_COMPARE_LEFT,
+    TEXT_COMPARE_RIGHT,
+};
+use crate::contracts::commands::{CommandDescriptor, CommandsAction, RefPickerAction};
 use crate::contracts::shell::Action;
 use crate::fonts::FontSettings;
 
 pub enum PlatformRequest {
     Focus(Option<FocusId>),
-    Theme(Box<Theme>),
+    Theme(Box<crate::app::theme::ThemeSelection>),
     Fonts(FontSettings),
     KeyBindings(KeyBindings),
     Menus(Vec<Menu>),
@@ -26,7 +30,7 @@ impl std::fmt::Debug for PlatformRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Focus(focus) => f.debug_tuple("Focus").field(focus).finish(),
-            Self::Theme(theme) => f.debug_tuple("Theme").field(&theme.mode).finish(),
+            Self::Theme(_) => f.write_str("Theme"),
             Self::Fonts(fonts) => f.debug_tuple("Fonts").field(fonts).finish(),
             Self::KeyBindings(_) => f.write_str("KeyBindings"),
             Self::Menus(menus) => f.debug_tuple("Menus").field(&menus.len()).finish(),
@@ -54,7 +58,12 @@ pub fn apply(requests: Vec<PlatformRequest>, cx: &mut UiContext) -> Vec<Action> 
     for request in requests {
         match request {
             PlatformRequest::Focus(focus) => cx.set_focus(focus),
-            PlatformRequest::Theme(theme) => cx.set_theme(*theme),
+            PlatformRequest::Theme(selection) => match *selection {
+                crate::app::theme::ThemeSelection::Fixed(theme) => cx.set_theme(theme),
+                crate::app::theme::ThemeSelection::System(pair) => {
+                    cx.set_themes(pair.light, pair.dark)
+                }
+            },
             PlatformRequest::Fonts(fonts) => {
                 let mut quark_fonts = WindowOptions::default().fonts;
                 quark_fonts.ui_family = fonts.ui_family;
@@ -72,11 +81,46 @@ pub fn apply(requests: Vec<PlatformRequest>, cx: &mut UiContext) -> Vec<Action> 
 }
 
 pub fn key_action(controllers: &Controllers, event: &InputEvent) -> Option<Action> {
+    if let InputEvent::ModifiersChanged(modifiers) = event {
+        controllers
+            .navigation
+            .observe_modifiers(crate::app::navigation::ClickModifiers {
+                extend: modifiers.shift_key(),
+                toggle: modifiers.super_key() || modifiers.control_key(),
+            });
+        return None;
+    }
+    if let InputEvent::Focused(focused) = event {
+        controllers.commands.observe_window_focus(*focused);
+        return None;
+    }
     let InputEvent::KeyPress(chord) = event else {
         return None;
     };
+    controllers.commands.observe_key();
     let binding = chord.binding()?;
     controllers.commands.key_action(&binding.to_string())
+}
+
+const MULTILINE_EDITORS: [FocusId; 5] = [
+    COMMIT_MESSAGE,
+    REVIEW_COMPOSER,
+    TEXT_COMPARE_LEFT,
+    TEXT_COMPARE_RIGHT,
+    SETTINGS_STEERING_PROMPT,
+];
+
+pub fn editor_command(
+    focus: Option<FocusId>,
+    event: &InputEvent,
+) -> Option<(FocusId, TextEditCommand)> {
+    let target = focus.filter(|f| MULTILINE_EDITORS.contains(f))?;
+    let InputEvent::KeyPress(chord) = event else {
+        return None;
+    };
+    let binding = chord.binding()?.to_string();
+    matches!(binding.as_str(), "enter" | "shift+enter")
+        .then(|| (target, TextEditCommand::InsertText("\n".to_owned())))
 }
 
 pub fn menu_action(controllers: &Controllers, id: &str) -> Option<Action> {
@@ -146,11 +190,17 @@ pub fn menus(
                 item(ids::SCALE_UP),
                 item(ids::SCALE_DOWN),
                 item(ids::SCALE_RESET),
-                MenuItem::Separator,
-                role(MenuRole::ToggleFullscreen),
             ],
         ),
-        Menu::window(),
+        Menu::new(
+            "Window",
+            vec![
+                role(MenuRole::Minimize),
+                role(MenuRole::Zoom),
+                MenuItem::Separator,
+                role(MenuRole::BringAllToFront),
+            ],
+        ),
         Menu::new("Help", vec![item(ids::KEYMAPS), item(ids::WEBSITE)]),
     ]
 }
@@ -208,6 +258,19 @@ impl CommandsController {
                 }
                 _ => None,
             },
+            Some(LayerKind::RefPicker) => match binding {
+                "escape" => Some(CommandsAction::CloseOverlay),
+                "enter" => Some(CommandsAction::ConfirmOverlaySelection),
+                "arrowdown" | "ctrl+n" => Some(CommandsAction::MoveOverlaySelection(1)),
+                "arrowup" | "ctrl+p" => Some(CommandsAction::MoveOverlaySelection(-1)),
+                "pagedown" => Some(CommandsAction::MoveOverlaySelection(8)),
+                "pageup" => Some(CommandsAction::MoveOverlaySelection(-8)),
+                "tab" | "shift+tab" => Some(CommandsAction::RefPicker(RefPickerAction::ToggleSide)),
+                "mod+c" if self.ref_picker_query_empty() => {
+                    Some(CommandsAction::RefPicker(RefPickerAction::CopySha))
+                }
+                _ => None,
+            },
             Some(LayerKind::Confirmation) => {
                 (binding == "escape").then_some(CommandsAction::CancelConfirmation)
             }
@@ -217,6 +280,10 @@ impl CommandsController {
             None => None,
         };
         action.map(Action::from)
+    }
+
+    fn ref_picker_query_empty(&self) -> bool {
+        self.ref_picker().is_some_and(|p| p.query.text().is_empty())
     }
 
     pub(super) fn menu_action(&self, id: &str) -> Option<Action> {

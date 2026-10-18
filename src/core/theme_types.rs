@@ -6,6 +6,7 @@ pub enum ThemeMode {
     #[default]
     Dark,
     Light,
+    System,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]

@@ -376,7 +376,7 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::SettingsBehavior => section(SettingsSection::Behavior),
         C::SettingsKeymaps => section(SettingsSection::Keymaps),
         C::SettingsClankers => section(SettingsSection::Clankers),
-        C::SettingsAbout => section(SettingsSection::About),
+        C::SettingsAbout => section(SettingsSection::Updates),
         C::ToggleThemeMode => CommandsAction::ToggleThemeMode.into(),
         C::OpenThemePicker => CommandsAction::OpenThemePicker.into(),
         C::ToggleContinuousScroll => CommandsAction::ToggleContinuousScroll.into(),

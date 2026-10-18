@@ -80,6 +80,12 @@ impl CommandsRuntime {
                 };
                 let _ = self.ref_worker.send((job, events));
             }
+            CommandsEffect::ExpireToast { id, after_ms } => {
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(after_ms));
+                    events.send(CommandsEvent::ToastExpired(id));
+                });
+            }
             CommandsEffect::LoadDiffSize(request) => {
                 let _ = self.size_worker.send((*request, events));
             }

@@ -1402,13 +1402,24 @@ impl Controller for CommandsController {
                 }
                 Reduction::changed()
             }
-            A::DismissToast(id) => {
-                if self.toasts.dismiss(id) {
+            A::DismissToast(id) => match self.toasts.take(id) {
+                Some(item) => {
+                    if let Some(expired) = item.expired {
+                        self.request(PlatformRequest::Dispatch(expired));
+                    }
                     Reduction::changed()
-                } else {
-                    Reduction::default()
                 }
-            }
+                None => Reduction::default(),
+            },
+            A::UndoToast(id) => match self.toasts.take(id) {
+                Some(item) => {
+                    if let Some(undo) = item.undo {
+                        self.request(PlatformRequest::Dispatch(undo));
+                    }
+                    Reduction::changed()
+                }
+                None => Reduction::default(),
+            },
             A::OpenSettings => self.open_settings(None),
             A::CloseSettings => self.close_settings(),
             A::SetSettingsSection(section) => match &mut self.settings_page {
@@ -1537,6 +1548,15 @@ impl Controller for CommandsController {
                 }
                 _ => Reduction::default(),
             },
+            CommandsEvent::ToastExpired(job) => match self.toasts.take_by_job(job) {
+                Some(item) => {
+                    if let Some(expired) = item.expired {
+                        self.request(PlatformRequest::Dispatch(expired));
+                    }
+                    Reduction::changed()
+                }
+                None => Reduction::default(),
+            },
             CommandsEvent::DiffSizeReady { token, size } => match &mut self.ref_picker {
                 Some(picker) if picker.size_token == token => {
                     picker.size = size;
@@ -1581,8 +1601,15 @@ impl Controller for CommandsController {
                 Reduction::default()
             }
             Intent::Toast(update) => {
+                let mut reduction = Reduction::changed();
+                if let ToastUpdate::Undo { id, expires_ms, .. } = update {
+                    reduction = reduction.effect(CommandsEffect::ExpireToast {
+                        id: *id,
+                        after_ms: *expires_ms,
+                    });
+                }
                 self.toasts.apply(update.clone());
-                Reduction::changed()
+                reduction
             }
             Intent::RequestConfirmation(request) => {
                 let Some(return_focus) = self.admit(LayerKind::Confirmation) else {

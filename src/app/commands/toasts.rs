@@ -1,5 +1,6 @@
 use crate::contracts::commands::{ToastKind, ToastUpdate};
 use crate::contracts::shared::JobId;
+use crate::contracts::shell::Action;
 
 const INFO_LIFETIME_MS: u64 = 4_000;
 const ERROR_LIFETIME_MS: u64 = 8_000;
@@ -15,10 +16,15 @@ pub struct ToastItem {
     pub description: Option<String>,
     pub progress: Option<(u64, u64)>,
     pub shown_at_ms: Option<u64>,
+    pub undo: Option<Action>,
+    pub expired: Option<Action>,
 }
 
 impl ToastItem {
     pub fn lifetime_ms(&self) -> Option<u64> {
+        if self.undo.is_some() {
+            return None;
+        }
         match self.progress {
             Some((done, total)) if total > 0 && done >= total => {
                 Some(FINISHED_PROGRESS_LIFETIME_MS)
@@ -79,6 +85,8 @@ impl ToastHost {
                     description,
                     progress: None,
                     shown_at_ms: None,
+                    undo: None,
+                    expired: None,
                 });
             }
             ToastUpdate::Progress {
@@ -105,10 +113,43 @@ impl ToastHost {
                     description: None,
                     progress: Some((completed, total)),
                     shown_at_ms: None,
+                    undo: None,
+                    expired: None,
                 });
             }
             ToastUpdate::Dismiss(job) => self.items.retain(|t| t.job != Some(job)),
+            ToastUpdate::Undo {
+                id,
+                kind,
+                message,
+                undo,
+                expired,
+                ..
+            } => {
+                self.items.retain(|t| t.job != Some(id));
+                self.push(ToastItem {
+                    id: 0,
+                    job: Some(id),
+                    kind,
+                    message,
+                    description: None,
+                    progress: None,
+                    shown_at_ms: None,
+                    undo: Some(*undo),
+                    expired: expired.map(|a| *a),
+                });
+            }
         }
+    }
+
+    pub fn take_by_job(&mut self, job: JobId) -> Option<ToastItem> {
+        let index = self.items.iter().position(|t| t.job == Some(job))?;
+        Some(self.items.remove(index))
+    }
+
+    pub fn take(&mut self, id: u64) -> Option<ToastItem> {
+        let index = self.items.iter().position(|t| t.id == id)?;
+        Some(self.items.remove(index))
     }
 
     fn push(&mut self, mut item: ToastItem) {

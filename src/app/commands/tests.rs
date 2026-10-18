@@ -1008,3 +1008,37 @@ fn theme_picker_offers_and_selects_the_current_default_theme() {
     ui.type_text("diffy-def");
     ui.find(By::role_name(Role::ListBoxOption, "diffy-default"));
 }
+
+#[test]
+fn undo_toasts_dispatch_undo_or_expiry_once() {
+    let mut ui = cmd_harness(Settings::default());
+    let toast = |id| {
+        Intent::Toast(ToastUpdate::Undo {
+            id: JobId(id),
+            kind: crate::contracts::commands::ToastKind::Success,
+            message: "Discarded 3 lines".to_owned(),
+            undo: Box::new(NavigationAction::RefreshRepository.into()),
+            expires_ms: 8000,
+            expired: Some(Box::new(NavigationAction::StartCompare.into())),
+        })
+    };
+    ui.inject(toast(1));
+    assert!(ui.app().effects.iter().any(|e| matches!(
+        e,
+        Effect::Commands(CommandsEffect::ExpireToast {
+            id: JobId(1),
+            after_ms: 8000
+        })
+    )));
+    ui.click_node(By::role_name(Role::Button, "Undo"));
+    assert_eq!(
+        ui.app().dispatched,
+        vec![Action::from(NavigationAction::RefreshRepository)]
+    );
+    ui.inject(toast(2));
+    ui.click_node(By::role_name(Role::Button, "Dismiss"));
+    assert_eq!(
+        ui.app().dispatched[1..],
+        [Action::from(NavigationAction::StartCompare)]
+    );
+}

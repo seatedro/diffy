@@ -149,6 +149,7 @@ pub enum CommandsAction {
     Confirm,
     CancelConfirmation,
     DismissToast(u64),
+    UndoToast(u64),
     OpenSettings,
     OpenKeymaps,
     CloseSettings,
@@ -220,6 +221,10 @@ pub enum CommandsEffect {
         query: String,
     },
     LoadDiffSize(Box<DiffSizeRequest>),
+    ExpireToast {
+        id: JobId,
+        after_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +289,7 @@ pub enum CommandsEvent {
         token: u64,
         size: Option<DiffSize>,
     },
+    ToastExpired(JobId),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -309,7 +315,7 @@ pub enum ToastKind {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ToastUpdate {
     Show {
         id: Option<JobId>,
@@ -324,6 +330,14 @@ pub enum ToastUpdate {
         total: u64,
     },
     Dismiss(JobId),
+    Undo {
+        id: JobId,
+        kind: ToastKind,
+        message: String,
+        undo: Box<Action>,
+        expires_ms: u64,
+        expired: Option<Box<Action>>,
+    },
 }
 
 impl ToastUpdate {

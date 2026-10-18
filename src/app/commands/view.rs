@@ -756,6 +756,26 @@ pub fn toasts(
                         {?toast.description.clone().map(|d| view! { <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>{d}</text> })}
                         {?progress}
                     </div>
+                    if toast.undo.is_some() {
+                        <div class="flex-row items-center shrink-0" pr={tokens::scaled(Sp::XS, scale)}>
+                            <div
+                                class="flex-row items-center"
+                                h={theme.metrics.ui_row_height}
+                                px={tokens::scaled(Sp::MD, scale)}
+                                rounded={theme.metrics.control_radius}
+                                bg={tc.element_background}
+                                border={tc.control_border}
+                                hover_bg={tc.element_hover}
+                                cursor={CursorHint::Pointer}
+                                id={format!("toast.undo.{}", toast.id)}
+                                role="button"
+                                aria-label="Undo"
+                                on:click={CommandsAction::UndoToast(toast.id)}
+                            >
+                                <text size={TextStyle::BodySmall.font_size(theme)} class="font-medium" color={tc.text}>"Undo"</text>
+                            </div>
+                        </div>
+                    }
                     <div
                         class="flex-row items-center justify-center shrink-0"
                         w={theme.metrics.ui_row_height}

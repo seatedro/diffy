@@ -430,6 +430,8 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             decorator,
             cx,
         );
+        let bar = mutations::selection_bar(&mut self.controllers.mutations, &slot, cx);
+        let main = view! { <div w={main_w} h={height} class="relative">{main}{?bar}</div> };
         let content = match files {
             Some(files) => Split::new(
                 "diffy.sidebar",
@@ -665,7 +667,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             cx.window.request_redraw();
             return true;
         }
-        let Some(action) = commands::key_action(&self.controllers, event) else {
+        let Some(action) = commands::key_action(&self.controllers, event, cx.focus()) else {
             return false;
         };
         self.update(action, cx);

@@ -8,10 +8,11 @@ use quark_ui::text_input::TextEditCommand;
 use super::state::{CommandsController, LayerKind};
 use crate::app::route::Controllers;
 use crate::app::text_targets::{
-    COMMIT_MESSAGE, REVIEW_COMPOSER, SETTINGS_STEERING_PROMPT, TEXT_COMPARE_LEFT,
-    TEXT_COMPARE_RIGHT,
+    COMMIT_MESSAGE, REVIEW_COMPOSER, SEARCH, SETTINGS_STEERING_PROMPT, SIDEBAR_FILTER,
+    TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT,
 };
 use crate::contracts::commands::{CommandDescriptor, CommandsAction, RefPickerAction};
+use crate::contracts::navigation::NavigationAction;
 use crate::contracts::shell::Action;
 use crate::fonts::FontSettings;
 
@@ -80,7 +81,11 @@ pub fn apply(requests: Vec<PlatformRequest>, cx: &mut UiContext) -> Vec<Action> 
     followups
 }
 
-pub fn key_action(controllers: &Controllers, event: &InputEvent) -> Option<Action> {
+pub fn key_action(
+    controllers: &Controllers,
+    event: &InputEvent,
+    focus: Option<FocusId>,
+) -> Option<Action> {
     if let InputEvent::ModifiersChanged(modifiers) = event {
         controllers
             .navigation
@@ -98,9 +103,35 @@ pub fn key_action(controllers: &Controllers, event: &InputEvent) -> Option<Actio
         return None;
     };
     controllers.commands.observe_key();
-    let binding = chord.binding()?;
-    controllers.commands.key_action(&binding.to_string())
+    let binding = chord.binding()?.to_string();
+    if let Some(action) = controllers.commands.key_action(&binding) {
+        return Some(action);
+    }
+    let leaves_commit = binding == "escape"
+        && controllers.navigation.viewing_commit()
+        && controllers.commands.top_layer().is_none()
+        && !controllers.commands.settings_open()
+        && !controllers.review.is_modal_open()
+        && !controllers.viewport.interaction.search().open
+        && controllers
+            .viewport
+            .interaction
+            .selection_target()
+            .is_none()
+        && controllers.mutations.selected_lines().is_empty()
+        && !focus.is_some_and(|f| TEXT_FIELDS.contains(&f));
+    leaves_commit.then(|| NavigationAction::ClearHistoryCommit.into())
 }
+
+const TEXT_FIELDS: [FocusId; 7] = [
+    SEARCH,
+    SIDEBAR_FILTER,
+    COMMIT_MESSAGE,
+    REVIEW_COMPOSER,
+    TEXT_COMPARE_LEFT,
+    TEXT_COMPARE_RIGHT,
+    SETTINGS_STEERING_PROMPT,
+];
 
 const MULTILINE_EDITORS: [FocusId; 5] = [
     COMMIT_MESSAGE,

@@ -17,6 +17,7 @@ use crate::contracts::navigation::{
     RepositorySyncReason, ResolveRefRequest, SelectedFile, SelectionOrigin, SidebarMode,
     SidebarTab, SyncRepositoryRequest,
 };
+use crate::contracts::review::ReviewAction;
 use crate::contracts::shared::{CompareGeneration, FileKey, JobId, SharedContext};
 use crate::contracts::shell::{
     Action, AppStartup, Controller, Effect, Intent, LogicalFocus, Reduction, ShellEffect,
@@ -181,6 +182,7 @@ pub struct NavigationController {
     modifiers: Cell<ClickModifiers>,
     banner: RefCell<super::banner::BannerCache>,
     tags: RefCell<(usize, Rc<HashMap<String, Vec<String>>>)>,
+    avatars_requested: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -225,6 +227,7 @@ impl Default for NavigationController {
             modifiers: Cell::new(ClickModifiers::default()),
             banner: RefCell::new(None),
             tags: RefCell::new((0, Rc::default())),
+            avatars_requested: HashSet::new(),
         }
     }
 }
@@ -316,6 +319,24 @@ impl NavigationController {
 
     pub(super) fn banner_cache(&self) -> &RefCell<super::banner::BannerCache> {
         &self.banner
+    }
+
+    pub fn find_commit(&self, revision: &str) -> Option<&VcsChange> {
+        let matches =
+            |c: &&VcsChange| c.revision.id.starts_with(revision) || c.short_revision == revision;
+        self.history
+            .commits
+            .as_deref()
+            .and_then(|commits| commits.iter().find(matches))
+            .or_else(|| {
+                self.repository
+                    .as_ref()
+                    .and_then(|repo| repo.snapshot.changes.iter().find(matches))
+            })
+    }
+
+    pub fn viewing_commit(&self) -> bool {
+        self.history.selected.is_some()
     }
 
     pub fn observe_modifiers(&self, modifiers: ClickModifiers) {
@@ -412,14 +433,60 @@ impl NavigationController {
             } else {
                 &self.compare.right
             };
-            let commit = shown(commit);
-            return (format!("{commit}^"), commit);
+            return match self.find_commit(commit) {
+                Some(found) => {
+                    let parent = found.parents.first().map_or_else(
+                        || format!("{}^", found.short_revision),
+                        |p| p[..p.len().min(7)].to_owned(),
+                    );
+                    (parent, found.short_revision.clone())
+                }
+                None => {
+                    let commit = shown(commit);
+                    (format!("{commit}^"), commit)
+                }
+            };
         }
         (shown(&self.compare.left), shown(&self.compare.right))
     }
 
     pub fn take_dispatch(&self) -> Vec<Action> {
         self.outbox.take()
+    }
+
+    fn queue_visible_avatars(&mut self) {
+        if self.tab != SidebarTab::Commits || !self.visible {
+            return;
+        }
+        let row = self.metrics.history_row;
+        let (first, count) = if row > 0.0 && self.metrics.viewport > 0.0 {
+            (
+                (self.history.scroll_px / row).floor().max(0.0) as usize,
+                (self.metrics.viewport / row).ceil() as usize + STATS_OVERSCAN_ROWS,
+            )
+        } else {
+            (0, STATS_FALLBACK_ROWS)
+        };
+        let emails: Vec<String> = self
+            .history_commits()
+            .map(|commits| {
+                commits
+                    .iter()
+                    .skip(first)
+                    .take(count)
+                    .filter_map(|c| c.author_email.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fresh: Vec<String> = emails
+            .into_iter()
+            .filter(|email| self.avatars_requested.insert(email.clone()))
+            .collect();
+        if !fresh.is_empty() {
+            self.outbox
+                .borrow_mut()
+                .push(ReviewAction::RequestAuthorAvatars(fresh).into());
+        }
     }
 
     fn queue_visible_stats(&mut self) {
@@ -474,6 +541,7 @@ impl NavigationController {
         self.clamp_scroll();
         if changed {
             self.queue_visible_stats();
+            self.queue_visible_avatars();
         }
     }
 
@@ -1053,18 +1121,24 @@ impl Controller for NavigationController {
     fn reduce_action(&mut self, action: Self::Action, cx: &SharedContext) -> Reduction {
         let reduction = self.action(action, cx);
         self.queue_visible_stats();
+        self.queue_visible_avatars();
         reduction
     }
 
     fn reduce_event(&mut self, event: Self::Event, cx: &SharedContext) -> Reduction {
         let reduction = self.event(event, cx);
         self.queue_visible_stats();
+        self.queue_visible_avatars();
         reduction
     }
 
     fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
+        if matches!(intent, Intent::AccountChanged) {
+            self.avatars_requested.clear();
+        }
         let reduction = self.intent(intent, cx);
         self.queue_visible_stats();
+        self.queue_visible_avatars();
         reduction
     }
 }

@@ -663,3 +663,62 @@ impl NavApp {
         }
     }
 }
+
+#[test]
+fn history_requests_visible_avatars_once_and_names_the_parent() {
+    let mut ui = nav_harness();
+    open(&mut ui, three_files());
+    ui.app_mut().update_compare("main", "feature");
+    ui.click_node(By::role_name(Role::Tab, "History"));
+    let generation = ui
+        .app()
+        .effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::Navigation(NavigationEffect::LoadHistory(r)) => Some(r.generation),
+            _ => None,
+        })
+        .expect("history request");
+    let commit =
+        |revision: &str, email: &str, parents: &[&str]| crate::core::vcs::model::VcsChange {
+            author_email: Some(email.to_owned()),
+            parents: parents.iter().map(|p| (*p).to_owned()).collect(),
+            ..fixtures::change(revision, "Change")
+        };
+    ui.app().nav.take_dispatch();
+    ui.app_mut().event(NavigationEvent::HistoryReady {
+        generation,
+        commits: vec![
+            commit("d4", "a@example.com", &["c3c3c3c3c3"]),
+            commit("e5", "a@example.com", &["d4aaaa"]),
+            commit("f6", "b@example.com", &["e5aaaa", "a1a1a1a1a1"]),
+        ]
+        .into(),
+    });
+    ui.frame();
+    let requests: Vec<Vec<String>> = ui
+        .app()
+        .nav
+        .take_dispatch()
+        .into_iter()
+        .filter_map(|action| match action {
+            Action::Review(crate::contracts::review::ReviewAction::RequestAuthorAvatars(
+                emails,
+            )) => Some(emails),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        requests,
+        vec![vec!["a@example.com".to_owned(), "b@example.com".to_owned()]]
+    );
+    ui.click_node(By::test_id("commit:d4aaaa"));
+    assert!(ui.app().nav.take_dispatch().iter().all(|a| !matches!(
+        a,
+        Action::Review(crate::contracts::review::ReviewAction::RequestAuthorAvatars(_))
+    )));
+    assert_eq!(
+        ui.app().nav.compare_labels(),
+        ("c3c3c3c".to_owned(), "d4".to_owned())
+    );
+}

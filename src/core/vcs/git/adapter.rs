@@ -748,6 +748,8 @@ pub fn git_changes(commits: &[CommitInfo], branches: &[BranchInfo]) -> Vec<VcsCh
             short_revision: commit.short_oid.clone(),
             summary: commit.summary.clone(),
             author_name: commit.author_name.clone(),
+            author_email: commit.author_email.clone(),
+            parents: commit.parents.clone(),
             timestamp: commit.timestamp,
             flags: ChangeFlags {
                 current: head_oid == Some(commit.oid.as_str()),

@@ -468,7 +468,7 @@ fn file_row(
     } else {
         Color::TRANSPARENT
     };
-    let buttons: Vec<AnyElement> = actions.iter().map(|a| text_action(a, theme)).collect();
+    let buttons: Vec<AnyElement> = actions.iter().map(|a| icon_action(a, theme)).collect();
     view! {
         <div
             class="flex-row items-center w-full shrink-0"
@@ -602,25 +602,59 @@ fn section_row(
 fn text_action(action: &RowAction, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
+    let color = if action.destructive {
+        tc.status_error
+    } else {
+        tc.text_muted
+    };
     view! {
         <div
             class="flex-row items-center shrink-0"
             h={theme.metrics.ui_row_height.round() - tokens::scaled(Sp::SM, scale)}
             px={tokens::scaled(Sp::XS, scale)}
+            gap={tokens::scaled(Sp::XS, scale)}
             rounded={theme.metrics.control_radius}
             hover_bg={tc.ghost_element_hover}
             cursor={CursorHint::Pointer}
-            id={format!("row-action:{}", action.label)}
+            id={format!("row-action:{}", action.test_id)}
+            test_id={action.test_id.clone()}
             role="button"
             aria-label={action.label.clone()}
             on:click={action.action.clone()}
         >
-            <text
-                size={TextStyle::BodySmall.font_size(theme)}
-                color={if action.destructive { tc.status_error } else { tc.text_muted }}
-            >
-                {action.label.clone()}
-            </text>
+            {?action.icon.map(|svg| view! { <icon svg={svg} size={Ico::XS} color={color} /> })}
+            <text size={TextStyle::BodySmall.font_size(theme)} color={color}>{action.label.clone()}</text>
+        </div>
+    }
+}
+
+fn icon_action(action: &RowAction, theme: &Theme) -> AnyElement {
+    let Some(svg) = action.icon else {
+        return text_action(action, theme);
+    };
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let side = theme.metrics.ui_row_height.round() - tokens::scaled(Sp::SM, scale);
+    let tooltip = match action.shortcut {
+        Some(key) => format!("{} {key}", action.label),
+        None => action.label.clone(),
+    };
+    view! {
+        <div
+            class="flex-row items-center justify-center shrink-0"
+            w={side}
+            h={side}
+            rounded={theme.metrics.control_radius}
+            hover_bg={tc.ghost_element_hover}
+            cursor={CursorHint::Pointer}
+            id={format!("row-action:{}", action.test_id)}
+            test_id={action.test_id.clone()}
+            role="button"
+            aria-label={action.label.clone()}
+            tooltip={tooltip}
+            on:click={action.action.clone()}
+        >
+            <icon svg={svg} size={Ico::XS} color={if action.destructive { tc.status_error } else { tc.icon }} />
         </div>
     }
 }
@@ -739,15 +773,15 @@ fn history(
                     label: "Copy SHA".to_owned(),
                     action: ShellAction::CopyText(revision.clone()).into(),
                     destructive: false,
-                    icon: None,
-                    shortcut: None,
+                    icon: Some(lucide::COPY),
+                    shortcut: Some("\u{2318}C"),
                     test_id: "history.copy-sha".to_owned(),
                 },
                 RowAction {
                     label: "Compare with working tree".to_owned(),
                     action: NavigationAction::CompareWithWorkingTree(revision.clone()).into(),
                     destructive: false,
-                    icon: None,
+                    icon: Some(lucide::GIT_COMPARE),
                     shortcut: None,
                     test_id: "history.compare-working-tree".to_owned(),
                 },
@@ -765,7 +799,12 @@ fn history(
             if names.len() > MAX_TAG_PILLS {
                 pills.push(pill(&format!("+{}", names.len() - MAX_TAG_PILLS), theme));
             }
-            let avatar = author_avatar(review, &commit.author_name, "").size(Layout::AVATAR_SM);
+            let avatar = author_avatar(
+                review,
+                &commit.author_name,
+                commit.author_email.as_deref().unwrap_or_default(),
+            )
+            .size(Layout::AVATAR_SM);
             let age = relative_age(now, commit.timestamp);
             let meta = [commit.short_revision.as_str(), commit.author_name.as_str(), age.as_str()]
                 .into_iter()
@@ -785,6 +824,7 @@ fn history(
                     cursor={CursorHint::Pointer}
                     key={revision.clone()}
                     id={format!("commit:{revision}")}
+                    test_id={format!("commit:{revision}")}
                     accessibility_role={AccessibilityRole::ListBoxOption}
                     aria-label={commit.summary.clone()}
                     aria-selected={is_selected}

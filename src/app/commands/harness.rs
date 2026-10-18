@@ -77,7 +77,7 @@ impl UiApp for Hooked {
     }
 
     fn event(&mut self, event: &InputEvent, cx: &mut UiContext) -> bool {
-        if let Some(action) = super::key_action(self.0.controllers(), event) {
+        if let Some(action) = super::key_action(self.0.controllers(), event, cx.focus()) {
             self.update(action, cx);
             cx.window.request_redraw();
             return true;

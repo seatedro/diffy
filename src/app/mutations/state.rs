@@ -117,6 +117,7 @@ enum UndoEntry {
 }
 
 const MAX_UNDO: usize = 8;
+const UNDO_MS: u64 = 8_000;
 
 #[derive(Debug, Default)]
 pub struct PublishMenu {
@@ -226,16 +227,13 @@ pub fn working_tree(cx: &SharedContext) -> bool {
 }
 
 fn undo_toast(id: JobId, message: impl Into<String>, undo: MutationsAction) -> Intent {
-    Intent::Toast(ToastUpdate::Show {
-        id: Some(id),
+    Intent::Toast(ToastUpdate::Undo {
+        id,
         kind: ToastKind::Success,
         message: message.into(),
-        description: Some(match undo {
-            MutationsAction::UndoCommit(_) => {
-                "Undo Last Commit is in the command palette.".to_owned()
-            }
-            _ => "Undo Discard is in the command palette.".to_owned(),
-        }),
+        undo: Box::new(undo.into()),
+        expires_ms: UNDO_MS,
+        expired: Some(Box::new(MutationsAction::ForgetUndo(id).into())),
     })
 }
 

@@ -399,7 +399,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 &mut self.controllers.navigation,
                 &self.controllers.review,
                 &slot,
-                None,
+                mutations::commit_box(&mut self.controllers.mutations, &slot, cx),
                 cx,
             )
         });

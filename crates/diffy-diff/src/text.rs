@@ -1,7 +1,11 @@
 //! Line-indexed text of one side of a file.
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Arc;
+
+const ESCAPE: &str = "\u{FFFD}";
+const ESCAPE_LEN: usize = ESCAPE.len();
 
 /// Text split into lines without copying. A final line without a newline
 /// still counts as a line; a trailing newline does not start an empty one.
@@ -12,6 +16,30 @@ use std::sync::Arc;
 pub struct TextStore {
     text: Arc<str>,
     line_starts: Arc<[u32]>,
+    escapes: Option<Arc<ByteEscapes>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ByteEscapes {
+    at: Box<[u32]>,
+    bytes: Box<[u8]>,
+}
+
+impl ByteEscapes {
+    pub fn len(&self) -> usize {
+        self.at.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.at.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (usize, u8)> + '_ {
+        self.at
+            .iter()
+            .zip(self.bytes.iter())
+            .map(|(&at, &byte)| (at as usize, byte))
+    }
 }
 
 impl Default for TextStore {
@@ -22,7 +50,32 @@ impl Default for TextStore {
 
 impl TextStore {
     pub fn new(text: impl Into<Arc<str>>) -> Self {
-        let text: Arc<str> = text.into();
+        Self::with_escapes(text.into(), None)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            return Self::new(text);
+        }
+        let mut text = String::with_capacity(bytes.len() + bytes.len() / 8);
+        let mut at = Vec::new();
+        let mut escaped = Vec::new();
+        for chunk in bytes.utf8_chunks() {
+            text.push_str(chunk.valid());
+            for &byte in chunk.invalid() {
+                at.push(text.len() as u32);
+                escaped.push(byte);
+                text.push_str(ESCAPE);
+            }
+        }
+        let escapes = ByteEscapes {
+            at: at.into(),
+            bytes: escaped.into(),
+        };
+        Self::with_escapes(text.into(), Some(Arc::new(escapes)))
+    }
+
+    fn with_escapes(text: Arc<str>, escapes: Option<Arc<ByteEscapes>>) -> Self {
         let mut starts = Vec::with_capacity(text.len() / 32 + 1);
         if !text.is_empty() {
             starts.push(0);
@@ -39,7 +92,78 @@ impl TextStore {
         Self {
             text,
             line_starts: starts.into(),
+            escapes,
         }
+    }
+
+    pub fn escapes(&self) -> Option<&ByteEscapes> {
+        self.escapes.as_deref()
+    }
+
+    pub fn is_exact(&self) -> bool {
+        self.escapes.is_none()
+    }
+
+    pub fn source_len(&self) -> usize {
+        self.source_offset(self.text.len())
+    }
+
+    pub fn source_offset(&self, display: usize) -> usize {
+        let Some(escapes) = self.escapes.as_deref() else {
+            return display;
+        };
+        let before = escapes
+            .at
+            .partition_point(|&at| at as usize + ESCAPE_LEN <= display);
+        match escapes.at.get(before) {
+            Some(&at) if (at as usize) < display => at as usize - before * (ESCAPE_LEN - 1),
+            _ => display - before * (ESCAPE_LEN - 1),
+        }
+    }
+
+    pub fn display_offset(&self, source: usize) -> usize {
+        let Some(escapes) = self.escapes.as_deref() else {
+            return source;
+        };
+        let mut k = 0;
+        let mut hi = escapes.at.len();
+        while k < hi {
+            let mid = (k + hi) / 2;
+            if (escapes.at[mid] as usize) - mid * (ESCAPE_LEN - 1) < source {
+                k = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        source + k * (ESCAPE_LEN - 1)
+    }
+
+    pub fn source_bytes(&self, range: Range<usize>) -> Cow<'_, [u8]> {
+        let end = range.end.min(self.text.len());
+        let start = range.start.min(end);
+        let bytes = &self.text.as_bytes()[start..end];
+        let Some(escapes) = self.escapes.as_deref() else {
+            return Cow::Borrowed(bytes);
+        };
+        let first = escapes.at.partition_point(|&at| (at as usize) < start);
+        let last = escapes.at.partition_point(|&at| (at as usize) < end);
+        if first == last {
+            return Cow::Borrowed(bytes);
+        }
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut cursor = start;
+        for i in first..last {
+            let at = escapes.at[i] as usize;
+            out.extend_from_slice(&self.text.as_bytes()[cursor..at]);
+            out.push(escapes.bytes[i]);
+            cursor = (at + ESCAPE_LEN).min(end);
+        }
+        out.extend_from_slice(&self.text.as_bytes()[cursor..end]);
+        Cow::Owned(out)
+    }
+
+    pub fn to_source_bytes(&self) -> Cow<'_, [u8]> {
+        self.source_bytes(0..self.text.len())
     }
 
     /// The whole text.
@@ -121,6 +245,32 @@ mod tests {
         for (text, expected) in cases {
             assert_eq!(dump(text), expected, "{text:?}");
         }
+    }
+
+    #[test]
+    fn invalid_bytes_are_escaped_and_map_back_exactly() {
+        let source = b"ok\xff\n\xfe\xfdz\r\nend";
+        let store = TextStore::from_bytes(source);
+        assert_eq!(store.as_str(), "ok\u{FFFD}\n\u{FFFD}\u{FFFD}z\r\nend");
+        assert!(!store.is_exact());
+        assert_eq!(store.line_count(), 3);
+        assert_eq!(store.display_line(1), Some("\u{FFFD}\u{FFFD}z"));
+        assert_eq!(store.to_source_bytes().as_ref(), source);
+        assert_eq!(store.source_len(), source.len());
+        let line = store.line_range(1).unwrap();
+        assert_eq!(store.source_bytes(line).as_ref(), b"\xfe\xfdz\r");
+        for (display, source) in [(0, 0), (2, 2), (3, 2), (5, 3), (6, 4), (12, 6), (13, 7)] {
+            assert_eq!(store.source_offset(display), source, "display {display}");
+        }
+        for source_at in 0..=source.len() {
+            let display = store.display_offset(source_at);
+            assert_eq!(
+                store.source_offset(display),
+                source_at,
+                "source {source_at}"
+            );
+        }
+        assert!(TextStore::from_bytes(b"plain\n").is_exact());
     }
 
     #[test]

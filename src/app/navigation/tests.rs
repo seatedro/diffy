@@ -24,7 +24,7 @@ use crate::contracts::shell::{
 };
 use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, FileStats};
 use crate::core::compare::CompareMode;
-use crate::core::vcs::model::VcsCompareSpec;
+use crate::core::vcs::model::{ChangeBucket, FileChange, FileChangeStatus, VcsCompareSpec};
 use crate::platform::persistence::Settings;
 
 #[derive(Default)]
@@ -516,6 +516,79 @@ fn file_rows_are_labeled_selectable_options() {
         "src/a.rs, modified, +77 \u{2212}216",
     ));
     assert_eq!(ui.app().nav.selected_key(), Some(FileKey(1)));
+}
+
+#[test]
+fn working_tree_files_group_by_staging_bucket() {
+    let mut ui = nav_harness();
+    let change = |path: &str, bucket| FileChange {
+        path: path.to_owned(),
+        old_path: None,
+        status: FileChangeStatus::Modified,
+        bucket,
+    };
+    let mut snapshot = fixtures::snapshot(RepositorySyncReason::Open, false);
+    snapshot.file_changes = vec![
+        change("src/b.rs", ChangeBucket::Staged),
+        change("src/a.rs", ChangeBucket::Unstaged),
+        change("docs/c.md", ChangeBucket::Untracked),
+    ];
+    let app = ui.app_mut();
+    app.inject(Intent::ActivateWorkspace {
+        path: PathBuf::from(REPO),
+    });
+    app.event(fixtures::snapshot_ready(1, snapshot));
+    app.inject(Intent::PublishManifest(fixtures::manifest(
+        1,
+        three_files(),
+    )));
+    ui.frame();
+    assert!(ui.app().nav.compare().working_copy);
+
+    let staged = ui.find(By::role_name(Role::Heading, "Staged, 1 file"));
+    let unstaged = ui.find(By::role_name(Role::Heading, "Unstaged, 1 file"));
+    ui.find(By::role_name(Role::Heading, "Untracked, 1 file"));
+    let b = ui.find(file_node(2));
+    let a = ui.find(file_node(1));
+    assert!(staged.bounds.y < b.bounds.y && b.bounds.y < unstaged.bounds.y);
+    assert!(unstaged.bounds.y < a.bounds.y);
+
+    ui.click_node(file_node(2));
+    ui.key("arrowdown");
+    assert_eq!(ui.app().nav.selected_key(), Some(FileKey(1)));
+}
+
+#[test]
+fn operation_rows_expose_their_actions() {
+    let mut ui = nav_harness();
+    let app = ui.app_mut();
+    app.inject(Intent::ActivateWorkspace {
+        path: PathBuf::from(REPO),
+    });
+    app.event(fixtures::snapshot_ready(
+        1,
+        fixtures::snapshot(RepositorySyncReason::Open, true),
+    ));
+    app.inject(Intent::PublishManifest(fixtures::manifest(
+        1,
+        three_files(),
+    )));
+    ui.frame();
+    ui.click_node(By::role_name(Role::Tab, "Operation log"));
+    ui.click_node(By::role_name(Role::ListBoxOption, "snapshot working copy"));
+    ui.find(By::role_name(Role::Button, "Undo last operation"));
+}
+
+#[test]
+fn new_text_compare_hands_off_to_the_viewport() {
+    let mut nav = NavigationController::default();
+    let reduction = nav.reduce_action(NavigationAction::NewTextCompare, &SharedContext::default());
+    assert!(
+        reduction
+            .intents
+            .iter()
+            .any(|i| matches!(i, Intent::OpenTextCompare))
+    );
 }
 
 #[test]

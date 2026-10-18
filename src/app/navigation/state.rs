@@ -281,6 +281,18 @@ impl NavigationController {
     }
 
     fn ensure_rows(&mut self) {
+        let sections = self
+            .repository
+            .as_ref()
+            .filter(|repo| {
+                self.compare.working_copy
+                    && repo.snapshot.capabilities.staging_area
+                    && !repo.snapshot.file_changes.is_empty()
+            })
+            .map(|repo| rows::Sections {
+                identity: Rc::as_ptr(repo) as usize,
+                changes: &repo.snapshot.file_changes,
+            });
         match &self.manifest {
             Some(manifest) => self.rows.ensure(
                 &manifest.files,
@@ -288,6 +300,7 @@ impl NavigationController {
                 self.filter.text(),
                 &self.expanded,
                 self.expanded_revision,
+                sections,
             ),
             None => self.rows.invalidate(),
         }
@@ -849,7 +862,7 @@ impl Controller for NavigationController {
                 self.compare.working_copy = true;
                 self.compare_intent(cx)
             }
-            A::NewTextCompare => Reduction::default(),
+            A::NewTextCompare => Reduction::default().intent(Intent::OpenTextCompare),
             A::RefreshRepository => {
                 if self.manifest.is_some() {
                     let mut reduction = self.compare_intent(cx);

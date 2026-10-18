@@ -695,6 +695,9 @@ impl CommandsController {
     }
 
     fn open_context_menu(&mut self, entries: Vec<ContextMenuEntry>, x: i32, y: i32) -> Reduction {
+        if entries.is_empty() {
+            return Reduction::default();
+        }
         let Some(return_focus) = self.admit(LayerKind::ContextMenu) else {
             return Reduction::default();
         };

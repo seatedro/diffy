@@ -449,3 +449,30 @@ fn jj_discards_selected_working_copy_lines() {
     .unwrap_err();
     assert!(error.to_string().contains("staging area"), "{error}");
 }
+
+#[test]
+fn commits_amend_and_soft_undo() {
+    let dir = repo();
+    commit(dir.path(), &[("f.txt", b"a\n")]);
+    write(dir.path(), "f.txt", b"b\n");
+    git(dir.path(), &["add", "f.txt"]);
+    let mut repo = discovery::open_repository(dir.path()).unwrap();
+    let created = repo.create_commit("Change f\n\nBody", false).unwrap();
+    assert!(created.sha.starts_with(&created.short));
+    let last = repo.last_commit().unwrap().unwrap();
+    assert_eq!(last.sha, created.sha);
+    assert_eq!(last.message, "Change f\n\nBody");
+
+    let amended = repo.create_commit("Change f again", true).unwrap();
+    assert_ne!(amended.sha, created.sha);
+    assert_eq!(
+        repo.last_commit().unwrap().unwrap().message,
+        "Change f again"
+    );
+
+    assert!(repo.undo_commit(&created.sha).is_err());
+    repo.undo_commit(&amended.sha).unwrap();
+    assert_eq!(index(dir.path(), "f.txt"), b"b\n");
+    let head = git(dir.path(), &["log", "-1", "--format=%s"]);
+    assert_eq!(head, b"base\n");
+}

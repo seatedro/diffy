@@ -20,8 +20,8 @@ use crate::core::vcs::git::{
     TagInfo, WORKDIR_REF, status::status_items_from_entry_with_old_path,
 };
 use crate::core::vcs::model::{
-    ChangeBucket, ChangeFlags, FileChange, FileChangeStatus, FileOperation, PublishAction,
-    PublishActionKind, PublishOutcome, PublishPlan, PullFastForwardOutcome, RefKind,
+    ChangeBucket, ChangeFlags, CommitRecord, FileChange, FileChangeStatus, FileOperation,
+    PublishAction, PublishActionKind, PublishOutcome, PublishPlan, PullFastForwardOutcome, RefKind,
     RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_GIT, VcsChange, VcsCompareRequest,
     VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
 };
@@ -403,8 +403,32 @@ impl VcsRepository for GitRepository {
         self.service.apply_patch(patch, application)
     }
 
-    fn create_commit(&mut self, message: &str) -> Result<()> {
-        self.service.commit(message).map(|_| ())
+    fn create_commit(&mut self, message: &str, amend: bool) -> Result<CommitRecord> {
+        let sha = self.service.commit(message, amend)?;
+        let short = self
+            .service
+            .abbreviate_oid(&sha)
+            .unwrap_or_else(|_| sha.chars().take(7).collect());
+        Ok(CommitRecord {
+            sha,
+            short,
+            message: message.to_owned(),
+        })
+    }
+
+    fn last_commit(&mut self) -> Result<Option<CommitRecord>> {
+        Ok(self
+            .service
+            .last_commit()?
+            .map(|(sha, short, message)| CommitRecord {
+                sha,
+                short,
+                message,
+            }))
+    }
+
+    fn undo_commit(&mut self, sha: &str) -> Result<()> {
+        self.service.soft_reset_commit(sha)
     }
 
     fn fetch_remote(
@@ -434,12 +458,22 @@ impl VcsRepository for GitRepository {
             .ok_or_else(|| {
                 DiffyError::vcs(VcsBackendKind::Git, "publish", "no current branch to push")
             })?;
+        let remotes = self.service.remote_names()?;
+        if remotes.is_empty() {
+            return Ok(PublishPlan::no_remote(
+                &branch.name,
+                "Add one with git remote add <name> <url>, then publish.",
+            ));
+        }
         let (remote, upstream_branch) = branch
             .upstream
             .as_deref()
             .and_then(upstream_pair)
             .unwrap_or_else(|| {
-                let remote = preferred_git_remote(&branches).unwrap_or_else(|| "origin".to_owned());
+                let remote = preferred_git_remote(&branches)
+                    .filter(|remote| remotes.contains(remote))
+                    .or_else(|| remotes.iter().find(|r| *r == "origin").cloned())
+                    .unwrap_or_else(|| remotes[0].clone());
                 (remote, branch.name.clone())
             });
         let refspec = format!("refs/heads/{}:refs/heads/{upstream_branch}", branch.name);
@@ -460,6 +494,9 @@ impl VcsRepository for GitRepository {
     }
 
     fn publish(&mut self, action: &PublishAction) -> Result<PublishOutcome> {
+        if let Some(reason) = &action.disabled_reason {
+            return Err(DiffyError::General(reason.clone()));
+        }
         match &action.kind {
             PublishActionKind::PushRef {
                 remote,

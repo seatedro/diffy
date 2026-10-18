@@ -7,9 +7,9 @@ use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::forge::github::PullRequestInfo;
 use crate::core::vcs::compare_port::entry_stats;
 use crate::core::vcs::model::{
-    FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan, PullFastForwardOutcome,
-    RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsKind,
-    VcsOperation, VcsSnapshot,
+    CommitRecord, FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan,
+    PullFastForwardOutcome, RepoCapabilities, RepoLocation, RevisionId, VcsChange,
+    VcsCompareRequest, VcsKind, VcsOperation, VcsSnapshot,
 };
 use crate::core::vcs::mutation::{MutationMaterial, PatchApplication};
 use crate::core::vcs::source::SourceText;
@@ -111,8 +111,14 @@ pub trait VcsRepository: Send {
     fn apply_patch(&mut self, _patch: &[u8], _application: PatchApplication) -> Result<()> {
         Err(unsupported_operation(self.location(), "patch operation"))
     }
-    fn create_commit(&mut self, _message: &str) -> Result<()> {
+    fn create_commit(&mut self, _message: &str, _amend: bool) -> Result<CommitRecord> {
         Err(unsupported_operation(self.location(), "commit"))
+    }
+    fn last_commit(&mut self) -> Result<Option<CommitRecord>> {
+        Err(unsupported_operation(self.location(), "read last commit"))
+    }
+    fn undo_commit(&mut self, _sha: &str) -> Result<()> {
+        Err(unsupported_operation(self.location(), "undo commit"))
     }
     fn run_operation(&mut self, _operation: &VcsOperation) -> Result<String> {
         Err(unsupported_operation(self.location(), "operation"))

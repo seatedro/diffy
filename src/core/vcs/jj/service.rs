@@ -20,9 +20,10 @@ use crate::core::vcs::jj::parse::{
     parse_operation_log,
 };
 use crate::core::vcs::model::{
-    ChangeIdToken, FileChange, FileOperation, JjOperation, PublishAction, PublishActionKind,
-    PublishOutcome, PublishPlan, RefKind, RepoCapabilities, RepoLocation, RevisionId,
-    VCS_PROFILE_JJ, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsOperation, VcsRef, VcsSnapshot,
+    ChangeIdToken, CommitRecord, FileChange, FileOperation, JjOperation, PublishAction,
+    PublishActionKind, PublishOutcome, PublishPlan, RefKind, RepoCapabilities, RepoLocation,
+    RevisionId, VCS_PROFILE_JJ, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsOperation, VcsRef,
+    VcsSnapshot,
 };
 use crate::core::vcs::mutation::{ApplyTarget, MutationMaterial, PatchApplication};
 use crate::core::vcs::patch::patch_identity;
@@ -778,12 +779,53 @@ impl VcsRepository for JjRepository {
         Ok(())
     }
 
-    fn create_commit(&mut self, message: &str) -> Result<()> {
+    fn create_commit(&mut self, message: &str, amend: bool) -> Result<CommitRecord> {
+        if amend {
+            return Err(jj_error_fatal(
+                "amend",
+                "jj describes changes in place; edit the description instead",
+            ));
+        }
         self.cli.run(&[
             OsString::from("commit"),
             OsString::from("-m"),
             OsString::from(message),
         ])?;
+        self.clear_after_write();
+        let ids = self.cli.run_ignored_wc(&[
+            OsString::from("log"),
+            OsString::from("--no-graph"),
+            OsString::from("-r"),
+            OsString::from("@-"),
+            OsString::from("-T"),
+            OsString::from("commit_id ++ \"\\n\" ++ commit_id.short()"),
+        ])?;
+        let mut lines = ids.lines();
+        let sha = lines.next().unwrap_or_default().trim().to_owned();
+        let short = lines.next().unwrap_or_default().trim().to_owned();
+        Ok(CommitRecord {
+            sha,
+            short,
+            message: message.to_owned(),
+        })
+    }
+
+    fn undo_commit(&mut self, sha: &str) -> Result<()> {
+        let parent = self.cli.run_ignored_wc(&[
+            OsString::from("log"),
+            OsString::from("--no-graph"),
+            OsString::from("-r"),
+            OsString::from("@-"),
+            OsString::from("-T"),
+            OsString::from("commit_id"),
+        ])?;
+        if parent.trim() != sha {
+            return Err(jj_error(
+                "undo commit",
+                "the working copy moved since the commit was created",
+            ));
+        }
+        self.cli.run(&[OsString::from("undo")])?;
         self.clear_after_write();
         Ok(())
     }
@@ -909,6 +951,12 @@ impl VcsRepository for JjRepository {
 
     fn publish_plan(&mut self) -> Result<PublishPlan> {
         self.ensure_read_epoch()?;
+        if self.remote_names()?.is_empty() {
+            return Ok(PublishPlan::no_remote(
+                "This repository",
+                "Add one with jj git remote add <name> <url>, then publish.",
+            ));
+        }
         let remote = self.preferred_remote()?;
         let target = self.default_publish_target()?;
         let bookmarks = self.local_bookmarks_at(&target.commit_id)?;
@@ -1161,6 +1209,9 @@ impl VcsRepository for JjRepository {
                     "publish",
                     "jj cannot run a Git refspec publish action",
                 ));
+            }
+            PublishActionKind::NoRemote => {
+                return Err(jj_error("publish", "no remotes are configured"));
             }
         }
         self.clear_after_write();
@@ -1679,7 +1730,7 @@ mod tests {
         );
 
         fs::write(repo_dir.path().join("COMMIT.md"), "committed\n").unwrap();
-        repo.create_commit("add commit from diffy").unwrap();
+        repo.create_commit("add commit from diffy", false).unwrap();
         let description = Command::new("jj")
             .arg("--no-pager")
             .arg("--color=never")
@@ -1736,7 +1787,7 @@ mod tests {
         let location = backend.detect(repo_dir.path()).unwrap().unwrap();
         let mut repo = backend.open(location).unwrap();
         fs::write(repo_dir.path().join("PUBLISH.md"), "publish me\n").unwrap();
-        repo.create_commit("publish me").unwrap();
+        repo.create_commit("publish me", false).unwrap();
 
         let plan = repo.publish_plan().unwrap();
         match &plan.primary.kind {
@@ -1811,7 +1862,7 @@ mod tests {
         let location = backend.detect(repo_dir.path()).unwrap().unwrap();
         let mut repo = backend.open(location).unwrap();
         fs::write(repo_dir.path().join("PUBLISHED.md"), "already published\n").unwrap();
-        repo.create_commit("already published").unwrap();
+        repo.create_commit("already published", false).unwrap();
 
         let status = Command::new("jj")
             .arg("--quiet")
@@ -1898,7 +1949,7 @@ mod tests {
         let location = backend.detect(repo_dir.path()).unwrap().unwrap();
         let mut repo = backend.open(location).unwrap();
         fs::write(repo_dir.path().join("BASE.md"), "base\n").unwrap();
-        repo.create_commit("base").unwrap();
+        repo.create_commit("base", false).unwrap();
 
         // Leave `feat` as a remote-only untracked bookmark on the parent — the
         // state a fresh fetch of someone's branch (or a fetched PR head) is in.
@@ -1926,7 +1977,7 @@ mod tests {
         }
 
         fs::write(repo_dir.path().join("NEXT.md"), "next\n").unwrap();
-        repo.create_commit("next").unwrap();
+        repo.create_commit("next", false).unwrap();
 
         let plan = repo.publish_plan().unwrap();
         match &plan.primary.kind {

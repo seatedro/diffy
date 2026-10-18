@@ -65,14 +65,34 @@ impl MutationsRuntime {
                 job,
                 repo_path,
                 message,
+                amend,
             } => self.vcs.dispatch(
                 workspace,
                 VcsCommand::Commit {
                     job,
                     path: repo_path,
                     message,
+                    amend,
                 },
             ),
+            MutationsEffect::LoadLastCommit { repo_path } => self
+                .vcs
+                .dispatch(workspace, VcsCommand::LastCommit { path: repo_path }),
+            MutationsEffect::UndoCommit {
+                job,
+                repo_path,
+                sha,
+            } => self.vcs.dispatch(
+                workspace,
+                VcsCommand::UndoCommit {
+                    job,
+                    path: repo_path,
+                    sha,
+                },
+            ),
+            MutationsEffect::RestoreDiscard { job, snapshot } => self
+                .vcs
+                .dispatch(workspace, VcsCommand::RestoreDiscard { job, snapshot }),
             MutationsEffect::RunOperation {
                 job,
                 repo_path,
@@ -259,14 +279,32 @@ impl VcsEvents for VcsEventRouter {
                     message,
                 });
             }
-            VcsWorkerEvent::FileOperationApplied { job, path } => {
-                events.send(MutationsEvent::FileOperationApplied { job, path });
+            VcsWorkerEvent::FileOperationApplied { job, path, undo } => {
+                events.send(MutationsEvent::FileOperationApplied { job, path, undo });
             }
             VcsWorkerEvent::FileOperationFailed { job, path, message } => {
                 events.send(MutationsEvent::FileOperationFailed { job, path, message });
             }
-            VcsWorkerEvent::CommitCreated { job, path } => {
-                events.send(MutationsEvent::CommitCreated { job, path });
+            VcsWorkerEvent::LastCommitLoaded { path, commit } => {
+                events.send(MutationsEvent::LastCommitLoaded { path, commit });
+            }
+            VcsWorkerEvent::LastCommitFailed { message } => {
+                events.send(MutationsEvent::LastCommitFailed { message });
+            }
+            VcsWorkerEvent::CommitUndone { job, path } => {
+                events.send(MutationsEvent::CommitUndone { job, path });
+            }
+            VcsWorkerEvent::CommitUndoFailed { job, message } => {
+                events.send(MutationsEvent::CommitUndoFailed { job, message });
+            }
+            VcsWorkerEvent::DiscardRestored { job, path } => {
+                events.send(MutationsEvent::DiscardRestored { job, path });
+            }
+            VcsWorkerEvent::DiscardRestoreFailed { job, message } => {
+                events.send(MutationsEvent::DiscardRestoreFailed { job, message });
+            }
+            VcsWorkerEvent::CommitCreated { job, path, commit } => {
+                events.send(MutationsEvent::CommitCreated { job, path, commit });
             }
             VcsWorkerEvent::CommitFailed { job, path, message } => {
                 events.send(MutationsEvent::CommitFailed { job, path, message });

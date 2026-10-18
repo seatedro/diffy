@@ -839,8 +839,6 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
 dependencies = [
- "serde",
- "termcolor",
  "unicode-width 0.2.2",
 ]
 
@@ -992,7 +990,7 @@ dependencies = [
  "clap",
  "criterion-plot",
  "is-terminal",
- "itertools 0.10.5",
+ "itertools",
  "num-traits",
  "once_cell",
  "oorandom",
@@ -1011,7 +1009,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
 dependencies = [
  "cast",
- "itertools 0.10.5",
+ "itertools",
 ]
 
 [[package]]
@@ -1272,10 +1270,7 @@ dependencies = [
 name = "diffy"
 version = "0.1.12"
 dependencies = [
- "accesskit",
- "accesskit_winit",
  "arboard",
- "bytemuck",
  "carbon",
  "clap",
  "difftastic",
@@ -1286,44 +1281,32 @@ dependencies = [
  "git2",
  "gix",
  "glyphon",
- "halogen",
  "heed",
  "image",
  "keyring",
  "mimalloc",
- "neo_frizbee",
  "notify",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
  "parking_lot",
  "phosphor",
- "pollster",
  "profiling",
- "pulldown-cmark",
  "quark",
  "quark-app",
  "quark-components",
  "quark-ui",
- "raw-window-handle",
  "rayon",
  "reqwest",
- "resvg",
  "rfd",
  "ring",
  "serde",
  "serde_json",
  "subsecond",
- "taffy",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "tungstenite",
- "unicode-segmentation",
  "webbrowser",
- "wgpu",
  "winit",
 ]
 
@@ -2925,25 +2908,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "halogen"
-version = "0.1.12"
-dependencies = [
- "halogen-macros",
- "serde",
- "taffy",
-]
-
-[[package]]
-name = "halogen-macros"
-version = "0.1.12"
-dependencies = [
- "halogen",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "harfrust"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3458,15 +3422,6 @@ name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]
@@ -4033,16 +3988,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
-]
-
-[[package]]
-name = "neo_frizbee"
-version = "0.8.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34a8a11f48357cecd5ada0751f1490d8da4dd935e595d34cc2727567d5288ead"
-dependencies = [
- "itertools 0.14.0",
- "raw-cpuid",
 ]
 
 [[package]]
@@ -5427,15 +5372,6 @@ name = "rangemap"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "973443cf09a9c8656b574a866ab68dfa19f0867d0340648c7d2f6a71b8a8ea68"
-
-[[package]]
-name = "raw-cpuid"
-version = "11.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
-dependencies = [
- "bitflags 2.11.0",
-]
 
 [[package]]
 name = "raw-window-handle"
@@ -7855,18 +7791,13 @@ dependencies = [
  "cfg_aliases",
  "document-features",
  "hashbrown 0.16.1",
- "js-sys",
  "log",
- "naga",
  "parking_lot",
  "portable-atomic",
  "profiling",
  "raw-window-handle",
  "smallvec",
  "static_assertions",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
  "wgpu-core",
  "wgpu-hal",
  "wgpu-types",

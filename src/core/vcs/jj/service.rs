@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use carbon::TextStore;
 
+use crate::contracts::navigation::RepositorySyncReason;
 use crate::core::compare::backends::compare_output_from_raw_patch;
 #[cfg(feature = "difftastic")]
 use crate::core::compare::backends::{DifftasticChangedPath, compare_changed_paths};
@@ -25,7 +26,6 @@ use crate::core::vcs::model::{
     RevisionId, VCS_PROFILE_JJ, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsOperation, VcsRef,
     VcsSnapshot,
 };
-use crate::events::RepositorySyncReason;
 
 const JJ_FILE_STATS_PATH_CHUNK: usize = 512;
 
@@ -1577,13 +1577,13 @@ mod tests {
         JjBackend, compare_summaries_from_jj_diff_summary, jj_fork_point_revset,
         parse_jj_diff_stat_total, parse_movable_bookmark_list,
     };
+    use crate::contracts::navigation::RepositorySyncReason;
     use crate::core::compare::{CompareFileStatsTarget, LayoutMode, RendererKind};
     use crate::core::vcs::backend::VcsBackend;
     use crate::core::vcs::model::{
         ChangeBucket, FileChangeStatus, FileOperation, PublishActionKind, VcsCompareRequest,
         VcsCompareSpec, VcsKind,
     };
-    use crate::events::RepositorySyncReason;
 
     #[test]
     fn jj_pr_support_follows_colocation() {

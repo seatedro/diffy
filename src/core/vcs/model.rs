@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Serialize, Serializer};
 
+use crate::contracts::navigation::{RepositoryChangeKind, RepositorySyncReason};
 use crate::core::compare::{LayoutMode, RendererKind};
-use crate::events::{RepositoryChangeKind, RepositorySyncReason};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VcsKind(&'static str);

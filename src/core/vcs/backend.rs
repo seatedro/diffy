@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use carbon::TextStore;
 
+use crate::contracts::navigation::RepositorySyncReason;
 use crate::core::compare::{
     CompareFileStatsTarget, CompareFileSummary, CompareOutput, ProgressSink, RendererKind,
 };
@@ -12,7 +13,6 @@ use crate::core::vcs::model::{
     RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsKind,
     VcsOperation, VcsSnapshot,
 };
-use crate::events::RepositorySyncReason;
 
 fn unsupported_operation(location: &RepoLocation, op: &str) -> DiffyError {
     let backend = if location.kind == VcsKind::JJ {

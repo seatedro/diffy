@@ -50,7 +50,6 @@ pub enum ContextMenuEntry {
     Separator,
 }
 
-
 impl ContextMenuEntry {
     pub fn item(label: impl Into<String>, action: impl Into<Action>) -> Self {
         Self::Item {

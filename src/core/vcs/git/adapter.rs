@@ -3,6 +3,7 @@ use std::sync::{LazyLock, Mutex};
 
 use carbon::TextStore;
 
+use crate::contracts::navigation::{RepositoryChangeKind, RepositorySyncReason};
 use crate::core::compare::backends::{DifftasticBackend, GitDiffBackend};
 use crate::core::compare::{
     CompareFileStatsTarget, CompareFileSummary, CompareMode, ComparePhase, CompareService,
@@ -23,7 +24,6 @@ use crate::core::vcs::model::{
     RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_GIT, VcsChange, VcsCompareRequest,
     VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
 };
-use crate::events::{RepositoryChangeKind, RepositorySyncReason};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GitBackend;
@@ -811,6 +811,7 @@ mod tests {
         GitBackend, GitRepository, completed_publish_label, git_compare_spec,
         git_location_or_error, preferred_git_remote, status_item_from_file_change, upstream_pair,
     };
+    use crate::contracts::navigation::RepositorySyncReason;
     use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
     use crate::core::vcs::backend::{VcsBackend, VcsRepository};
     use crate::core::vcs::git::{BranchInfo, StatusScope, WORKDIR_REF};
@@ -818,7 +819,6 @@ mod tests {
         ChangeBucket, FileChange, FileChangeStatus, RefKind, RevisionId, VcsCompareRequest,
         VcsCompareSpec, VcsKind,
     };
-    use crate::events::RepositorySyncReason;
 
     fn commit_file(
         repo: &Repository,

@@ -8,6 +8,7 @@ pub mod review;
 pub mod search;
 pub mod syntax;
 pub mod text;
+pub mod theme_colors;
 pub mod theme_types;
 pub mod themes;
 pub mod update;

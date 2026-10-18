@@ -2,7 +2,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use diffy_ui::DiffEvent;
-use diffy_ui::diff_view::decorator::{DiffDecorator, DiffViewOptions};
+use diffy_ui::diff_view::decorator::{DiffDecorator, DiffViewOptions, LinePointer};
 use quark::view;
 use quark_app::ViewContext;
 use quark_components::search_field;
@@ -21,7 +21,7 @@ use crate::app::text_targets::{SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT};
 use crate::app::tokens::{self, Sp, TextStyle};
 use crate::contracts::shell::Action;
 use crate::contracts::viewport::interaction::{
-    DiffInput, InteractionAction, TextCompareLanguage, TextCompareSide, TextCompareView,
+    DiffInput, InteractionAction, LineInput, TextCompareLanguage, TextCompareSide, TextCompareView,
 };
 
 const SYNTAX_POLL: Duration = Duration::from_millis(50);
@@ -50,6 +50,10 @@ fn act(action: InteractionAction) -> quark_ui::Action {
 
 fn diff_event(event: DiffEvent) -> quark_ui::Action {
     act(InteractionAction::Diff(DiffInput(event)))
+}
+
+fn line_event(pointer: LinePointer) -> quark_ui::Action {
+    act(InteractionAction::Line(LineInput(pointer)))
 }
 
 fn row_height(theme: &Theme) -> f32 {
@@ -215,6 +219,7 @@ fn diff_area(
         decorator,
         sources: Some(interaction.sources.clone()),
         keys: Some(keys::DIFF),
+        on_line: Some(line_event),
     };
     let poll = !interaction.syntax.has_wake();
     let Some(diff) = interaction.diff.as_mut() else {
@@ -238,6 +243,7 @@ fn diff_area(
         .w(width)
         .h(list_h)
         .key_context(WORKSPACE_CONTEXT)
+        .on_key("escape", act(InteractionAction::ClearSelection))
         .test_id("diff.lines")
         .child(list);
     view! {

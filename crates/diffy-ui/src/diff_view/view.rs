@@ -16,8 +16,8 @@ use quark_text::{TextParams, TextStyle};
 use quark_ui::Action;
 use quark_ui::element::{
     AnyElement, Bounds, CacheKey, ClickEvent, CursorHint, DragHandler, DragReleaseResult, Element,
-    ElementContext, IntoAnyElement, LayoutEngine, LayoutId, ScrollActionBuilder, cached, canvas,
-    div, inputs_hash, svg_icon, text,
+    ElementContext, GroupCondition, GroupId, IntoAnyElement, LayoutEngine, LayoutId,
+    ScrollActionBuilder, cached, canvas, div, inputs_hash, svg_icon, text,
 };
 use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
@@ -25,12 +25,13 @@ use quark_ui::theme::{Color, Theme};
 
 use super::decorator::{
     AnnotationContext, DiffDecorator, DiffSources, DiffViewOptions, GutterContext, HeaderContext,
-    HeaderSlot, HunkSource, LineContext, LineMark, SeparatorContext,
+    HeaderSlot, HunkSource, LineContext, LineMark, LinePointer, SeparatorContext,
 };
 use super::interaction::AUTOSCROLL_FRAME_MS;
 use super::paint::{self, Cue, LineColors};
 use super::prepared::{
-    FileFact, FrameRow, LinePaint, Metrics, PreparedKind, RowPaint, SearchMark, ViewFrame,
+    ColumnBox, FileFact, FrameRow, LinePaint, Metrics, PreparedKind, RowPaint, SearchMark,
+    ViewFrame,
 };
 use super::presentation::{
     DiffColors, DiffMarkers, DiffNumbers, DiffPresentation, EmptySideFill, FileHeaders,
@@ -68,9 +69,9 @@ struct Look {
     env: CollectionEnv,
 }
 
-/// The app's decorator and what identifies its output in cache keys.
 const CHANGE_BAR_W: f32 = 3.0;
 
+/// The app's decorator and what identifies its output in cache keys.
 #[derive(Clone)]
 struct Deco {
     decorator: Option<Rc<dyn DiffDecorator>>,
@@ -161,11 +162,13 @@ pub(crate) fn diff_view_custom(
     };
     let deco = Deco::new(options.decorator, options.sources);
     let keys = options.keys.unwrap_or(KEYS);
+    let on_line = options.on_line;
     // The cache watches the sideways scroll handles itself.
     let hash = inputs_hash(&(
         state.frame_id,
         env,
         on_event as usize,
+        on_line.map(|f| f as usize),
         look.colors_key,
         deco.key,
         keys.as_ptr() as usize,
@@ -173,7 +176,7 @@ pub(crate) fn diff_view_custom(
     ));
     BoundsProbe {
         child: view! {
-            <cached(state.id, hash, move || build(&frame, look, &deco, keys, on_event))
+            <cached(state.id, hash, move || build(&frame, look, &deco, keys, on_event, on_line))
                 w={width}
                 h={height}
             />
@@ -190,6 +193,7 @@ fn build(
     deco: &Deco,
     keys: &'static [(&'static str, DiffKey)],
     on_event: fn(DiffEvent) -> Action,
+    on_line: Option<fn(LinePointer) -> Action>,
 ) -> AnyElement {
     let (width, height) = frame.viewport;
     let colors = look.colors;
@@ -278,6 +282,12 @@ fn build(
                         h={height}
                         class="overflow-clip"
                         bg={colors.gutter}
+                        @when {let Some(on_line) = on_line} {
+                            class="cursor-pointer"
+                            on:drag={move |press: ClickEvent| {
+                                Box::new(LineDrag { press, on_line }) as Box<dyn DragHandler>
+                            }}
+                        }
                     >
                         <div w={column.gutter_w} class="flex-col" translate={(0.0, first_top)}>
                             for (i, row) in frame.rows.iter().enumerate() {
@@ -342,6 +352,11 @@ fn build(
                     >
                         {band(frame, row, look, deco, on_event)}
                     </div>
+                }
+                for row in frame.rows.iter().filter(|r| !r.focused && r.height > 0.0 && r.paint.kind.is_line()) {
+                    if let Some(utility) = hover_utility(frame, row, deco) {
+                        {utility}
+                    }
                 }
                 for row in frame.rows.iter().filter(|r| r.focused && r.height > 0.0) {
                     {focus_overlay(frame, row, look, deco)}
@@ -832,38 +847,65 @@ fn empty_side(frame: &ViewFrame, row: &FrameRow, side: Side, look: Look) -> AnyE
     }
 }
 
+/// The decorator's gutter utility for a line row, and where it sits:
+/// a row-high square just right of the change bar.
+fn utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<(ColumnBox, f32, AnyElement)> {
+    let kind = row.paint.kind.diff().filter(|k| k.is_line())?;
+    let decorator = deco.decorator.as_ref()?;
+    let mode = frame.columns.mode;
+    let side = match mode {
+        Mode::Unified => shown_side(mode, kind, Side::New),
+        // The new side's column, unless the row has only an old line.
+        Mode::Split if row.paint.source_lines[1].is_some() => Side::New,
+        Mode::Split => Side::Old,
+    };
+    let line = row.paint.source_lines[side as usize]?;
+    let column = frame.columns.of(side);
+    let size = row.height.min(frame.metrics.line_h);
+    let cx = GutterContext {
+        file: row.paint.file,
+        source: deco.file(row.paint.file),
+        side,
+        line,
+        kind,
+        width: size,
+        height: size,
+    };
+    Some((column, size, decorator.gutter_utility(&cx)?))
+}
+
+/// A line row's gutter utility, shown while the pointer is over the row.
+/// Covers only the code column, so gutter presses still reach the gutter.
+fn hover_utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<AnyElement> {
+    let group = GroupId::new("diff.line");
+    let (column, size, element) = utility(frame, row, deco)?;
+    Some(view! {
+        <div
+            class="absolute"
+            left={column.text_x}
+            top={row.top}
+            w={column.text_w}
+            h={row.height}
+            interaction_group={group}
+        >
+            <div
+                class="absolute top-0 left-0"
+                w={size}
+                h={size}
+                show_when={GroupCondition::HoveredOrFocusWithin(group)}
+            >
+                {element}
+            </div>
+        </div>
+    })
+}
+
 /// The keyboard focus outline over a row, painted after everything else
 /// in it, with the decorator's gutter utility for a line row.
 fn focus_overlay(frame: &ViewFrame, row: &FrameRow, look: Look, deco: &Deco) -> AnyElement {
     let (width, height) = (frame.viewport.0, row.height);
     let color = look.colors.focused_row;
-    let utility = row
-        .paint
-        .kind
-        .diff()
-        .filter(|k| k.is_line())
-        .and_then(|kind| {
-            let decorator = deco.decorator.as_ref()?;
-            let mode = frame.columns.mode;
-            let side = match mode {
-                Mode::Unified => shown_side(mode, kind, Side::New),
-                // The new side's gutter, unless the row has only an old line.
-                Mode::Split if row.paint.source_lines[1].is_some() => Side::New,
-                Mode::Split => Side::Old,
-            };
-            let line = row.paint.source_lines[side as usize]?;
-            let column = frame.columns.of(side);
-            let cx = GutterContext {
-                file: row.paint.file,
-                source: deco.file(row.paint.file),
-                side,
-                line,
-                kind,
-                width: column.gutter_w,
-                height,
-            };
-            Some((column, decorator.gutter_utility(&cx)?))
-        });
+    let utility = utility(frame, row, deco);
     view! {
         <div class="absolute left-0" top={row.top} w={width} h={height}>
             <canvas(
@@ -880,8 +922,8 @@ fn focus_overlay(frame: &ViewFrame, row: &FrameRow, look: Look, deco: &Deco) -> 
                 w={width}
                 h={height}
             />
-            if let Some((column, element)) = utility {
-                <div class="absolute top-0" left={column.gutter_x} w={column.gutter_w} h={height}>
+            if let Some((column, size, element)) = utility {
+                <div class="absolute top-0" left={column.text_x} w={size} h={size}>
                     {element}
                 </div>
             }
@@ -1436,6 +1478,41 @@ fn expand_button(
         >
             <icon svg={icon} size={(size * 0.7).round()} color={colors.muted} />
         </div>
+    }
+}
+
+/// A press or drag over a line gutter, reported to the app for line
+/// selection.
+struct LineDrag {
+    press: ClickEvent,
+    on_line: fn(LinePointer) -> Action,
+}
+
+impl DragHandler for LineDrag {
+    fn on_press(&mut self) -> Vec<Action> {
+        vec![(self.on_line)(LinePointer {
+            x: self.press.x,
+            y: self.press.y,
+            drag: false,
+        })]
+    }
+
+    fn on_move(&mut self, x: f32, y: f32) -> Vec<Action> {
+        vec![(self.on_line)(LinePointer { x, y, drag: true })]
+    }
+
+    fn on_release(&mut self) -> DragReleaseResult {
+        DragReleaseResult {
+            actions: Vec::new(),
+        }
+    }
+
+    fn on_cancel(&mut self) -> Vec<Action> {
+        Vec::new()
+    }
+
+    fn cursor(&self) -> CursorHint {
+        CursorHint::Pointer
     }
 }
 

@@ -127,6 +127,53 @@ impl DiffViewState {
         }
     }
 
+    /// Moves the keyboard focus to the next (or previous) added, removed or
+    /// modified line row and scrolls it into view; returns its line.
+    pub fn focus_change(&mut self, forward: bool) -> Option<super::selection::LineHit> {
+        let count = self.refs.len();
+        let start = self.focused_index.map(|i| i as usize);
+        let changed = |state: &Self, index: usize| match state.refs.get(index)? {
+            RowRef::Line { seg, row } => {
+                let p = &state.segments[seg as usize].projection;
+                let kind = p.kind[row as usize];
+                matches!(kind, RowKind::Added | RowKind::Removed | RowKind::Modified)
+                    .then_some((seg, row, kind))
+            }
+            _ => None,
+        };
+        let next = |index: usize| -> Option<usize> {
+            if forward {
+                (index + 1 < count).then_some(index + 1)
+            } else {
+                index.checked_sub(1)
+            }
+        };
+        let mut index = match start {
+            Some(i) => next(i)?,
+            None if forward => 0,
+            None => count.checked_sub(1)?,
+        };
+        let (seg, row, kind) = loop {
+            if let Some(found) = changed(self, index) {
+                break found;
+            }
+            index = next(index)?;
+        };
+        self.scroll_to_index(index as u32, RevealAlign::Nearest);
+        self.set_focus(Some(index as u32));
+        let side = if kind == RowKind::Removed {
+            Side::Old
+        } else {
+            Side::New
+        };
+        let segment = &self.segments[seg as usize];
+        let p = &segment.projection;
+        let file = p.file[row as usize];
+        let line = p.line(row, side)?;
+        let line = source_line(&segment.doc, file, side, line);
+        self.line_hit(segment.unit(file), side, line, kind)
+    }
+
     /// Moves the keyboard focus target to list row `index`.
     pub(crate) fn set_focus(&mut self, index: Option<u32>) {
         let key = index.map(|i| self.ref_key(self.refs.at(i as usize)));

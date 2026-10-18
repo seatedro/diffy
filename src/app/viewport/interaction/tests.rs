@@ -738,3 +738,81 @@ fn an_empty_compare_shows_no_changes() {
     ui.frame();
     assert!(ui.painted_text().contains("No changes"));
 }
+
+fn gutter_of(ui: &UiTestHarness<Host>, name: &str) -> (f32, f32) {
+    let line = ui.find_all(By::role_name(Role::ListItem, name))[0].bounds;
+    (line.x - 12.0, line.y + line.height / 2.0)
+}
+
+#[test]
+fn gutter_presses_and_drags_select_changed_lines() {
+    use crate::contracts::mutations::MutationsAction as M;
+
+    let mut ui = loaded(Host::new());
+    let target = |line: u32| SourceTarget {
+        file: FileKey(1),
+        revision: FileRevision(1),
+        side: Side::New,
+        lines: line..line + 1,
+    };
+    let ten = gutter_of(&ui, "changed ten");
+    ui.click(ten);
+    assert_eq!(ui.app().line_actions, [M::SelectLines(target(10))]);
+
+    ui.send_event(InputEvent::ModifiersChanged(ModifiersState::SUPER));
+    ui.click(ten);
+    ui.send_event(InputEvent::ModifiersChanged(ModifiersState::SHIFT));
+    ui.click(ten);
+    ui.send_event(InputEvent::ModifiersChanged(ModifiersState::empty()));
+    assert_eq!(
+        ui.app().line_actions[1..],
+        [
+            M::ToggleLineSelection(target(10)),
+            M::ExtendLineSelection(target(10))
+        ]
+    );
+
+    let before = ui.app().line_actions.len();
+    ui.click(gutter_of(&ui, "line 12"));
+    assert_eq!(
+        ui.app().line_actions.len(),
+        before,
+        "unchanged lines are not selectable"
+    );
+}
+
+#[test]
+fn row_cursor_moves_between_changed_lines_and_publishes_them() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    ui.key("shift+j");
+    let target = selections(&ui).last().cloned().expect("a published line");
+    assert_eq!(
+        (target.file, target.side, target.lines.clone()),
+        (FileKey(1), Side::Old, 10..11)
+    );
+    ui.key("shift+j");
+    let target = selections(&ui).last().cloned().expect("a published line");
+    assert_eq!(target.lines, 10..11);
+    assert_eq!(target.side, Side::New);
+}
+
+#[test]
+fn escape_clears_the_text_selection() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    ui.key("mod+a");
+    assert!(
+        ui.app()
+            .interaction
+            .diff()
+            .is_some_and(|d| d.selection().is_some())
+    );
+    ui.key("escape");
+    assert!(
+        ui.app()
+            .interaction
+            .diff()
+            .is_some_and(|d| d.selection().is_none())
+    );
+}

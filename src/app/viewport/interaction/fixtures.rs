@@ -115,6 +115,7 @@ pub struct Host {
     pub decorator: Rc<dyn DiffDecorator>,
     pub effects: Vec<Effect>,
     pub intents: Vec<Intent>,
+    pub line_actions: Vec<crate::contracts::mutations::MutationsAction>,
     pub clock: u64,
 }
 
@@ -138,6 +139,7 @@ impl Host {
             decorator,
             effects: Vec::new(),
             intents: Vec::new(),
+            line_actions: Vec::new(),
             clock: 0,
         };
         host.update_settings(|s| s.continuous_scroll = true);
@@ -215,8 +217,13 @@ impl UiApp for Host {
     fn update(&mut self, action: Action, cx: &mut UiContext) {
         match action {
             Action::Viewport(ViewportAction::Interaction(action)) => {
+                let mods = cx.window.modifiers();
+                self.interaction
+                    .set_modifiers(mods.shift_key(), mods.super_key() || mods.control_key());
                 let reduction = self.interaction.reduce_action(action, &self.shared);
                 self.absorb(reduction, cx);
+                let lines = self.interaction.take_line_actions();
+                self.line_actions.extend(lines);
             }
             Action::Shell(ShellAction::FocusLogical(focus)) => cx.set_focus(focus.map(focus_id)),
             Action::Commands(CommandsAction::Shortcut(command)) => {

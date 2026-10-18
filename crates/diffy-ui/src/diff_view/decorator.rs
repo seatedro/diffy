@@ -145,11 +145,22 @@ impl DiffViewState {
     }
 }
 
+/// A press or drag over a line gutter, in window points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinePointer {
+    pub x: f32,
+    pub y: f32,
+    /// Whether the pointer moved with the button held since the press.
+    pub drag: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct DiffViewOptions {
     pub decorator: Option<std::rc::Rc<dyn DiffDecorator>>,
     pub sources: Option<std::rc::Rc<DiffSources>>,
     pub keys: Option<&'static [(&'static str, super::DiffKey)]>,
+    /// Presses and drags over line gutters, for line selection.
+    pub on_line: Option<fn(LinePointer) -> quark_ui::Action>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

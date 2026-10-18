@@ -4,9 +4,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use diffy_diff::{
-    DiffSession, DiffUpdate, GapId, Reveal, Revision, SourcePurpose, SourceRemap, UpdateError,
+    DiffSession, DiffUpdate, GapId, Reveal, Revision, RowKind, Side, SourcePurpose, SourceRemap,
+    UpdateError,
 };
-use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources};
+use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources, LinePointer};
 use diffy_ui::diff_view::presentation::{DiffLayout, DiffMarkers, DiffPresentation};
 use diffy_ui::{
     DiffAnnotation, DiffEvent, DiffKey, DiffOutcome, DiffSessionViewState, DiffStyle, DiffTarget,
@@ -25,15 +26,17 @@ use crate::app::text_targets::{
     SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT, TextCx, TextHost, VIEWPORT,
 };
 use crate::contracts::commands::{CommandDescriptor, CommandSource};
+use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{SelectedFile, SelectionOrigin};
 use crate::contracts::shared::{
-    CompareGeneration, FileKey, HunkTarget, SharedContext, SourceTarget,
+    CompareGeneration, FileKey, FileRevision, HunkTarget, SharedContext, SourceTarget,
 };
 use crate::contracts::shell::{Controller, Intent, LogicalFocus, Reduction, ShellEffect};
 use crate::contracts::viewport::InteractionAction;
 use crate::contracts::viewport::InteractionEvent;
 use crate::contracts::viewport::interaction::{
-    ContextDirection, DiffInput, InstallItem, TextCompareSide, TextCompareView, ViewportInstall,
+    ContextDirection, DiffInput, InstallItem, LineInput, TextCompareSide, TextCompareView,
+    ViewportInstall,
 };
 use crate::contracts::viewport::pipeline::{PreparedDiff, PreparedSegment, SlotUpdate};
 use crate::core::compare::LayoutMode;
@@ -85,6 +88,15 @@ pub struct InteractionController {
     pub(super) seeded: HashSet<FileKey>,
     pub(super) scopes: SharedScopes,
     pub(super) scope_revision: u64,
+    pub(super) modifiers: LineModifiers,
+    pub(super) line_actions: Vec<MutationsAction>,
+    pub(super) line_drag: Option<SourceTarget>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LineModifiers {
+    pub extend: bool,
+    pub toggle: bool,
 }
 
 struct Pending {
@@ -132,6 +144,9 @@ impl Default for InteractionController {
             seeded: HashSet::new(),
             scopes: SharedScopes::default(),
             scope_revision: 0,
+            modifiers: LineModifiers::default(),
+            line_actions: Vec::new(),
+            line_drag: None,
         }
     }
 }
@@ -562,6 +577,83 @@ impl InteractionController {
         })))
     }
 
+    pub fn set_modifiers(&mut self, shift: bool, primary: bool) {
+        self.modifiers = LineModifiers {
+            extend: shift,
+            toggle: primary,
+        };
+    }
+
+    pub fn take_line_actions(&mut self) -> Vec<MutationsAction> {
+        std::mem::take(&mut self.line_actions)
+    }
+
+    fn line_pointer(&mut self, pointer: LinePointer) -> Reduction {
+        let Some(hit) = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.line_at(pointer.x, pointer.y))
+            .filter(|hit| {
+                matches!(
+                    hit.kind,
+                    RowKind::Added | RowKind::Removed | RowKind::Modified
+                )
+            })
+        else {
+            return Reduction::default();
+        };
+        let target = SourceTarget {
+            file: hit.file,
+            revision: FileRevision(hit.revision.0),
+            side: hit.side,
+            lines: hit.line..hit.line + 1,
+        };
+        if pointer.drag && self.line_drag.as_ref() == Some(&target) {
+            return Reduction::default();
+        }
+        let action = match (pointer.drag, self.modifiers) {
+            (true, _) => MutationsAction::ExtendLineSelection(target.clone()),
+            (false, LineModifiers { toggle: true, .. }) => {
+                MutationsAction::ToggleLineSelection(target.clone())
+            }
+            (false, LineModifiers { extend: true, .. }) => {
+                MutationsAction::ExtendLineSelection(target.clone())
+            }
+            (false, _) => MutationsAction::SelectLines(target.clone()),
+        };
+        self.line_drag = Some(target);
+        self.line_actions.push(action);
+        Reduction::changed()
+    }
+
+    fn move_to_change(&mut self, steps: i32) -> Reduction {
+        let Some(diff) = &mut self.diff else {
+            return Reduction::default();
+        };
+        let mut hit = None;
+        for _ in 0..steps.unsigned_abs().min(MAX_REPEAT) {
+            match diff.focus_change(steps > 0) {
+                Some(next) => hit = Some(next),
+                None => break,
+            }
+        }
+        let Some(hit) = hit else {
+            return Reduction::default();
+        };
+        let target = Some(SourceTarget {
+            file: hit.file,
+            revision: FileRevision(hit.revision.0),
+            side: hit.side,
+            lines: hit.line..hit.line + 1,
+        });
+        let mut reduction = Reduction::changed();
+        if target != self.published {
+            self.published = target.clone();
+            reduction.intents.push(Intent::SelectSource(target));
+        }
+        self.follow(reduction, false)
+    }
+
     pub fn take_source_requests(&mut self) -> Vec<(FileKey, SourcePurpose)> {
         std::mem::take(&mut self.source_requests)
     }
@@ -910,7 +1002,19 @@ impl Controller for InteractionController {
                 let reduction = self.outcome(outcome);
                 self.follow(reduction, select)
             }
-            A::ScrollLines(lines) | A::MoveRowCursor(lines) => {
+            A::Line(LineInput(pointer)) => self.line_pointer(pointer),
+            A::ClearSelection => {
+                let Some(diff) = &mut self.diff else {
+                    return Reduction::default();
+                };
+                if diff.selection().is_none() {
+                    return Reduction::default();
+                }
+                diff.set_selection(None, Side::New);
+                self.follow(Reduction::changed(), true)
+            }
+            A::MoveRowCursor(steps) => self.move_to_change(steps),
+            A::ScrollLines(lines) => {
                 let key = if lines < 0 {
                     DiffKey::LineUp
                 } else {

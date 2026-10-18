@@ -117,7 +117,7 @@ impl UiApp for CmdApp {
             width,
             height,
         };
-        let overlays = super::overlays(&mut self.commands, &slot, cx);
+        let overlays = super::overlays(&mut self.commands, &slot, None, cx);
         let toasts = super::toasts(&mut self.commands, &slot, cx);
         let theme = cx.theme;
         quark::view! {
@@ -261,6 +261,90 @@ fn palette_opens_from_the_shortcut_runs_a_command_and_returns_focus() {
             .is_none()
     );
     assert_eq!(ui.focus(), filter);
+}
+
+#[test]
+fn palette_omits_its_own_command() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenCommandPalette);
+    ui.type_text("palette");
+    let tree = ui.accessibility_tree();
+    assert!(!tree.contains("\"Command Palette"));
+    ui.find(By::name("No results"));
+}
+
+#[test]
+fn external_commands_replace_builtins_and_claim_shortcuts() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::SetExternalCommands(Rc::from(vec![
+        CommandDescriptor::new(
+            "settings.open",
+            "Open Settings Elsewhere",
+            NavigationAction::RefreshRepository,
+        ),
+        CommandDescriptor::new(
+            "review.next_thread",
+            "Next Thread",
+            NavigationAction::SelectNextFile,
+        )
+        .shortcut(ShortcutCommand::OpenSettings),
+    ])));
+    let commands = ui.app().commands.commands();
+    assert_eq!(
+        commands.iter().filter(|c| c.id == "settings.open").count(),
+        1
+    );
+    assert!(
+        commands
+            .iter()
+            .filter(|c| c.shortcut == Some(ShortcutCommand::OpenSettings))
+            .all(|c| c.id == "review.next_thread")
+    );
+    ui.key("mod+,");
+    assert_eq!(
+        ui.app().dispatched,
+        vec![Action::from(NavigationAction::SelectNextFile)]
+    );
+    assert!(!ui.app().commands.settings_open());
+
+    ui.run(CommandsAction::SetExternalCommands(Rc::from(Vec::new())));
+    ui.key("mod+,");
+    assert!(ui.app().commands.settings_open());
+}
+
+#[test]
+fn a_new_overlay_replaces_the_open_one_and_escape_returns_focus() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenThemePicker);
+    assert_eq!(ui.focus(), Some(PICKER));
+    ui.run(CommandsAction::OpenCommandPalette);
+    assert_eq!(ui.app().commands.top_layer(), Some(LayerKind::Palette));
+    assert!(!ui.app().commands.has_layer(LayerKind::Picker));
+    ui.key("escape");
+    assert_eq!(ui.app().commands.top_layer(), None);
+    assert_eq!(ui.focus(), Some(SIDEBAR));
+}
+
+#[test]
+fn a_confirmation_blocks_other_overlays_until_answered() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenCommandPalette);
+    ui.inject(Intent::RequestConfirmation(discard_request()));
+    ui.frame();
+    assert_eq!(ui.app().commands.top_layer(), Some(LayerKind::Confirmation));
+    assert!(!ui.app().commands.has_layer(LayerKind::Palette));
+    ui.run(CommandsAction::OpenCommandPalette);
+    ui.run(CommandsAction::OpenSettings);
+    ui.run(CommandsAction::DismissOverlays);
+    assert_eq!(ui.app().commands.top_layer(), Some(LayerKind::Confirmation));
+    assert!(!ui.app().commands.settings_open());
+    ui.key("escape");
+    assert_eq!(ui.app().commands.top_layer(), None);
+    assert_eq!(ui.focus(), Some(SIDEBAR));
 }
 
 #[test]

@@ -28,9 +28,27 @@ fn palette_event(event: PaletteEvent) -> quark_ui::Action {
     Action::from(CommandsAction::Palette(event)).into()
 }
 
+pub fn clankers_slot(commands: &CommandsController, slot: &Slot, theme: &Theme) -> Option<f32> {
+    let page = commands.settings_page()?;
+    (page.section == SettingsSection::Clankers).then(|| settings_content_width(theme, slot.width))
+}
+
+fn settings_nav_width(theme: &Theme, width: f32) -> f32 {
+    tokens::scaled(Sz::SETTINGS_NAV_W, tokens::ui_scale(theme)).min(width * 0.4)
+}
+
+fn settings_content_width(theme: &Theme, width: f32) -> f32 {
+    let scale = tokens::ui_scale(theme);
+    let padding = tokens::scaled(Sp::XL, scale) * 2.0;
+    (width - settings_nav_width(theme, width) - padding)
+        .min(tokens::scaled(Sz::SETTINGS_CONTENT_MAX_W, scale))
+        .max(0.0)
+}
+
 pub fn overlays(
     commands: &mut CommandsController,
     slot: &Slot,
+    clankers: Option<AnyElement>,
     cx: &mut ViewContext,
 ) -> Option<AnyElement> {
     let theme = cx.theme;
@@ -40,7 +58,7 @@ pub fn overlays(
     let size = (slot.width, slot.height);
     let mut children: Vec<AnyElement> = Vec::new();
     if commands.settings_page().is_some() {
-        children.push(settings_page(commands, size, cx));
+        children.push(settings_page(commands, size, clankers, cx));
     }
     let layers: Vec<LayerKind> = [
         LayerKind::Picker,
@@ -266,6 +284,7 @@ pub fn action_button(
 fn settings_page(
     commands: &CommandsController,
     size: (f32, f32),
+    clankers: Option<AnyElement>,
     cx: &mut ViewContext,
 ) -> AnyElement {
     let theme = cx.theme;
@@ -276,7 +295,7 @@ fn settings_page(
     };
     let settings = &commands.settings().settings;
     let top = theme.metrics.title_bar_height.min(size.1);
-    let nav_w = tokens::scaled(Sz::SETTINGS_NAV_W, scale).min(size.0 * 0.4);
+    let nav_w = settings_nav_width(theme, size.0);
     let nav: Vec<AnyElement> = SettingsSection::ALL
         .iter()
         .map(|section| nav_item(*section, page.section == *section, theme))
@@ -286,11 +305,13 @@ fn settings_page(
         SettingsSection::Editor => editor(settings, theme),
         SettingsSection::Behavior => behavior(settings, theme),
         SettingsSection::Keymaps => keymaps(settings, page, theme),
-        SettingsSection::Clankers => note(
-            "AI providers",
-            "Provider keys and the commit steering prompt appear here.",
-            theme,
-        ),
+        SettingsSection::Clankers => clankers.unwrap_or_else(|| {
+            note(
+                "AI providers",
+                "Provider keys and the commit steering prompt appear here.",
+                theme,
+            )
+        }),
         SettingsSection::About => about(theme),
     };
     view! {

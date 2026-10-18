@@ -250,7 +250,7 @@ fn files(nav: &mut NavigationController, height: f32, focused: bool, theme: &The
             key_context={WORKSPACE_CONTEXT}
             on:key:arrowdown={NavigationAction::SelectNextFile}
             on:key:arrowup={NavigationAction::SelectPreviousFile}
-            accessibility_role={if tree { AccessibilityRole::Tree } else { AccessibilityRole::List }}
+            accessibility_role={if tree { AccessibilityRole::Tree } else { AccessibilityRole::ListBox }}
             aria-label="Changed files"
             test_id="file-list"
             @when {focused} { border={tc.focus_border} }
@@ -301,6 +301,7 @@ fn file_row(
     let key = file.key;
     let indent = tokens::scaled(Sp::LG, scale) * f32::from(depth);
     let small = TextStyle::BodySmall.font_size(theme);
+    let label = row_label(&path, file, stats);
     let viewed_label = if viewed {
         "Mark unviewed"
     } else {
@@ -319,8 +320,8 @@ fn file_row(
             key={format!("file:{}", key.0)}
             id={format!("file:{}", key.0)}
             test_id={format!("file:{}", key.0)}
-            accessibility_role={if tree { AccessibilityRole::TreeItem } else { AccessibilityRole::ListItem }}
-            aria-label={path.clone()}
+            accessibility_role={if tree { AccessibilityRole::TreeItem } else { AccessibilityRole::ListBoxOption }}
+            aria-label={label}
             aria-selected={selected}
             on:click={NavigationAction::SelectFile(SelectedFile { key, origin: SelectionOrigin::Sidebar })}
         >
@@ -360,6 +361,24 @@ fn file_row(
                 />
             </div>
         </div>
+    }
+}
+
+fn row_label(path: &str, file: &ManifestFile, stats: Option<(u32, u32)>) -> String {
+    let status = if file.binary {
+        "binary"
+    } else {
+        match file.status {
+            FileStatus::Added => "added",
+            FileStatus::Deleted => "deleted",
+            FileStatus::Modified => "modified",
+            FileStatus::Renamed => "renamed",
+            FileStatus::Copied => "copied",
+        }
+    };
+    match stats {
+        Some((add, del)) => format!("{path}, {status}, +{add} \u{2212}{del}"),
+        None => format!("{path}, {status}"),
     }
 }
 
@@ -435,7 +454,7 @@ fn history(nav: &mut NavigationController, height: f32, theme: &Theme) -> AnyEle
                     cursor={CursorHint::Pointer}
                     key={revision.clone()}
                     id={format!("commit:{revision}")}
-                    accessibility_role={AccessibilityRole::ListItem}
+                    accessibility_role={AccessibilityRole::ListBoxOption}
                     aria-label={commit.summary.clone()}
                     aria-selected={is_selected}
                     on:click={NavigationAction::SelectHistoryCommit(revision.clone())}
@@ -475,7 +494,7 @@ fn history(nav: &mut NavigationController, height: f32, theme: &Theme) -> AnyEle
                 scroll_total={window.total_extent}
                 on:scroll={ScrollActionBuilder::new(|lines| Action::from(NavigationAction::ScrollHistory(lines)).into())}
                 key_context={WORKSPACE_CONTEXT}
-                accessibility_role={AccessibilityRole::List}
+                accessibility_role={AccessibilityRole::ListBox}
                 aria-label="Commits"
             >
                 <div class="w-full shrink-0" h={window.top_spacer} />
@@ -527,7 +546,7 @@ fn operations(nav: &NavigationController, height: f32, theme: &Theme) -> AnyElem
                     cursor={CursorHint::Pointer}
                     key={entry.operation_id.clone()}
                     id={format!("operation:{}", entry.operation_id)}
-                    accessibility_role={AccessibilityRole::ListItem}
+                    accessibility_role={AccessibilityRole::ListBoxOption}
                     aria-label={entry.description.clone()}
                     aria-selected={is_selected}
                     on:click={NavigationAction::SelectOperation(entry.operation_id.clone())}
@@ -545,7 +564,7 @@ fn operations(nav: &NavigationController, height: f32, theme: &Theme) -> AnyElem
         <div
             class="w-full flex-col overflow-hidden"
             h={height}
-            accessibility_role={AccessibilityRole::List}
+            accessibility_role={AccessibilityRole::ListBox}
             aria-label="Operations"
         >
             {...rows}

@@ -1,7 +1,7 @@
 use quark_app::keymap::{self, Keymap, ShortcutEntry, ShortcutGroup, ShortcutScope};
 use quark_ui::key_context::KeyBindings;
 
-use crate::contracts::commands::{CommandDescriptor, CommandsAction, SettingsSection};
+use crate::contracts::commands::{CommandsAction, SettingsSection};
 use crate::contracts::delivery::DeliveryAction;
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{NavigationAction, SidebarTab};
@@ -290,14 +290,9 @@ pub fn overrides(saved: &[KeymapOverride]) -> Vec<Override> {
         .collect()
 }
 
-pub fn key_bindings(saved: &[KeymapOverride], external: &[CommandDescriptor]) -> KeyBindings {
+pub fn key_bindings(saved: &[KeymapOverride]) -> KeyBindings {
     KEYMAP.key_bindings(&overrides(saved), |command| {
-        let claimed = external.iter().any(|d| d.shortcut == Some(command));
-        let action = match builtin_action(command) {
-            Some(action) if !claimed => action,
-            _ => CommandsAction::Shortcut(command).into(),
-        };
-        action.into()
+        Action::from(CommandsAction::Shortcut(command)).into()
     })
 }
 
@@ -368,8 +363,8 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::PageDown => interaction(InteractionAction::ScrollPages(1)),
         C::PageUp => interaction(InteractionAction::ScrollPages(-1)),
         C::GoToBottom => interaction(InteractionAction::ScrollToBottom),
-        C::UnifiedView => interaction(InteractionAction::SetLayout(LayoutMode::Unified)),
-        C::SplitView => interaction(InteractionAction::SetLayout(LayoutMode::Split)),
+        C::UnifiedView => CommandsAction::SetLayout(LayoutMode::Unified).into(),
+        C::SplitView => CommandsAction::SetLayout(LayoutMode::Split).into(),
         C::OpenCompareMenu => CommandsAction::OpenCompareMenu.into(),
         C::RefreshView => NavigationAction::RefreshRepository.into(),
         C::ToggleFileTree => NavigationAction::ToggleSidebarMode.into(),

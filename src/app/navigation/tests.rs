@@ -301,9 +301,9 @@ fn manifest_rows_render_with_stats_and_pending_never_reads_as_zero() {
     };
     open(&mut ui, files);
 
-    ui.find(By::role_name(Role::List, "Changed files"));
+    ui.find(By::role_name(Role::ListBox, "Changed files"));
     let row = ui.find(file_node(1));
-    assert_eq!(row.name.as_deref(), Some("src/a.rs"));
+    assert_eq!(row.name.as_deref(), Some("src/a.rs, modified"));
     let painted = ui.painted_text();
     assert!(painted.contains("+3"));
     assert!(!painted.contains("+0") && !painted.contains("-0"));
@@ -434,13 +434,13 @@ fn large_manifests_only_build_visible_rows() {
         .map(|i| fixtures::file(i + 1, &format!("dir{}/file{i}.rs", i % 50)))
         .collect();
     open(&mut ui, files);
-    let rows = ui.find_all(By::role(Role::ListItem));
+    let rows = ui.find_all(By::role(Role::ListBoxOption));
     assert!(
         !rows.is_empty() && rows.len() < 80,
         "{} rows built",
         rows.len()
     );
-    let list = ui.find(By::role_name(Role::List, "Changed files"));
+    let list = ui.find(By::role_name(Role::ListBox, "Changed files"));
     ui.pointer_move(list.center());
     ui.wheel(0.0, 20.0);
     let scrolled = ui.app().nav.scroll_px();
@@ -486,7 +486,7 @@ fn history_tab_loads_range_commits_and_drills_into_one() {
         .into(),
     });
     ui.frame();
-    ui.click_node(By::role_name(Role::ListItem, "Add tests"));
+    ui.click_node(By::role_name(Role::ListBoxOption, "Add tests"));
     let compare = ui.app().nav.compare().clone();
     assert_eq!(compare.mode, CompareMode::SingleCommit);
     assert_eq!(compare.left, "e5aaaa");
@@ -498,6 +498,24 @@ fn history_tab_loads_range_commits_and_drills_into_one() {
     ui.click_node(By::role_name(Role::Button, "Back to comparison"));
     assert_eq!(ui.app().nav.compare().mode, CompareMode::TwoDot);
     assert_eq!(ui.app().nav.compare().left, "main");
+}
+
+#[test]
+fn file_rows_are_labeled_selectable_options() {
+    let mut ui = nav_harness();
+    let mut files = three_files();
+    files[0].stats = FileStats::Known {
+        additions: 77,
+        deletions: 216,
+    };
+    open(&mut ui, files);
+    ui.find(By::role_name(Role::ListBox, "Changed files"));
+    ui.find(By::role_name(Role::ListBoxOption, "src/b.rs, modified"));
+    ui.click_node(By::role_name(
+        Role::ListBoxOption,
+        "src/a.rs, modified, +77 \u{2212}216",
+    ));
+    assert_eq!(ui.app().nav.selected_key(), Some(FileKey(1)));
 }
 
 #[test]

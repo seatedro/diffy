@@ -497,7 +497,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             height,
         };
         let review_overlay = review::overlay(&self.controllers.review, &slot, cx);
-        let overlays = commands::overlays(&mut self.controllers.commands, &slot, cx);
+        let overlays = commands::overlays(&mut self.controllers.commands, &slot, None, cx);
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
         view! {

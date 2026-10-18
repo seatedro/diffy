@@ -144,6 +144,38 @@ impl DiffViewState {
         self.target_of_index(self.focused_index?)
     }
 
+    pub fn top_file(&self) -> Option<FileId> {
+        let index = self.list.rows().row_at(self.list.scroll_offset())?;
+        let unit = match self.refs.get(index)? {
+            RowRef::Line { seg, row } => {
+                let segment = &self.segments[seg as usize];
+                segment.unit(segment.projection.file[row as usize])
+            }
+            RowRef::Fact { seg, file, .. } => self.segments[seg as usize].unit(file),
+            RowRef::Annotation { .. } | RowRef::More { .. } => return None,
+        };
+        Some(self.file_id(unit))
+    }
+
+    pub fn focused_hunk(&self) -> Option<(FileId, u32)> {
+        self.focused?;
+        let RowRef::Line { seg, row } = self.refs.get(self.focused_index? as usize)? else {
+            return None;
+        };
+        let segment = &self.segments[seg as usize];
+        let p = &segment.projection;
+        let file = p.file[row as usize];
+        let global = match p.kind[row as usize] {
+            RowKind::Gap => p.gap(row)?.id.hunk?,
+            RowKind::FileHeader => return None,
+            _ => Some(p.hunk[row as usize]).filter(|&h| h != super::state::NONE)?,
+        };
+        let hunks = segment.doc.files().hunks[file as usize].clone();
+        hunks
+            .contains(&global)
+            .then(|| (self.file_id(segment.unit(file)), global - hunks.start))
+    }
+
     /// The source target a list row stands for.
     pub(crate) fn target_of_index(&self, index: u32) -> Option<DiffTarget> {
         let (seg, row) = match self.refs.get(index as usize)? {

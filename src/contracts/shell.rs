@@ -124,6 +124,7 @@ pub enum Intent {
     RepositoryChanged(Rc<RepositoryContext>),
     InvalidateRepository,
     SetReviewTarget(Option<Rc<ReviewContext>>),
+    OpenPullRequest { url: String },
     AccountChanged,
     GrammarAvailable(GrammarAvailability),
     SettingsChanged(Rc<SettingsSnapshot>),

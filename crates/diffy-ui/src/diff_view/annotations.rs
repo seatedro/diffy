@@ -306,6 +306,20 @@ impl DiffViewState {
         self.anchor_is_current(&anchor).then_some(anchor)
     }
 
+    pub fn selected_lines(&self) -> Option<DiffAnchor> {
+        let s = self.selection?;
+        let (side_a, unit_a, index_a) = decode_key(s.anchor.block);
+        let (side_b, unit_b, index_b) = decode_key(s.focus.block);
+        if side_a != side_b || unit_a != unit_b {
+            return None;
+        }
+        let (seg, file) = self.locate(unit_a)?;
+        let doc = &self.segments[seg].doc;
+        let a = source_line(doc, file, side_a, index_a);
+        let b = source_line(doc, file, side_a, index_b);
+        self.anchor_for(self.file_id(unit_a), side_a, a.min(b)..a.max(b) + 1)
+    }
+
     /// An anchor on the selected lines when the selection stays on one
     /// side of one file, else on the focused row's line.
     pub(crate) fn annotate_selection_or_focus(&self) -> Option<DiffAnchor> {

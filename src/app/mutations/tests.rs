@@ -624,7 +624,8 @@ impl UiApp for Host {
             width: width * 0.4,
             height,
         };
-        let commit = super::commit_box(&mut self.controller, &sidebar, cx).map(|(commit, _)| commit);
+        let commit =
+            super::commit_box(&mut self.controller, &sidebar, cx).map(|(commit, _)| commit);
         let body = Slot {
             shared: &self.shared,
             width,
@@ -1067,6 +1068,39 @@ fn decorator_outputs_follow_the_displayed_compare() {
             .is_none()
     );
     assert!(presentation.gutter_utility(&gutter).is_none());
+}
+
+#[test]
+fn commit_message_separates_subject_from_body() {
+    use super::state::commit_message;
+    assert_eq!(commit_message("subject\nbody"), "subject\n\nbody");
+    assert_eq!(
+        commit_message("subject\nbody\nmore"),
+        "subject\n\nbody\nmore"
+    );
+    assert_eq!(commit_message("subject\n\nbody"), "subject\n\nbody");
+    assert_eq!(commit_message("subject\n  \nbody"), "subject\n  \nbody");
+    assert_eq!(commit_message(" subject \n"), "subject");
+}
+
+#[test]
+fn submitted_commits_get_a_blank_line_after_the_subject() {
+    let cx = shared();
+    let mut controller = MutationsController::default();
+    controller.set_text_value(
+        crate::app::text_targets::COMMIT_MESSAGE,
+        "subject\nbody".to_owned(),
+        &TextCx {
+            shared: &cx,
+            now_ms: 0,
+        },
+    );
+    let reduction = controller.reduce_action(MutationsAction::SubmitCommit, &cx);
+    let effects = mutation_effects(&reduction);
+    let [MutationsEffect::CreateCommit { message, .. }] = effects.as_slice() else {
+        panic!("expected a commit");
+    };
+    assert_eq!(message, "subject\n\nbody");
 }
 
 #[test]

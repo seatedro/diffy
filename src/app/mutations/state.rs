@@ -249,6 +249,21 @@ fn repo_path(cx: &SharedContext) -> Option<PathBuf> {
         .map(|repo| repo.snapshot.path.clone())
 }
 
+pub(super) fn commit_message(text: &str) -> String {
+    let text = text.trim();
+    match text.split_once('\n') {
+        Some((subject, body))
+            if !body
+                .lines()
+                .next()
+                .is_some_and(|line| line.trim().is_empty()) =>
+        {
+            format!("{}\n\n{body}", subject.trim_end())
+        }
+        _ => text.to_owned(),
+    }
+}
+
 fn committable(bucket: ChangeBucket, staging_area: bool) -> bool {
     if staging_area {
         bucket == ChangeBucket::Staged
@@ -771,7 +786,7 @@ impl MutationsController {
         if !capabilities.create_commit {
             return error("This repository backend does not support commits.");
         }
-        let message = self.commit.text().trim().to_owned();
+        let message = commit_message(self.commit.text());
         if message.is_empty() {
             return error("Write a commit message first.");
         }

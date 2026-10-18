@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
+use diffy_syntax::GrammarStatus;
+
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryAction {
     CheckForUpdates,
-    InstallUpdate,
     RestartToUpdate,
+    ToggleLanguages,
     RetryGrammar { language: String },
 }
 
@@ -20,12 +22,12 @@ pub enum DeliveryEffect {
         silent: bool,
     },
     ApplyStagedUpdate(Box<StagedUpdate>),
-    InstallCommonGrammars,
-    EnsureGrammarForPath {
-        path: String,
+    WatchGrammars,
+    EnsureGrammars {
+        languages: Vec<&'static str>,
     },
-    EnsureGrammarsForPaths {
-        paths: Vec<String>,
+    RetryGrammar {
+        language: String,
     },
 }
 
@@ -50,18 +52,7 @@ pub enum DeliveryEvent {
         message: String,
         silent: bool,
     },
-    GrammarInstallStarted {
-        language: String,
-    },
-    GrammarsInstalled {
-        languages: Arc<[String]>,
-    },
-    GrammarInstallFinished {
-        language: String,
-    },
-    GrammarInstallFailed {
-        language: String,
-    },
+    GrammarsChanged(Arc<[GrammarStatus]>),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -82,8 +73,8 @@ mod tests {
             Action::Delivery(DeliveryAction::CheckForUpdates)
         );
         assert_eq!(
-            Effect::from(DeliveryEffect::InstallCommonGrammars),
-            Effect::Delivery(DeliveryEffect::InstallCommonGrammars)
+            Effect::from(DeliveryEffect::WatchGrammars),
+            Effect::Delivery(DeliveryEffect::WatchGrammars)
         );
         assert!(matches!(
             AppEvent::from(DeliveryEvent::UpdateNotAvailable { silent: true }),

@@ -1,1 +1,326 @@
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use diffy_syntax::{GrammarState, GrammarStatus};
+use quark::view;
+use quark_app::testing::{By, UiTestHarness};
+use quark_app::{UiApp, UiContext, ViewContext};
+use quark_ui::accessibility::AccessibilityRole as Role;
+use quark_ui::element::*;
+use quark_ui::style::Styled;
+
+use super::state::{DeliveryController, UpdateState, grammar_languages};
+use crate::app::shell::Slot;
+use crate::app::testing::*;
+use crate::contracts::delivery::{DeliveryEffect, DeliveryEvent, GrammarAvailability};
+use crate::contracts::shared::SharedContext;
+use crate::contracts::shell::{Action, Controller, Effect, Intent};
+use crate::core::update::{AvailableUpdate, StagedUpdate, UpdateFormat, UpdatePlatform};
+
+fn staged() -> StagedUpdate {
+    StagedUpdate {
+        update: AvailableUpdate {
+            version: "9.9.9".to_owned(),
+            channel: "stable".to_owned(),
+            notes: None,
+            pub_date: None,
+            platform: "macos-aarch64".to_owned(),
+            artifact: UpdatePlatform {
+                format: UpdateFormat::Dmg,
+                url: "https://example.com/a.dmg".to_owned(),
+                signature: String::new(),
+                sha256: String::new(),
+                size: None,
+            },
+        },
+        artifact_path: PathBuf::from("a.dmg"),
+    }
+}
+
+fn grammars(states: &[(&'static str, GrammarState)]) -> DeliveryEvent {
+    DeliveryEvent::GrammarsChanged(
+        states
+            .iter()
+            .map(|(language, state)| GrammarStatus {
+                language,
+                state: state.clone(),
+            })
+            .collect::<Vec<_>>()
+            .into(),
+    )
+}
+
+fn delivery_effects(ui: &Harness) -> Vec<DeliveryEffect> {
+    ui.app()
+        .dispatcher()
+        .effects
+        .iter()
+        .filter_map(|(effect, _)| match effect {
+            Effect::Delivery(effect) => Some(effect.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn startup_effects(updates_supported: bool, auto_update: bool) -> Vec<DeliveryEffect> {
+    let mut delivery = DeliveryController::new(updates_supported);
+    let settings = crate::platform::persistence::Settings {
+        auto_update,
+        ..Default::default()
+    };
+    let startup = crate::contracts::shell::AppStartup {
+        options: crate::platform::startup::StartupOptions::from_parts(
+            clap::Parser::parse_from(["diffy"]),
+            None,
+            String::new(),
+            false,
+        ),
+        settings,
+    };
+    delivery
+        .apply_intent(&Intent::Startup(startup.into()), &SharedContext::default())
+        .effects
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::Delivery(effect) => Some(effect),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn startup_watches_grammars_and_checks_silently_per_settings() {
+    let common = vec![
+        "bash",
+        "c",
+        "cpp",
+        "go",
+        "javascript",
+        "json",
+        "python",
+        "rust",
+        "toml",
+        "typescript",
+        "tsx",
+    ];
+    let base = vec![
+        DeliveryEffect::WatchGrammars,
+        DeliveryEffect::EnsureGrammars { languages: common },
+    ];
+    let mut checking = base.clone();
+    checking.push(DeliveryEffect::CheckForUpdates { silent: true });
+
+    assert_eq!(startup_effects(true, true), checking);
+    assert_eq!(startup_effects(true, false), base);
+    assert_eq!(startup_effects(false, true), base);
+}
+
+#[test]
+fn paths_request_highlight_and_semantic_grammars() {
+    let cases = [
+        ("src/app.js", vec!["typescript", "javascript"]),
+        ("src/view.jsx", vec!["tsx", "javascript"]),
+        ("flake.nix", vec!["nix"]),
+        ("README.md", vec![]),
+    ];
+    for (path, expected) in cases {
+        assert_eq!(
+            grammar_languages(path).collect::<Vec<_>>(),
+            expected,
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn installed_grammars_publish_availability_once_per_change() {
+    let mut delivery = DeliveryController::default();
+    let cx = SharedContext::default();
+    let mut available = |event| {
+        delivery
+            .reduce_event(event, &cx)
+            .intents
+            .into_iter()
+            .filter_map(|intent| match intent {
+                Intent::GrammarAvailable(availability) => Some(availability),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let first = available(grammars(&[("rust", GrammarState::Installed)]));
+    let repeat = available(grammars(&[("rust", GrammarState::Ready)]));
+    let downloading = available(grammars(&[
+        ("rust", GrammarState::Ready),
+        ("go", GrammarState::Downloading),
+    ]));
+
+    assert_eq!(
+        first,
+        vec![GrammarAvailability {
+            revision: 1,
+            installed: Arc::from(["rust".to_owned()]),
+        }]
+    );
+    assert!(repeat.is_empty() && downloading.is_empty());
+}
+
+struct Host {
+    delivery: DeliveryController,
+    shared: SharedContext,
+    effects: Vec<DeliveryEffect>,
+}
+
+impl UiApp for Host {
+    type Action = Action;
+    type Message = DeliveryEvent;
+
+    fn view(&mut self, cx: &mut ViewContext) -> AnyElement {
+        let (width, height) = cx.frame.size();
+        let status_h = cx.theme.metrics.status_bar_height;
+        let slot = Slot {
+            shared: &self.shared,
+            width,
+            height: status_h,
+        };
+        let status = super::view(&mut self.delivery, &slot, cx);
+        let overlay = super::overlay(&mut self.delivery, &slot, cx);
+        view! {
+            <div w={width} h={height} class="flex-col relative overflow-hidden">
+                <div class="flex-1" />
+                <div h={status_h} class="flex-row items-center overflow-hidden">{status}</div>
+                {?overlay}
+            </div>
+        }
+    }
+
+    fn message(&mut self, event: DeliveryEvent, cx: &mut UiContext) {
+        self.delivery.reduce_event(event, &self.shared);
+        cx.window.request_redraw();
+    }
+
+    fn update(&mut self, action: Action, _cx: &mut UiContext) {
+        if let Action::Delivery(action) = action {
+            let reduction = self.delivery.reduce_action(action, &self.shared);
+            self.effects.extend(
+                reduction
+                    .effects
+                    .into_iter()
+                    .filter_map(|effect| match effect {
+                        Effect::Delivery(effect) => Some(effect),
+                        _ => None,
+                    }),
+            );
+        }
+    }
+}
+
+fn host() -> UiTestHarness<Host> {
+    UiTestHarness::new(
+        Host {
+            delivery: DeliveryController::default(),
+            shared: SharedContext::default(),
+            effects: Vec::new(),
+        },
+        (720.0, 560.0),
+        2.0,
+    )
+}
+
+fn event(ui: &mut UiTestHarness<Host>, event: DeliveryEvent) {
+    ui.send_message(event);
+}
+
+#[test]
+fn failed_language_offers_retry_download() {
+    let mut ui = host();
+    event(
+        &mut ui,
+        grammars(&[
+            ("go", GrammarState::Ready),
+            ("rust", GrammarState::Failed("HTTP 404".to_owned())),
+        ]),
+    );
+
+    assert!(ui.try_find(By::name("Retry download")).is_none());
+    ui.click_node(By::role_name(Role::Button, "Syntax languages"));
+    let panel = ui.find(By::test_id("delivery.languages"));
+    let status = ui.find(By::role_name(Role::Button, "Syntax languages"));
+    let row = ui.find(By::test_id("delivery.language.rust"));
+    let retry = ui.find(By::role_name(Role::Button, "Retry download"));
+    assert!(panel.bounds.y + panel.bounds.height <= status.bounds.y);
+    assert!(retry.bounds.y >= row.bounds.y && retry.bounds.y < row.bounds.y + row.bounds.height);
+    ui.click_node(By::role_name(Role::Button, "Retry download"));
+
+    assert_eq!(
+        ui.app().effects,
+        vec![DeliveryEffect::RetryGrammar {
+            language: "rust".to_owned()
+        }]
+    );
+    assert!(
+        ui.try_find(By::role_name(Role::Button, "Retry download"))
+            .is_none()
+    );
+    assert!(ui.painted_text().contains("Downloading"));
+}
+
+#[test]
+fn check_for_updates_disables_while_checking_and_failure_keeps_focus() {
+    let mut ui = host();
+    ui.click_node(By::role_name(Role::Button, "Syntax languages"));
+    ui.click_node(By::role_name(Role::Button, "Check for updates"));
+
+    assert_eq!(
+        ui.app().effects,
+        vec![DeliveryEffect::CheckForUpdates { silent: false }]
+    );
+    assert!(matches!(ui.app().delivery.update(), UpdateState::Checking));
+    ui.click_node(By::role_name(Role::Button, "Check for updates"));
+    assert_eq!(ui.app().effects.len(), 1);
+
+    let focus = ui.focus();
+    event(
+        &mut ui,
+        DeliveryEvent::UpdateCheckFailed {
+            message: "offline".to_owned(),
+            silent: false,
+        },
+    );
+
+    assert_eq!(ui.focus(), focus);
+    assert!(matches!(ui.app().delivery.update(), UpdateState::Failed(_)));
+    assert!(ui.painted_text().contains("offline"));
+    assert!(
+        ui.find(By::role_name(Role::Button, "Check for updates"))
+            .bounds
+            .width
+            > 0.0
+    );
+}
+
+#[test]
+fn staged_update_offers_restart_in_the_status_bar() {
+    let mut ui = harness();
+    deliver_current(
+        &mut ui,
+        DeliveryEvent::UpdateStaged {
+            staged: Box::new(staged()),
+            silent: true,
+        },
+    );
+
+    let status = ui.find(By::test_id("status"));
+    let restart = ui.find(By::role_name(Role::Button, "Restart to update"));
+    assert!(restart.bounds.y >= status.bounds.y);
+    ui.click_node(By::role_name(Role::Button, "Restart to update"));
+
+    assert_eq!(
+        delivery_effects(&ui),
+        vec![DeliveryEffect::ApplyStagedUpdate(Box::new(staged()))]
+    );
+    assert!(
+        ui.try_find(By::role_name(Role::Button, "Restart to update"))
+            .is_none()
+    );
+}

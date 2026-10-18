@@ -88,6 +88,7 @@ pub enum ReviewAction {
     CopyCardSelection(CardKey),
     ScrollComposer(i32),
     OpenSubmitMenu,
+    RequestAuthorAvatars(Vec<String>),
     PeekPullRequest { url: String },
     ToggleFileComments(String),
 }

@@ -1026,11 +1026,17 @@ fn formatting_shortcuts_write_markdown() {
 
 struct App {
     driver: Driver,
+    accounts: bool,
+    forwarded: Vec<Action>,
 }
 
 impl App {
     fn new(driver: Driver) -> Self {
-        Self { driver }
+        Self {
+            driver,
+            accounts: false,
+            forwarded: Vec::new(),
+        }
     }
 
     fn apply_focus(&mut self, cx: &mut UiContext) {
@@ -1081,9 +1087,13 @@ impl UiApp for App {
             height,
         };
         let overlay = overlay(&self.driver.review, &full, cx);
+        let accounts = self
+            .accounts
+            .then(|| super::accounts_settings(&self.driver.review, cx.theme));
         view! {
             <div w={width} h={height} class="flex-col relative overflow-hidden">
                 <div w={width} h={title_height} class="flex-row items-center">{title}</div>
+                {?accounts}
                 <div class="flex-row p-2">{?header}</div>
                 <div class="flex-col gap-2 p-2">{...cards}</div>
                 {?overlay}
@@ -1095,7 +1105,7 @@ impl UiApp for App {
         match action {
             Action::Review(action) => self.driver.act(action),
             Action::Shell(ShellAction::CopyText(text)) => cx.window.set_clipboard_text(&text),
-            _ => {}
+            other => self.forwarded.push(other),
         }
         self.apply_focus(cx);
     }
@@ -1992,4 +2002,144 @@ fn request_annotation_opens_the_composer_at_the_target() {
         driver.focus.last(),
         Some(&Some(LogicalFocus::ReviewComposer))
     );
+}
+
+fn same_height(ui: &UiTestHarness<App>, labels: &[&str]) {
+    let heights: Vec<f32> = labels
+        .iter()
+        .map(|label| ui.find(By::role_name(Role::Button, *label)).bounds.height)
+        .collect();
+    for (label, height) in labels.iter().zip(&heights) {
+        assert!(
+            (height - heights[0]).abs() < 0.5,
+            "{label} is {height}, not {}",
+            heights[0]
+        );
+    }
+}
+
+fn signed_out() -> Driver {
+    let mut driver = Driver::new(Fake::new());
+    driver.startup(None);
+    driver.act(ReviewAction::SignOut);
+    driver
+}
+
+#[test]
+fn title_bar_offers_review_pr_and_sign_in() {
+    let mut ui = harness(signed_out());
+    let review = ui.find(By::role_name(Role::Button, "Review PR"));
+    let sign_in = ui.find(By::role_name(Role::Button, "Sign in to GitHub"));
+
+    assert!(review.bounds.x + review.bounds.width <= sign_in.bounds.x);
+    same_height(&ui, &["Review PR", "Sign in to GitHub"]);
+    ui.click_node(By::role_name(Role::Button, "Review PR"));
+    assert!(matches!(
+        ui.app().forwarded.as_slice(),
+        [Action::Commands(
+            crate::contracts::commands::CommandsAction::OpenPullRequestPicker
+        )]
+    ));
+}
+
+#[test]
+fn title_bar_shows_the_loaded_pull_request_and_account() {
+    let ui = harness(Driver::signed_in_with_pr());
+
+    assert!(
+        ui.try_find(By::role_name(Role::Button, "Review PR"))
+            .is_none()
+    );
+    ui.find(By::test_id("review.pull_request"));
+    ui.find(By::role_name(Role::Button, "GitHub account"));
+    same_height(&ui, &["Submit review", "Open on GitHub"]);
+}
+
+#[test]
+fn sign_in_dialog_fits_its_content_with_actions_on_the_right() {
+    let mut ui = harness(signed_out());
+    ui.click_node(By::role_name(Role::Button, "Sign in to GitHub"));
+    let dialog = ui
+        .find(By::role_name(Role::Dialog, "Sign in to GitHub"))
+        .bounds;
+    let cancel = ui.find(By::role_name(Role::Button, "Cancel")).bounds;
+    let primary = ui
+        .find(By::role_name(Role::Button, "Continue with GitHub"))
+        .bounds;
+    let padding = crate::app::tokens::scaled(
+        crate::app::tokens::Sp::XL,
+        crate::app::tokens::ui_scale(ui.theme()),
+    );
+
+    assert!((cancel.y - primary.y).abs() < 0.5);
+    assert!(cancel.x + cancel.width <= primary.x);
+    assert!((dialog.x + dialog.width - (primary.x + primary.width) - padding).abs() < 1.0);
+    let border = 1.0;
+    assert!(
+        (bottom(dialog) - bottom(primary) - padding - border).abs() < 1.0,
+        "{dialog:?} {primary:?}"
+    );
+    same_height(&ui, &["Cancel", "Continue with GitHub"]);
+}
+
+#[test]
+fn card_actions_share_one_button_height() {
+    let mut ui = harness(Driver::signed_in_with_pr());
+    same_height(&ui, &["Reply", "Resolve thread"]);
+    ui.click_node(By::role_name(Role::Button, "Reply"));
+    same_height(&ui, &["Write", "Preview", "Reply", "Cancel"]);
+}
+
+#[test]
+fn accounts_settings_show_the_github_account() {
+    let mut app = App::new(Driver::signed_in_with_pr());
+    app.accounts = true;
+    let mut ui = UiTestHarness::new(app, (1100.0, 900.0), 2.0);
+    let row = ui.find(By::role_name(Role::Group, "GitHub account")).bounds;
+    let sign_out = ui.find(By::role_name(Role::Button, "Sign out")).bounds;
+
+    assert!(contains(row, sign_out));
+    ui.click_node(By::role_name(Role::Button, "Sign out"));
+    assert!(!ui.app().driver.review.signed_in());
+    let sign_in = ui.find(By::role_name(Role::Button, "Sign in"));
+    assert!(contains(row, sign_in.bounds));
+    assert!(ui.painted_text().contains("Sign in to load pull requests"));
+}
+
+#[test]
+fn commit_authors_share_the_avatar_cache() {
+    let mut driver = Driver::signed_in_with_pr();
+    let before = driver.fake.effects.len();
+    driver.act(ReviewAction::RequestAuthorAvatars(vec![
+        "123+alpha@users.noreply.github.com".to_owned(),
+        "Dev@Example.com".to_owned(),
+        "dev@example.com".to_owned(),
+        "not-an-email".to_owned(),
+    ]));
+
+    let urls: Vec<String> = driver.fake.effects[before..]
+        .iter()
+        .filter_map(|effect| match effect {
+            ReviewEffect::FetchAvatar { url } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        urls,
+        vec!["https://avatars.githubusercontent.com/u/e?email=dev%40example.com&s=64".to_owned()]
+    );
+    assert!(
+        driver
+            .review
+            .author_face("123+alpha@users.noreply.github.com")
+            .is_some()
+    );
+    assert!(driver.review.author_face("dev@example.com").is_some());
+
+    let mut signed_out = signed_out();
+    let before = signed_out.fake.effects.len();
+    signed_out.act(ReviewAction::RequestAuthorAvatars(vec![
+        "dev@example.com".to_owned(),
+    ]));
+    assert_eq!(signed_out.fake.effects.len(), before);
 }

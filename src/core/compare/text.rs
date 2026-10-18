@@ -1,6 +1,7 @@
-use crate::core::compare::backends::{compare_text_builtin, compare_text_difftastic};
-use crate::core::compare::service::CompareOutput;
-use crate::core::compare::spec::{LayoutMode, RendererKind};
+use crate::core::compare::git;
+use crate::core::compare::output::CompareOutput;
+use crate::core::compare::service::SEMANTIC_UNAVAILABLE;
+use crate::core::compare::spec::RendererKind;
 use crate::core::error::Result;
 
 pub fn compare_text(
@@ -8,24 +9,18 @@ pub fn compare_text(
     right_text: &str,
     display_path: &str,
     renderer: RendererKind,
-    _layout: LayoutMode,
 ) -> Result<CompareOutput> {
     let display_path = normalized_display_path(display_path);
-    match renderer {
-        RendererKind::Builtin => compare_text_builtin(left_text, right_text, &display_path),
-        RendererKind::Difftastic => {
-            match compare_text_difftastic(left_text, right_text, &display_path)? {
-                Some(output) => Ok(output),
-                None => {
-                    let mut output = compare_text_builtin(left_text, right_text, &display_path)?;
-                    output.used_fallback = true;
-                    output.fallback_message =
-                        "difftastic unavailable, fell back to built-in backend".to_owned();
-                    Ok(output)
-                }
-            }
-        }
+    if renderer == RendererKind::Difftastic {
+        #[cfg(feature = "difftastic")]
+        return crate::core::compare::semantic::compare_text(left_text, right_text, &display_path);
     }
+    let mut output = git::compare_text(left_text, right_text, &display_path)?;
+    if renderer == RendererKind::Difftastic {
+        output.used_fallback = true;
+        output.fallback_message = SEMANTIC_UNAVAILABLE.to_owned();
+    }
+    Ok(output)
 }
 
 fn normalized_display_path(path: &str) -> String {
@@ -39,62 +34,69 @@ fn normalized_display_path(path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use diffy_diff::{FileStatus, Side};
+
     use super::*;
 
     fn builtin(left: &str, right: &str) -> CompareOutput {
-        compare_text(
-            left,
-            right,
-            "snippet.rs",
-            RendererKind::Builtin,
-            LayoutMode::Unified,
-        )
-        .unwrap()
+        compare_text(left, right, "snippet.rs", RendererKind::Builtin).unwrap()
     }
 
     #[test]
-    fn text_compare_modified_text_builds_compare_output() {
-        let output = builtin("fn value() -> u32 { 1 }\n", "fn value() -> u32 { 2 }\n");
-
-        assert_eq!(output.file_count(), 1);
-        let file = &output.carbon.files[0];
-        assert_eq!(file.path(), "snippet.rs");
-        assert_eq!(file.status, carbon::FileStatus::Modified);
-        assert_eq!(file.additions, 1);
-        assert_eq!(file.deletions, 1);
+    fn text_compare_reports_status_and_stats() {
+        let cases = [
+            (
+                "fn value() -> u32 { 1 }\n",
+                "fn value() -> u32 { 2 }\n",
+                FileStatus::Modified,
+                (1, 1),
+            ),
+            ("", "new line\n", FileStatus::Added, (1, 0)),
+            ("old line\n", "", FileStatus::Deleted, (0, 1)),
+        ];
+        for (left, right, status, stats) in cases {
+            let output = builtin(left, right);
+            assert_eq!(output.file_count(), 1);
+            let entry = output.entry(0).unwrap();
+            assert_eq!(entry.path(), "snippet.rs");
+            assert_eq!(entry.status(), status);
+            assert_eq!(entry.stats.known(), Some(stats));
+        }
+        assert_eq!(builtin("", "").file_count(), 0);
     }
 
     #[test]
-    fn text_compare_added_text_builds_added_file() {
-        let output = builtin("", "new line\n");
-
-        let file = &output.carbon.files[0];
-        assert_eq!(file.status, carbon::FileStatus::Added);
-        assert_eq!(file.additions, 1);
-    }
-
-    #[test]
-    fn text_compare_deleted_text_builds_deleted_file() {
-        let output = builtin("old line\n", "");
-
-        let file = &output.carbon.files[0];
-        assert_eq!(file.status, carbon::FileStatus::Deleted);
-        assert_eq!(file.deletions, 1);
-    }
-
-    #[test]
-    fn text_compare_equal_empty_text_has_no_files() {
-        let output = builtin("", "");
-
-        assert_eq!(output.file_count(), 0);
-    }
-
-    #[test]
-    fn text_compare_preserves_no_newline_at_eof_markers() {
+    fn text_compare_keeps_full_sources_and_missing_newlines() {
         let output = builtin("old", "new");
+        let doc = output.document(0).unwrap();
+        let facts = doc.facts(0);
+        assert!(facts.old_missing_newline && facts.new_missing_newline);
+        assert_eq!(doc.text(0, Side::New).as_str(), "new");
+        assert_eq!(
+            compare_text("a", "b", "  ", RendererKind::Builtin)
+                .unwrap()
+                .entry(0)
+                .unwrap()
+                .path(),
+            "text.txt"
+        );
+    }
 
-        let block = output.carbon.files[0].blocks.first().unwrap();
-        assert!(block.old_no_newline_at_end);
-        assert!(block.new_no_newline_at_end);
+    #[cfg(feature = "difftastic")]
+    #[test]
+    fn semantic_text_compare_keeps_change_intensities() {
+        let output = compare_text(
+            "fn value() -> u32 {\n    1\n}\n",
+            "fn value() -> u32 {\n    2\n}\n",
+            "snippet.rs",
+            RendererKind::Difftastic,
+        )
+        .unwrap();
+        assert!(!output.used_fallback);
+        let doc = output.document(0).unwrap();
+        assert_eq!(doc.stats(0).known(), Some((1, 1)));
+        let novel = doc.semantic_spans(0, Side::New, 1);
+        assert!(!novel.is_empty(), "difftastic marks the changed literal");
+        assert!(novel.iter().all(|span| span.end as usize <= "    2".len()));
     }
 }

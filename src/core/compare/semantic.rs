@@ -162,7 +162,7 @@ pub fn compare_changed_paths(
         let doc = document_from_changed(changed)?;
         let seen = progress.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         if let Some(r) = reporter
-            && (seen % LOADING_FILE_EMIT_STRIDE == 0 || seen == files_total)
+            && (seen.is_multiple_of(LOADING_FILE_EMIT_STRIDE) || seen == files_total)
         {
             r.phase(ComparePhase::LoadingFiles {
                 files_seen: seen,
@@ -649,7 +649,12 @@ mod tests {
         SemanticDiffResult, SemanticLine,
     };
 
-    use super::{ChangedPath, document_from_changed, document_from_semantic};
+    use super::{
+        ChangedPath, compare, compare_path, document_from_changed, document_from_semantic,
+    };
+    use crate::core::compare::service::tests::commit_file;
+    use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
+    use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
     fn span(start: u32, end: u32, intensity: DftIntensity) -> ChangeSpan {
         ChangeSpan {
@@ -840,5 +845,65 @@ mod tests {
         assert_eq!(hunks(&doc), [(0, 0, 1, 2)]);
         assert_eq!(doc.text(0, Side::New).line(1), Some("let x = 1;"));
         assert_eq!(doc.summary(0).status, FileStatus::Added);
+    }
+
+    fn repo_spec(left: &str, right: &str) -> CompareSpec {
+        CompareSpec {
+            mode: CompareMode::TwoDot,
+            left_ref: left.to_owned(),
+            right_ref: right.to_owned(),
+            renderer: RendererKind::Difftastic,
+            layout: LayoutMode::Unified,
+        }
+    }
+
+    #[test]
+    fn workdir_compares_read_current_files_and_filter_paths() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        commit_file(&repo, "src/other.rs", "stay\n", "other");
+        let head = commit_file(
+            &repo,
+            "src/lib.rs",
+            "fn answer() {\n    old();\n}\n",
+            "initial",
+        );
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "fn answer() {\n    new();\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("src/other.rs"), "changed\n").unwrap();
+        let mut service = GitService::new();
+        service.open(dir.path().to_str().unwrap()).unwrap();
+        let output = compare(&repo_spec(&head, WORKDIR_REF), &service, None).unwrap();
+        assert_eq!(output.file_count(), 2);
+        let lib = output
+            .entries
+            .iter()
+            .position(|entry| entry.path() == "src/lib.rs")
+            .unwrap();
+        let doc = output.document(lib).unwrap();
+        assert_eq!(doc.text(0, Side::Old).line(1), Some("    old();"));
+        assert_eq!(doc.text(0, Side::New).line(1), Some("    new();"));
+        assert_eq!(doc.stats(0).known(), Some((1, 1)));
+        assert!(!doc.semantic_spans(0, Side::New, 1).is_empty());
+        let one = compare_path(&repo_spec(&head, WORKDIR_REF), "src/lib.rs", &service).unwrap();
+        assert_eq!(one.file_count(), 1);
+        assert_eq!(one.entry(0).unwrap().path(), "src/lib.rs");
+    }
+
+    #[test]
+    fn added_files_in_a_range_are_whole_file_changes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let base = commit_file(&repo, "README.md", "base\n", "initial");
+        let head = commit_file(&repo, "src/new.rs", "fn new() {}\nlet x = 1;\n", "add");
+        let mut service = GitService::new();
+        service.open(dir.path().to_str().unwrap()).unwrap();
+        let output = compare(&repo_spec(&base, &head), &service, None).unwrap();
+        let entry = output.entry(0).unwrap();
+        assert_eq!(entry.status(), FileStatus::Added);
+        assert_eq!(entry.stats.known(), Some((2, 0)));
     }
 }

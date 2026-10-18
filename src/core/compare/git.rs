@@ -203,7 +203,7 @@ fn output_from_gix_changes(
     let mut output = CompareOutput::default();
     for (index, change) in changes.iter().enumerate() {
         if let Some(r) = reporter
-            && (index % LOADING_FILE_EMIT_STRIDE == 0 || index + 1 == changes.len())
+            && (index.is_multiple_of(LOADING_FILE_EMIT_STRIDE) || index + 1 == changes.len())
         {
             r.phase(ComparePhase::LoadingFiles {
                 files_seen: (index + 1) as u32,

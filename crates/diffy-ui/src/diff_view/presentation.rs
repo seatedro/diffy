@@ -333,6 +333,13 @@ pub(crate) struct DiffColors {
     pub search_outline: Color,
     pub selection: Color,
     pub focused_row: Color,
+    pub accent: Color,
+    pub warning: Color,
+    pub strong: Color,
+    pub faint: Color,
+    pub picked_wash: Color,
+    pub picked_gutter: Color,
+    pub picked_number: Color,
     pub syntax: [Color; HIGHLIGHT_KINDS],
 }
 
@@ -363,14 +370,16 @@ impl DiffColors {
             syntax[kind as usize] = pick(o.syntax[kind as usize], syntax_base(kind));
         }
         let gutter_text = pick(o.gutter_text, c.gutter_text);
+        let surface = pick(o.surface, c.editor_surface);
+        let gutter = pick(o.gutter, c.gutter_bg);
         Self {
-            surface: pick(o.surface, c.editor_surface),
+            surface,
             empty_side: pick(o.empty_side, c.background),
             hatch: pick(o.hatch, c.border_variant),
             text,
             muted: c.text_muted,
             border: c.border_variant,
-            gutter: pick(o.gutter, c.gutter_bg),
+            gutter,
             gutter_text,
             add_line: pick(o.add_line, c.line_add),
             del_line: pick(o.del_line, c.line_del),
@@ -383,13 +392,20 @@ impl DiffColors {
             add_text: c.line_add_text,
             del_text: c.line_del_text,
             file_header: pick(o.file_header, c.file_header_bg),
-            separator: pick(o.separator, c.hunk_header_bg),
+            separator: pick(o.separator, gutter),
             hover: c.ghost_element_hover,
             search_match: pick(o.search_match, c.search_match_bg),
             search_active: pick(o.search_active, c.search_match_active_bg),
             search_outline: c.focus_border,
             selection: pick(o.selection, c.accent.with_alpha(Alpha::SOFT)),
             focused_row: pick(o.focused_row, c.focus_border),
+            accent: c.accent,
+            warning: c.status_warning,
+            strong: c.text_strong,
+            faint: c.text_disabled,
+            picked_wash: surface.lerp(c.accent, PICKED_WASH),
+            picked_gutter: gutter.lerp(c.accent, PICKED_GUTTER),
+            picked_number: gutter_text.lerp(c.accent, PICKED_NUMBER),
             syntax,
         }
     }
@@ -424,6 +440,13 @@ impl DiffColors {
             self.search_outline,
             self.selection,
             self.focused_row,
+            self.accent,
+            self.warning,
+            self.strong,
+            self.faint,
+            self.picked_wash,
+            self.picked_gutter,
+            self.picked_number,
         ];
         for c in colors.iter().chain(&self.syntax) {
             [c.r, c.g, c.b, c.a].hash(&mut h);
@@ -435,6 +458,11 @@ impl DiffColors {
         self.syntax[kind as usize]
     }
 
+    /// An opaque tint of `tone` over `base`, for pills and washes.
+    pub fn tint(base: Color, tone: Color) -> Color {
+        base.lerp(tone, TINT)
+    }
+
     /// Background of a line of `kind` on `side`, if it has one.
     pub fn line(&self, kind: RowKind, side: Side) -> Option<Color> {
         match (kind, side) {
@@ -444,6 +472,11 @@ impl DiffColors {
         }
     }
 }
+
+const TINT: f32 = 0.14;
+const PICKED_WASH: f32 = 0.09;
+const PICKED_GUTTER: f32 = 0.16;
+const PICKED_NUMBER: f32 = 0.6;
 
 const ALL_KINDS: [HighlightKind; HIGHLIGHT_KINDS] = [
     HighlightKind::Normal,

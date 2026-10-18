@@ -25,6 +25,7 @@ use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, AppMessage, AppStartup, Effect, Intent, Reduction, ShellAction, ShellEffect, ShellEvent,
 };
+use crate::contracts::viewport::ViewportAction;
 use crate::core::compare::LayoutMode;
 
 pub trait EffectDispatcher: 'static {
@@ -590,6 +591,13 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn update(&mut self, action: Action, cx: &mut UiContext) {
         self.tick(cx);
+        if matches!(action, Action::Viewport(ViewportAction::Interaction(_))) {
+            let modifiers = cx.window.modifiers();
+            self.controllers.viewport.interaction.set_modifiers(
+                modifiers.shift_key(),
+                modifiers.super_key() || modifiers.control_key(),
+            );
+        }
         match self.controllers.route_action(action, &self.shared) {
             Routed::Shell(action) => self.shell_action(action, cx),
             Routed::Stream(reduction) => {

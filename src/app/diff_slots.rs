@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use diffy_ui::diff_view::decorator::{
     AnnotationContext, DiffDecorator, GutterContext, HeaderContext, HeaderSlot, LineContext,
@@ -127,5 +128,30 @@ impl DiffDecorator for AppDiffDecorator {
         self.mutations
             .line_mark(cx)
             .or_else(|| self.review.line_mark(cx))
+    }
+
+    fn file_state(&self, cx: &HeaderContext) -> Option<String> {
+        self.mutations
+            .file_state(cx)
+            .or_else(|| self.review.file_state(cx))
+    }
+
+    fn hunk_scope(&self, cx: &SeparatorContext) -> Option<Arc<[Arc<str>]>> {
+        self.mutations
+            .hunk_scope(cx)
+            .or_else(|| self.review.hunk_scope(cx))
+    }
+
+    fn banner(&self, width: f32) -> Option<(f32, AnyElement)> {
+        self.review
+            .banner(width)
+            .or_else(|| self.mutations.banner(width))
+    }
+
+    fn hunk_actions(&self, cx: &SeparatorContext) -> Option<AnyElement> {
+        self.both(
+            self.mutations.hunk_actions(cx),
+            self.review.hunk_actions(cx),
+        )
     }
 }

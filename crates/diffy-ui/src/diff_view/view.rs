@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use accesskit::Role;
-use diffy_diff::{GapId, Mode, Reveal, RowKind, Side};
+use diffy_diff::{FileStatus, GapId, Mode, Reveal, RowKind, Side, SlotState};
 use quark::view;
 use quark_render::scene::{Rect, RichTextPrimitive, ShapedText};
 use quark_render::{FontKind, RectPrimitive, Scene};
@@ -16,26 +16,26 @@ use quark_text::{TextParams, TextStyle};
 use quark_ui::Action;
 use quark_ui::element::{
     AnyElement, Bounds, CacheKey, ClickEvent, CursorHint, DragHandler, DragReleaseResult, Element,
-    ElementContext, IntoAnyElement, LayoutEngine, LayoutId, ScrollActionBuilder, cached, canvas,
-    div, inputs_hash, svg_icon, text,
+    ElementContext, GroupCondition, GroupId, IntoAnyElement, LayoutEngine, LayoutId,
+    ScrollActionBuilder, cached, canvas, div, inputs_hash, svg_icon, text,
 };
 use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
-use quark_ui::theme::Theme;
+use quark_ui::theme::{Color, Theme};
 
 use super::decorator::{
     AnnotationContext, DiffDecorator, DiffSources, DiffViewOptions, GutterContext, HeaderContext,
-    HeaderSlot, LineContext, LineMark, SeparatorContext,
+    HeaderSlot, HunkSource, LineContext, LineMark, LinePointer, SeparatorContext,
 };
 use super::interaction::AUTOSCROLL_FRAME_MS;
 use super::paint::{self, Cue, LineColors};
 use super::prepared::{
-    FileFact, FrameRow, LinePaint, MARKER_BAR_W, Metrics, PreparedKind, RowPaint, SearchMark,
+    ColumnBox, FileFact, FrameRow, LinePaint, Metrics, PreparedKind, RowPaint, SearchMark,
     ViewFrame,
 };
 use super::presentation::{
     DiffColors, DiffMarkers, DiffNumbers, DiffPresentation, EmptySideFill, FileHeaders,
-    HunkSeparator,
+    HunkSeparator, band_height,
 };
 use super::{DiffEvent, DiffKey, DiffViewState, REVEAL_STEP};
 use quark_components::CollectionEnv;
@@ -68,6 +68,8 @@ struct Look {
     presentation: DiffPresentation,
     env: CollectionEnv,
 }
+
+const CHANGE_BAR_W: f32 = 3.0;
 
 /// The app's decorator and what identifies its output in cache keys.
 #[derive(Clone)]
@@ -160,11 +162,13 @@ pub(crate) fn diff_view_custom(
     };
     let deco = Deco::new(options.decorator, options.sources);
     let keys = options.keys.unwrap_or(KEYS);
+    let on_line = options.on_line;
     // The cache watches the sideways scroll handles itself.
     let hash = inputs_hash(&(
         state.frame_id,
         env,
         on_event as usize,
+        on_line.map(|f| f as usize),
         look.colors_key,
         deco.key,
         keys.as_ptr() as usize,
@@ -172,7 +176,7 @@ pub(crate) fn diff_view_custom(
     ));
     BoundsProbe {
         child: view! {
-            <cached(state.id, hash, move || build(&frame, look, &deco, keys, on_event))
+            <cached(state.id, hash, move || build(&frame, look, &deco, keys, on_event, on_line))
                 w={width}
                 h={height}
             />
@@ -189,6 +193,7 @@ fn build(
     deco: &Deco,
     keys: &'static [(&'static str, DiffKey)],
     on_event: fn(DiffEvent) -> Action,
+    on_line: Option<fn(LinePointer) -> Action>,
 ) -> AnyElement {
     let (width, height) = frame.viewport;
     let colors = look.colors;
@@ -214,6 +219,8 @@ fn build(
             Some((slot, column, side, content_w, origin, laid_w))
         });
     let split = frame.columns.mode == Mode::Split;
+    let sticky = frame.sticky_header.as_ref().map(|row| row.key);
+    let picks = [Side::Old, Side::New].map(|side| picked_rows(frame, side, deco));
     // Split rows with no line on a side: one fill across that side's
     // gutter and text, outside the sideways scroll.
     let empty_sides = frame
@@ -275,10 +282,16 @@ fn build(
                         h={height}
                         class="overflow-clip"
                         bg={colors.gutter}
+                        @when {let Some(on_line) = on_line} {
+                            class="cursor-pointer"
+                            on:drag={move |press: ClickEvent| {
+                                Box::new(LineDrag { press, on_line }) as Box<dyn DragHandler>
+                            }}
+                        }
                     >
                         <div w={column.gutter_w} class="flex-col" translate={(0.0, first_top)}>
-                            for row in &frame.rows {
-                                {gutter_cell(frame, row, side, column.gutter_w, look, deco)}
+                            for (i, row) in frame.rows.iter().enumerate() {
+                                {gutter_cell(frame, row, side, column.gutter_w, look, picks[slot][i])}
                             }
                         </div>
                     </div>
@@ -298,8 +311,8 @@ fn build(
                         }
                     >
                         <div w={laid_w} class="flex-col" translate={(0.0, first_top)}>
-                            for row in &frame.rows {
-                                {text_cell(frame, row, side, laid_w, origin, look)}
+                            for (i, row) in frame.rows.iter().enumerate() {
+                                {text_cell(frame, row, side, laid_w, origin, look, picks[slot][i])}
                             }
                         </div>
                     </div>
@@ -329,7 +342,7 @@ fn build(
                 for row in frame
                     .rows
                     .iter()
-                    .filter(|r| !r.paint.kind.is_line() && r.height > 0.0) {
+                    .filter(|r| !r.paint.kind.is_line() && r.height > 0.0 && Some(r.key) != sticky) {
                     <div
                         class="absolute left-0"
                         top={row.top}
@@ -340,8 +353,23 @@ fn build(
                         {band(frame, row, look, deco, on_event)}
                     </div>
                 }
+                for row in frame.rows.iter().filter(|r| !r.focused && r.height > 0.0 && r.paint.kind.is_line()) {
+                    if let Some(utility) = hover_utility(frame, row, deco) {
+                        {utility}
+                    }
+                }
                 for row in frame.rows.iter().filter(|r| r.focused && r.height > 0.0) {
                     {focus_overlay(frame, row, look, deco)}
+                }
+                if let Some(row) = &frame.sticky_header {
+                    <div
+                        class="absolute left-0 top-0"
+                        w={width}
+                        h={row.height}
+                        @when {let Some(id) = band_id(frame, row, deco)} { test_id={id} }
+                    >
+                        {band(frame, row, look, deco, on_event)}
+                    </div>
                 }
             </div>
         </div>
@@ -408,13 +436,68 @@ fn gutter_numbers(
     }
 }
 
+/// Whether a row's line on one side is in the app's line selection, and
+/// whether it starts or ends a selected range.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct Pick {
+    on: bool,
+    top: bool,
+    bottom: bool,
+}
+
+/// The [`Pick`] of each row's line in the column showing `side`.
+fn picked_rows(frame: &ViewFrame, side: Side, deco: &Deco) -> Vec<Pick> {
+    let mode = frame.columns.mode;
+    let on: Vec<bool> = frame
+        .rows
+        .iter()
+        .map(|row| {
+            row.paint
+                .kind
+                .diff()
+                .filter(|k| k.is_line())
+                .and_then(|kind| deco.mark(&row.paint, kind, shown_side(mode, kind, side)))
+                .is_some()
+        })
+        .collect();
+    (0..on.len())
+        .map(|i| Pick {
+            on: on[i],
+            top: on[i] && (i == 0 || !on[i - 1]),
+            bottom: on[i] && on.get(i + 1).is_none_or(|next| !next),
+        })
+        .collect()
+}
+
+/// The 1 pt rules at the top and bottom of a selected range.
+fn pick_rules(scene: &mut Scene, bounds: Bounds, pick: Pick, color: Color, scale: f32) {
+    let rule = paint::whole_pixels(1.0, scale);
+    let mut draw = |y: f32| {
+        scene.rect(RectPrimitive {
+            rect: Rect {
+                x: bounds.x,
+                y,
+                width: bounds.width,
+                height: rule,
+            },
+            color,
+        })
+    };
+    if pick.top {
+        draw(bounds.y);
+    }
+    if pick.bottom {
+        draw(bounds.y + bounds.height - rule);
+    }
+}
+
 fn gutter_cell(
     frame: &ViewFrame,
     row: &FrameRow,
     side: Side,
     width: f32,
     look: Look,
-    deco: &Deco,
+    pick: Pick,
 ) -> AnyElement {
     let height = row.height;
     let Some(kind) = row.paint.kind.diff().filter(|k| k.is_line()) else {
@@ -431,7 +514,6 @@ fn gutter_cell(
         gutter_numbers(presentation.numbers, mode, row.paint.numbers(), side, shown);
     let m = frame.metrics;
     let colors = look.colors;
-    let mark = deco.mark(&row.paint, kind, shown);
     let hash = inputs_hash(&(
         row.paint.stamp,
         numbers,
@@ -441,12 +523,13 @@ fn gutter_cell(
         width.to_bits(),
         look.colors_key,
         presentation.markers,
-        mark,
+        pick,
     ));
     let build = move || {
-        let bg = match mark {
-            Some(LineMark::Selected) => Some(colors.selection),
-            None => colors.line(kind, shown),
+        let bg = if pick.on {
+            Some(colors.picked_gutter)
+        } else {
+            colors.line(kind, shown)
         };
         view! {
             <div
@@ -465,8 +548,10 @@ fn gutter_cell(
                             presentation.markers,
                             &numbers[..count],
                             cue(kind, shown),
+                            pick.on,
                             colors,
                         );
+                        pick_rules(scene, bounds, pick, colors.accent, cx.scale_factor);
                     }
                 )
                     w={width}
@@ -489,6 +574,7 @@ fn paint_gutter(
     markers: DiffMarkers,
     numbers: &[u32],
     cue: Option<Cue>,
+    picked: bool,
     colors: DiffColors,
 ) {
     let style = TextStyle::new(m.font_size)
@@ -496,25 +582,27 @@ fn paint_gutter(
         .line_height(m.line_h);
     let mut x = bounds.x;
     if markers == DiffMarkers::Bars {
-        if let Some(cue) = cue {
-            let color = match cue {
-                Cue::Added => colors.add_marker,
-                Cue::Removed => colors.del_marker,
-            };
-            paint::marker(
-                scene,
-                x,
-                bounds.y,
-                MARKER_BAR_W,
-                bounds.height,
-                cue,
+        let color = match (picked, cue) {
+            (true, _) => Some(colors.accent),
+            (false, Some(Cue::Added)) => Some(colors.add_marker),
+            (false, Some(Cue::Removed)) => Some(colors.del_marker),
+            (false, None) => None,
+        };
+        if let Some(color) = color {
+            let w = paint::whole_pixels(CHANGE_BAR_W, cx.scale_factor);
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    x: bounds.x + bounds.width - w,
+                    y: bounds.y,
+                    width: w,
+                    height: bounds.height,
+                },
                 color,
-                cx.scale_factor,
-            );
+            });
         }
-        x += MARKER_BAR_W;
     }
     let number_color = match cue {
+        _ if picked => colors.picked_number,
         Some(Cue::Added) => colors.add_number,
         Some(Cue::Removed) => colors.del_number,
         None => colors.gutter_text,
@@ -572,6 +660,7 @@ fn text_cell(
     width: f32,
     origin: f64,
     look: Look,
+    pick: Pick,
 ) -> AnyElement {
     let height = row.height;
     let mode = frame.columns.mode;
@@ -603,16 +692,22 @@ fn text_cell(
         mode,
         position,
         look.colors_key,
+        pick,
     ));
     let build = move || {
         let line = paint.sides[shown as usize].as_ref().expect("shown line");
         let canvas_paint = paint.clone();
+        let bg = match (pick.on, colors.line(kind, shown)) {
+            (true, Some(bg)) => Some(DiffColors::tint(bg, colors.accent)),
+            (true, None) => Some(colors.picked_wash),
+            (false, bg) => bg,
+        };
         view! {
             <div
                 w={width}
                 h={height}
                 class="shrink-0"
-                @when {let Some(bg) = colors.line(kind, shown)} { bg={bg} }
+                @when {let Some(bg) = bg} { bg={bg} }
                 @when {env.accessible} {
                     accessibility_role={Role::ListItem}
                     aria-label={line.layout.text().to_string()}
@@ -643,6 +738,7 @@ fn text_cell(
                                 cx.scale_factor,
                             );
                         }
+                        pick_rules(scene, bounds, pick, colors.accent, cx.scale_factor);
                     }
                 )
                     w={width}
@@ -751,38 +847,65 @@ fn empty_side(frame: &ViewFrame, row: &FrameRow, side: Side, look: Look) -> AnyE
     }
 }
 
+/// The decorator's gutter utility for a line row, and where it sits:
+/// a row-high square just right of the change bar.
+fn utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<(ColumnBox, f32, AnyElement)> {
+    let kind = row.paint.kind.diff().filter(|k| k.is_line())?;
+    let decorator = deco.decorator.as_ref()?;
+    let mode = frame.columns.mode;
+    let side = match mode {
+        Mode::Unified => shown_side(mode, kind, Side::New),
+        // The new side's column, unless the row has only an old line.
+        Mode::Split if row.paint.source_lines[1].is_some() => Side::New,
+        Mode::Split => Side::Old,
+    };
+    let line = row.paint.source_lines[side as usize]?;
+    let column = frame.columns.of(side);
+    let size = row.height.min(frame.metrics.line_h);
+    let cx = GutterContext {
+        file: row.paint.file,
+        source: deco.file(row.paint.file),
+        side,
+        line,
+        kind,
+        width: size,
+        height: size,
+    };
+    Some((column, size, decorator.gutter_utility(&cx)?))
+}
+
+/// A line row's gutter utility, shown while the pointer is over the row.
+/// Covers only the code column, so gutter presses still reach the gutter.
+fn hover_utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<AnyElement> {
+    let group = GroupId::new("diff.line");
+    let (column, size, element) = utility(frame, row, deco)?;
+    Some(view! {
+        <div
+            class="absolute"
+            left={column.text_x}
+            top={row.top}
+            w={column.text_w}
+            h={row.height}
+            interaction_group={group}
+        >
+            <div
+                class="absolute top-0 left-0"
+                w={size}
+                h={size}
+                show_when={GroupCondition::HoveredOrFocusWithin(group)}
+            >
+                {element}
+            </div>
+        </div>
+    })
+}
+
 /// The keyboard focus outline over a row, painted after everything else
 /// in it, with the decorator's gutter utility for a line row.
 fn focus_overlay(frame: &ViewFrame, row: &FrameRow, look: Look, deco: &Deco) -> AnyElement {
     let (width, height) = (frame.viewport.0, row.height);
     let color = look.colors.focused_row;
-    let utility = row
-        .paint
-        .kind
-        .diff()
-        .filter(|k| k.is_line())
-        .and_then(|kind| {
-            let decorator = deco.decorator.as_ref()?;
-            let mode = frame.columns.mode;
-            let side = match mode {
-                Mode::Unified => shown_side(mode, kind, Side::New),
-                // The new side's gutter, unless the row has only an old line.
-                Mode::Split if row.paint.source_lines[1].is_some() => Side::New,
-                Mode::Split => Side::Old,
-            };
-            let line = row.paint.source_lines[side as usize]?;
-            let column = frame.columns.of(side);
-            let cx = GutterContext {
-                file: row.paint.file,
-                source: deco.file(row.paint.file),
-                side,
-                line,
-                kind,
-                width: column.gutter_w,
-                height,
-            };
-            Some((column, decorator.gutter_utility(&cx)?))
-        });
+    let utility = utility(frame, row, deco);
     view! {
         <div class="absolute left-0" top={row.top} w={width} h={height}>
             <canvas(
@@ -799,8 +922,8 @@ fn focus_overlay(frame: &ViewFrame, row: &FrameRow, look: Look, deco: &Deco) -> 
                 w={width}
                 h={height}
             />
-            if let Some((column, element)) = utility {
-                <div class="absolute top-0" left={column.gutter_x} w={column.gutter_w} h={height}>
+            if let Some((column, size, element)) = utility {
+                <div class="absolute top-0" left={column.text_x} w={size} h={size}>
                     {element}
                 </div>
             }
@@ -836,32 +959,51 @@ fn band(
         deco.key,
         &paint.kind,
     ));
+    let header_h = band_height(RowKind::FileHeader, &frame.metrics, &look.presentation);
     let build = move || match &paint.kind {
-        PreparedKind::Diff(RowKind::FileHeader) | PreparedKind::Pending { .. } => {
-            file_header(&paint, id, width, height, pad, font_size, look, &deco)
+        PreparedKind::Diff(RowKind::FileHeader) => file_header(
+            &paint, id, width, height, pad, font_size, look, &deco, on_event,
+        ),
+        PreparedKind::Pending { state, .. } => {
+            let header_h = header_h.min(height);
+            let header = file_header(
+                &paint, id, width, header_h, pad, font_size, look, &deco, on_event,
+            );
+            pending_band(
+                header,
+                *state,
+                width,
+                height - header_h,
+                pad,
+                font_size,
+                look,
+            )
         }
         PreparedKind::Diff(_) => {
-            let custom = deco.decorator.as_ref().and_then(|d| {
-                let hunk = match paint.kind.diff() {
-                    Some(RowKind::Gap) => paint.gap.and_then(|g| g.hunk),
-                    _ => Some((key & 0x3F_FFFF_FFFF) as u32),
-                };
-                let sources = deco.sources.as_ref();
-                d.separator(&SeparatorContext {
-                    file: paint.file,
-                    gap: paint.gap,
-                    source: deco.file(paint.file),
-                    hunk: hunk.and_then(|h| sources?.hunk(paint.file, h)),
-                    hidden: paint.hidden,
-                    title: &paint.title,
-                    columns,
-                    width,
-                    height,
-                })
-            });
-            match custom {
+            let hunk = match paint.kind.diff() {
+                Some(RowKind::Gap) => paint.gap.and_then(|g| g.hunk),
+                _ => Some((key & 0x3F_FFFF_FFFF) as u32),
+            };
+            let sources = deco.sources.as_ref();
+            let cx = SeparatorContext {
+                file: paint.file,
+                gap: paint.gap,
+                source: deco.file(paint.file),
+                hunk: hunk.and_then(|h| sources?.hunk(paint.file, h)),
+                hidden: paint.hidden,
+                title: &paint.title,
+                columns,
+                width,
+                height,
+            };
+            let decorator = deco.decorator.as_ref();
+            match decorator.and_then(|d| d.separator(&cx)) {
                 Some(custom) => view! { <div w={width} h={height}>{custom}</div> },
-                None => separator(&paint, width, height, pad, font_size, look, on_event),
+                None => {
+                    let scope = decorator.and_then(|d| d.hunk_scope(&cx));
+                    let actions = decorator.and_then(|d| d.hunk_actions(&cx));
+                    separator(&paint, &cx, scope, actions, pad, font_size, look, on_event)
+                }
             }
         }
         PreparedKind::Fact(fact) => {
@@ -935,6 +1077,49 @@ fn band(
     view! { <cached(part_key(row.key, 4), hash, build) w={width} h={height} /> }
 }
 
+/// A file whose diff is not installed: its header, then a band as tall as
+/// its estimated lines saying why.
+#[allow(clippy::too_many_arguments)]
+fn pending_band(
+    header: AnyElement,
+    state: SlotState,
+    width: f32,
+    height: f32,
+    pad: f32,
+    font_size: f32,
+    look: Look,
+) -> AnyElement {
+    let colors = look.colors;
+    let env = look.env;
+    let (label, tone) = match state {
+        SlotState::Unloaded => ("Not loaded yet", colors.muted),
+        SlotState::Loading => ("Loading\u{2026}", colors.muted),
+        SlotState::Failed => ("Couldn\u{2019}t load this file", colors.del_text),
+        SlotState::Evicted => (
+            "Unloaded to save memory; scroll here to reload",
+            colors.muted,
+        ),
+    };
+    view! {
+        <div w={width} class="flex-col">
+            {header}
+            <div
+                w={width}
+                h={height.max(0.0)}
+                class="flex-row items-start justify-center"
+                pt={pad}
+                bg={colors.surface}
+                @when {env.accessible} {
+                    accessibility_role={Role::Status}
+                    aria-label={label}
+                }
+            >
+                <text size={font_size * 0.9} color={tone}>{label}</text>
+            </div>
+        </div>
+    }
+}
+
 fn fact_label(fact: &FileFact) -> String {
     match fact {
         FileFact::Binary => "Binary file not shown".to_owned(),
@@ -944,6 +1129,29 @@ fn fact_label(fact: &FileFact) -> String {
         FileFact::NoNewlineAtEof(Side::Old) => "No newline at end of the old file".to_owned(),
         FileFact::NoNewlineAtEof(Side::New) => "No newline at end of the new file".to_owned(),
     }
+}
+
+fn status_label(status: FileStatus) -> String {
+    let name = status.name();
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+fn status_tone(status: FileStatus, colors: DiffColors) -> Color {
+    match status {
+        FileStatus::Added => colors.add_text,
+        FileStatus::Deleted => colors.del_text,
+        FileStatus::Modified => colors.warning,
+        FileStatus::Renamed | FileStatus::Copied => colors.muted,
+    }
+}
+
+/// A path as breadcrumb segments: its directories, then its name.
+fn path_segments(title: &str) -> Option<Vec<String>> {
+    (!title.contains('\u{2192}')).then(|| title.split('/').map(str::to_owned).collect())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -956,6 +1164,7 @@ fn file_header(
     font_size: f32,
     look: Look,
     deco: &Deco,
+    on_event: fn(DiffEvent) -> Action,
 ) -> AnyElement {
     let (adds, dels) = paint.stats;
     let cx = HeaderContext {
@@ -976,21 +1185,67 @@ fn file_header(
         return view! { <div w={width} h={height}>{custom}</div> };
     }
     let slot = |slot| decorator.and_then(|d| d.header_slot(slot, &cx));
-    let (prefix, metadata, actions) = (
+    let (prefix, metadata, actions, trailing) = (
         slot(HeaderSlot::Prefix),
         slot(HeaderSlot::Metadata),
         slot(HeaderSlot::Actions),
+        slot(HeaderSlot::Trailing),
     );
+    let collapsed_note = paint
+        .collapsed
+        .then(|| slot(HeaderSlot::Collapsed))
+        .flatten();
     let status = paint.status.name();
+    let state = decorator
+        .and_then(|d| d.file_state(&cx))
+        .unwrap_or_else(|| status_label(paint.status));
     let colors = look.colors;
     let env = look.env;
+    let tone = status_tone(paint.status, colors);
+    let small = font_size * 0.85;
+    let open = !paint.collapsed;
+    let toggle = on_event(DiffEvent::ToggleFile { file: paint.file });
+    let chevron = if open {
+        lucide::CHEVRON_DOWN
+    } else {
+        lucide::CHEVRON_RIGHT
+    };
+    let toggle_size = (height * 0.5).round();
+    let title: AnyElement = match path_segments(&paint.title) {
+        Some(segments) => {
+            let last = segments.len() - 1;
+            view! {
+                <div class="flex-row items-center min-w-0 overflow-hidden" gap={pad * 0.25}>
+                    for (i, segment) in segments.into_iter().enumerate() {
+                        if i > 0 {
+                            <text size={font_size} color={colors.faint}>"/"</text>
+                        }
+                        <text
+                            size={font_size}
+                            class="truncate"
+                            color={if i == last { colors.strong } else { colors.muted }}
+                            @when {i == last} { class="font-semibold" }
+                        >
+                            {segment}
+                        </text>
+                    }
+                </div>
+            }
+        }
+        None => view! {
+            <text size={font_size} class="font-semibold truncate" color={colors.strong}>
+                {&*paint.title}
+            </text>
+        },
+    };
     view! {
         <div
             w={width}
             h={height}
             class="flex-row items-center"
             gap={pad * 0.5}
-            px={pad}
+            pr={pad}
+            pl={pad * 0.5}
             border_b={colors.border}
             bg={colors.file_header}
             @when {env.accessible} {
@@ -999,84 +1254,183 @@ fn file_header(
                 aria-label={format!("{}, {status}, {adds} added, {dels} removed", paint.title)}
             }
         >
+            <div
+                w={toggle_size}
+                h={toggle_size}
+                rounded={4.0}
+                class="flex-row items-center justify-center shrink-0 cursor-pointer"
+                hover_bg={colors.hover}
+                on:click={toggle}
+                @when {env.accessible} {
+                    accessibility_role={Role::Button}
+                    aria-label={if open { "Collapse file" } else { "Expand file" }}
+                    aria-expanded={open}
+                }
+            >
+                <icon svg={chevron} size={(toggle_size * 0.75).round()} color={colors.muted} />
+            </div>
             if let Some(prefix) = prefix {
                 {prefix}
             }
-            <text size={font_size * 0.85} color={colors.muted}>{status}</text>
-            <text size={font_size} class="font-semibold truncate" color={colors.text}>
-                {&*paint.title}
-            </text>
+            {title}
+            <div
+                class="shrink-0"
+                px={pad * 0.3}
+                py={pad * 0.1}
+                rounded={4.0}
+                bg={DiffColors::tint(colors.file_header, tone)}
+                test_id="diff.file.state"
+            >
+                <text size={small} class="font-semibold" color={tone}>{state}</text>
+            </div>
+            <div class="flex-row items-center shrink-0" gap={pad * 0.25}>
+                <text size={small} class="font-mono" color={colors.add_text}>"+{adds}"</text>
+                <text size={small} class="font-mono" color={colors.del_text}>"\u{2212}{dels}"</text>
+            </div>
+            if paint.binary {
+                <text size={small} color={colors.muted}>"binary"</text>
+            }
             if let Some(metadata) = metadata {
                 {metadata}
             }
-            <div class="flex-1" />
-            if paint.binary {
-                <text size={font_size * 0.85} color={colors.muted}>"binary"</text>
+            if let Some(note) = collapsed_note {
+                {note}
             }
-            <text size={font_size} color={colors.add_text}>"+{adds}"</text>
-            <text size={font_size} color={colors.del_text}>"-{dels}"</text>
+            <div class="flex-1" min_w={0.0} />
             if let Some(actions) = actions {
-                {actions}
+                <div class="shrink-0">{actions}</div>
+            }
+            if let Some(trailing) = trailing {
+                <div class="shrink-0" w={1.0} h={(height * 0.45).round()} bg={colors.border} />
+                <div class="shrink-0">{trailing}</div>
             }
         </div>
     }
 }
 
-/// A hunk header or collapsed gap, drawn as the separator choice says.
+/// The `@@` range of a hunk, from its source lines.
+fn hunk_range(hunk: &HunkSource) -> String {
+    format!(
+        "@@ \u{2212}{},{} +{},{} @@",
+        hunk.old.start + 1,
+        hunk.old.len(),
+        hunk.new.start + 1,
+        hunk.new.len()
+    )
+}
+
+/// A hunk header or collapsed gap: expand controls over the gutter, the
+/// enclosing scope, the hidden-line count, the dim `@@` range, and the
+/// app's hunk actions; or a thin fold bar under the compact choice.
+#[allow(clippy::too_many_arguments)]
 fn separator(
     paint: &RowPaint,
-    width: f32,
-    height: f32,
+    cx: &SeparatorContext,
+    scope: Option<Arc<[Arc<str>]>>,
+    actions: Option<AnyElement>,
     pad: f32,
     font_size: f32,
     look: Look,
     on_event: fn(DiffEvent) -> Action,
 ) -> AnyElement {
+    let (width, height) = (cx.width, cx.height);
     let colors = look.colors;
     let env = look.env;
-    let gap = (paint.kind.diff() == Some(RowKind::Gap)).then(|| paint.gap.expect("gap row"));
-    match (look.presentation.separators, gap) {
-        (HunkSeparator::Compact, Some(gap)) => view! {
-            <div
-                w={width}
-                h={height}
-                bg={colors.separator}
-                hover_bg={colors.hover}
-                class="cursor-pointer"
-                on:click={on_event(DiffEvent::Expand(gap, Reveal::All))}
-                @when {env.accessible} {
-                    accessibility_role={Role::Button}
-                    aria-label={"Show all unchanged lines"}
-                    aria-description={&*paint.title}
-                }
-            />
-        },
-        (HunkSeparator::Compact, None) => view! {
-            <div w={width} h={height} bg={colors.separator} />
-        },
-        (separators, gap) => {
-            let controls = gap.filter(|_| separators == HunkSeparator::ContextControls);
-            view! {
+    let gap = cx.gap;
+    if look.presentation.separators == HunkSeparator::Compact {
+        return match gap {
+            Some(gap) => view! {
                 <div
                     w={width}
                     h={height}
-                    class="flex-row items-center"
-                    gap={pad * 0.5}
-                    px={pad}
-                    border_b={colors.border}
                     bg={colors.separator}
-                >
-                    if let Some(gap) = controls {
-                        for (reveal, icon, label) in gap_controls(gap) {
-                            {expand_button(gap, reveal, icon, label, height, colors, env, on_event)}
-                        }
+                    hover_bg={colors.hover}
+                    class="cursor-pointer"
+                    on:click={on_event(DiffEvent::Expand(gap, Reveal::All))}
+                    @when {env.accessible} {
+                        accessibility_role={Role::Button}
+                        aria-label={"Show all unchanged lines"}
+                        aria-description={&*paint.title}
                     }
-                    <text size={font_size * 0.9} class="font-mono" color={colors.muted}>
-                        {&*paint.title}
+                />
+            },
+            None => view! { <div w={width} h={height} bg={colors.separator} /> },
+        };
+    }
+    let controls = gap.filter(|_| look.presentation.separators == HunkSeparator::ContextControls);
+    let gutter_w = cx
+        .columns
+        .sides
+        .iter()
+        .flatten()
+        .next()
+        .map_or(pad * 4.0, |c| c.gutter_x + c.gutter_w);
+    let (lead, section) = match (gap, paint.title.split_once("    ")) {
+        (Some(_), Some((lead, rest))) => (Some(lead.to_owned()), rest.to_owned()),
+        (Some(_), None) => (Some(paint.title.to_string()), String::new()),
+        (None, _) => (None, paint.title.to_string()),
+    };
+    let range = cx.hunk.as_ref().map(hunk_range);
+    let section = section
+        .rsplit_once("@@")
+        .map(|(_, text)| text.trim().to_owned())
+        .filter(|text| !text.is_empty());
+    let small = font_size * 0.9;
+    let scope_label = scope.filter(|s| !s.is_empty()).map(|scopes| {
+        view! {
+            <div class="flex-row items-center min-w-0 overflow-hidden" gap={pad * 0.25}>
+                <text size={small} color={colors.muted}>"in"</text>
+                for (i, scope) in scopes.iter().enumerate() {
+                    if i > 0 {
+                        <text size={small} color={colors.muted}>"\u{203A}"</text>
+                    }
+                    <text size={small} class="font-medium truncate" color={colors.text}>
+                        {scope.to_string()}
                     </text>
-                </div>
-            }
+                }
+            </div>
         }
+    });
+    let has_scope = scope_label.is_some();
+    view! {
+        <div
+            w={width}
+            h={height}
+            class="flex-row items-center"
+            gap={pad * 0.5}
+            pr={pad}
+            border_t={colors.border}
+            border_b={colors.border}
+            bg={colors.separator}
+            @when {env.accessible} {
+                accessibility_role={Role::Group}
+                aria-label={paint.title.to_string()}
+            }
+        >
+            <div w={gutter_w} h={height} class="flex-row items-center justify-center shrink-0" gap={pad * 0.25}>
+                if let Some(gap) = controls {
+                    for (reveal, icon, label) in gap_controls(gap) {
+                        {expand_button(gap, reveal, icon, label, height, colors, env, on_event)}
+                    }
+                }
+            </div>
+            if let Some(scope) = scope_label {
+                {scope}
+            }
+            if let Some(lead) = lead.filter(|_| !has_scope) {
+                <text size={small} color={colors.muted}>{lead}</text>
+            }
+            if let Some(section) = section.filter(|_| !has_scope) {
+                <text size={small} class="truncate" color={colors.muted}>{section}</text>
+            }
+            if let Some(range) = range {
+                <text size={small * 0.95} class="font-mono" color={colors.faint}>{range}</text>
+            }
+            <div class="flex-1" min_w={0.0} />
+            if let Some(actions) = actions {
+                <div class="shrink-0">{actions}</div>
+            }
+        </div>
     }
 }
 
@@ -1128,6 +1482,41 @@ fn expand_button(
         >
             <icon svg={icon} size={(size * 0.7).round()} color={colors.muted} />
         </div>
+    }
+}
+
+/// A press or drag over a line gutter, reported to the app for line
+/// selection.
+struct LineDrag {
+    press: ClickEvent,
+    on_line: fn(LinePointer) -> Action,
+}
+
+impl DragHandler for LineDrag {
+    fn on_press(&mut self) -> Vec<Action> {
+        vec![(self.on_line)(LinePointer {
+            x: self.press.x,
+            y: self.press.y,
+            drag: false,
+        })]
+    }
+
+    fn on_move(&mut self, x: f32, y: f32) -> Vec<Action> {
+        vec![(self.on_line)(LinePointer { x, y, drag: true })]
+    }
+
+    fn on_release(&mut self) -> DragReleaseResult {
+        DragReleaseResult {
+            actions: Vec::new(),
+        }
+    }
+
+    fn on_cancel(&mut self) -> Vec<Action> {
+        Vec::new()
+    }
+
+    fn cursor(&self) -> CursorHint {
+        CursorHint::Pointer
     }
 }
 

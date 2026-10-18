@@ -73,7 +73,13 @@ impl Controllers {
         }
         Routed::Stream(match action {
             Action::Shell(action) => return Routed::Shell(action),
-            Action::Viewport(action) => self.viewport.reduce_action(action, cx),
+            Action::Viewport(action) => {
+                let mut reduction = self.viewport.reduce_action(action, cx);
+                for line in self.viewport.interaction.take_line_actions() {
+                    reduction.merge(self.mutations.reduce_action(line, cx));
+                }
+                reduction
+            }
             Action::Navigation(action) => self.navigation.reduce_action(action, cx),
             Action::Commands(action) => self.commands.reduce_action(action, cx),
             Action::Review(action) => self.review.reduce_action(action, cx),

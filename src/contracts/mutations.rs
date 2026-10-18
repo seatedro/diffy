@@ -56,10 +56,7 @@ pub enum MutationsAction {
     CloseCommitComposer,
     ScrollCommitMessage(i32),
     ClosePublishMenu,
-    SetAiProvider(Option<Provider>),
     SaveAiKeyField(AiKeyKind),
-    SaveSteeringPrompt,
-    ResetSteeringPrompt,
     ScrollSteeringPrompt(i32),
 }
 

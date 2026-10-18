@@ -9,6 +9,7 @@ use crate::app::navigation::NavigationController;
 use crate::app::review::ReviewController;
 use crate::app::viewport::ViewportController;
 use crate::contracts::commands::{CommandDescriptor, CommandSource, CommandsAction};
+use crate::contracts::review::ReviewAction;
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, AppEvent, Controller, Intent, Reduction, ShellAction, ShellEvent,
@@ -56,16 +57,19 @@ impl Controllers {
         action: Action,
         cx: &SharedContext,
     ) -> Routed<ShellAction, Reduction> {
-        if matches!(action, Action::Commands(CommandsAction::OpenCommandPalette)) {
-            let commands = self.external_commands(cx);
-            let mut reduction = self
-                .commands
-                .reduce_action(CommandsAction::SetExternalCommands(commands), cx);
-            reduction.merge(
-                self.commands
-                    .reduce_action(CommandsAction::OpenCommandPalette, cx),
-            );
-            return Routed::Stream(reduction);
+        match action {
+            Action::Commands(action) => return Routed::Stream(self.commands_action(action, cx)),
+            Action::Review(action) if opens_review_modal(&action) => {
+                if self.commands.modal_open() {
+                    return Routed::Stream(Reduction::default());
+                }
+                let mut reduction = self
+                    .commands
+                    .reduce_action(CommandsAction::DismissOverlays, cx);
+                reduction.merge(self.review.reduce_action(action, cx));
+                return Routed::Stream(reduction);
+            }
+            _ => {}
         }
         Routed::Stream(match action {
             Action::Shell(action) => return Routed::Shell(action),
@@ -76,6 +80,22 @@ impl Controllers {
             Action::Mutations(action) => self.mutations.reduce_action(action, cx),
             Action::Delivery(action) => self.delivery.reduce_action(action, cx),
         })
+    }
+
+    fn commands_action(&mut self, action: CommandsAction, cx: &SharedContext) -> Reduction {
+        if action.blocked_by_modal() && self.review.is_modal_open() {
+            return Reduction::default();
+        }
+        let mut reduction = Reduction::default();
+        if action.wants_external_commands() {
+            let commands = self.external_commands(cx);
+            reduction.merge(
+                self.commands
+                    .reduce_action(CommandsAction::SetExternalCommands(commands), cx),
+            );
+        }
+        reduction.merge(self.commands.reduce_action(action, cx));
+        reduction
     }
 
     fn external_commands(&self, cx: &SharedContext) -> Rc<[CommandDescriptor]> {
@@ -147,3 +167,10 @@ ui_action!(
     crate::contracts::mutations::MutationsAction,
     crate::contracts::delivery::DeliveryAction,
 );
+
+fn opens_review_modal(action: &ReviewAction) -> bool {
+    matches!(
+        action,
+        ReviewAction::OpenAuthModal | ReviewAction::OpenAccountMenu | ReviewAction::OpenSubmitMenu
+    )
+}

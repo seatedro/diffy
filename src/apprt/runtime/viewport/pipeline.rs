@@ -60,10 +60,10 @@ impl PipelineRuntime {
                 };
                 thread::spawn(move || {
                     let event = match services.run_compare(&job, &progress) {
-                        Ok(manifest) => PipelineEvent::CompareFinished {
+                        Ok(result) => PipelineEvent::CompareFinished {
                             generation,
                             request: job.intent.request,
-                            manifest,
+                            result,
                         },
                         Err(failure) => PipelineEvent::CompareFailed {
                             generation,
@@ -75,8 +75,6 @@ impl PipelineRuntime {
             }
             PipelineEffect::RunTextCompare(request) => {
                 let generation = request.generation;
-                self.queue.set_epoch(generation);
-                let queue = Arc::clone(&self.queue);
                 thread::spawn(move || {
                     let event = match services.run_text_compare(&request) {
                         Ok(prepared) => PipelineEvent::TextCompareFinished {
@@ -88,7 +86,7 @@ impl PipelineRuntime {
                             failure,
                         },
                     };
-                    queue.send_current(generation, &events, event);
+                    events.send(event);
                 });
             }
             PipelineEffect::SupersedeCompare(generation) => self.queue.set_epoch(generation),
@@ -126,12 +124,10 @@ impl PipelineRuntime {
                     let key = request.file.key;
                     let revision = request.file.revision;
                     let event = match services.load_sources(&request) {
-                        Ok(sources) => PipelineEvent::SourcesLoaded {
+                        Ok(prepared) => PipelineEvent::SourcesLoaded {
                             generation,
-                            key,
-                            revision,
                             purpose: request.purpose,
-                            sources,
+                            prepared,
                         },
                         Err(failure) => PipelineEvent::SourcesFailed {
                             generation,
@@ -428,7 +424,7 @@ mod tests {
     use crate::apprt::transport::RuntimeEventSender;
     use crate::contracts::shared::{FileRevision, WorkspaceEpoch};
     use crate::contracts::viewport::pipeline::FileTarget;
-    use crate::core::compare::stats::CompareFilePaths;
+    use crate::core::compare::CompareEntry;
     use crate::core::compare::{LayoutMode, RendererKind};
     use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
 
@@ -449,7 +445,11 @@ mod tests {
             file: FileTarget {
                 key: FileKey(key),
                 revision: FileRevision(1),
-                paths: CompareFilePaths::from_paths(Some("a.rs"), Some("a.rs")),
+                entry: CompareEntry::deferred(
+                    Some("a.rs"),
+                    Some("a.rs"),
+                    diffy_diff::FileStatus::Modified,
+                ),
             },
             priority,
         }))

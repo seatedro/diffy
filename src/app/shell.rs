@@ -392,7 +392,13 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 width: files_w,
                 height,
             };
-            navigation::view(&mut self.controllers.navigation, &slot, cx)
+            navigation::view(
+                &mut self.controllers.navigation,
+                &self.controllers.review,
+                &slot,
+                None,
+                cx,
+            )
         });
         let presentation = self.controllers.review.presentation();
         self.controllers

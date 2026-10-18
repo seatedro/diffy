@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -27,7 +27,7 @@ use crate::contracts::viewport::pipeline::{
 };
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::ref_catalog::WORKING_TREE_LABEL;
-use crate::core::vcs::model::{RefKind, VcsChange, VcsCompareRequest, VcsCompareSpec};
+use crate::core::vcs::model::{RefKind, VcsChange, VcsCompareRequest, VcsCompareSpec, VcsKind};
 use crate::platform::persistence::{PersistedCompare, Settings};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +146,7 @@ pub struct HistoryState {
 pub struct ListMetrics {
     pub row_height: f32,
     pub viewport: f32,
+    pub history_row: f32,
 }
 
 #[derive(Debug)]
@@ -175,6 +176,15 @@ pub struct NavigationController {
     stats_requested: HashSet<FileKey>,
     stats_generation: Option<CompareGeneration>,
     outbox: RefCell<Vec<Action>>,
+    marked: Vec<FileKey>,
+    anchor: Option<FileKey>,
+    modifiers: Cell<ClickModifiers>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClickModifiers {
+    pub extend: bool,
+    pub toggle: bool,
 }
 
 const STATS_OVERSCAN_ROWS: usize = 8;
@@ -208,6 +218,9 @@ impl Default for NavigationController {
             stats_requested: HashSet::new(),
             stats_generation: None,
             outbox: RefCell::new(Vec::new()),
+            marked: Vec::new(),
+            anchor: None,
+            modifiers: Cell::new(ClickModifiers::default()),
         }
     }
 }
@@ -277,6 +290,73 @@ impl NavigationController {
         self.repository
             .as_ref()
             .is_some_and(|r| r.snapshot.capabilities.operation_log)
+    }
+
+    pub fn observe_modifiers(&self, modifiers: ClickModifiers) {
+        self.modifiers.set(modifiers);
+    }
+
+    pub fn marked(&self) -> &[FileKey] {
+        &self.marked
+    }
+
+    pub fn is_marked(&self, key: FileKey) -> bool {
+        self.marked.contains(&key)
+    }
+
+    pub fn viewed_count(&self) -> (usize, usize) {
+        let files = self.files();
+        let viewed = files
+            .iter()
+            .filter(|f| self.viewed.contains(f.paths.display_path().as_ref()))
+            .count();
+        (viewed, files.len())
+    }
+
+    pub fn highlights(&self, file: u32) -> &[(usize, usize)] {
+        self.rows.highlights(file)
+    }
+
+    fn mark(&mut self, key: FileKey) {
+        let modifiers = self.modifiers.get();
+        let current = self.selection.as_ref().map(|s| s.key);
+        if modifiers.extend {
+            let anchor = self.anchor.or(current).unwrap_or(key);
+            self.ensure_rows();
+            let order: Vec<FileKey> = self
+                .rows
+                .file_rows()
+                .iter()
+                .filter_map(|&row| match self.rows.rows()[row] {
+                    Row::File { file, .. } => self.files().get(file as usize).map(|f| f.key),
+                    _ => None,
+                })
+                .collect();
+            let at = |k: FileKey| order.iter().position(|&o| o == k);
+            if let (Some(a), Some(b)) = (at(anchor), at(key)) {
+                let (lo, hi) = (a.min(b), a.max(b));
+                self.marked = order[lo..=hi].to_vec();
+            }
+            self.anchor = Some(anchor);
+            return;
+        }
+        if modifiers.toggle {
+            if self.marked.is_empty()
+                && let Some(current) = current
+            {
+                self.marked.push(current);
+            }
+            match self.marked.iter().position(|&k| k == key) {
+                Some(index) => {
+                    self.marked.remove(index);
+                }
+                None => self.marked.push(key),
+            }
+            self.anchor = Some(key);
+            return;
+        }
+        self.marked.clear();
+        self.anchor = Some(key);
     }
 
     pub fn compare_labels(&self) -> (String, String) {
@@ -445,6 +525,9 @@ impl NavigationController {
         let Some(index) = self.file_index(key) else {
             return Reduction::default();
         };
+        if origin == SelectionOrigin::Sidebar {
+            self.mark(key);
+        }
         let path = self.files()[index].paths.display_path().into_owned();
         self.selection = Some(Selection { key, path });
         self.reveal_selected();
@@ -827,6 +910,8 @@ impl NavigationController {
         self.rows.invalidate();
         if generation_changed {
             self.scroll_px = 0.0;
+            self.marked.clear();
+            self.anchor = None;
             if self.history.pre_drill.is_none() {
                 self.resolved = [
                     non_empty(&manifest.resolved_left),
@@ -1156,9 +1241,23 @@ impl NavigationController {
             A::SetSidebarTab(tab) => self.set_tab(tab),
             A::SelectHistoryCommit(revision) => self.drill_into(revision),
             A::ClearHistoryCommit => self.restore_drill(cx),
+            A::CompareWithWorkingTree(revision) => {
+                let workdir = match &self.repository {
+                    Some(repo) if repo.snapshot.location.kind != VcsKind::GIT => "@",
+                    _ => crate::core::vcs::git::WORKDIR_REF,
+                };
+                self.history.pre_drill = None;
+                self.history.selected = None;
+                self.compare.working_copy = false;
+                self.compare.left = revision;
+                self.compare.right = workdir.to_owned();
+                self.compare.mode = CompareMode::TwoDot;
+                self.resolved = [None, None];
+                self.compare_intent(cx)
+            }
             A::ScrollHistory(lines) => {
                 let rows = self.history_commits().map_or(0, <[VcsChange]>::len) as f32;
-                let max = (rows * self.metrics.row_height - self.metrics.viewport).max(0.0);
+                let max = (rows * self.metrics.history_row - self.metrics.viewport).max(0.0);
                 self.history.scroll_px = (self.history.scroll_px
                     + lines as f32 * self.metrics.row_height)
                     .clamp(0.0, max);

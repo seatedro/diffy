@@ -1,3 +1,4 @@
+use crate::core::search::fuzzy::match_ranges;
 use std::path::{Path, PathBuf};
 
 use quark_components::FuzzyMatcher;
@@ -244,22 +245,6 @@ fn row(candidate: &PickerCandidate, highlights: Vec<(usize, usize)>) -> PickerRo
         choice: candidate.choice.clone(),
         current: candidate.current,
     }
-}
-
-pub fn match_ranges(label: &str, positions: &[u32]) -> Vec<(usize, usize)> {
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for &position in positions {
-        let start = position as usize;
-        let Some(ch) = label.get(start..).and_then(|rest| rest.chars().next()) else {
-            continue;
-        };
-        let end = start + ch.len_utf8();
-        match ranges.last_mut() {
-            Some(last) if last.1 == start => last.1 = end,
-            _ => ranges.push((start, end)),
-        }
-    }
-    ranges
 }
 
 pub fn expand_path(query: &str) -> PathBuf {

@@ -1,3 +1,4 @@
+use crate::core::search::fuzzy::match_ranges;
 use std::collections::HashMap;
 
 use quark_components::FuzzyMatcher;
@@ -175,7 +176,7 @@ pub fn filter(catalog: &RefCatalog, query: &str) -> RefResults {
             .iter()
             .position(|s| *s == entry.section)
             .unwrap_or(0);
-        groups[slot].push((score, index as u32, ranges(&entry.name, &positions)));
+        groups[slot].push((score, index as u32, match_ranges(&entry.name, &positions)));
     }
     let mut rows = Vec::new();
     for (section, mut group) in RefSection::ALL.into_iter().zip(groups) {
@@ -196,22 +197,6 @@ pub fn filter(catalog: &RefCatalog, query: &str) -> RefResults {
         );
     }
     RefResults { rows }
-}
-
-fn ranges(label: &str, positions: &[u32]) -> Vec<(usize, usize)> {
-    let mut out: Vec<(usize, usize)> = Vec::new();
-    for &position in positions {
-        let start = position as usize;
-        let Some(ch) = label.get(start..).and_then(|rest| rest.chars().next()) else {
-            continue;
-        };
-        let end = start + ch.len_utf8();
-        match out.last_mut() {
-            Some(last) if last.1 == start => last.1 = end,
-            _ => out.push((start, end)),
-        }
-    }
-    out
 }
 
 pub fn relative_age(now: i64, timestamp: i64) -> String {

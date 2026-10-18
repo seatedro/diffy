@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use crate::core::search::fuzzy::match_ranges;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -50,6 +51,7 @@ pub struct RowCache {
     sorted: Option<(usize, Vec<u32>)>,
     matcher: FuzzyMatcher,
     positions: Vec<u32>,
+    highlights: HashMap<u32, Vec<(usize, usize)>>,
 }
 
 impl RowCache {
@@ -85,6 +87,7 @@ impl RowCache {
             return;
         }
         self.rows.clear();
+        self.highlights.clear();
         if !filter.is_empty() {
             self.build_filtered(files, filter);
         } else if mode == SidebarMode::Tree {
@@ -106,6 +109,10 @@ impl RowCache {
         self.key = Some(key);
     }
 
+    pub fn highlights(&self, file: u32) -> &[(usize, usize)] {
+        self.highlights.get(&file).map_or(&[], Vec::as_slice)
+    }
+
     pub fn row_of_file(&self, file: u32) -> Option<usize> {
         self.file_rows
             .iter()
@@ -123,6 +130,8 @@ impl RowCache {
             self.positions.clear();
             if let Some(score) = self.matcher.score(&path, &mut self.positions) {
                 scored.push((score, index as u32));
+                self.highlights
+                    .insert(index as u32, match_ranges(&path, &self.positions));
             }
         }
         scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));

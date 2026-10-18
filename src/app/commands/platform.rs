@@ -77,6 +77,15 @@ pub fn apply(requests: Vec<PlatformRequest>, cx: &mut UiContext) -> Vec<Action> 
 }
 
 pub fn key_action(controllers: &Controllers, event: &InputEvent) -> Option<Action> {
+    if let InputEvent::ModifiersChanged(modifiers) = event {
+        controllers
+            .navigation
+            .observe_modifiers(crate::app::navigation::ClickModifiers {
+                extend: modifiers.shift_key(),
+                toggle: modifiers.super_key() || modifiers.control_key(),
+            });
+        return None;
+    }
     let InputEvent::KeyPress(chord) = event else {
         return None;
     };

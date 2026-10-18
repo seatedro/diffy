@@ -1,0 +1,291 @@
+use std::collections::HashSet;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use quark_components::FuzzyMatcher;
+
+use crate::contracts::navigation::SidebarMode;
+use crate::contracts::viewport::pipeline::ManifestFile;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Row {
+    Folder {
+        path: Rc<str>,
+        depth: u16,
+        expanded: bool,
+    },
+    File {
+        file: u32,
+        depth: u16,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowKey {
+    files: usize,
+    len: usize,
+    mode: SidebarMode,
+    filter: String,
+    expanded: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct RowCache {
+    key: Option<RowKey>,
+    rows: Vec<Row>,
+    file_rows: Vec<usize>,
+    sorted: Option<(usize, Vec<u32>)>,
+    matcher: FuzzyMatcher,
+    positions: Vec<u32>,
+}
+
+impl RowCache {
+    pub fn invalidate(&mut self) {
+        self.key = None;
+    }
+
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+
+    pub fn file_rows(&self) -> &[usize] {
+        &self.file_rows
+    }
+
+    pub fn ensure(
+        &mut self,
+        files: &Arc<[ManifestFile]>,
+        mode: SidebarMode,
+        filter: &str,
+        expanded: &HashSet<String>,
+        expanded_revision: u64,
+    ) {
+        let filter = filter.trim();
+        let key = RowKey {
+            files: Arc::as_ptr(files) as *const u8 as usize,
+            len: files.len(),
+            mode,
+            filter: filter.to_owned(),
+            expanded: expanded_revision,
+        };
+        if self.key.as_ref() == Some(&key) {
+            return;
+        }
+        self.rows.clear();
+        if !filter.is_empty() {
+            self.build_filtered(files, filter);
+        } else if mode == SidebarMode::Tree {
+            self.build_tree(files, key.files, expanded);
+        } else {
+            self.rows
+                .extend((0..files.len() as u32).map(|file| Row::File { file, depth: 0 }));
+        }
+        self.file_rows.clear();
+        self.file_rows.extend(
+            self.rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| matches!(row, Row::File { .. }))
+                .map(|(i, _)| i),
+        );
+        self.key = Some(key);
+    }
+
+    pub fn row_of_file(&self, file: u32) -> Option<usize> {
+        self.file_rows
+            .iter()
+            .copied()
+            .find(|&row| matches!(self.rows[row], Row::File { file: f, .. } if f == file))
+    }
+
+    fn build_filtered(&mut self, files: &[ManifestFile], filter: &str) {
+        self.matcher.set_query(filter);
+        let mut scored: Vec<(i32, u32)> = Vec::new();
+        let mut path = String::new();
+        for (index, file) in files.iter().enumerate() {
+            path.clear();
+            file.paths.push_display_path_to(&mut path);
+            self.positions.clear();
+            if let Some(score) = self.matcher.score(&path, &mut self.positions) {
+                scored.push((score, index as u32));
+            }
+        }
+        scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        self.rows.extend(
+            scored
+                .into_iter()
+                .map(|(_, file)| Row::File { file, depth: 0 }),
+        );
+    }
+
+    fn build_tree(&mut self, files: &[ManifestFile], identity: usize, expanded: &HashSet<String>) {
+        if self
+            .sorted
+            .as_ref()
+            .is_none_or(|(id, order)| *id != identity || order.len() != files.len())
+        {
+            let mut order: Vec<u32> = (0..files.len() as u32).collect();
+            order.sort_by_cached_key(|&i| files[i as usize].paths.display_path().into_owned());
+            self.sorted = Some((identity, order));
+        }
+        let Some((_, order)) = &self.sorted else {
+            return;
+        };
+        let mut open: Vec<String> = Vec::new();
+        let mut collapsed: Option<String> = None;
+        let mut path = String::new();
+        for &index in order {
+            path.clear();
+            files[index as usize].paths.push_display_path_to(&mut path);
+            if let Some(prefix) = &collapsed {
+                if is_within(&path, prefix) {
+                    continue;
+                }
+                collapsed = None;
+            }
+            let common = open
+                .iter()
+                .take_while(|folder| is_within(&path, folder))
+                .count();
+            open.truncate(common);
+            let separators: Vec<usize> = path.match_indices('/').map(|(i, _)| i).collect();
+            let mut hidden = false;
+            for (depth, &end) in separators.iter().enumerate().skip(common) {
+                let full = &path[..end];
+                let is_open = expanded.contains(full);
+                self.rows.push(Row::Folder {
+                    path: Rc::from(full),
+                    depth: depth as u16,
+                    expanded: is_open,
+                });
+                if !is_open {
+                    collapsed = Some(full.to_owned());
+                    hidden = true;
+                    break;
+                }
+                open.push(full.to_owned());
+            }
+            if !hidden {
+                self.rows.push(Row::File {
+                    file: index,
+                    depth: separators.len() as u16,
+                });
+            }
+        }
+    }
+}
+
+fn is_within(path: &str, folder: &str) -> bool {
+    path.len() > folder.len() && path.starts_with(folder) && path.as_bytes()[folder.len()] == b'/'
+}
+
+pub fn folder_prefixes(path: &str, out: &mut HashSet<String>) {
+    for (index, _) in path.match_indices('/') {
+        out.insert(path[..index].to_owned());
+    }
+}
+
+pub fn file_name(path: &str) -> (&str, &str) {
+    match path.rsplit_once('/') {
+        Some((dir, name)) => (dir, name),
+        None => ("", path),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contracts::shared::{FileKey, FileRevision};
+    use crate::contracts::viewport::pipeline::FileStats;
+    use crate::core::compare::stats::CompareFilePaths;
+    use diffy_diff::FileStatus;
+
+    fn manifest(paths: &[&str]) -> Arc<[ManifestFile]> {
+        paths
+            .iter()
+            .enumerate()
+            .map(|(i, path)| ManifestFile {
+                key: FileKey(i as u64 + 1),
+                revision: FileRevision(1),
+                paths: CompareFilePaths::from_paths(Some(path), Some(path)),
+                status: FileStatus::Modified,
+                binary: false,
+                stats: FileStats::Pending,
+            })
+            .collect()
+    }
+
+    fn labels(cache: &RowCache, files: &[ManifestFile]) -> Vec<String> {
+        cache
+            .rows()
+            .iter()
+            .map(|row| match row {
+                Row::Folder {
+                    path,
+                    depth,
+                    expanded,
+                } => {
+                    format!(
+                        "{}{}{}",
+                        "  ".repeat(*depth as usize),
+                        path,
+                        if *expanded { "/" } else { "/+" }
+                    )
+                }
+                Row::File { file, depth } => format!(
+                    "{}{}",
+                    "  ".repeat(*depth as usize),
+                    files[*file as usize].paths.display_path()
+                ),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tree_rows_follow_expanded_folders() {
+        let files = manifest(&[
+            "src/b.rs",
+            "README",
+            "src/a/x.rs",
+            "src/a/y.rs",
+            "docs/z.md",
+        ]);
+        let mut cache = RowCache::default();
+        let mut expanded = HashSet::new();
+        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 0);
+        assert_eq!(labels(&cache, &files), ["README", "docs/+", "src/+"]);
+
+        expanded.insert("src".to_owned());
+        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 1);
+        assert_eq!(
+            labels(&cache, &files),
+            ["README", "docs/+", "src/", "  src/a/+", "  src/b.rs"]
+        );
+
+        expanded.insert("src/a".to_owned());
+        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 2);
+        assert_eq!(
+            labels(&cache, &files),
+            [
+                "README",
+                "docs/+",
+                "src/",
+                "  src/a/",
+                "    src/a/x.rs",
+                "    src/a/y.rs",
+                "  src/b.rs"
+            ]
+        );
+        assert_eq!(cache.file_rows().len(), 4);
+    }
+
+    #[test]
+    fn filter_ranks_matches_in_a_flat_list() {
+        let files = manifest(&["src/main.rs", "src/lib.rs", "docs/main.md"]);
+        let mut cache = RowCache::default();
+        cache.ensure(&files, SidebarMode::Tree, "lib", &HashSet::new(), 0);
+        assert_eq!(labels(&cache, &files), ["src/lib.rs"]);
+        cache.ensure(&files, SidebarMode::Tree, "zzz", &HashSet::new(), 0);
+        assert!(cache.rows().is_empty());
+    }
+}

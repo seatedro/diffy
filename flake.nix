@@ -231,9 +231,9 @@
         in
         {
           default = pkgs.mkShell {
-            inputsFrom = [ self.packages.${system}.default ];
-
             packages = [
+              pkgs.pkg-config
+              pkgs.openssl
               (rustToolchainFor pkgs)
               pkgs.nodejs_22
               pkgs.uv
@@ -246,6 +246,14 @@
               (mkDevCommand pkgs)
             ]
             ++ pkgs.lib.optionals isLinux [
+              pkgs.libxkbcommon
+              pkgs.wayland
+              pkgs.libGL
+              pkgs.libx11
+              pkgs.libxi
+              pkgs.libxcursor
+              pkgs.libxrandr
+              pkgs.dbus
               pkgs.gcc
               pkgs.gdb
               pkgs.rr

@@ -50,6 +50,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
+        with:
+          submodules: recursive
 
       - uses: actions/setup-node@v4
         if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
@@ -68,6 +70,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node .github/workflows/update-phosphor-index.mjs
+
+      - name: Install lld (macOS)
+        if: runner.os == 'macOS' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform)
+        run: brew install lld
+
+      - name: Install lld (Linux)
+        if: runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform)
+        run: sudo apt-get update && sudo apt-get install -y lld
+
+      - name: Check packs load with Diffy's tree-sitter
+        if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform
+        shell: bash
+        env:
+          DIFFY_SKIP_CODESIGN: "1"
+        run: cargo run --locked -p syntax-pack -- legacy-check --out .phosphor-pack-out ${PHOSPHOR_PACK_LANGUAGES//,/ }
 
       - name: Sign index
         if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.platform

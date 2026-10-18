@@ -230,6 +230,8 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             }
             Intent::Startup(_)
             | Intent::OpenPullRequest { .. }
+            | Intent::RequestAnnotation(_)
+            | Intent::OpenTextCompare
             | Intent::RequestCompare(_)
             | Intent::InvalidateRepository
             | Intent::GrammarAvailable(_)

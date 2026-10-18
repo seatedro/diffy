@@ -1,6 +1,8 @@
 use std::rc::Rc;
 
 use quark_app::testing::{By, UiTestHarness};
+use quark_app::winit::keyboard::ModifiersState;
+use quark_app::{InputEvent, KeyChord, KeyKind};
 use quark_ui::accessibility::AccessibilityRole as Role;
 
 use super::fixtures::*;
@@ -11,6 +13,7 @@ use crate::contracts::shell::{Controller, Effect, Intent};
 use crate::contracts::viewport::ViewportEffect;
 use crate::contracts::viewport::interaction::{TextCompareView, ViewportInstall};
 use crate::contracts::viewport::pipeline::PipelineEffect;
+use crate::core::compare::LayoutMode;
 
 const SIZE: (f32, f32) = (900.0, 600.0);
 const SHORT: (f32, f32) = (900.0, 240.0);
@@ -44,6 +47,44 @@ fn selections(ui: &UiTestHarness<Host>) -> Vec<SourceTarget> {
         .filter_map(|intent| match intent {
             Intent::SelectSource(Some(target)) => Some(target.clone()),
             _ => None,
+        })
+        .collect()
+}
+
+fn chord(ch: char, modifiers: ModifiersState) -> KeyChord {
+    KeyChord {
+        logical: KeyKind::Character(ch.to_string()),
+        physical: None,
+        modifiers,
+        repeat: false,
+    }
+}
+
+fn key_events(binding: &str) -> Vec<InputEvent> {
+    let primary = if cfg!(target_os = "macos") {
+        ModifiersState::SUPER
+    } else {
+        ModifiersState::CONTROL
+    };
+    let ch = binding.strip_prefix("mod+").and_then(|k| k.chars().next());
+    let ch = ch.unwrap_or_else(|| panic!("unsupported binding {binding}"));
+    vec![
+        InputEvent::ModifiersChanged(primary),
+        InputEvent::KeyPress(chord(ch, primary)),
+        InputEvent::KeyRelease(chord(ch, primary)),
+        InputEvent::ModifiersChanged(ModifiersState::empty()),
+    ]
+}
+
+fn typed(text: &str) -> Vec<InputEvent> {
+    text.chars()
+        .flat_map(|ch| {
+            let chord = chord(ch, ModifiersState::empty());
+            [
+                InputEvent::KeyPress(chord.clone()),
+                InputEvent::TextInput(ch.to_string()),
+                InputEvent::KeyRelease(chord),
+            ]
         })
         .collect()
 }
@@ -91,7 +132,7 @@ fn installed_files_render_with_identity_test_ids() {
 #[test]
 fn split_layout_shows_both_sides() {
     let mut ui = loaded(Host::new());
-    ui.click_node(By::role_name(Role::Button, "Split"));
+    ui.click_node(By::role_name(Role::RadioButton, "Split"));
     let names = line_names(&ui);
     assert!(names.iter().any(|n| n == "line 10"));
     assert!(names.iter().any(|n| n == "changed ten"));
@@ -191,6 +232,47 @@ fn find_in_diff_searches_and_steps_matches() {
 }
 
 #[test]
+fn typing_right_after_opening_find_reaches_the_field() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    let closed = ui.find(By::role_name(Role::SearchInput, "Find in diff"));
+    assert!(closed.bounds.height <= 0.0, "{:?}", closed.bounds);
+    let top = ui.app().interaction.diff().map(|d| d.scroll_offset());
+    ui.send_events(key_events("mod+f").into_iter().chain(typed("ud1")));
+    assert_eq!(ui.focus(), Some(SEARCH));
+    assert_eq!(ui.app().interaction.search().field.text(), "ud1");
+    assert_eq!(ui.app().interaction.diff().map(|d| d.scroll_offset()), top);
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Unified);
+    let field = ui.find(By::role_name(Role::SearchInput, "Find in diff"));
+    assert!(field.bounds.width > SIZE.0 / 3.0, "{}", field.bounds.width);
+}
+
+#[test]
+fn workspace_shortcuts_drive_the_focused_diff() {
+    let mut ui = loaded(Host::new());
+    focus_diff(&mut ui);
+    ui.key("2");
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
+    ui.key("1");
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Unified);
+}
+
+#[test]
+fn layout_survives_unrelated_settings_changes() {
+    let mut ui = loaded(Host::new());
+    ui.app_mut().update_settings(|_| {});
+    ui.click_node(By::role_name(Role::RadioButton, "Split"));
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
+    ui.app_mut().update_settings(|s| s.ui_scale_pct = 110);
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Split);
+    ui.app_mut()
+        .update_settings(|s| s.viewport.layout = LayoutMode::Split);
+    ui.app_mut()
+        .update_settings(|s| s.viewport.layout = LayoutMode::Unified);
+    assert_eq!(ui.app().interaction.layout(), LayoutMode::Unified);
+}
+
+#[test]
 fn search_follows_new_revisions_of_a_file() {
     let mut ui = loaded(Host::new());
     focus_diff(&mut ui);
@@ -238,13 +320,12 @@ fn wrap_and_wrap_column_rewrap_long_lines() {
             .map_or(0.0, |d| d.content_height())
     };
     let unwrapped = height(&ui);
-    ui.click_node(By::role_name(Role::Button, "Wrap"));
+    ui.click_node(By::role_name(Role::Switch, "Wrap"));
     let wrapped = height(&ui);
     assert!(wrapped > unwrapped, "{wrapped} > {unwrapped}");
-    ui.app_mut().interaction.reduce_action(
-        crate::contracts::viewport::interaction::InteractionAction::SetWrapColumn(20),
-        &Default::default(),
-    );
+    assert!(ui.accessibility_tree().contains("Wrap"));
+    ui.app_mut()
+        .update_settings(|s| s.viewport.wrap_column = 20);
     ui.frame();
     assert!(height(&ui) > wrapped);
 }

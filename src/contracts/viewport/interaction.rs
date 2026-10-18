@@ -26,8 +26,6 @@ impl Eq for DiffInput {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionAction {
     Diff(DiffInput),
-    ToggleWrap,
-    SetWrapColumn(u16),
     ToggleSearchCaseSensitive,
     ToggleTextCompareLanguageMenu,
     ScrollTextCompare(TextCompareSide, i32),

@@ -8,21 +8,24 @@ use diffy_ui::diff_view::decorator::{
 };
 use quark::view;
 use quark_app::testing::UiTestHarness;
-use quark_app::{UiApp, UiContext, ViewContext};
+use quark_app::{UiAdapter, UiApp, UiContext, ViewContext};
 use quark_ui::FocusId;
 use quark_ui::element::*;
 use quark_ui::style::Styled;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 
 use super::{InteractionController, view_shared};
+use crate::app::commands::keymap;
 use crate::app::shell::Slot;
 use crate::app::text_targets::{TextCx, TextHost, focus_id};
+use crate::contracts::commands::CommandsAction;
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, SharedContext};
 use crate::contracts::shell::{
     Action, Controller, Effect, Intent, Reduction, ShellAction, ShellEffect,
 };
 use crate::contracts::viewport::interaction::ViewportInstall;
 use crate::contracts::viewport::{PreparedDiff, ViewportAction};
+use crate::platform::persistence::Settings;
 
 pub const GENERATION: CompareGeneration = CompareGeneration(1);
 
@@ -139,6 +142,15 @@ impl Host {
         }
     }
 
+    pub fn update_settings(&mut self, change: impl FnOnce(&mut Settings)) {
+        let mut snapshot = (*self.shared.settings).clone();
+        change(&mut snapshot.settings);
+        snapshot.revision += 1;
+        let snapshot = Rc::new(snapshot);
+        self.shared.settings = snapshot.clone();
+        self.intent(Intent::SettingsChanged(snapshot));
+    }
+
     pub fn install(&mut self, update: ViewportInstall) {
         let reduction = self.interaction.install(update, &self.shared);
         self.absorb_detached(reduction);
@@ -205,6 +217,9 @@ impl UiApp for Host {
                 self.absorb(reduction, cx);
             }
             Action::Shell(ShellAction::FocusLogical(focus)) => cx.set_focus(focus.map(focus_id)),
+            Action::Commands(CommandsAction::ToggleWrap) => {
+                self.update_settings(|s| s.viewport.wrap_enabled = !s.viewport.wrap_enabled)
+            }
             _ => {}
         }
     }
@@ -225,7 +240,8 @@ impl UiApp for Host {
 }
 
 pub fn harness(host: Host, size: (f32, f32)) -> UiTestHarness<Host> {
-    let mut ui = UiTestHarness::new(host, size, 1.0);
+    let adapter = UiAdapter::new(host, "Test").with_key_bindings(keymap::key_bindings(&[], &[]));
+    let mut ui = UiTestHarness::with_adapter(adapter, size, 1.0);
     ui.set_accessibility_active(true);
     ui.frame();
     ui

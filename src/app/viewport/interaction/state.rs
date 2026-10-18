@@ -3,21 +3,23 @@ use std::fmt;
 use std::rc::Rc;
 
 use diffy_diff::{DiffSession, DiffUpdate, GapId, Reveal, Revision, UpdateError};
-use diffy_ui::diff_view::decorator::DiffSources;
+use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources};
 use diffy_ui::diff_view::presentation::{DiffLayout, DiffPresentation};
 use diffy_ui::{
-    DiffEvent, DiffKey, DiffOutcome, DiffSessionViewState, DiffStyle, DiffTarget, FindOptions,
-    RevealAlign, SearchDirection, SearchSummary, SourcePoint,
+    DiffAnnotation, DiffEvent, DiffKey, DiffOutcome, DiffSessionViewState, DiffStyle, DiffTarget,
+    FindOptions, RevealAlign, SearchDirection, SearchSummary, SourcePoint,
 };
 use quark_ui::FocusId;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
 use super::syntax::{SyntaxWake, ViewportSyntax};
-use super::targets::{hunk_target, source_target};
+use super::targets::{hunk_target, source_anchor, source_target};
 use super::text_compare::TextCompare;
+use crate::app::review::ReviewPresentation;
 use crate::app::text_targets::{
     SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT, TextCx, TextHost, VIEWPORT,
 };
+use crate::contracts::commands::{CommandDescriptor, CommandSource};
 use crate::contracts::navigation::{SelectedFile, SelectionOrigin};
 use crate::contracts::shared::{
     CompareGeneration, FileKey, HunkTarget, SharedContext, SourceTarget,
@@ -29,6 +31,7 @@ use crate::contracts::viewport::interaction::{
     ContextDirection, DiffInput, TextCompareSide, TextCompareView, ViewportInstall,
 };
 use crate::core::compare::LayoutMode;
+use crate::core::keymap::ShortcutCommand;
 use crate::platform::persistence::PersistedViewport;
 
 pub const DIFF_ID: &str = "diffy.diff";
@@ -65,6 +68,8 @@ pub struct InteractionController {
     pub(super) syntax: ViewportSyntax,
     pub(super) text_compare: TextCompare,
     pub(super) viewport_height: f32,
+    pub(super) persisted: Option<PersistedViewport>,
+    pub(super) review_revision: Option<u64>,
 }
 
 impl Default for InteractionController {
@@ -85,6 +90,8 @@ impl Default for InteractionController {
             syntax: ViewportSyntax::default(),
             text_compare: TextCompare::default(),
             viewport_height: 0.0,
+            persisted: None,
+            review_revision: None,
         }
     }
 }
@@ -176,6 +183,30 @@ impl InteractionController {
         Some(hunk_target(&self.sources.hunk_at(unit, hunk)?))
     }
 
+    pub fn sync_review(&mut self, review: &ReviewPresentation) {
+        let Some(diff) = &mut self.diff else {
+            return;
+        };
+        let revision = review.revision();
+        if self.review_revision == Some(revision) {
+            return;
+        }
+        self.review_revision = Some(revision);
+        let annotations: Vec<DiffAnnotation> = review
+            .annotations()
+            .iter()
+            .map(|annotation| DiffAnnotation {
+                id: annotation.id,
+                anchor: source_anchor(&annotation.target),
+                revision: annotation.revision,
+            })
+            .collect();
+        if diff.annotations().map(|(a, _)| a).eq(annotations.iter()) {
+            return;
+        }
+        diff.set_annotations(annotations);
+    }
+
     pub(super) fn set_viewport_height(&mut self, height: f32) {
         self.viewport_height = height;
     }
@@ -195,6 +226,7 @@ impl InteractionController {
                 LayoutMode::Split => DiffLayout::Split,
             },
             wrap_column: (self.wrap_column > 0).then_some(self.wrap_column),
+            sticky_headers: true,
             ..DiffPresentation::default()
         }
     }
@@ -234,6 +266,7 @@ impl InteractionController {
         self.failures.clear();
         self.published = None;
         self.shown_file = None;
+        self.review_revision = None;
         self.phase = Phase::Loading;
     }
 
@@ -479,14 +512,23 @@ impl InteractionController {
         )
     }
 
-    fn apply_viewport_settings(&mut self, viewport: &PersistedViewport) -> bool {
-        let wrap_column = u16::try_from(viewport.wrap_column).unwrap_or(u16::MAX);
-        let changed = (self.wrap, self.wrap_column, self.layout)
-            != (viewport.wrap_enabled, wrap_column, viewport.layout);
-        self.wrap = viewport.wrap_enabled;
-        self.wrap_column = wrap_column;
-        self.layout = viewport.layout;
-        self.sync_presentation();
+    fn apply_viewport_settings(&mut self, viewport: &PersistedViewport, startup: bool) -> bool {
+        let previous = self.persisted.replace(viewport.clone());
+        let old = previous.as_ref().filter(|_| !startup);
+        let before = (self.wrap, self.wrap_column, self.layout);
+        if old.is_none_or(|old| old.wrap_enabled != viewport.wrap_enabled) {
+            self.wrap = viewport.wrap_enabled;
+        }
+        if old.is_none_or(|old| old.wrap_column != viewport.wrap_column) {
+            self.wrap_column = u16::try_from(viewport.wrap_column).unwrap_or(u16::MAX);
+        }
+        if old.is_none_or(|old| old.layout != viewport.layout) {
+            self.layout = viewport.layout;
+        }
+        let changed = before != (self.wrap, self.wrap_column, self.layout);
+        if changed {
+            self.sync_presentation();
+        }
         changed
     }
 
@@ -644,18 +686,6 @@ impl Controller for InteractionController {
                 self.sync_presentation();
                 Reduction::changed()
             }
-            A::ToggleWrap => {
-                self.wrap = !self.wrap;
-                Reduction::changed()
-            }
-            A::SetWrapColumn(column) => {
-                if self.wrap_column == column {
-                    return Reduction::default();
-                }
-                self.wrap_column = column;
-                self.sync_presentation();
-                Reduction::changed()
-            }
             A::SetTextCompareView(view) => {
                 self.text_compare.active = true;
                 self.text_compare.view = view;
@@ -705,9 +735,11 @@ impl Controller for InteractionController {
 
     fn apply_intent(&mut self, intent: &Intent, _cx: &SharedContext) -> Reduction {
         let changed = match intent {
-            Intent::Startup(startup) => self.apply_viewport_settings(&startup.settings.viewport),
+            Intent::Startup(startup) => {
+                self.apply_viewport_settings(&startup.settings.viewport, true)
+            }
             Intent::SettingsChanged(settings) => {
-                self.apply_viewport_settings(&settings.settings.viewport)
+                self.apply_viewport_settings(&settings.settings.viewport, false)
             }
             Intent::SelectFile(Some(selected)) if selected.origin != SelectionOrigin::Viewport => {
                 self.reveal_file(selected.key)
@@ -803,4 +835,60 @@ impl TextHost for InteractionController {
 
 fn focus(target: LogicalFocus) -> ShellEffect {
     ShellEffect::Focus(Some(target))
+}
+
+impl CommandSource for InteractionController {
+    fn commands(&self, _cx: &SharedContext, out: &mut Vec<CommandDescriptor>) {
+        use InteractionAction as A;
+        use ShortcutCommand as S;
+        let has_files = self.diff.as_ref().is_some_and(|d| !d.session().is_empty());
+        let matches = self.search.open && self.search_summary().matches > 0;
+        let selected = self.diff.as_ref().is_some_and(|d| d.selection().is_some());
+        let unified = self.layout == LayoutMode::Unified;
+        out.extend([
+            CommandDescriptor::new("diff.find", "Find in Diff", A::OpenSearch)
+                .shortcut(S::OpenSearch)
+                .enabled(has_files),
+            CommandDescriptor::new("diff.find_next", "Next Match", A::SearchNext).enabled(matches),
+            CommandDescriptor::new("diff.find_previous", "Previous Match", A::SearchPrevious)
+                .enabled(matches),
+            CommandDescriptor::new("diff.next_hunk", "Next Hunk", A::GoToNextHunk)
+                .shortcut(S::NextHunk)
+                .enabled(has_files),
+            CommandDescriptor::new("diff.previous_hunk", "Previous Hunk", A::GoToPreviousHunk)
+                .shortcut(S::PreviousHunk)
+                .enabled(has_files),
+            CommandDescriptor::new("diff.next_file", "Next File in Diff", A::GoToNextFile)
+                .enabled(has_files),
+            CommandDescriptor::new(
+                "diff.previous_file",
+                "Previous File in Diff",
+                A::GoToPreviousFile,
+            )
+            .enabled(has_files),
+            CommandDescriptor::new("diff.top", "Go to Top", A::ScrollToTop).enabled(has_files),
+            CommandDescriptor::new("diff.bottom", "Go to Bottom", A::ScrollToBottom)
+                .shortcut(S::GoToBottom)
+                .enabled(has_files),
+            CommandDescriptor::new(
+                "diff.unified",
+                "Unified View",
+                A::SetLayout(LayoutMode::Unified),
+            )
+            .shortcut(S::UnifiedView)
+            .enabled(!unified),
+            CommandDescriptor::new("diff.split", "Split View", A::SetLayout(LayoutMode::Split))
+                .shortcut(S::SplitView)
+                .enabled(unified),
+            CommandDescriptor::new("diff.expand_all", "Expand All Context", A::ExpandAllContext)
+                .enabled(has_files),
+            CommandDescriptor::new("diff.copy", "Copy Selection", A::CopySelection)
+                .enabled(selected),
+            CommandDescriptor::new(
+                "diff.text_compare",
+                "New Text Compare",
+                A::SetTextCompareView(TextCompareView::Edit),
+            ),
+        ]);
+    }
 }

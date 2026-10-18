@@ -24,6 +24,7 @@ use crate::core::review::{
     ReviewAnchor, ReviewDecision, ReviewDraftId, ReviewDraftKind, ReviewDraftState,
     ReviewResolution, ReviewSession, ReviewSessionStatus, ReviewTarget, ReviewThreadId,
 };
+use crate::core::syntax::grammar::Grammars;
 use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
 
 const ACCOUNT_AVATAR_PX: u32 = 128;
@@ -198,8 +199,16 @@ impl ReviewController {
         Rc::clone(&self.presentation)
     }
 
-    pub fn set_syntax_wake(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
-        self.host.set_wake(wake);
+    pub fn with_grammars(grammars: Grammars) -> Self {
+        let controller = Self::default();
+        controller.host.set_grammars(Arc::new(grammars));
+        controller
+    }
+
+    pub fn set_syntax_wake(&mut self, wake: Option<Arc<dyn Fn() + Send + Sync>>) {
+        if let Some(wake) = wake {
+            self.host.set_wake(wake);
+        }
     }
 
     pub fn account(&self) -> &Account {
@@ -1428,6 +1437,10 @@ impl ReviewController {
                 Reduction::default()
             }
             Intent::PublishManifest(_) => Reduction::changed(),
+            Intent::GrammarAvailable(_) => {
+                self.host.grammars_changed();
+                Reduction::changed()
+            }
             _ => Reduction::default(),
         }
     }

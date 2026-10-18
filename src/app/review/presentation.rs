@@ -5,7 +5,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use diffy_syntax::{GrammarStore, HighlightWorker};
 use diffy_ui::diff_view::AnnotationId;
 use diffy_ui::diff_view::decorator::{AnnotationContext, DiffDecorator};
 use quark::view;
@@ -34,6 +33,7 @@ use crate::core::review::{
     ReviewDraft, ReviewDraftKind, ReviewDraftState, ReviewResolution, ReviewSession, ReviewSide,
     ReviewThread,
 };
+use crate::core::syntax::grammar::Grammars;
 
 const MEASURE_HEIGHT: f32 = 100_000.0;
 const COMPOSER_MIN_LINES: f32 = 3.0;
@@ -61,7 +61,7 @@ struct HostInner {
     preview: Option<CardDoc>,
     theme: Option<Theme>,
     widths: HashMap<CardKey, f32>,
-    worker: Option<HighlightWorker>,
+    grammars: Option<Arc<Grammars>>,
     wake: Option<Wake>,
 }
 
@@ -102,13 +102,14 @@ fn new_doc(inner: &mut HostInner, theme_font: f32, rows: &[CommentRow]) -> CardD
         ..DocumentStyle::for_font_size(theme_font)
     });
     doc.set_decorator(CommentChrome);
-    let worker = inner
-        .worker
-        .get_or_insert_with(|| HighlightWorker::new(GrammarStore::none()))
-        .share();
-    if let Some(wake) = inner.wake.clone() {
-        worker.set_wake(move || wake());
-    }
+    let grammars: &Grammars = match inner.grammars.as_deref() {
+        Some(grammars) => grammars,
+        None => Grammars::shared(),
+    };
+    let worker = match inner.wake.clone() {
+        Some(wake) => grammars.worker_waking(move || wake()),
+        None => grammars.worker(),
+    };
     doc.set_code_highlighter(ReviewCodeHighlighter::new(worker));
     let header = (theme_font * 1.8).round();
     let entries = rows.iter().enumerate().map(|(index, row)| MarkdownEntry {
@@ -138,6 +139,17 @@ impl CardHost {
 
     pub fn set_wake(&self, wake: Wake) {
         self.with(|inner| inner.wake = Some(wake));
+    }
+
+    pub fn set_grammars(&self, grammars: Arc<Grammars>) {
+        self.with(|inner| inner.grammars = Some(grammars));
+    }
+
+    pub fn grammars_changed(&self) {
+        self.with(|inner| {
+            inner.docs.clear();
+            inner.preview = None;
+        });
     }
 
     pub fn reset_composer(&self, body: &str) {

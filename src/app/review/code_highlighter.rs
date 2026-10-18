@@ -288,6 +288,27 @@ mod tests {
     }
 
     #[test]
+    fn installed_grammars_color_code_blocks() {
+        let Some(store) = diffy_syntax::testing::store_with("rust") else {
+            return;
+        };
+        let grammars = crate::core::syntax::grammar::Grammars::with_store(store);
+        let mut h = ReviewCodeHighlighter::new(grammars.worker());
+        let key = BlockKey(6);
+        h.version(key, "rust", "fn main() {}");
+
+        let keys = h.finish_pending();
+
+        assert_eq!(keys, [key]);
+        assert_ne!(h.version(key, "rust", "fn main() {}"), 0);
+        assert!(
+            h.spans(key)
+                .iter()
+                .any(|span| span.tone == SyntaxTone::Keyword)
+        );
+    }
+
+    #[test]
     fn categories_map_to_markdown_tones() {
         assert_eq!(
             syntax_tone(HighlightKind::Keyword),

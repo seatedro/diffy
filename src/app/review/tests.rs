@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark::view;
 use quark_app::testing::{By, UiTestHarness};
 use quark_app::{UiApp, UiContext, ViewContext};
@@ -441,7 +442,7 @@ struct Driver {
 impl Driver {
     fn new(fake: Fake) -> Self {
         Self {
-            review: ReviewController::default(),
+            review: ReviewController::with_grammars(crate::core::syntax::grammar::Grammars::none()),
             shared: SharedContext::default(),
             fake,
             focus: Vec::new(),
@@ -1169,6 +1170,22 @@ fn review_card_fixture_content() {
     assert!(painted.contains("@bravo replied"));
     assert!(painted.contains("fn cached_height"));
     assert_eq!(tree, harness(sample_driver()).accessibility_tree());
+}
+
+#[test]
+fn grammar_availability_rebuilds_card_documents() {
+    let mut ui = harness(sample_driver());
+    let before = ui.app().driver.review.presentation().revision();
+
+    ui.app_mut()
+        .driver
+        .intent(Intent::GrammarAvailable(Default::default()));
+    ui.send_message(ReviewEvent::TokenSaveFailed {
+        message: "redraw".to_owned(),
+    });
+
+    assert!(ui.app().driver.review.presentation().revision() > before);
+    assert!(ui.painted_text().contains("fn cached_height"));
 }
 
 #[test]

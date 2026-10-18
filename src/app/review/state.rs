@@ -243,6 +243,43 @@ fn error(message: impl Into<String>) -> Intent {
     toast(ToastKind::Error, message)
 }
 
+const NOREPLY_DOMAIN: &str = "@users.noreply.github.com";
+
+fn author_face_key(email: &str) -> Option<String> {
+    let email = email.trim().to_ascii_lowercase();
+    let (local, _) = email.split_once('@')?;
+    if local.is_empty() {
+        return None;
+    }
+    Some(match email.strip_suffix(NOREPLY_DOMAIN) {
+        Some(local) => local.rsplit('+').next().unwrap_or(local).to_owned(),
+        None => format!("email:{email}"),
+    })
+}
+
+fn author_avatar_url(key: &str) -> Option<String> {
+    let base = match key.strip_prefix("email:") {
+        Some(email) => format!(
+            "https://avatars.githubusercontent.com/u/e?email={}",
+            percent_encode(email)
+        ),
+        None => format!("https://avatars.githubusercontent.com/{key}"),
+    };
+    avatar_url_sized(&base, REVIEW_AVATAR_PX)
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 pub(super) fn avatar_url_sized(base: &str, size: u32) -> Option<String> {
     let base = base.trim();
     if base.is_empty() {
@@ -307,6 +344,30 @@ impl ReviewController {
 
     pub fn peek(&self, pr: &PullRequestRef) -> Option<&PeekState> {
         self.peeks.get(pr)
+    }
+
+    pub fn author_face(&self, email: &str) -> Option<AvatarImage> {
+        self.host.face(&author_face_key(email)?)
+    }
+
+    fn request_author_avatars(&mut self, emails: &[String]) -> Reduction {
+        if !self.signed_in() {
+            return Reduction::default();
+        }
+        let mut reduction = Reduction::default();
+        for key in emails.iter().filter_map(|email| author_face_key(email)) {
+            let Some(url) = author_avatar_url(&key) else {
+                continue;
+            };
+            if self.avatars.contains(&url) || self.host.face(&key).is_some() {
+                continue;
+            }
+            for evicted in self.avatars.insert(url.clone(), key) {
+                self.host.remove_face(&evicted);
+            }
+            reduction = reduction.effect(ReviewEffect::FetchAvatar { url });
+        }
+        reduction
     }
 
     pub fn avatar_cache_len(&self) -> usize {
@@ -1391,6 +1452,7 @@ impl ReviewController {
                 self.open_overlay(ReviewOverlay::SubmitReview);
                 Reduction::changed()
             }
+            ReviewAction::RequestAuthorAvatars(emails) => self.request_author_avatars(&emails),
             ReviewAction::ToggleFileComments(path) => {
                 self.file_comments = if self.file_comments.as_ref() == Some(&path) {
                     None

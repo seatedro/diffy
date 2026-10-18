@@ -9,9 +9,7 @@ use diffy_ui::diff_view::AnnotationId;
 use diffy_ui::diff_view::decorator::{AnnotationContext, DiffDecorator, HeaderContext, HeaderSlot};
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::{
-    AvatarImage, Button, ButtonSize, ButtonStyle, PopoverSide, anchored, avatar, popover_panel,
-};
+use quark_components::{AvatarImage, PopoverSide, anchored, avatar, popover_panel};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::document::{
     DocumentEvent, DocumentStyle, MarkdownDocument, MarkdownEntry, RowChrome, RowDecorator,
@@ -26,9 +24,10 @@ use quark_ui::virtual_list::RowKey;
 
 use super::code_highlighter::ReviewCodeHighlighter;
 use super::composer::{ComposerEditor, ComposerTarget};
+use super::controls::{self, Tone};
 use super::state::ReviewController;
 use crate::app::text_targets::REVIEW_COMPOSER;
-use crate::app::tokens::{Rad, Sp, TextStyle};
+use crate::app::tokens::{Ico, Rad, Sp, TextStyle};
 use crate::contracts::review::{CardKey, ComposerFormat, ReviewAction};
 use crate::contracts::shared::{FileKey, SharedContext, SourceTarget};
 use crate::core::review::{
@@ -138,7 +137,7 @@ impl RowDecorator for CommentChrome {
         let test_id = format!("review.avatar.{login}");
         Some(view! { scale,
             <div class="flex-row items-center" gap={Sp::XS}>
-                <div test_id={test_id}>{avatar(login).size(size * 1.4 / scale).image(face)}</div>
+                <div test_id={test_id}>{avatar(login).size(Ico::LG).image(face)}</div>
                 <text size={size} class="font-medium truncate" color={theme.colors.text_strong}>
                     {label}
                 </text>
@@ -205,6 +204,17 @@ impl CardHost {
                 faces.insert(login, face);
             }
         });
+    }
+
+    pub fn face(&self, key: &str) -> Option<AvatarImage> {
+        self.with(|inner| {
+            inner
+                .faces
+                .try_borrow()
+                .ok()
+                .and_then(|faces| faces.get(key).cloned())
+        })
+        .flatten()
     }
 
     pub fn remove_face(&self, login: &str) {
@@ -1087,11 +1097,12 @@ impl ReviewPresentation {
             n => format!("{n} file comments"),
         };
         let open = self.open_file.as_deref() == Some(path);
-        let toggle = Button::new(action(ReviewAction::ToggleFileComments(path.to_owned())))
-            .label(label)
-            .style(ButtonStyle::Ghost)
-            .size(ButtonSize::Compact)
-            .active(open);
+        let toggle = controls::button(
+            label,
+            action(ReviewAction::ToggleFileComments(path.to_owned())),
+            Tone::Ghost,
+        )
+        .active(open);
         let popover = open.then(|| {
             let cards: Vec<AnyElement> = keys
                 .iter()
@@ -1122,11 +1133,8 @@ fn action(action: ReviewAction) -> quark_ui::Action {
     action.into()
 }
 
-fn button(label: &str, on_click: ReviewAction, style: ButtonStyle, test_id: String) -> AnyElement {
-    let button = Button::new(action(on_click))
-        .label(label)
-        .style(style)
-        .size(ButtonSize::Compact);
+fn button(label: &str, on_click: ReviewAction, tone: Tone, test_id: String) -> AnyElement {
+    let button = controls::button(label, action(on_click), tone);
     view! { <div test_id={test_id}>{button}</div> }
 }
 
@@ -1181,7 +1189,7 @@ fn card_view(
             button(
                 "Retry",
                 ReviewAction::EditDraft(id),
-                ButtonStyle::Subtle,
+                Tone::Secondary,
                 format!("review.retry.{}", id.0),
             )
         });
@@ -1246,11 +1254,12 @@ fn header_view(
             } else {
                 lucide::CHEVRON_RIGHT
             };
-            let toggle = Button::new(action(ReviewAction::ToggleThread(id.clone())))
-                .icon(icon)
-                .tooltip(label)
-                .style(ButtonStyle::Ghost)
-                .size(ButtonSize::Compact);
+            let toggle = controls::icon_button(
+                icon,
+                label,
+                action(ReviewAction::ToggleThread(id.clone())),
+                theme,
+            );
             Some(view! { <div test_id={format!("review.toggle.{}", id.0)}>{toggle}</div> })
         }
         _ => None,
@@ -1264,7 +1273,7 @@ fn header_view(
                 </text>
             </div>
             <div class="flex-row items-center" px={Sp::SM} py={Sp::XXS} rounded={Rad::SM} bg={tc.element_background}>
-                <text size={small * 0.9} class="font-medium" color={status_color}>{card.status.clone()}</text>
+                <text size={TextStyle::Caption.font_size(theme)} class="font-medium" color={status_color}>{card.status.clone()}</text>
             </div>
         </div>
     }
@@ -1278,7 +1287,7 @@ fn footer_view(card: &CardModel, composing: bool) -> Option<AnyElement> {
                 buttons.push(button(
                     "Reply",
                     ReviewAction::ReplyToThread(id.clone()),
-                    ButtonStyle::Subtle,
+                    Tone::Secondary,
                     format!("review.reply.{}", id.0),
                 ));
             }
@@ -1289,7 +1298,7 @@ fn footer_view(card: &CardModel, composing: bool) -> Option<AnyElement> {
                         id: id.clone(),
                         resolved,
                     },
-                    ButtonStyle::Subtle,
+                    Tone::Secondary,
                     format!("review.resolve.{}", id.0),
                 ));
             }
@@ -1299,7 +1308,7 @@ fn footer_view(card: &CardModel, composing: bool) -> Option<AnyElement> {
                     ReviewAction::EditComment {
                         comment_node_id: node,
                     },
-                    ButtonStyle::Ghost,
+                    Tone::Ghost,
                     format!("review.edit.{}", id.0),
                 ));
             }
@@ -1309,7 +1318,7 @@ fn footer_view(card: &CardModel, composing: bool) -> Option<AnyElement> {
                     ReviewAction::DeleteComment {
                         comment_node_id: node,
                     },
-                    ButtonStyle::Ghost,
+                    Tone::Destructive,
                     format!("review.delete.{}", id.0),
                 ));
             }
@@ -1318,13 +1327,13 @@ fn footer_view(card: &CardModel, composing: bool) -> Option<AnyElement> {
             buttons.push(button(
                 "Edit",
                 ReviewAction::EditDraft(*id),
-                ButtonStyle::Subtle,
+                Tone::Secondary,
                 format!("review.draft.edit.{}", id.0),
             ));
             buttons.push(button(
                 "Delete",
                 ReviewAction::DeleteDraft(*id),
-                ButtonStyle::Ghost,
+                Tone::Destructive,
                 format!("review.draft.delete.{}", id.0),
             ));
         }
@@ -1346,19 +1355,21 @@ fn composer_view(composer: &ComposerView, inner: &mut HostInner, theme: &Theme) 
     let scale = theme.metrics.ui_scale();
     let small = TextStyle::BodySmall.font_size(theme);
     let tab = |label: &str, preview: bool| {
-        Button::new(action(ReviewAction::SetComposerPreview(preview)))
-            .label(label)
-            .style(ButtonStyle::Ghost)
-            .size(ButtonSize::Compact)
-            .active(composer.preview == preview)
+        controls::button(
+            label,
+            action(ReviewAction::SetComposerPreview(preview)),
+            Tone::Ghost,
+        )
+        .active(composer.preview == preview)
     };
     let format = |label: &str, tooltip: &str, format: ComposerFormat| {
-        Button::new(action(ReviewAction::FormatComment(format)))
-            .label(label)
-            .tooltip(tooltip.to_owned())
-            .style(ButtonStyle::Ghost)
-            .size(ButtonSize::Compact)
-            .disabled(composer.preview)
+        controls::button(
+            label,
+            action(ReviewAction::FormatComment(format)),
+            Tone::Ghost,
+        )
+        .tooltip(tooltip.to_owned())
+        .disabled(composer.preview)
     };
     let content = if composer.preview {
         inner.preview.as_mut().map(|doc| {
@@ -1400,14 +1411,14 @@ fn composer_view(composer: &ComposerView, inner: &mut HostInner, theme: &Theme) 
             }
         })
     };
-    let submit = Button::new(action(ReviewAction::SubmitComment))
-        .label(composer.submit_label)
-        .style(ButtonStyle::Filled)
-        .size(ButtonSize::Compact);
-    let cancel = Button::new(action(ReviewAction::CancelComment))
-        .label("Cancel")
-        .style(ButtonStyle::Ghost)
-        .size(ButtonSize::Compact);
+    let submit = controls::button(
+        composer.submit_label,
+        action(ReviewAction::SubmitComment),
+        Tone::Primary,
+    )
+    .tooltip("\u{2318}\u{21a9}");
+    let cancel =
+        controls::button("Cancel", action(ReviewAction::CancelComment), Tone::Ghost).tooltip("Esc");
     view! { scale,
         <div
             class="flex-col"

@@ -658,7 +658,7 @@ fn cached_comparison_publishes_before_the_fresh_load_without_a_second_compare() 
 fn review_data_is_anchored_to_manifest_source_targets() {
     let driver = Driver::signed_in_with_pr();
 
-    let presentation = driver.review.shared_presentation();
+    let presentation = driver.review.presentation();
     let annotation = &presentation.annotations()[0];
 
     assert_eq!(annotation.card, CardKey::Thread(driver.thread()));
@@ -813,7 +813,7 @@ fn drafts_persist_across_a_simulated_restart() {
         .find(|d| matches!(d.kind, ReviewDraftKind::Reply { .. }))
         .unwrap();
     assert_eq!(reply.body, "Half-written reply");
-    let presentation = driver.review.shared_presentation();
+    let presentation = driver.review.presentation();
     assert!(
         presentation
             .cards()
@@ -842,7 +842,7 @@ fn reply_failure_keeps_the_draft_for_retry() {
     assert_eq!(driver.errors(), ["reply rejected"]);
     let card = driver
         .review
-        .shared_presentation()
+        .presentation()
         .card(&CardKey::Thread(driver.thread()))
         .cloned()
         .unwrap();
@@ -1049,7 +1049,7 @@ impl UiApp for App {
             height: title_height,
         };
         let title = title_view(&mut self.driver.review, &slot, cx);
-        let presentation = self.driver.review.shared_presentation();
+        let presentation = self.driver.review.presentation();
         let card_width = default_card_width(width, cx.theme);
         let cards: Vec<AnyElement> = presentation
             .cards()

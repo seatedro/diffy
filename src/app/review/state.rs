@@ -191,11 +191,7 @@ pub(super) fn avatar_url_sized(base: &str, size: u32) -> Option<String> {
 }
 
 impl ReviewController {
-    pub fn presentation(&self) -> &ReviewPresentation {
-        &self.presentation
-    }
-
-    pub fn shared_presentation(&self) -> Rc<ReviewPresentation> {
+    pub fn presentation(&self) -> Rc<ReviewPresentation> {
         Rc::clone(&self.presentation)
     }
 

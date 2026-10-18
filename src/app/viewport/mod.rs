@@ -14,26 +14,42 @@ pub struct ViewportController {
     pub interaction: InteractionController,
 }
 
+impl ViewportController {
+    fn install(&mut self, mut reduction: Reduction, cx: &SharedContext) -> Reduction {
+        for install in self.pipeline.take_installs() {
+            reduction.merge(self.interaction.install(install, cx));
+        }
+        reduction
+    }
+}
+
 impl Controller for ViewportController {
     type Action = ViewportAction;
     type Event = ViewportEvent;
 
     fn reduce_action(&mut self, action: ViewportAction, cx: &SharedContext) -> Reduction {
         match action {
-            ViewportAction::Pipeline(action) => self.pipeline.reduce_action(action, cx),
+            ViewportAction::Pipeline(action) => {
+                let reduction = self.pipeline.reduce_action(action, cx);
+                self.install(reduction, cx)
+            }
             ViewportAction::Interaction(action) => self.interaction.reduce_action(action, cx),
         }
     }
 
     fn reduce_event(&mut self, event: ViewportEvent, cx: &SharedContext) -> Reduction {
         match event {
-            ViewportEvent::Pipeline(event) => self.pipeline.reduce_event(event, cx),
+            ViewportEvent::Pipeline(event) => {
+                let reduction = self.pipeline.reduce_event(event, cx);
+                self.install(reduction, cx)
+            }
             ViewportEvent::Interaction(event) => self.interaction.reduce_event(event, cx),
         }
     }
 
     fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
-        let mut reduction = self.pipeline.apply_intent(intent, cx);
+        let reduction = self.pipeline.apply_intent(intent, cx);
+        let mut reduction = self.install(reduction, cx);
         reduction.merge(self.interaction.apply_intent(intent, cx));
         reduction
     }

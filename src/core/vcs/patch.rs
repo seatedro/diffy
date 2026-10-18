@@ -791,8 +791,14 @@ mod tests {
     #[test]
     fn parses_identity_and_source_lines() {
         let file = parse(MODIFIED);
-        assert_eq!(file.identity.old.as_ref().map(ObjectId::as_str), Some("1111111"));
-        assert_eq!(file.identity.new.as_ref().map(ObjectId::as_str), Some("2222222"));
+        assert_eq!(
+            file.identity.old.as_ref().map(ObjectId::as_str),
+            Some("1111111")
+        );
+        assert_eq!(
+            file.identity.new.as_ref().map(ObjectId::as_str),
+            Some("2222222")
+        );
         assert_eq!(file.path(), Some(&b"f"[..]));
         let hunk = &file.hunks[0];
         assert_eq!(hunk.lines[1].old, Some(1));

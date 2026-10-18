@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use crate::contracts::navigation::RepositorySyncReason;
-use crate::core::compare::{
-    CompareFileStatsTarget, CompareFileSummary, CompareOutput, ProgressSink, RendererKind,
-};
+use crate::core::compare::output::{CompareEntry, CompareOutput};
+use crate::core::compare::{ProgressSink, RendererKind};
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::forge::github::PullRequestInfo;
+use crate::core::vcs::compare_port::entry_stats;
 use crate::core::vcs::model::{
     FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan, PullFastForwardOutcome,
     RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsKind,
@@ -68,18 +68,15 @@ pub trait VcsRepository: Send {
     fn compare_file_stats(
         &mut self,
         _request: &VcsCompareRequest,
-        files: &[CompareFileStatsTarget],
+        files: &[CompareEntry],
     ) -> Result<Vec<(i32, i32)>> {
-        Ok(files
-            .iter()
-            .map(CompareFileStatsTarget::fallback_stats)
-            .collect())
+        Ok(files.iter().map(entry_stats).collect())
     }
     fn compare_path(
         &mut self,
         request: &VcsCompareRequest,
         path: &str,
-        deferred_file: Option<&CompareFileSummary>,
+        deferred_file: Option<&CompareEntry>,
     ) -> Result<CompareOutput>;
     fn file_change_diff(
         &mut self,

@@ -9,7 +9,7 @@ use gix::bstr::ByteSlice;
 use serde::Serialize;
 
 use crate::core::compare::backends::RENAME_DETECTION_LIMIT;
-use crate::core::compare::service::CompareOutput;
+use crate::core::compare::output::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
@@ -878,6 +878,24 @@ impl GitService {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
+    pub fn diff_refs_paths(&self, left: &str, right: &str, paths: &[&str]) -> Result<Vec<u8>> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
+            OsString::from("--no-color"),
+            OsString::from("--src-prefix=a/"),
+            OsString::from("--dst-prefix=b/"),
+            OsString::from(self.resolve_commit_oid(left)?),
+        ];
+        if right != WORKDIR_REF {
+            args.push(OsString::from(self.resolve_commit_oid(right)?));
+        }
+        args.push(OsString::from("--"));
+        args.extend(paths.iter().map(OsString::from));
+        Ok(run_system_git_allow_diff(self.repo_path_ref()?, &args)?.stdout)
+    }
+
     pub fn status_item_exact_patch(&self, item: &StatusItem) -> Result<Vec<u8>> {
         let mut args = vec![
             OsString::from("diff"),
@@ -1031,7 +1049,6 @@ impl GitService {
         self.diff_between_refs_path(left, right, path, false)
     }
 
-    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     pub(crate) fn diff_name_status(
         &self,
         left: &str,

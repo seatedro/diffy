@@ -12,7 +12,7 @@
 //!
 //! [`clear`]: VcsReadCache::clear
 
-use crate::core::compare::CompareOutput;
+use crate::core::compare::output::CompareOutput;
 use crate::core::vcs::model::{RevisionId, VcsCompareRequest};
 use crate::core::vcs::source::SourceText;
 

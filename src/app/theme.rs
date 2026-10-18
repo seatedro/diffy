@@ -1,6 +1,9 @@
 use quark_ui::theme::{Color, Theme, ThemeColors, ThemeMode};
 
+use std::sync::OnceLock;
+
 use crate::core::themes::{SemanticPalette, ThemeRegistry};
+use crate::platform::persistence::Settings;
 
 pub const DEFAULT_THEME: &str = "diffy-default";
 
@@ -33,6 +36,27 @@ impl Default for ThemePair {
             dark: Theme::default_dark(),
         }
     }
+}
+
+pub fn registry() -> &'static ThemeRegistry {
+    static REGISTRY: OnceLock<ThemeRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(ThemeRegistry::load)
+}
+
+pub fn quark_mode(mode: crate::core::theme_types::ThemeMode) -> ThemeMode {
+    match mode {
+        crate::core::theme_types::ThemeMode::Dark => ThemeMode::Dark,
+        crate::core::theme_types::ThemeMode::Light => ThemeMode::Light,
+    }
+}
+
+pub fn settings_theme(settings: &Settings) -> Theme {
+    theme_for(
+        registry(),
+        &settings.theme_name,
+        quark_mode(settings.theme_mode),
+        f32::from(settings.ui_scale_pct) / 100.0,
+    )
 }
 
 pub fn theme_for(registry: &ThemeRegistry, name: &str, mode: ThemeMode, ui_scale: f32) -> Theme {

@@ -20,6 +20,24 @@ pub enum SidebarTab {
     #[default]
     Files,
     Commits,
+    OperationLog,
+}
+
+impl SidebarTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Files => "Files",
+            Self::Commits => "History",
+            Self::OperationLog => "Operation log",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarMode {
+    #[default]
+    List,
+    Tree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,11 +147,16 @@ pub enum NavigationAction {
     ToggleFileViewed(FileKey),
     SetFilter(String),
     ClearFilter,
+    EscapeFilter,
+    ScrollFiles(i32),
+    ScrollFilesTo(u32),
     ToggleSidebarMode,
     ToggleSidebar,
     SetSidebarTab(SidebarTab),
     SelectHistoryCommit(String),
     ClearHistoryCommit,
+    ScrollHistory(i32),
+    SelectOperation(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

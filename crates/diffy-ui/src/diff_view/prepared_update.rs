@@ -1,6 +1,88 @@
-use diffy_diff::{DiffDocument, FileStatus, Side};
+use diffy_diff::{
+    Comparison, ComparisonOptions, ContextPolicy, DiffDocument, Expansion, FileDiffSnapshot,
+    FileStatus, Mode, Projection, Side,
+};
 
+use super::DiffViewState;
 use super::prepared::FileFact;
+use super::state::Segment;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Preparation {
+    pub mode: Mode,
+    pub policy: ContextPolicy,
+    pub comparison: ComparisonOptions,
+}
+
+#[derive(Debug)]
+pub struct PreparedSegment {
+    snapshot: FileDiffSnapshot,
+    preparation: Preparation,
+    expansion: Expansion,
+    comparison: Comparison,
+    projection: Projection,
+}
+
+impl PreparedSegment {
+    pub fn prepare(snapshot: FileDiffSnapshot, preparation: Preparation) -> Self {
+        let doc = &snapshot.diff;
+        let expansion = Expansion::with_policy(doc, preparation.policy);
+        let comparison = Comparison::new(doc, preparation.comparison);
+        let projection =
+            Projection::with_comparison(doc, preparation.mode, &expansion, &comparison);
+        Self {
+            snapshot,
+            preparation,
+            expansion,
+            comparison,
+            projection,
+        }
+    }
+
+    pub fn snapshot(&self) -> &FileDiffSnapshot {
+        &self.snapshot
+    }
+
+    pub fn preparation(&self) -> Preparation {
+        self.preparation
+    }
+}
+
+pub(super) fn segment_for(
+    view: &DiffViewState,
+    snapshot: &FileDiffSnapshot,
+    slot: u32,
+    prepared: Option<PreparedSegment>,
+) -> Segment {
+    let wanted = Preparation {
+        mode: view.mode,
+        policy: view.context_policy,
+        comparison: view.comparison,
+    };
+    match prepared {
+        Some(prepared)
+            if prepared.preparation == wanted
+                && std::sync::Arc::ptr_eq(&prepared.snapshot.diff, &snapshot.diff) =>
+        {
+            Segment::from_parts(
+                snapshot.diff.clone(),
+                slot,
+                view.generations,
+                prepared.expansion,
+                prepared.comparison,
+                prepared.projection,
+            )
+        }
+        _ => Segment::new(
+            snapshot.diff.clone(),
+            slot,
+            view.generations,
+            view.mode,
+            view.context_policy,
+            view.comparison,
+        ),
+    }
+}
 
 /// Facts about `file` its line rows do not show. See [`FileFact`]. A
 /// missing final newline is a fact only where it differs between the sides

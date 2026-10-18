@@ -483,6 +483,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         };
         let review_overlay = review::overlay(&self.controllers.review, &slot, cx);
         let overlays = commands::overlays(&mut self.controllers.commands, &slot, cx);
+        let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
         view! {
             <div w={width} h={height} class="flex-col relative overflow-hidden" bg={theme.colors.app_bg}>
@@ -491,6 +492,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 {status}
                 {?review_overlay}
                 {?overlays}
+                {?languages}
                 {?toasts}
             </div>
         }

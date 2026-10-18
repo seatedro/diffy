@@ -1,11 +1,9 @@
 [workspace]
 members = [
   ".",
-  "crates/carbon",
   "crates/diffy-diff",
   "crates/diffy-syntax",
   "crates/diffy-ui",
-  "crates/phosphor",
   "tools/syntax-pack",
 ]
 exclude = ["crates/difftastic"]
@@ -68,7 +66,7 @@ appdata-paths = ["$LOCALAPPDATA/$PUBLISHER/$PRODUCTNAME"]
 
 [features]
 default = ["difftastic"]
-hot-reload = ["dep:tungstenite", "dep:subsecond"]
+hot-reload = ["quark-app/hot-reload"]
 difftastic = ["dep:vendored_difftastic", "dep:rayon"]
 headless-render = []
 
@@ -94,14 +92,11 @@ quark.workspace = true
 quark-app = { workspace = true, default-features = false, features = ["ui", "components", "dialogs"] }
 quark-components.workspace = true
 quark-ui.workspace = true
-phosphor = { path = "crates/phosphor", default-features = false }
 vendored_difftastic = { package = "difftastic", path = "crates/difftastic", optional = true, default-features = false, features = ["dynamic-languages"] }
 winit = { version = "0.30" }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt", "registry", "std"] }
 profiling = "1.0"
-subsecond = { version = "0.7", optional = true }
-tungstenite = { version = "0.29", optional = true }
 notify = "8.2.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }

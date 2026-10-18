@@ -57,17 +57,32 @@ impl Grammar {
             Some(file) => Some(std::fs::read_to_string(dir.join(&file.path))?),
             None => None,
         };
-        let library_path = dir.join(&manifest.library.path);
+        Self::compile(
+            &dir.join(&manifest.library.path),
+            &manifest.symbol,
+            Some(manifest.abi),
+            &highlights,
+            injections.as_deref(),
+        )
+    }
+
+    pub(crate) fn compile(
+        library_path: &Path,
+        symbol: &str,
+        expected_abi: Option<u32>,
+        highlights: &str,
+        injections: Option<&str>,
+    ) -> Result<Self, PackError> {
         // SAFETY: loading a library runs its initializers, and calling the
         // symbol runs its code. The pack passed its SHA-256 check against a
         // manifest that is either signed (downloaded packs) or in a
         // directory the app opted into (local packs); see the threat model
         // in the crate docs.
         let language = unsafe {
-            let library = libloading::Library::new(&library_path)
+            let library = libloading::Library::new(library_path)
                 .map_err(|e| PackError::Library(e.to_string()))?;
             let library: &'static libloading::Library = Box::leak(Box::new(library));
-            let mut name = manifest.symbol.clone().into_bytes();
+            let mut name = symbol.as_bytes().to_vec();
             name.push(0);
             let symbol = library
                 .get::<unsafe extern "C" fn() -> *const ()>(&name)
@@ -76,7 +91,7 @@ impl Grammar {
         };
         // The manifest's ABI was checked; this checks the library agrees.
         let abi = language.abi_version() as u32;
-        if abi != manifest.abi || !supported_abi().contains(&abi) {
+        if expected_abi.is_some_and(|expected| expected != abi) || !supported_abi().contains(&abi) {
             let range = supported_abi();
             return Err(PackError::Abi {
                 abi,
@@ -85,7 +100,7 @@ impl Grammar {
             });
         }
         let query =
-            ts::Query::new(&language, &highlights).map_err(|e| PackError::Query(e.to_string()))?;
+            ts::Query::new(&language, highlights).map_err(|e| PackError::Query(e.to_string()))?;
         let capture_kinds = query
             .capture_names()
             .iter()
@@ -93,7 +108,7 @@ impl Grammar {
             .collect();
         let none = query.capture_index_for_name("none");
         let injections = injections
-            .map(|text| Injections::compile(&language, &text))
+            .map(|text| Injections::compile(&language, text))
             .transpose()?;
         Ok(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),

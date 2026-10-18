@@ -1,8 +1,14 @@
+use std::rc::Rc;
+use std::sync::Arc;
+
+use quark_components::PaletteEvent;
+
 use crate::contracts::navigation::CompareField;
-use crate::contracts::shared::JobId;
+use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{Action, LogicalFocus};
 use crate::core::keymap::ShortcutCommand;
 use crate::core::theme_types::ThemeMode;
+use crate::fonts::FontFamilyEntry;
 use crate::platform::persistence::Settings;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -63,6 +69,48 @@ impl ContextMenuEntry {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CommandDescriptor {
+    pub id: &'static str,
+    pub title: String,
+    pub detail: Option<String>,
+    pub action: Action,
+    pub shortcut: Option<ShortcutCommand>,
+    pub enabled: bool,
+}
+
+impl CommandDescriptor {
+    pub fn new(id: &'static str, title: impl Into<String>, action: impl Into<Action>) -> Self {
+        Self {
+            id,
+            title: title.into(),
+            detail: None,
+            action: action.into(),
+            shortcut: None,
+            enabled: true,
+        }
+    }
+
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn shortcut(mut self, command: ShortcutCommand) -> Self {
+        self.shortcut = Some(command);
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+pub trait CommandSource {
+    fn commands(&self, _cx: &SharedContext, _out: &mut Vec<CommandDescriptor>) {}
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum CommandsAction {
     OpenCommandPalette,
     OpenRepoPicker,
@@ -77,15 +125,22 @@ pub enum CommandsAction {
     SelectOverlayEntry(usize),
     ConfirmOverlaySelection,
     TabCompletePickerDir,
+    ScrollOverlay(i32),
+    OverlayKey(String),
+    Palette(PaletteEvent),
+    SetExternalCommands(Rc<[CommandDescriptor]>),
+    RunCommand(&'static str),
+    Shortcut(ShortcutCommand),
     OpenContextMenu {
         entries: Vec<ContextMenuEntry>,
         x: i32,
         y: i32,
     },
+    SelectContextMenuEntry(usize),
     CloseContextMenu,
     Confirm,
     CancelConfirmation,
-    DismissToast(JobId),
+    DismissToast(u64),
     OpenSettings,
     OpenKeymaps,
     CloseSettings,
@@ -111,17 +166,27 @@ pub enum CommandsAction {
     },
     ResetKeymapBinding(ShortcutCommand),
     CancelKeymapRebind,
+    ShowAbout,
+    OpenProjectPage,
+    Quit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandsEffect {
     SaveSettings(Box<Settings>),
+    LoadFontCatalog,
 }
 
 #[derive(Debug, Clone)]
 pub enum CommandsEvent {
     SettingsSaved,
-    SettingsSaveFailed { message: String },
+    SettingsSaveFailed {
+        message: String,
+    },
+    FontCatalogReady {
+        ui: Arc<[FontFamilyEntry]>,
+        mono: Arc<[FontFamilyEntry]>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -166,9 +231,21 @@ pub enum ToastUpdate {
 
 impl ToastUpdate {
     pub fn error(message: impl Into<String>) -> Self {
+        Self::show(ToastKind::Error, message)
+    }
+
+    pub fn info(message: impl Into<String>) -> Self {
+        Self::show(ToastKind::Info, message)
+    }
+
+    pub fn success(message: impl Into<String>) -> Self {
+        Self::show(ToastKind::Success, message)
+    }
+
+    fn show(kind: ToastKind, message: impl Into<String>) -> Self {
         Self::Show {
             id: None,
-            kind: ToastKind::Error,
+            kind,
             message: message.into(),
             description: None,
         }

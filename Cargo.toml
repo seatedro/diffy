@@ -1,9 +1,28 @@
 [workspace]
-members = [".", "crates/carbon", "crates/halogen", "crates/halogen-macros", "crates/phosphor"]
+members = [
+  ".",
+  "crates/carbon",
+  "crates/diffy-diff",
+  "crates/diffy-syntax",
+  "crates/diffy-ui",
+  "crates/halogen",
+  "crates/halogen-macros",
+  "crates/phosphor",
+  "tools/syntax-pack",
+]
 exclude = ["crates/difftastic"]
 
 [workspace.package]
 version = "0.1.12"
+
+[workspace.dependencies]
+quark = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d" }
+quark-app = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d" }
+quark-components = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d" }
+quark-render = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d" }
+quark-text = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d", default-features = false }
+quark-ui = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d" }
+quark-update = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d" }
 
 [package]
 name = "diffy"
@@ -120,3 +139,8 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[patch.crates-io]
+accesskit_unix = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d" }
+cosmic-text = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d" }
+taffy = { git = "https://github.com/seatedro/quark", rev = "01572c4bfd2fb547f26d6db38f95b43c5c614d3d" }

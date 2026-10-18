@@ -28,6 +28,13 @@ justification), and clean, boring Rust.
   `crates/halogen-macros/` — `#[derive(Store)]` and `view!` proc macros.
   `crates/phosphor/` — tree-sitter syntax highlighting.
 - `crates/difftastic/` is vendored and out-of-workspace; don't casually refactor it.
+- Quark rewrite (in progress; the legacy stack above still ships): Quark
+  (`seatedro/quark`, git dependency pinned in the root `Cargo.toml`) is the UI
+  platform. `crates/diffy-diff/` — diff model, `crates/diffy-syntax/` —
+  tree-sitter packs (see its `PACKS.md`), `crates/diffy-ui/` — diff view on
+  Quark, `tools/syntax-pack/` — pack builder. Imported from Quark's
+  `handoff/diffy-v1` tag. Quark never depends on Diffy; keep diff and syntax
+  code here. `rust-toolchain.toml` follows Quark's nightly pin.
 - `.docs/` is reference material, not app source.
 
 Before editing a crate, load its `AGENTS.md`

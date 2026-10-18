@@ -1,0 +1,7 @@
+/* Greeting styles. */
+@media (min-width: 600px) {
+  .greeting > p {
+    color: #ff0000;
+    margin: 4px auto;
+  }
+}

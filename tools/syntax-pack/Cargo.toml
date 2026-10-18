@@ -1,0 +1,27 @@
+[package]
+name = "syntax-pack"
+description = "Builds diffy-syntax grammar packs from pinned sources and signs their index."
+version.workspace = true
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+# Finds the C compiler and linker for a target, MSVC included.
+cc = "1.2"
+# Pack types and checks, and loading each built pack as the app would.
+diffy-syntax = { path = "../../crates/diffy-syntax", features = ["download"] }
+# Index signing, the same Ed25519 scheme and key format as update manifests.
+quark-update.workspace = true
+ring = "0.17"
+# Loads each built grammar on its own and runs its queries over the
+# language's sample, independently of how diffy-syntax highlights.
+tree-sitter = "0.26"
+tree-sitter-language = "0.1"
+libloading = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1"
+
+[dev-dependencies]
+tempfile = "3"

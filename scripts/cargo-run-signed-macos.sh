@@ -9,6 +9,8 @@ fi
 exe="$1"
 shift
 
+export DYLD_FALLBACK_LIBRARY_PATH="$(rustc --print target-libdir)${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+
 identity="${DIFFY_CODESIGN_IDENTITY:-Diffy Dev}"
 
 if [[ "${DIFFY_SKIP_CODESIGN:-0}" == "1" ]]; then

@@ -1,0 +1,49 @@
+[package]
+name = "diffy-syntax"
+description = "Tree-sitter syntax highlighting for Diffy, with grammars loaded at runtime from signed packs."
+version.workspace = true
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+# No grammar is compiled in. Grammars arrive as packs (a shared library
+# plus queries and a manifest) from a local directory the app names, or
+# from a signed index the app configures; see the crate docs and
+# PACKS.md. Without any feature this crate has no
+# dependencies and every lookup falls back to plain text.
+[dependencies]
+tree-sitter = { version = "0.26", optional = true }
+tree-sitter-language = { version = "0.1", optional = true }
+libloading = { version = "0.8", optional = true }
+# SHA-256 of pack files, and Ed25519 for the index with `download`. The
+# same ring that ureq's rustls backend builds.
+ring = { version = "0.17", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+thiserror = { version = "2", optional = true }
+tracing = { version = "0.1.44", optional = true }
+# Resumable, SHA-checked downloads, the trusted key type, and the HTTP
+# client (ureq with rustls), shared with the updater.
+quark-update = { workspace = true, optional = true }
+ureq = { version = "3", default-features = false, features = ["rustls"], optional = true }
+
+[features]
+default = []
+# The tree-sitter runtime and pack loading from local directories.
+engine = [
+  "dep:tree-sitter",
+  "dep:tree-sitter-language",
+  "dep:libloading",
+  "dep:ring",
+  "dep:serde",
+  "dep:serde_json",
+  "dep:thiserror",
+  "dep:tracing",
+]
+# Downloading packs on demand from a signed index.
+download = ["engine", "dep:quark-update", "dep:ureq"]
+
+[dev-dependencies]
+tempfile = "3"
+# Unit tests cover pack loading and downloads, so they always build both.
+diffy-syntax = { path = ".", features = ["download"] }

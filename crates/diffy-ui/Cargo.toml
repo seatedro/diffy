@@ -1,0 +1,36 @@
+[package]
+name = "diffy-ui"
+description = "Diffy's Quark components: the diff view and its syntax bridge."
+version.workspace = true
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+accesskit = "0.24"
+diffy-diff = { path = "../diffy-diff" }
+diffy-syntax = { path = "../diffy-syntax" }
+quark.workspace = true
+quark-components.workspace = true
+quark-render.workspace = true
+quark-text.workspace = true
+quark-ui.workspace = true
+
+[features]
+syntax = ["diffy-syntax/engine"]
+syntax-download = ["syntax", "diffy-syntax/download"]
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+proptest = { version = "1", default-features = false, features = ["std"] }
+quark-app = { workspace = true, features = ["headless-render", "components"] }
+quark-ui = { workspace = true, features = ["test-alloc"] }
+quark-render = { workspace = true, features = ["headless-render"] }
+diffy-syntax = { path = "../diffy-syntax", features = ["download"] }
+
+[[example]]
+name = "diff_demo"
+test = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

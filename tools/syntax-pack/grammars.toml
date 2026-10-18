@@ -1,0 +1,257 @@
+# Pinned grammar sources for diffy-syntax packs.
+#
+# `rev` is a full git commit of `repo`. `sha256` covers every file the build
+# reads: the C sources and headers under `src`, any `include` files, and the
+# query files, as `<path>\0<sha256>\n` lines sorted by path (see
+# `source_hash` in src/main.rs). A rewritten rev or a tampered mirror fails
+# the build. After bumping `rev`, run the build once: it prints the new hash
+# to paste here.
+#
+# Query paths are relative to the repository; `@<language>/<path>` reads
+# from another entry's checkout, for grammars whose queries layer over
+# another's. Several highlight files are concatenated in order.
+#
+# Every name, alias, and extension must belong to one language. `scanner`
+# is `"c"` (src/scanner.c, compiled with parser.c) or `"none"`; C++
+# scanners are not supported, so pick a revision with a C scanner.
+# `license` is the SPDX expression of the grammar and its queries.
+#
+# Checks: each built pack for the host parses `sample` (relative to this
+# file) without errors, and some occurrence of each `captures` text must
+# start a capture of that name (or a dotted child of it) that covers it. Every
+# language in `injects` must be named by the injection query over the
+# sample, and must be a tag of some pinned language.
+#
+# Line endings are normalized to LF before hashing, so a Windows checkout
+# that converted them hashes the same.
+#
+# Defaults: `src = "src"`, `symbol = "tree_sitter_<language>"`.
+
+[bash]
+repo = "https://github.com/tree-sitter/tree-sitter-bash"
+rev = "a06c2e4415e9bc0346c6b86d401879ffb44058f7"
+version = "0.25.1"
+aliases = ["sh", "shell", "zsh", "console"]
+extensions = ["sh", "bash", "zsh"]
+highlights = ["queries/highlights.scm"]
+sha256 = "61f293830ad01f986c8675f9ac4d07f6462a2fbd23dd8a978b710d2e3b40da65"
+license = "MIT"
+scanner = "c"
+sample = "samples/bash.sh"
+captures = [["greet", "function"], ["for", "keyword"], ["\"hello, $name\"", "string"], ["# Greets", "comment"]]
+
+[go]
+repo = "https://github.com/tree-sitter/tree-sitter-go"
+rev = "1547678a9da59885853f5f5cc8a99cc203fa2e2c"
+version = "0.25.0"
+aliases = ["golang"]
+extensions = ["go"]
+highlights = ["queries/highlights.scm"]
+sha256 = "eb1fdb0fed6670a635197752ebb1befe8da21b8dfed8b31715f22eb4941ecc4b"
+license = "MIT"
+scanner = "none"
+sample = "samples/go.go"
+captures = [["func", "keyword"], ["Greeter", "type"], ["\"fmt\"", "string"], ["42", "number"], ["// Greeter", "comment"]]
+
+[javascript]
+repo = "https://github.com/tree-sitter/tree-sitter-javascript"
+rev = "44c892e0be055ac465d5eeddae6d3e194424e7de"
+version = "0.25.0"
+aliases = ["js", "jsx", "mjs", "cjs"]
+extensions = ["js", "jsx", "mjs", "cjs"]
+highlights = ["queries/highlights.scm", "queries/highlights-jsx.scm"]
+injections = ["queries/injections.scm"]
+sha256 = "00af6bfe573134e8080d11b0a5a4612765d23573616abfd56b48a989526ac63e"
+license = "MIT"
+scanner = "c"
+sample = "samples/javascript.js"
+captures = [["function", "keyword"], ["greet", "function"], ["\"./ui.js\"", "string"], ["p", "tag"], ["className", "attribute"]]
+
+[json]
+repo = "https://github.com/tree-sitter/tree-sitter-json"
+rev = "ee35a6ebefcef0c5c416c0d1ccec7370cfca5a24"
+version = "0.24.8"
+aliases = ["jsonc"]
+extensions = ["json", "jsonc"]
+highlights = ["queries/highlights.scm"]
+sha256 = "f3f4d5af175536442c9aad54f4bb5a61ee1d85a407a0c9ded617b72ea65853ad"
+license = "MIT"
+scanner = "none"
+sample = "samples/json.json"
+captures = [["\"quark\"", "string"], ["1", "number"], ["true", "constant"], ["null", "constant"]]
+
+[python]
+repo = "https://github.com/tree-sitter/tree-sitter-python"
+rev = "293fdc02038ee2bf0e2e206711b69c90ac0d413f"
+version = "0.25.0"
+aliases = ["py", "python3"]
+extensions = ["py", "pyi"]
+highlights = ["queries/highlights.scm"]
+sha256 = "6cf4880802ad351ac72c6edd02c362c8b2d7e012c82948cdc5ce7cbfe1a53cb3"
+license = "MIT"
+scanner = "c"
+sample = "samples/python.py"
+captures = [["class", "keyword"], ["greet", "function"], ["\"\"\"Says hello.\"\"\"", "string"], ["# Formats", "comment"], ["42", "number"]]
+
+[rust]
+repo = "https://github.com/tree-sitter/tree-sitter-rust"
+rev = "77a3747266f4d621d0757825e6b11edcbf991ca5"
+version = "0.24.2"
+aliases = ["rs"]
+extensions = ["rs"]
+highlights = ["queries/highlights.scm"]
+injections = ["queries/injections.scm"]
+sha256 = "9ca0e726a8d8befee951e16baa429f772fe4d24b11c34024f5c301cece11e720"
+license = "MIT"
+scanner = "c"
+sample = "samples/rust.rs"
+captures = [["fn", "keyword"], ["Greeter", "type"], ["\"hello, {}\"", "string"], ["42", "constant"], ["// Says", "comment"]]
+
+# TypeScript's query only covers what it adds to JavaScript; the grammar
+# repository layers it over JavaScript's.
+[typescript]
+repo = "https://github.com/tree-sitter/tree-sitter-typescript"
+rev = "f975a621f4e7f532fe322e13c4f79495e0a7b2e7"
+version = "0.23.2"
+src = "typescript/src"
+include = ["common/scanner.h"]
+aliases = ["ts", "mts", "cts"]
+extensions = ["ts", "mts", "cts"]
+highlights = ["@javascript/queries/highlights.scm", "queries/highlights.scm"]
+sha256 = "4b557b121fed86ca65226e3359924e202d7f354702a00bc8454700f962370e34"
+license = "MIT"
+scanner = "c"
+sample = "samples/typescript.ts"
+captures = [["interface", "keyword"], ["Greeter", "type"], ["string", "type"], ["`hello, ${greeter.name}`", "string"]]
+
+# Same repository and layering as TypeScript, plus JSX. The TSX sample
+# holds both a generic arrow function and an element, which only parse
+# together under the TSX grammar.
+[tsx]
+repo = "https://github.com/tree-sitter/tree-sitter-typescript"
+rev = "f975a621f4e7f532fe322e13c4f79495e0a7b2e7"
+version = "0.23.2"
+src = "tsx/src"
+include = ["common/scanner.h"]
+extensions = ["tsx"]
+highlights = ["@javascript/queries/highlights.scm", "@javascript/queries/highlights-jsx.scm", "queries/highlights.scm"]
+injections = ["@javascript/queries/injections.scm"]
+sha256 = "78cbf2adfcb33eff59e324cf0e0ec9d7cd4b04723b844b48452dd92947e079a8"
+license = "MIT"
+scanner = "c"
+sample = "samples/tsx.tsx"
+captures = [["type", "keyword"], ["Props", "type"], ["div", "tag"], ["className", "attribute"], ["\"greeting\"", "string"]]
+
+[html]
+repo = "https://github.com/tree-sitter/tree-sitter-html"
+rev = "5a5ca8551a179998360b4a4ca2c0f366a35acc03"
+version = "0.23.2"
+aliases = ["htm", "xhtml"]
+extensions = ["html", "htm", "xhtml"]
+highlights = ["queries/highlights.scm"]
+injections = ["queries/injections.scm"]
+sha256 = "e28407489db0280bea32ee9ca473095a4647ecc88f7f1b2fcaee7bcbfbe4a6df"
+license = "MIT"
+scanner = "c"
+sample = "samples/html.html"
+captures = [["html", "tag"], ["lang", "attribute"], ["en", "string"], ["<!-- A page", "comment"]]
+injects = ["javascript", "css"]
+
+[css]
+repo = "https://github.com/tree-sitter/tree-sitter-css"
+rev = "dda5cfc5722c429eaba1c910ca32c2c0c5bb1a3f"
+version = "0.25.0"
+extensions = ["css"]
+highlights = ["queries/highlights.scm"]
+sha256 = "dc71be1c81720acad1373cd847a853dbfa4c857f779dd78f524e2bbd1dfe8bfb"
+license = "MIT"
+scanner = "c"
+sample = "samples/css.css"
+captures = [["@media", "keyword"], ["greeting", "property"], ["color", "property"], ["4px", "number"], ["/* Greeting", "comment"]]
+
+# The block grammar; inline content (emphasis, code spans, links) is the
+# markdown_inline grammar, injected into each paragraph.
+[markdown]
+repo = "https://github.com/tree-sitter-grammars/tree-sitter-markdown"
+rev = "f969cd3ae3f9fbd4e43205431d0ae286014c05b5"
+version = "0.5.3"
+src = "tree-sitter-markdown/src"
+aliases = ["md"]
+extensions = ["md", "markdown"]
+highlights = ["tree-sitter-markdown/queries/highlights.scm"]
+injections = ["tree-sitter-markdown/queries/injections.scm"]
+sha256 = "670651881c979035d9a5b3f3f3ac39623284cc3bc3124919ec3d408450d7a9dc"
+license = "MIT"
+scanner = "c"
+sample = "samples/markdown.md"
+captures = [["Hello", "text.title"], ["#", "punctuation.special"], ["```", "punctuation.delimiter"]]
+injects = ["markdown_inline", "rust", "html", "yaml"]
+
+# Named as markdown's injection query names it.
+[markdown_inline]
+repo = "https://github.com/tree-sitter-grammars/tree-sitter-markdown"
+rev = "f969cd3ae3f9fbd4e43205431d0ae286014c05b5"
+version = "0.5.3"
+src = "tree-sitter-markdown-inline/src"
+highlights = ["tree-sitter-markdown-inline/queries/highlights.scm"]
+injections = ["tree-sitter-markdown-inline/queries/injections.scm"]
+sha256 = "41090bac8fd3cbdd11fdc369a673b0e050cbd5684386446ed649c6b5a33e7d1c"
+license = "MIT"
+scanner = "c"
+sample = "samples/markdown_inline.md"
+captures = [["**bold**", "text.strong"], ["*emphasis*", "text.emphasis"], ["`code`", "text.literal"], ["https://example.com", "text.uri"]]
+injects = ["html"]
+
+[toml]
+repo = "https://github.com/tree-sitter-grammars/tree-sitter-toml"
+rev = "64b56832c2cffe41758f28e05c756a3a98d16f41"
+version = "0.7.0"
+extensions = ["toml"]
+highlights = ["queries/highlights.scm"]
+sha256 = "6937626e3c2df29871cb85c146bd85dbc02b53a5d57e97a05b363d5310797541"
+license = "MIT"
+scanner = "c"
+sample = "samples/toml.toml"
+captures = [["package", "type"], ["name", "property"], ["\"quark\"", "string"], ["1", "number"], ["true", "boolean"], ["# Package", "comment"]]
+
+[yaml]
+repo = "https://github.com/tree-sitter-grammars/tree-sitter-yaml"
+rev = "7708026449bed86239b1cd5bce6e3c34dbca6415"
+version = "0.7.2"
+aliases = ["yml"]
+extensions = ["yaml", "yml"]
+highlights = ["queries/highlights.scm"]
+sha256 = "b3b7619ecd96b2156126a3dc4e05fca90242d6c623e3a7ef881e7b7a6777fe6c"
+license = "MIT"
+scanner = "c"
+sample = "samples/yaml.yaml"
+captures = [["name", "property"], ["1", "number"], ["true", "boolean"], ["base", "label"], ["# Workflow", "comment"]]
+
+[c]
+repo = "https://github.com/tree-sitter/tree-sitter-c"
+rev = "b780e47fc780ddc8da13afa35a3f4ed5c157823d"
+version = "0.24.2"
+extensions = ["c", "h"]
+highlights = ["queries/highlights.scm"]
+sha256 = "c31fb1ed0df774e85063ebff8af6e4d1fb5eab476ae9e93aa16ea2fa0ae0e7d0"
+license = "MIT"
+scanner = "none"
+sample = "samples/c.c"
+captures = [["#include", "keyword"], ["static", "keyword"], ["int", "type"], ["greet", "function"], ["\"hello, %s\\n\"", "string"], ["/* Prints", "comment"]]
+
+# C++'s query covers what it adds to C; the grammar repository layers it
+# over C's. Raw string delimiters name an injected language.
+[cpp]
+repo = "https://github.com/tree-sitter/tree-sitter-cpp"
+rev = "f41e1a044c8a84ea9fa8577fdd2eab92ec96de02"
+version = "0.23.4"
+aliases = ["c++", "cxx"]
+extensions = ["cpp", "cc", "cxx", "hpp", "hxx", "hh"]
+highlights = ["@c/queries/highlights.scm", "queries/highlights.scm"]
+injections = ["queries/injections.scm"]
+sha256 = "b4dcb780a28f975450a78dfb2c15949c624829f2d84defd0f872be0b51334017"
+license = "MIT"
+scanner = "c"
+sample = "samples/cpp.cpp"
+captures = [["namespace", "keyword"], ["template", "keyword"], ["typename", "keyword"], ["\"hello, \"", "string"], ["// Says", "comment"]]
+injects = ["js"]

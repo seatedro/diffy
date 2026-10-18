@@ -1,0 +1,8 @@
+# Package settings.
+[package]
+name = "quark"
+version = 1
+stable = true
+
+[[bin]]
+path = "src/main.rs"

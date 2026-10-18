@@ -1,6 +1,11 @@
 use std::sync::Arc;
 
-use crate::contracts::shared::{FileKey, FileRevision, JobId, Side, SourceTarget};
+use diffy_diff::SourceRemap;
+use diffy_ui::DiffEvent;
+
+use crate::contracts::shared::{
+    CompareGeneration, FileKey, FileRevision, JobId, Side, SourceTarget,
+};
 use crate::contracts::shell::{Action, AppEvent, Effect};
 use crate::contracts::viewport::pipeline::PreparedDiff;
 use crate::contracts::viewport::{ViewportAction, ViewportEffect, ViewportEvent};
@@ -13,8 +18,19 @@ pub enum ContextDirection {
     All,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiffInput(pub DiffEvent);
+
+impl Eq for DiffInput {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InteractionAction {
+    Diff(DiffInput),
+    ToggleWrap,
+    SetWrapColumn(u16),
+    ToggleSearchCaseSensitive,
+    ToggleTextCompareLanguageMenu,
+    ScrollTextCompare(TextCompareSide, i32),
     ScrollLines(i32),
     ScrollHalfPage(i32),
     ScrollPages(i32),
@@ -44,6 +60,34 @@ pub enum InteractionAction {
     ClearTextCompareSide(TextCompareSide),
     SetTextCompareLanguage(TextCompareLanguage),
     CompareText,
+}
+
+#[derive(Debug, Clone)]
+pub enum ViewportInstall {
+    Begin {
+        generation: CompareGeneration,
+    },
+    File {
+        prepared: PreparedDiff,
+        remap: Option<SourceRemap>,
+    },
+    Failed {
+        generation: CompareGeneration,
+        key: FileKey,
+        revision: FileRevision,
+        message: String,
+    },
+    Remove {
+        key: FileKey,
+        revision: FileRevision,
+    },
+    Order {
+        generation: CompareGeneration,
+        files: Arc<[FileKey]>,
+    },
+    TextCompare {
+        prepared: PreparedDiff,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

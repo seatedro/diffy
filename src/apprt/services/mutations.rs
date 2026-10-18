@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::ai::{self, GenerateRequest, StreamMessage};
-use crate::contracts::mutations::{GenerateCommitMessageRequest, MutationsEvent};
+use crate::contracts::mutations::{GenerateCommitMessageRequest, MutationsEvent, StagedDigest};
 use crate::contracts::review::Secret;
 use crate::core::error::Result;
 use crate::core::vcs::discovery;
@@ -64,6 +64,12 @@ impl MutationsServices {
             }
         };
 
+        if !emit(MutationsEvent::CommitMessageStarted {
+            generation,
+            staged: StagedDigest::of(diff_text.as_bytes()),
+        }) {
+            return;
+        }
         let compressed =
             ai::diff_compress::build_commit_diff_payload(&diff_text, ai::MAX_DIFF_BYTES);
         tracing::debug!(
@@ -137,6 +143,14 @@ impl MutationsServices {
                 }
             }
         }
+    }
+}
+
+impl MutationsServices {
+    pub fn staged_digest(&self, repo_path: &Path, has_staged: bool) -> Result<StagedDigest> {
+        Ok(StagedDigest::of(
+            read_commit_diff(repo_path, has_staged)?.as_bytes(),
+        ))
     }
 }
 

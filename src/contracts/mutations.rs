@@ -56,6 +56,23 @@ pub enum MutationsAction {
     CloseCommitComposer,
     ScrollCommitMessage(i32),
     ClosePublishMenu,
+    SetAiProvider(Option<Provider>),
+    SaveAiKeyField(AiKeyKind),
+    SaveSteeringPrompt,
+    ResetSteeringPrompt,
+    ScrollSteeringPrompt(i32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StagedDigest(pub u64);
+
+impl StagedDigest {
+    pub fn of(diff: &[u8]) -> Self {
+        use std::hash::{DefaultHasher, Hasher};
+        let mut hasher = DefaultHasher::new();
+        hasher.write(diff);
+        Self(hasher.finish())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -243,6 +260,11 @@ pub enum MutationsEffect {
         kind: AiKeyKind,
     },
     GenerateCommitMessage(Box<GenerateCommitMessageRequest>),
+    CheckStagedDiff {
+        generation: u64,
+        repo_path: PathBuf,
+        has_staged: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +380,14 @@ pub enum MutationsEvent {
     },
     AiKeySaveFailed {
         message: String,
+    },
+    CommitMessageStarted {
+        generation: u64,
+        staged: StagedDigest,
+    },
+    StagedDiffChecked {
+        generation: u64,
+        staged: Option<StagedDigest>,
     },
     CommitMessageChunk {
         generation: u64,

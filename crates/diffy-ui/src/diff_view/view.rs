@@ -26,6 +26,7 @@ use quark_ui::theme::Theme;
 use super::decorator::{
     AnnotationContext, DiffDecorator, GutterContext, HeaderContext, HeaderSlot, SeparatorContext,
 };
+use super::interaction::AUTOSCROLL_FRAME_MS;
 use super::paint::{self, Cue, LineColors};
 use super::prepared::{
     FileFact, FrameRow, LinePaint, MARKER_BAR_W, Metrics, PreparedKind, RowPaint, SearchMark,
@@ -35,7 +36,7 @@ use super::presentation::{
     DiffColors, DiffMarkers, DiffNumbers, DiffPresentation, EmptySideFill, FileHeaders,
     HunkSeparator,
 };
-use super::{AUTOSCROLL_FRAME_MS, DiffEvent, DiffKey, DiffViewState, REVEAL_STEP};
+use super::{DiffEvent, DiffKey, DiffViewState, REVEAL_STEP};
 use quark_components::CollectionEnv;
 
 const KEYS: &[(&str, DiffKey)] = &[

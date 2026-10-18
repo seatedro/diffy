@@ -16,8 +16,9 @@
 use diffy_diff::{Mode, RowKind, Side, write_unified};
 use quark::selection::{BlockKey, Selection, SelectionPoint};
 
+use super::frame::{column_slot, floor_boundary, shown_len};
 use super::navigation::FileId;
-use super::state::{RowRef, column_slot, floor_boundary, shown_len, store_index};
+use super::state::{RowRef, store_index};
 use super::{CopySide, DiffViewState};
 
 /// A row among all rows: segment position, then projection row.

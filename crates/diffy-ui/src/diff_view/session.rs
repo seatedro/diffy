@@ -23,36 +23,26 @@
 //! highlighted as it arrives, and sides an update leaves unchanged keep
 //! their colors.
 
-use std::rc::Rc;
-
 use diffy_diff::{
     ComparisonOptions, ContextPolicy, DiffLimits, DiffSession, DiffUpdate, GapId, InlineOptions,
     LineMap, Mode, Reveal, Side, SourceRemap, UpdateError, UpdateOutcome,
 };
 use quark::selection::{Selection, SelectionPoint};
-use quark_text::{LayoutCache, TextSystem};
-use quark_ui::element::{AnyElement, ScrollHandle};
-use quark_ui::theme::Theme;
-use quark_ui::{Action, FocusId};
+use quark_ui::FocusId;
 
 use diffy_diff::RowKind;
-use diffy_syntax::{GrammarStore, HighlightWorker};
 
-use super::annotations::{DiffAnchor, DiffAnnotation};
-use super::decorator::DiffDecorator;
-use super::navigation::{DiffTarget, FileId, RevealAlign, SourcePoint};
-use super::prepared::{AnnotationId, DiffPreviewLimit, ViewFrame};
-use super::presentation::{DiffAppearance, DiffPresentation};
-use super::search::{FindOptions, SearchDirection, SearchSummary};
-use super::selection::{CopyContent, block_key, decode_key};
+use super::navigation::FileId;
+use super::selection::{block_key, decode_key};
+#[cfg(doc)]
+use super::session_interaction::diff_session_view;
 use super::state::{Anchor, NONE, Segment, source_line, store_index};
-use super::{DiffEvent, DiffOutcome, DiffStyle, DiffViewState};
-use quark_components::CollectionEnv;
+use super::{DiffStyle, DiffViewState};
 
 /// App-owned state of a session diff view. See the [module docs](self).
 pub struct DiffSessionViewState {
-    view: DiffViewState,
-    session: DiffSession,
+    pub(super) view: DiffViewState,
+    pub(super) session: DiffSession,
 }
 
 /// Forwards methods whose meaning is the same in both views.
@@ -74,6 +64,8 @@ macro_rules! forward {
         )*
     };
 }
+
+pub(super) use forward;
 
 impl DiffSessionViewState {
     /// `id` names cache entries and accessibility ids (unique in the
@@ -111,73 +103,21 @@ impl DiffSessionViewState {
 
     forward! {
         fn mode() -> Mode;
-        fn style() -> DiffStyle;
-        fn presentation() -> DiffPresentation;
         fn limits() -> DiffLimits;
         fn comparison() -> ComparisonOptions;
         fn inline_options() -> InlineOptions;
         fn hidden_whitespace_changes(file: FileId) -> u32;
-        fn scroll_offset() -> f32;
-        fn content_height() -> f32;
-        fn selection() -> Option<Selection>;
-        fn frame() -> Option<&Rc<ViewFrame>>;
-        fn horizontal_scroll(side: Side) -> &ScrollHandle;
-        fn wants_frame() -> bool;
-        fn selected_text() -> String;
-        fn copy(content: CopyContent) -> Option<String>;
-        fn search_summary() -> SearchSummary;
-        fn focused_target() -> Option<DiffTarget>;
-        fn point_at(x: f32, y: f32) -> Option<SelectionPoint>;
-        fn is_file_collapsed(file: FileId) -> bool;
     }
 
     forward! { mut
         fn set_mode(mode: Mode) -> ();
-        fn set_style(style: DiffStyle) -> ();
-        fn set_presentation(presentation: DiffPresentation) -> ();
-        fn set_appearance(appearance: DiffAppearance) -> ();
-        fn set_preview_limit(limit: Option<DiffPreviewLimit>) -> ();
         fn set_limits(limits: DiffLimits) -> ();
         fn set_comparison(options: ComparisonOptions) -> ();
         fn set_inline_options(options: InlineOptions) -> ();
         fn set_context_policy(policy: ContextPolicy) -> ();
-        fn set_viewport(width: f32, height: f32) -> ();
-        fn set_selection(selection: Option<Selection>, side: Side) -> ();
-        fn select_all() -> ();
         fn collapse(gap: GapId) -> bool;
         fn expand_all() -> bool;
         fn reveal(gap: GapId, reveal: Reveal, amount: u32) -> bool;
-        fn reveal_target(target: DiffTarget, align: RevealAlign) -> bool;
-        fn set_find_query(query: &str, options: FindOptions) -> ();
-        fn next_match(direction: SearchDirection) -> Option<SourcePoint>;
-        fn set_annotations(annotations: Vec<DiffAnnotation>) -> ();
-        fn set_annotation_height(id: AnnotationId, revision: u64, height: f32) -> bool;
-        fn handle(event: DiffEvent) -> DiffOutcome;
-        fn set_file_collapsed(file: FileId, collapsed: bool) -> bool;
-        fn enable_syntax(store: GrammarStore) -> ();
-        fn enable_syntax_shared(worker: &HighlightWorker, store: GrammarStore) -> ();
-        fn finish_syntax() -> bool;
-    }
-
-    /// See [`DiffViewState::set_syntax_wake`].
-    pub fn set_syntax_wake(&mut self, wake: impl Fn() + Send + Sync + 'static) {
-        self.view.set_syntax_wake(wake);
-    }
-
-    /// Each annotation with whether it is outdated, in the order given.
-    pub fn annotations(&self) -> impl Iterator<Item = (&DiffAnnotation, bool)> {
-        self.view.annotations()
-    }
-
-    /// See [`DiffViewState::prepare`].
-    pub fn prepare(
-        &mut self,
-        text: &mut TextSystem,
-        layouts: &mut LayoutCache,
-        scale: f32,
-        now_ms: u64,
-    ) {
-        self.view.prepare(text, layouts, scale, now_ms);
     }
 
     /// Applies `update` to the session and shows the result. A refused
@@ -422,16 +362,6 @@ impl DiffSessionViewState {
             files.slot_seg[segment.slot as usize] = position as u32;
         }
     }
-
-    /// An anchor on `lines` of `file`'s current revision, when they exist.
-    pub fn anchor_for(
-        &self,
-        file: FileId,
-        side: Side,
-        lines: std::ops::Range<u32>,
-    ) -> Option<DiffAnchor> {
-        self.view.anchor_for(file, side, lines)
-    }
 }
 
 /// Reveals in `new` the gap lines `old` showed revealed whose text
@@ -471,29 +401,6 @@ fn carry_expansion(old: &Segment, new: &mut Segment, remap: &SourceRemap, mode: 
     if changed {
         new.rebuild(mode);
     }
-}
-
-/// The session diff at its viewport size, as of the last
-/// [`DiffSessionViewState::prepare`]; see [`super::diff_view`].
-pub fn diff_session_view(
-    state: &mut DiffSessionViewState,
-    theme: &Theme,
-    env: CollectionEnv,
-    on_event: fn(DiffEvent) -> Action,
-) -> AnyElement {
-    super::diff_view(&mut state.view, theme, env, on_event)
-}
-
-/// [`diff_session_view`] with the app's `decorator`; see
-/// [`super::diff_view_with`].
-pub fn diff_session_view_with(
-    state: &mut DiffSessionViewState,
-    theme: &Theme,
-    env: CollectionEnv,
-    on_event: fn(DiffEvent) -> Action,
-    decorator: Option<Rc<dyn DiffDecorator>>,
-) -> AnyElement {
-    super::diff_view_with(&mut state.view, theme, env, on_event, decorator)
 }
 
 #[cfg(test)]

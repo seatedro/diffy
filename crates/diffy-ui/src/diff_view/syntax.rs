@@ -58,6 +58,8 @@ use diffy_syntax::{
 };
 use quark_text::TextSpan;
 
+use super::DiffViewState;
+
 /// How far a file side's colors can be trusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SyntaxStatus {
@@ -666,6 +668,131 @@ fn hunk_fragments(
             (to > from).then(|| line_start(from) as u32..line_start(to) as u32)
         })
         .collect()
+}
+
+impl DiffViewState {
+    /// Highlights every file on a background thread, by file extension,
+    /// with `store`'s grammars. Files whose language has no grammar (or
+    /// whose grammar is still downloading) stay plain until it arrives.
+    /// A session view also highlights each file revision as it arrives.
+    pub fn enable_syntax(&mut self, store: GrammarStore) {
+        if !self.files.is_static() {
+            self.attach_session_syntax(HighlightWorker::new(store.clone()), store);
+            return;
+        }
+        self.syntax.enable(store);
+        self.syntax
+            .request(&self.segments[0].doc, self.segments[0].generation);
+    }
+
+    /// [`Self::enable_syntax`] on a worker shared with other views, so many
+    /// diffs need one parsing thread.
+    pub fn enable_syntax_shared(&mut self, worker: &HighlightWorker, store: GrammarStore) {
+        if !self.files.is_static() {
+            self.attach_session_syntax(worker.share(), store);
+            return;
+        }
+        self.syntax.enable_shared(worker, store);
+        self.syntax
+            .request(&self.segments[0].doc, self.segments[0].generation);
+    }
+
+    /// Calls `wake` from the syntax worker when results are ready, so an
+    /// idle app can ask for a frame instead of polling.
+    pub fn set_syntax_wake(&mut self, wake: impl Fn() + Send + Sync + 'static) {
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+        let each = |bridge: &mut DiffSyntax| {
+            let wake = wake.clone();
+            bridge.set_wake(move || wake());
+        };
+        each(&mut self.syntax);
+        self.slot_syntax.iter_mut().for_each(each);
+        self.syntax_wake = Some(wake);
+    }
+
+    /// Session views: highlights every file on `worker`, one bridge per
+    /// file slot, each a handle of its own on the worker's thread.
+    fn attach_session_syntax(&mut self, worker: HighlightWorker, store: GrammarStore) {
+        // Bridges of an earlier worker lose their requests with it.
+        self.slot_syntax.clear();
+        self.session_worker = Some((worker, store));
+        for seg in 0..self.segments.len() {
+            self.request_slot_syntax(seg);
+        }
+    }
+
+    /// Asks for the colors of segment `seg`'s current document. Sides
+    /// whose source did not change keep the colors they have.
+    pub(crate) fn request_slot_syntax(&mut self, seg: usize) {
+        let Some((worker, store)) = &self.session_worker else {
+            return;
+        };
+        let segment = &self.segments[seg];
+        let slot = segment.slot as usize;
+        if self.slot_syntax.len() <= slot {
+            self.slot_syntax.resize_with(slot + 1, DiffSyntax::default);
+        }
+        let bridge = &mut self.slot_syntax[slot];
+        if !bridge.is_enabled() {
+            if let Some(wake) = &self.syntax_wake {
+                let wake = wake.clone();
+                bridge.set_wake(move || wake());
+            }
+            bridge.set_budget(SyntaxBudget {
+                side_bytes: self.limits.syntax_file_bytes,
+            });
+            bridge.enable_shared(worker, store.clone());
+        }
+        bridge.request(&segment.doc, segment.generation);
+    }
+
+    /// Drops the colors of a slot whose file left the session.
+    pub(crate) fn drop_slot_syntax(&mut self, slot: u32) {
+        if let Some(bridge) = self.slot_syntax.get_mut(slot as usize) {
+            *bridge = DiffSyntax::default();
+        }
+    }
+
+    /// The bridge holding segment `seg`'s colors, and the index it knows
+    /// the segment's `file` by.
+    pub(crate) fn syntax_of(&self, seg: usize, file: u32) -> Option<(&DiffSyntax, u32)> {
+        if self.files.is_static() {
+            return Some((&self.syntax, file));
+        }
+        let slot = self.segments.get(seg)?.slot;
+        self.slot_syntax.get(slot as usize).map(|s| (s, file))
+    }
+
+    /// Takes finished highlights. Returns whether any recolored a file.
+    pub(super) fn poll_syntax(&mut self) -> bool {
+        if self.files.is_static() {
+            return self
+                .segments
+                .first()
+                .is_some_and(|segment| self.syntax.poll(segment.generation));
+        }
+        let mut changed = false;
+        for segment in &self.segments {
+            if let Some(bridge) = self.slot_syntax.get_mut(segment.slot as usize) {
+                changed |= bridge.poll(segment.generation);
+            }
+        }
+        changed
+    }
+
+    /// Blocks until every requested highlight has its first result and
+    /// takes it, so the next frame shows colors. For tests and
+    /// screenshots.
+    pub fn finish_syntax(&mut self) -> bool {
+        let mut changed = self.syntax.finish_pending();
+        for bridge in &mut self.slot_syntax {
+            changed |= bridge.finish_pending();
+        }
+        if changed {
+            self.revision += 1;
+        }
+        changed
+    }
 }
 
 #[cfg(test)]

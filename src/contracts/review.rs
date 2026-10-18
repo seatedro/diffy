@@ -87,6 +87,9 @@ pub enum ReviewAction {
     CardDocument { card: CardKey, event: DocumentEvent },
     CopyCardSelection(CardKey),
     ScrollComposer(i32),
+    OpenSubmitMenu,
+    PeekPullRequest { url: String },
+    ToggleFileComments(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -364,6 +367,10 @@ pub enum ReviewEffect {
         pull_request: Box<PullRequestInfo>,
     },
     SaveSession {
+        scope: ReviewScope,
+        session: Box<ReviewSession>,
+    },
+    SaveSessionDraft {
         scope: ReviewScope,
         session: Box<ReviewSession>,
     },

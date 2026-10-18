@@ -648,7 +648,23 @@ fn allow_unsigned_packs() -> bool {
     cfg!(debug_assertions) || std::env::var_os(ALLOW_UNSIGNED_ENV).is_some()
 }
 
+static STORAGE_DIR_OVERRIDE: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+#[doc(hidden)]
+pub fn override_storage_dir(dir: PathBuf) {
+    *STORAGE_DIR_OVERRIDE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(dir);
+}
+
 fn default_storage_dir() -> Result<PathBuf> {
+    if let Some(dir) = STORAGE_DIR_OVERRIDE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    {
+        return Ok(dir);
+    }
     dirs::data_local_dir()
         .map(|base| base.join("diffy").join("phosphor").join("languages"))
         .ok_or(PackError::MissingStorageDir)

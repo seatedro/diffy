@@ -608,8 +608,8 @@ mod download {
     /// test holds `hold`, or the [`Server::gate`] of their path. Range
     /// requests get the rest of the file from their offset, and a path in
     /// `cut` sends only that many bytes before closing the connection.
-    struct Server {
-        url: String,
+    pub(super) struct Server {
+        pub(super) url: String,
         files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
         cut: Arc<Mutex<HashMap<String, usize>>>,
         hold: Arc<Mutex<()>>,
@@ -620,7 +620,7 @@ mod download {
     }
 
     impl Server {
-        fn start() -> Self {
+        pub(super) fn start() -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!("http://{}", listener.local_addr().unwrap());
             let files: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::default();
@@ -703,7 +703,7 @@ mod download {
             }
         }
 
-        fn serve(&self, path: &str, bytes: Vec<u8>) {
+        pub(super) fn serve(&self, path: &str, bytes: Vec<u8>) {
             self.files.lock().unwrap().insert(path.to_owned(), bytes);
         }
 
@@ -717,7 +717,7 @@ mod download {
                 .clone()
         }
 
-        fn log(&self) -> Vec<String> {
+        pub(super) fn log(&self) -> Vec<String> {
             self.log.lock().unwrap().clone()
         }
     }
@@ -760,7 +760,7 @@ mod download {
         format!("/packs/{}/index.json", pack::TARGET)
     }
 
-    fn wait(resolved: &Receiver<()>) {
+    pub(super) fn wait(resolved: &Receiver<()>) {
         resolved
             .recv_timeout(Duration::from_secs(60))
             .expect("the fetch thread resolves the language");
@@ -1223,5 +1223,457 @@ fn report_large_highlights() {
             peak_rss_mib(),
             peak_rss_mib() - before
         );
+    }
+}
+
+mod legacy {
+    use std::path::Path;
+    use std::sync::mpsc::{Receiver, channel};
+
+    use serde_json::{Value, json};
+
+    use super::download::{Server, wait};
+    use super::*;
+    use crate::legacy_pack::{self, GrammarState, GrammarStatus, LegacyPacks, platform};
+    use crate::pack::PackError;
+    use crate::testing::legacy::{self as fixture, PublishedPack};
+
+    const INDEX: &str = "/legacy/index.json";
+
+    fn dummy(language: &str) -> PublishedPack {
+        PublishedPack::new(language, b"not a library", b"(identifier) @variable")
+    }
+
+    fn publish(server: &Server, packs: &[PublishedPack]) {
+        let entries = packs.iter().map(|pack| pack.entry(&server.url)).collect();
+        server.serve(
+            INDEX,
+            fixture::sign(&fixture::index(entries))
+                .unwrap()
+                .into_bytes(),
+        );
+        for pack in packs {
+            for (name, bytes) in pack.files() {
+                server.serve(&pack.url_path(&name), bytes);
+            }
+        }
+    }
+
+    fn downloading(server: &Server, storage: &Path) -> (GrammarStore, Receiver<()>) {
+        let legacy = LegacyPacks::new(storage, &[fixture::key().unwrap()])
+            .downloads(format!("{}{INDEX}", server.url));
+        let store = GrammarStore::new(StoreConfig::new().legacy_packs(legacy));
+        let (sender, receiver) = channel();
+        store.subscribe(move || sender.send(()).is_ok());
+        (store, receiver)
+    }
+
+    fn state(store: &GrammarStore, language: &str) -> Option<GrammarState> {
+        store
+            .legacy_status()
+            .into_iter()
+            .find(|status| status.language == language)
+            .map(|status| status.state)
+    }
+
+    fn failed(store: &GrammarStore, language: &str) -> String {
+        match state(store, language) {
+            Some(GrammarState::Failed(message)) => message,
+            other => panic!("{language} did not fail: {other:?}"),
+        }
+    }
+
+    fn rust() -> Option<PublishedPack> {
+        Some(fixture::native_packs(&[("rust", "rust")])?.remove(0))
+    }
+
+    fn keywords(store: &GrammarStore, source: &str) -> String {
+        dump(
+            &highlight(store, &language("rs"), source),
+            source,
+            &[HighlightKind::Keyword],
+        )
+    }
+
+    #[test]
+    fn tags_follow_the_phosphor_registry() {
+        let cases = [
+            ("rs", Some("rust")),
+            ("rust", Some("rust")),
+            ("js", Some("typescript")),
+            ("mjs", Some("typescript")),
+            ("jsx", Some("tsx")),
+            ("javascript", Some("javascript")),
+            ("h", Some("c")),
+            ("hpp", Some("cpp")),
+            ("zsh", Some("bash")),
+            ("pyi", Some("python")),
+            ("nix", Some("nix")),
+            ("zig", Some("zig")),
+            ("md", None),
+        ];
+        for (tag, expected) in cases {
+            assert_eq!(
+                legacy_pack::language_for_tag(tag).map(|l| l.name),
+                expected,
+                "{tag}"
+            );
+        }
+        let paths = [
+            ("src/app.JS", Some("typescript")),
+            ("flake.nix", Some("nix")),
+            ("build.zig", Some("zig")),
+            (".bashrc", None),
+            ("Makefile", None),
+        ];
+        for (path, expected) in paths {
+            assert_eq!(
+                legacy_pack::language_for_path(path).map(|l| l.name),
+                expected,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_index_verification_table() {
+        let good = || dummy("rust").entry("https://example.com");
+        let signed = |payload: &Value| fixture::sign(payload).unwrap();
+        let with = |field: &str, value: Value| {
+            let mut entry = good();
+            entry[field] = value;
+            signed(&fixture::index(vec![entry]))
+        };
+        let tampered = {
+            let mut document: Value =
+                serde_json::from_str(&signed(&fixture::index(vec![good()]))).unwrap();
+            document["payload"]["packs"][0]["symbol"] = json!("tree_sitter_evil");
+            document.to_string()
+        };
+        let mut other_platform = fixture::index(vec![good()]);
+        other_platform["platform"] = json!("plan9-mips");
+        let mut old_abi = fixture::index(vec![good()]);
+        old_abi["tree_sitter_abi"] = json!(13);
+        let mut foreign = dummy("ada").entry("https://example.com");
+        foreign["symbol"] = json!("tree_sitter_ada; rm");
+        let other_key =
+            quark_update::manifest::sign(&[3; 32], &fixture::index(vec![good()])).unwrap();
+
+        let cases = [
+            ("valid", signed(&fixture::index(vec![good()])), "rust"),
+            ("tampered", tampered, "bad signature"),
+            ("other key", other_key, "bad signature"),
+            (
+                "other platform",
+                signed(&other_platform),
+                "wrong target plan9-mips",
+            ),
+            ("abi", signed(&old_abi), "abi 13"),
+            (
+                "foreign language",
+                signed(&fixture::index(vec![good(), foreign])),
+                "rust",
+            ),
+            (
+                "version traversal",
+                with("version", json!("../v1")),
+                "rejected rust: unsafe version",
+            ),
+            (
+                "symbol",
+                with("symbol", json!("tree_sitter_rust; rm")),
+                "rejected rust: unsafe symbol",
+            ),
+            (
+                "parser traversal",
+                with(
+                    "parser",
+                    json!({"url": "u", "path": "../parser.dylib", "sha256": "0".repeat(64)}),
+                ),
+                "rejected rust: unsafe parser",
+            ),
+            (
+                "parser suffix",
+                with(
+                    "parser",
+                    json!({"url": "u", "path": "highlights.scm", "sha256": "0".repeat(64)}),
+                ),
+                "rejected rust: unsafe parser.path",
+            ),
+            (
+                "manifest name",
+                with(
+                    "manifest",
+                    json!({"url": "u", "path": "other.json", "sha256": "0".repeat(64)}),
+                ),
+                "rejected rust: unsafe manifest.path",
+            ),
+        ];
+        let key = crate::download::public_key_bytes(&fixture::key().unwrap());
+        for (name, document, expected) in cases {
+            let outcome =
+                match legacy_pack::verify_legacy_index(document.as_bytes(), &[key], platform()) {
+                    Ok(index) => {
+                        let mut parts: Vec<String> =
+                            index.packs.iter().map(|p| p.language.clone()).collect();
+                        parts.extend(index.rejected.iter().map(|(language, error)| match error {
+                            PackError::Unsafe { field, .. } => {
+                                format!("rejected {language}: unsafe {field}")
+                            }
+                            other => format!("rejected {language}: {other}"),
+                        }));
+                        parts.join(", ")
+                    }
+                    Err(PackError::BadSignature) => "bad signature".to_owned(),
+                    Err(PackError::WrongTarget { found, .. }) => format!("wrong target {found}"),
+                    Err(PackError::Abi { abi, .. }) => format!("abi {abi}"),
+                    Err(error) => error.to_string(),
+                };
+            assert_eq!(outcome, expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn unverified_cache_is_never_loaded() {
+        let Some(pack) = rust() else { return };
+        let cases = ["no index", "index signed by another key", "manifest edited"];
+        for case in cases {
+            let storage = tempfile::tempdir().unwrap();
+            let dir = pack.install(storage.path()).unwrap();
+            match case {
+                "no index" => {}
+                "index signed by another key" => {
+                    let index = fixture::index(vec![pack.entry("https://example.com")]);
+                    let document = quark_update::manifest::sign(&[3; 32], &index).unwrap();
+                    fixture::write_index(storage.path(), &document).unwrap();
+                }
+                _ => {
+                    fixture::install_signed(storage.path(), std::slice::from_ref(&pack)).unwrap();
+                    let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
+                    std::fs::write(
+                        dir.join("manifest.json"),
+                        manifest.replace("\"source\"", "\"extra\": 1, \"source\""),
+                    )
+                    .unwrap();
+                }
+            }
+            let store = fixture::cached_store(storage.path()).unwrap();
+
+            assert_eq!(
+                (store.status(&language("rs")), store.legacy_status()),
+                (LanguageStatus::Unavailable, Vec::new()),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn signed_cache_loads_offline_without_requests() {
+        let Some(pack) = rust() else { return };
+        let storage = tempfile::tempdir().unwrap();
+        fixture::install_signed(storage.path(), std::slice::from_ref(&pack)).unwrap();
+        let server = Server::start();
+        let (store, _) = downloading(&server, storage.path());
+
+        assert_eq!(
+            (
+                store.status(&language("rs")),
+                keywords(&store, RUST),
+                server.log()
+            ),
+            (
+                LanguageStatus::Ready,
+                RUST_DUMP_KEYWORDS.to_owned(),
+                Vec::<String>::new()
+            )
+        );
+    }
+
+    const RUST_DUMP_KEYWORDS: &str = "keyword:fn keyword:let keyword:if keyword:return";
+
+    #[test]
+    fn download_installs_the_phosphor_layout_and_prunes_old_versions() {
+        let Some(pack) = rust() else { return };
+        let storage = tempfile::tempdir().unwrap();
+        let mut old = pack.clone();
+        old.version = "000000000000-000000000000".to_owned();
+        let old_dir = old.install(storage.path()).unwrap();
+        let server = Server::start();
+        publish(&server, std::slice::from_ref(&pack));
+        let (store, resolved) = downloading(&server, storage.path());
+
+        let first = store.status(&language("rust"));
+        wait(&resolved);
+        let dir = pack.dir(storage.path());
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
+
+        assert_eq!(first, LanguageStatus::Pending);
+        assert_eq!(store.status(&language("rs")), LanguageStatus::Ready);
+        assert_eq!(keywords(&store, RUST), RUST_DUMP_KEYWORDS);
+        assert_eq!(
+            (
+                manifest["platform"].as_str(),
+                manifest["parser"]["path"].as_str()
+            ),
+            (Some(platform()), Some(fixture::parser_name().as_str()))
+        );
+        assert!(
+            storage
+                .path()
+                .join(".index")
+                .join(format!("{}.json", platform()))
+                .is_file()
+        );
+        assert!(!old_dir.exists());
+        assert_eq!(
+            store.legacy_status(),
+            vec![GrammarStatus {
+                language: "rust",
+                state: GrammarState::Ready
+            }]
+        );
+    }
+
+    #[test]
+    fn corrupt_cached_pack_is_downloaded_again() {
+        let Some(pack) = rust() else { return };
+        let storage = tempfile::tempdir().unwrap();
+        let dir = pack.install(storage.path()).unwrap();
+        std::fs::write(dir.join(fixture::parser_name()), b"truncated").unwrap();
+        let server = Server::start();
+        publish(&server, std::slice::from_ref(&pack));
+        let (store, resolved) = downloading(&server, storage.path());
+
+        let first = store.status(&language("rs"));
+        wait(&resolved);
+
+        assert_eq!(
+            (first, store.status(&language("rs")), keywords(&store, RUST)),
+            (
+                LanguageStatus::Pending,
+                LanguageStatus::Ready,
+                RUST_DUMP_KEYWORDS.to_owned()
+            )
+        );
+        assert!(
+            server
+                .log()
+                .contains(&pack.url_path(&fixture::parser_name()))
+        );
+    }
+
+    #[test]
+    fn swapped_download_is_rejected_before_it_reaches_the_cache() {
+        let pack = dummy("rust");
+        let storage = tempfile::tempdir().unwrap();
+        let server = Server::start();
+        publish(&server, std::slice::from_ref(&pack));
+        server.serve(&pack.url_path(&fixture::parser_name()), b"swapped".to_vec());
+        let (store, resolved) = downloading(&server, storage.path());
+
+        store.status(&language("rs"));
+        wait(&resolved);
+        let dir = pack.dir(storage.path());
+
+        assert_eq!(store.status(&language("rs")), LanguageStatus::Unavailable);
+        assert!(failed(&store, "rust").contains("SHA-256"));
+        assert!(!dir.join(fixture::parser_name()).exists());
+        assert!(!dir.join("manifest.json").exists());
+    }
+
+    #[test]
+    fn failed_downloads_stay_failed_until_retried() {
+        let Some(pack) = rust() else { return };
+        let cases = ["offline", "not published"];
+        for case in cases {
+            let storage = tempfile::tempdir().unwrap();
+            let server = Server::start();
+            if case == "not published" {
+                publish(&server, &[dummy("go")]);
+            }
+            let (store, resolved) = downloading(&server, storage.path());
+
+            store.status(&language("rs"));
+            wait(&resolved);
+            let reason = failed(&store, "rust");
+            let again = store.status(&language("rust"));
+            let requests = server.log().len();
+            publish(&server, std::slice::from_ref(&pack));
+            let unretried = store.status(&language("rs"));
+            let retried = store.retry("rs");
+            let pending = store.status(&language("rs"));
+            wait(&resolved);
+
+            assert!(
+                match case {
+                    "offline" => reason.contains("HTTP 404"),
+                    _ => reason.contains("not published"),
+                },
+                "{case}: {reason}"
+            );
+            assert_eq!(
+                (
+                    again,
+                    unretried,
+                    retried,
+                    pending,
+                    store.status(&language("rs"))
+                ),
+                (
+                    LanguageStatus::Unavailable,
+                    LanguageStatus::Unavailable,
+                    true,
+                    LanguageStatus::Pending,
+                    LanguageStatus::Ready
+                ),
+                "{case}"
+            );
+            assert_eq!(requests, 1, "{case}");
+            assert!(!store.retry("rs"), "{case}");
+        }
+    }
+
+    #[test]
+    fn tsx_downloads_and_inherits_typescript() {
+        let Some(packs) = fixture::native_packs(&[("typescript", "typescript"), ("tsx", "tsx")])
+        else {
+            return;
+        };
+        let storage = tempfile::tempdir().unwrap();
+        let server = Server::start();
+        publish(&server, &packs);
+        let (store, resolved) = downloading(&server, storage.path());
+
+        store.status(&language("jsx"));
+        wait(&resolved);
+        let source = "const view = <a href=\"x\">{1}</a>;\n";
+
+        assert_eq!(store.status(&language("tsx")), LanguageStatus::Ready);
+        assert_eq!(
+            dump(
+                &highlight(&store, &language("jsx"), source),
+                source,
+                &[HighlightKind::Keyword, HighlightKind::String]
+            ),
+            "keyword:const string:\"x\""
+        );
+        assert!(packs[0].dir(storage.path()).join("manifest.json").is_file());
+    }
+
+    #[test]
+    fn inherited_queries_compose_like_phosphor() {
+        let typescript =
+            legacy_pack::compose_highlights("; inherits: ecma\n(type_identifier) @type\n", None);
+        let tsx = legacy_pack::compose_highlights(
+            "; inherits: typescript,jsx\n(jsx_element) @tag\n",
+            Some(&typescript),
+        );
+        let plain =
+            legacy_pack::compose_highlights("; inherits: c\n(identifier) @variable\n", None);
+
+        assert!(typescript.starts_with(legacy_pack::ECMA_HIGHLIGHTS));
+        assert!(tsx.contains("(type_identifier) @type") && tsx.ends_with("(jsx_element) @tag\n"));
+        assert_eq!(plain, "; inherits: c\n(identifier) @variable\n");
     }
 }

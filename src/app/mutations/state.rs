@@ -7,7 +7,7 @@ use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark_ui::FocusId;
 use quark_ui::text_input::{Editor, EditorMode, TextEditCommand, TextEditOutcome, TextField};
 
-use super::presentation::{MutationPresentation, PresentationStyle, mutable_buckets};
+use super::presentation::{MutationPresentation, PresentationStyle};
 use crate::ai::{DEFAULT_STEERING_PROMPT, Provider};
 use crate::app::text_targets::{
     COMMIT_MESSAGE, SETTINGS_ANTHROPIC_KEY, SETTINGS_OPENAI_KEY, SETTINGS_STEERING_PROMPT, TextCx,
@@ -211,16 +211,12 @@ fn progress(id: JobId, message: impl Into<String>) -> Intent {
     })
 }
 
-fn mutable_file(cx: &SharedContext, file: FileKey) -> bool {
+fn mutable_file(cx: &SharedContext, file: FileKey, revision: FileRevision) -> bool {
     cx.manifest
         .as_ref()
         .filter(|manifest| manifest.working_tree)
-        .is_some_and(|manifest| {
-            manifest
-                .files
-                .iter()
-                .any(|entry| entry.key == file && !entry.buckets.is_empty())
-        })
+        .and_then(|manifest| manifest.file(file))
+        .is_some_and(|entry| entry.revision == revision && !entry.buckets.is_empty())
 }
 
 pub fn working_tree(cx: &SharedContext) -> bool {
@@ -414,7 +410,7 @@ impl MutationsController {
             self.presentation.revision().wrapping_add(1),
             self.presentation.style(),
             capabilities(cx).is_some_and(|c| c.partial_hunk_mutation),
-            mutable_buckets(cx.manifest.as_deref()),
+            cx.manifest.clone(),
             self.selection.clone(),
         );
         if !self.presentation.same_content(&next) {
@@ -1366,7 +1362,7 @@ impl Controller for MutationsController {
             A::SelectLines(target)
             | A::ToggleLineSelection(target)
             | A::ExtendLineSelection(target)
-                if !mutable_file(cx, target.file) =>
+                if !mutable_file(cx, target.file, target.revision) =>
             {
                 Reduction::default()
             }
@@ -1389,7 +1385,7 @@ impl Controller for MutationsController {
                 let Some(target) = cx.selection.clone() else {
                     return error("Move the cursor to a changed line before selecting lines.");
                 };
-                if !mutable_file(cx, target.file) {
+                if !mutable_file(cx, target.file, target.revision) {
                     return Reduction::default();
                 }
                 if action == A::ToggleCurrentLineSelection {
@@ -1430,6 +1426,15 @@ impl Controller for MutationsController {
                 Err(reduction) => reduction,
             },
             A::Push { force_with_lease } => self.push(force_with_lease, cx),
+            A::PublishDefault
+                if cx
+                    .repository
+                    .as_ref()
+                    .and_then(|repo| repo.snapshot.publish_plan.as_ref())
+                    .is_some_and(|plan| !plan.has_remote()) =>
+            {
+                self.open_publish_menu(cx)
+            }
             A::PublishDefault => self.publish(None, cx),
             A::OpenPublishMenu => self.open_publish_menu(cx),
             A::Publish(action) => self.publish(Some(*action), cx),
@@ -2053,6 +2058,9 @@ impl CommandSource for MutationsController {
             index += 1;
             index <= start || keep(command.id)
         });
+        if !working {
+            return;
+        }
         if let Some(job) = self.latest_undo(true) {
             out.push(CommandDescriptor::new(
                 "mutations.undo_commit",

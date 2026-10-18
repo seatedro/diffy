@@ -951,6 +951,12 @@ impl VcsRepository for JjRepository {
 
     fn publish_plan(&mut self) -> Result<PublishPlan> {
         self.ensure_read_epoch()?;
+        if self.remote_names()?.is_empty() {
+            return Ok(PublishPlan::no_remote(
+                "This repository",
+                "Add one with jj git remote add <name> <url>, then publish.",
+            ));
+        }
         let remote = self.preferred_remote()?;
         let target = self.default_publish_target()?;
         let bookmarks = self.local_bookmarks_at(&target.commit_id)?;
@@ -1203,6 +1209,9 @@ impl VcsRepository for JjRepository {
                     "publish",
                     "jj cannot run a Git refspec publish action",
                 ));
+            }
+            PublishActionKind::NoRemote => {
+                return Err(jj_error("publish", "no remotes are configured"));
             }
         }
         self.clear_after_write();

@@ -112,7 +112,7 @@ impl PendingSnapshot {
             .files
             .iter()
             .any(|file| file.before.as_deref().map(digest) != file.after);
-        changed.then(|| WorktreeSnapshot {
+        changed.then_some(WorktreeSnapshot {
             root: self.root,
             files: self.files,
         })

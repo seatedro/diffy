@@ -368,6 +368,25 @@ pub struct PublishPlan {
     pub alternatives: Vec<PublishAction>,
 }
 
+impl PublishPlan {
+    pub fn no_remote(subject: &str, hint: &str) -> Self {
+        Self {
+            primary: PublishAction {
+                label: "No remote".to_owned(),
+                description: format!("{subject} has no remote to push to."),
+                kind: PublishActionKind::NoRemote,
+                disabled_reason: Some(hint.to_owned()),
+                change_id_token: None,
+            },
+            alternatives: Vec::new(),
+        }
+    }
+
+    pub fn has_remote(&self) -> bool {
+        self.primary.kind != PublishActionKind::NoRemote
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishAction {
     pub label: String,
@@ -424,6 +443,7 @@ pub enum PublishActionKind {
         bookmark: String,
         revision: String,
     },
+    NoRemote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

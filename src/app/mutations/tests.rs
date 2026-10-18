@@ -618,7 +618,7 @@ impl UiApp for Host {
         let panel = panel(&mut self.controller, &slot, cx);
         let presentation = self.controller.presentation();
         let chrome = Chrome::from_theme(cx.theme);
-        let hunk = mutation_controls::row(presentation.hunk_actions(&hunk()), &chrome);
+        let hunk = mutation_controls::row(presentation.actions_for_hunk(&hunk()), &chrome);
         let sidebar = Slot {
             shared: &self.shared,
             width: width * 0.4,
@@ -809,6 +809,26 @@ fn publish_menu_lists_plan_actions() {
 }
 
 #[test]
+fn publish_menu_without_a_remote_offers_no_push() {
+    let mut ui = harness();
+    ui.click_node(By::role_name(Role::Button, "Publish"));
+    let Some(MutationsEffect::LoadPublishPlan { job, .. }) = ui.app().effects().last().cloned()
+    else {
+        panic!("expected a plan load");
+    };
+    ui.send_message(HostMessage::Event(MutationsEvent::PublishPlanReady {
+        job,
+        path: PathBuf::from("/repo"),
+        plan: Box::new(PublishPlan::no_remote("main", "Add a remote.")),
+    }));
+    assert!(
+        ui.try_find(By::test_id("mutations.publish.no-remote"))
+            .is_some()
+    );
+    assert!(ui.try_find(By::test_id("mutations.publish.0")).is_none());
+}
+
+#[test]
 fn presentation_marks_selected_lines_and_offers_hunk_controls() {
     use diffy_ui::diff_view::decorator::{DiffDecorator, FileSource, LineContext, LineMark};
     let cx = shared();
@@ -838,7 +858,7 @@ fn presentation_marks_selected_lines_and_offers_hunk_controls() {
     assert_eq!(presentation.line_mark(&line(3)), Some(LineMark::Selected));
     assert_eq!(presentation.line_mark(&line(4)), None);
     let labels: Vec<_> = presentation
-        .hunk_actions(&hunk())
+        .actions_for_hunk(&hunk())
         .into_iter()
         .map(|control| control.label)
         .collect();
@@ -962,7 +982,12 @@ fn nothing_mutates_outside_working_tree_compares() {
     cx.manifest = Some(Rc::new(manifest));
     let mut controller = MutationsController::default();
     controller.apply_intent(&Intent::PublishManifest(cx.manifest.clone().unwrap()), &cx);
-    assert!(controller.presentation().hunk_actions(&hunk()).is_empty());
+    assert!(
+        controller
+            .presentation()
+            .actions_for_hunk(&hunk())
+            .is_empty()
+    );
     let staged = controller.reduce_action(MutationsAction::StageHunkAt(hunk()), &cx);
     assert!(staged.effects.is_empty());
     let mut commands = Vec::new();
@@ -972,6 +997,76 @@ fn nothing_mutates_outside_working_tree_compares() {
         "mutations.stage" | "mutations.discard" | "mutations.commit" | "mutations.publish"
     )));
     assert!(super::file_row_actions(&cx.manifest.as_ref().unwrap().files[0], &cx).is_empty());
+}
+
+#[test]
+fn decorator_outputs_follow_the_displayed_compare() {
+    use diffy_ui::diff_view::Revision;
+    use diffy_ui::diff_view::decorator::{
+        DiffDecorator, FileSource, GutterContext, HeaderContext, HeaderSlot,
+    };
+    let header = |revision: u64| HeaderContext {
+        file: 0,
+        source: Some(FileSource {
+            id: FILE,
+            revision: Revision(revision),
+        }),
+        title: "f.txt",
+        status: diffy_diff::FileStatus::Modified,
+        additions: 1,
+        deletions: 1,
+        binary: false,
+        width: 400.0,
+        height: 28.0,
+    };
+    let gutter = GutterContext {
+        file: 0,
+        source: header(REVISION.0).source,
+        side: Side::New,
+        line: 0,
+        kind: diffy_diff::RowKind::Added,
+        width: 16.0,
+        height: 16.0,
+    };
+    let mut cx = shared();
+    let mut controller = MutationsController::default();
+    controller.apply_intent(&Intent::PublishManifest(cx.manifest.clone().unwrap()), &cx);
+    let presentation = controller.presentation();
+    assert_eq!(
+        presentation.file_state(&header(REVISION.0)).as_deref(),
+        Some("Modified \u{00b7} unstaged + staged")
+    );
+    assert!(
+        presentation
+            .header_slot(HeaderSlot::Actions, &header(REVISION.0))
+            .is_some()
+    );
+    assert!(presentation.gutter_utility(&gutter).is_some());
+    assert!(presentation.file_state(&header(REVISION.0 + 1)).is_none());
+    assert!(
+        presentation
+            .header_slot(HeaderSlot::Actions, &header(REVISION.0 + 1))
+            .is_none()
+    );
+    let mut stale = hunk();
+    stale.source.revision = FileRevision(REVISION.0 + 1);
+    assert!(presentation.actions_for_hunk(&stale).is_empty());
+
+    let mut manifest = (*manifest(REVISION)).clone();
+    manifest.working_tree = false;
+    cx.manifest = Some(Rc::new(manifest));
+    controller.apply_intent(&Intent::PublishManifest(cx.manifest.clone().unwrap()), &cx);
+    let presentation = controller.presentation();
+    assert_eq!(
+        presentation.file_state(&header(REVISION.0)).as_deref(),
+        Some("Read-only")
+    );
+    assert!(
+        presentation
+            .header_slot(HeaderSlot::Actions, &header(REVISION.0))
+            .is_none()
+    );
+    assert!(presentation.gutter_utility(&gutter).is_none());
 }
 
 #[test]

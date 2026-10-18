@@ -460,22 +460,10 @@ impl VcsRepository for GitRepository {
             })?;
         let remotes = self.service.remote_names()?;
         if remotes.is_empty() {
-            return Ok(PublishPlan {
-                primary: PublishAction {
-                    label: "No remote".to_owned(),
-                    description: format!("{} has no remote to push to", branch.name),
-                    kind: PublishActionKind::PushRef {
-                        remote: String::new(),
-                        refspec: String::new(),
-                        force_with_lease: false,
-                    },
-                    disabled_reason: Some(
-                        "Add a remote with `git remote add` to publish this branch.".to_owned(),
-                    ),
-                    change_id_token: None,
-                },
-                alternatives: Vec::new(),
-            });
+            return Ok(PublishPlan::no_remote(
+                &branch.name,
+                "Add one with git remote add <name> <url>, then publish.",
+            ));
         }
         let (remote, upstream_branch) = branch
             .upstream
@@ -506,6 +494,9 @@ impl VcsRepository for GitRepository {
     }
 
     fn publish(&mut self, action: &PublishAction) -> Result<PublishOutcome> {
+        if let Some(reason) = &action.disabled_reason {
+            return Err(DiffyError::General(reason.clone()));
+        }
         match &action.kind {
             PublishActionKind::PushRef {
                 remote,

@@ -1,6 +1,7 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use std::rc::Rc;
 
-use diffy_diff::RowKind;
+use diffy_diff::{FileStatus, RowKind};
 use diffy_ui::diff_view::decorator::{
     DiffDecorator, FileSource, GutterContext, HeaderContext, HeaderSlot, LineContext, LineMark,
     SeparatorContext,
@@ -51,28 +52,12 @@ pub struct MutationPresentation {
     revision: u64,
     style: PresentationStyle,
     partial: bool,
-    buckets: HashMap<FileKey, Vec<ChangeBucket>>,
+    manifest: Option<Rc<CompareManifestSnapshot>>,
     selection: BTreeSet<LineKey>,
 }
 
 fn file_revision(source: FileSource) -> FileRevision {
     FileRevision(source.revision.0)
-}
-
-pub fn mutable_buckets(
-    manifest: Option<&CompareManifestSnapshot>,
-) -> HashMap<FileKey, Vec<ChangeBucket>> {
-    manifest
-        .filter(|manifest| manifest.working_tree)
-        .map(|manifest| {
-            manifest
-                .files
-                .iter()
-                .filter(|file| !file.buckets.is_empty())
-                .map(|file| (file.key, file.buckets.clone()))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 pub fn file_controls(file: FileKey, buckets: &[ChangeBucket]) -> Vec<Control> {
@@ -199,14 +184,14 @@ impl MutationPresentation {
         revision: u64,
         style: PresentationStyle,
         partial: bool,
-        buckets: HashMap<FileKey, Vec<ChangeBucket>>,
+        manifest: Option<Rc<CompareManifestSnapshot>>,
         selection: BTreeSet<LineKey>,
     ) -> Self {
         Self {
             revision,
             style,
             partial,
-            buckets,
+            manifest,
             selection,
         }
     }
@@ -220,7 +205,7 @@ impl MutationPresentation {
             revision: self.revision.wrapping_add(1),
             style,
             partial: self.partial,
-            buckets: self.buckets.clone(),
+            manifest: self.manifest.clone(),
             selection: self.selection.clone(),
         }
     }
@@ -228,28 +213,78 @@ impl MutationPresentation {
     pub fn same_content(&self, other: &Self) -> bool {
         self.style == other.style
             && self.partial == other.partial
-            && self.buckets == other.buckets
+            && match (&self.manifest, &other.manifest) {
+                (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
             && self.selection == other.selection
     }
 
-    pub fn buckets(&self, file: FileKey) -> &[ChangeBucket] {
-        self.buckets.get(&file).map_or(&[], Vec::as_slice)
+    fn working(&self) -> bool {
+        self.manifest
+            .as_ref()
+            .is_some_and(|manifest| manifest.working_tree)
     }
 
-    pub fn hunk_actions(&self, target: &HunkTarget) -> Vec<Control> {
+    fn shown(&self, file: FileKey, revision: FileRevision) -> Option<&[ChangeBucket]> {
+        self.manifest
+            .as_ref()?
+            .file(file)
+            .filter(|entry| entry.revision == revision)
+            .map(|entry| entry.buckets.as_slice())
+    }
+
+    pub fn buckets(&self, file: FileKey, revision: FileRevision) -> &[ChangeBucket] {
+        match self.shown(file, revision) {
+            Some(buckets) if self.working() => buckets,
+            _ => &[],
+        }
+    }
+
+    fn source_buckets(&self, source: FileSource) -> &[ChangeBucket] {
+        self.buckets(source.id, file_revision(source))
+    }
+
+    pub fn actions_for_hunk(&self, target: &HunkTarget) -> Vec<Control> {
         if !self.partial {
             return Vec::new();
         }
-        hunk_controls(target, self.buckets(target.source.file))
+        hunk_controls(
+            target,
+            self.buckets(target.source.file, target.source.revision),
+        )
     }
 
     pub fn is_selected(&self, source: FileSource, side: Side, line: u32) -> bool {
-        self.selection.contains(&LineKey {
-            file: source.id,
-            revision: file_revision(source),
-            side,
-            line,
-        })
+        self.working()
+            && self.selection.contains(&LineKey {
+                file: source.id,
+                revision: file_revision(source),
+                side,
+                line,
+            })
+    }
+}
+
+pub fn state_label(status: FileStatus, buckets: &[ChangeBucket]) -> String {
+    let name = status.name();
+    let status = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+    let place = |bucket: &ChangeBucket| match bucket {
+        ChangeBucket::Staged => "staged",
+        ChangeBucket::Unstaged => "unstaged",
+        ChangeBucket::WorkingCopy => "working copy",
+        ChangeBucket::Untracked => "untracked",
+        ChangeBucket::Conflicted => "conflicted",
+    };
+    match buckets {
+        [ChangeBucket::Untracked] => "Untracked".to_owned(),
+        [ChangeBucket::Conflicted] => "Conflicted".to_owned(),
+        [] => status,
+        buckets => {
+            let places: Vec<&str> = buckets.iter().map(place).collect();
+            format!("{status} \u{00b7} {}", places.join(" + "))
+        }
     }
 }
 
@@ -267,47 +302,30 @@ impl DiffDecorator for MutationPresentation {
             return None;
         }
         let source = cx.source?;
-        let controls = file_controls(source.id, self.buckets(source.id));
+        let controls = file_controls(source.id, self.source_buckets(source));
         if controls.is_empty() {
             return None;
         }
         Some(controls::row(controls, &self.style.chrome))
     }
 
-    fn separator(&self, cx: &SeparatorContext) -> Option<AnyElement> {
-        if cx.gap.is_some() {
-            return None;
-        }
+    fn file_state(&self, cx: &HeaderContext) -> Option<String> {
+        let source = cx.source?;
+        let buckets = self.shown(source.id, file_revision(source))?;
+        Some(if self.working() {
+            state_label(cx.status, buckets)
+        } else {
+            "Read-only".to_owned()
+        })
+    }
+
+    fn hunk_actions(&self, cx: &SeparatorContext) -> Option<AnyElement> {
         let target = hunk_target(cx.hunk.as_ref()?);
-        let actions = self.hunk_actions(&target);
+        let actions = self.actions_for_hunk(&target);
         if actions.is_empty() {
             return None;
         }
-        let title = cx.title.to_owned();
-        let style = self.style;
-        let left = cx
-            .columns
-            .sides
-            .iter()
-            .flatten()
-            .next()
-            .map_or(style.inset, |column| column.text_x);
-        Some(view! {
-            <div
-                w={cx.width}
-                h={cx.height}
-                class="flex-row items-center"
-                pl={left}
-                pr={style.inset}
-                gap={style.inset}
-                test_id="mutations.hunk"
-            >
-                <div class="flex-1" min_w={0.0}>
-                    <text size={style.code_size} color={style.muted} class="truncate font-mono">{title}</text>
-                </div>
-                {controls::row(actions, &style.chrome)}
-            </div>
-        })
+        Some(controls::row(actions, &self.style.chrome))
     }
 
     fn gutter_utility(&self, cx: &GutterContext) -> Option<AnyElement> {
@@ -315,7 +333,7 @@ impl DiffDecorator for MutationPresentation {
             return None;
         }
         let source = cx.source?;
-        if self.buckets(source.id).is_empty() {
+        if self.source_buckets(source).is_empty() {
             return None;
         }
         let target = SourceTarget {
@@ -345,10 +363,12 @@ impl DiffDecorator for MutationPresentation {
             lucide::PLUS
         });
         let mut chrome = self.style.chrome;
-        chrome.height = cx.height.min(chrome.height);
+        chrome.height = cx.width.min(cx.height);
+        chrome.icon = chrome.icon.min(chrome.height * 0.75);
+        chrome.radius = chrome.radius.min(chrome.height * 0.25);
         chrome.muted = chrome.accent;
         Some(view! {
-            <div w={cx.width} h={cx.height} class="flex-row items-center justify-end">
+            <div w={cx.width} h={cx.height} class="flex-row items-center justify-center">
                 {controls::render(control, &chrome)}
             </div>
         })

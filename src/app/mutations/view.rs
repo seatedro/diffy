@@ -435,9 +435,37 @@ pub fn panel(
     let body = TextStyle::Body.font_size(theme);
     let small = TextStyle::BodySmall.font_size(theme);
     let chrome = Chrome::from_theme(theme);
+    let no_remote = menu
+        .plan
+        .as_ref()
+        .filter(|plan| !plan.has_remote())
+        .map(|plan| {
+            let hint = plan.primary.disabled_reason.clone().unwrap_or_default();
+            let description = plan.primary.description.clone();
+            view! {
+                <div
+                    class="flex-row"
+                    gap={gap}
+                    p={gap}
+                    rounded={theme.metrics.control_radius}
+                    bg={tc.element_background}
+                    accessibility_role={AccessibilityRole::Group}
+                    aria-label="No remote"
+                    test_id="mutations.publish.no-remote"
+                >
+                    <icon svg={lucide::INFO} size={chrome.icon} color={tc.text_muted} />
+                    <div class="flex-col flex-1 min-w-0" gap={tokens::scaled(Sp::XXS, scale)}>
+                        <text size={body} class="font-medium" color={tc.text}>"No remote"</text>
+                        <text size={small} color={tc.text_muted}>{description}</text>
+                        <text size={small} color={tc.text_muted}>{hint}</text>
+                    </div>
+                </div>
+            }
+        });
     let actions: Vec<_> = menu
         .plan
         .iter()
+        .filter(|plan| plan.has_remote())
         .flat_map(|plan| std::iter::once(&plan.primary).chain(&plan.alternatives))
         .cloned()
         .collect();
@@ -508,6 +536,7 @@ pub fn panel(
             if loading {
                 <text size={small} color={tc.text_muted}>"Loading publish options\u{2026}"</text>
             }
+            {?no_remote}
             {...rows}
         </div>
     })

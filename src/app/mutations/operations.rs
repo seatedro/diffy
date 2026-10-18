@@ -56,7 +56,7 @@ impl RowAction {
     }
 }
 
-fn manifest_entry<'a>(cx: &'a SharedContext, file: FileKey) -> Option<&'a ManifestFile> {
+fn manifest_entry(cx: &SharedContext, file: FileKey) -> Option<&ManifestFile> {
     cx.manifest
         .as_ref()
         .filter(|manifest| manifest.working_tree)?

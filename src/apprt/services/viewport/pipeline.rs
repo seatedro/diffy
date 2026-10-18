@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -9,20 +9,23 @@ use diffy_diff::{
 
 use crate::apprt::services::open_compare_repository;
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision};
+use crate::contracts::viewport::interaction::ViewportInstall;
 use crate::contracts::viewport::pipeline::{
-    CompareJob, CompareManifestSnapshot, CompareResult, FileLoadRequest, FileStat,
-    FileStatsRequest, ManifestFile, PipelineFailure, Preparation, PreparedDiff, SourceLoadRequest,
-    StatusDiffRequest, TextCompareRequest, TotalStatsRequest,
+    CompareJob, CompareManifestSnapshot, CompareResult, DiffSize, DiffSizeRequest, FileLoadRequest,
+    FileStat, FileStatsRequest, ManifestFile, PipelineFailure, PipelineInstall, Preparation,
+    PreparedDiff, SlotUpdate, SourceLoadRequest, StatusDiffRequest, TextCompareRequest,
+    TotalStatsRequest, WORKING_SET_FILES, WORKING_SET_LINES,
 };
 use crate::core::compare::git::{compare_worktree, compare_worktree_entry};
 use crate::core::compare::service::matching_document;
 use crate::core::compare::{
     CompareEntry, CompareOutput, ComparePhase, ProgressSink, RendererKind, compare_text,
 };
+use crate::core::compare::{CompareMode, LayoutMode};
 use crate::core::error::DiffyError;
 use crate::core::vcs::git::GitService;
 use crate::core::vcs::model::RevisionId;
-use crate::core::vcs::model::{VcsCompareSpec, VcsKind};
+use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec, VcsKind};
 use crate::core::vcs::source::SourceText;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -105,31 +108,54 @@ pub fn compare_result(
             file
         })
         .collect();
-    let prepared = output
-        .documents
+    let positions: HashMap<FileKey, usize> = keys
         .iter()
         .enumerate()
-        .filter_map(|(index, doc)| Some((index, doc.clone()?)))
-        .map(|(index, doc)| {
-            prepare(key_at(index), generation, revision, doc)
-                .map(|prepared| prepared.with_segment(preparation))
-        })
-        .collect::<Result<Arc<[PreparedDiff]>, _>>()?;
-    let placeholders = output
-        .entries
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| output.document(*index).is_none())
-        .map(|(index, entry)| {
-            let placeholder = Placeholder::new(
-                Revision(revision.0),
-                SlotState::Unloaded,
-                estimated_lines(entry.stats),
-                entry.file_meta(),
-            );
-            (key_at(index), placeholder)
-        })
+        .map(|(index, &key)| (key, index))
         .collect();
+    let mut loaded = Vec::new();
+    let mut placeholders = HashMap::with_capacity(keys.len());
+    let mut installs = Vec::with_capacity(keys.len() + 1);
+    let mut budget = (0u64, 0usize);
+    for (index, entry) in output.entries.iter().enumerate() {
+        let key = key_at(index);
+        if let Some(doc) = output.document(index) {
+            let file = prepare(key, generation, revision, doc.clone())?;
+            let lines = u64::from(file.estimated_lines());
+            if budget.0 + lines <= WORKING_SET_LINES && budget.1 < WORKING_SET_FILES {
+                budget = (budget.0 + lines, budget.1 + 1);
+                let file = file.with_segment(preparation);
+                loaded.push(file.clone());
+                installs.push(PipelineInstall::View(ViewportInstall::File {
+                    prepared: file,
+                    remap: None,
+                }));
+                continue;
+            }
+            let placeholder = file.evicted_placeholder();
+            installs.push(PipelineInstall::Slot(SlotUpdate::Placeholder {
+                key,
+                placeholder: placeholder.clone(),
+            }));
+            placeholders.insert(key, placeholder);
+            continue;
+        }
+        let placeholder = Placeholder::new(
+            Revision(revision.0),
+            SlotState::Unloaded,
+            estimated_lines(entry.stats),
+            entry.file_meta(),
+        );
+        installs.push(PipelineInstall::Slot(SlotUpdate::Placeholder {
+            key,
+            placeholder: placeholder.clone(),
+        }));
+        placeholders.insert(key, placeholder);
+    }
+    installs.push(PipelineInstall::View(ViewportInstall::Order {
+        generation,
+        files: keys.iter().copied().collect(),
+    }));
     let notice = output
         .used_fallback
         .then(|| output.fallback_message.clone())
@@ -141,10 +167,13 @@ pub fn compare_result(
             resolved_right: resolved.1,
             files,
             totals: output.totals(),
+            working_tree: false,
         }),
         entries: output.entries.into(),
-        prepared,
+        positions,
+        loaded,
         placeholders,
+        installs,
         notice,
     })
 }
@@ -168,6 +197,8 @@ fn unchanged_document(path: &str, text: &str) -> Result<Arc<DiffDocument>, Pipel
         .map_err(invalid)?;
     Ok(Arc::new(builder.build()))
 }
+
+pub const DIFF_SIZE_COMMIT_LIMIT: usize = 1_000;
 
 fn is_git_worktree(kind: VcsKind, spec: &VcsCompareSpec) -> bool {
     kind == VcsKind::GIT && matches!(spec, VcsCompareSpec::WorkingCopy)
@@ -229,6 +260,45 @@ impl PipelineServices {
         };
         let revision = file_revision(request.generation);
         prepare(key_at(0), request.generation, revision, doc)
+    }
+
+    pub fn diff_size(&self, request: &DiffSizeRequest) -> Result<DiffSize, PipelineFailure> {
+        let refs = [request.left.as_str(), request.right.as_str()];
+        let mut repo = open_compare_repository(&request.repo_path, refs).map_err(failed)?;
+        let spec = match request.mode {
+            CompareMode::ThreeDot => VcsCompareSpec::MergeBaseRange {
+                base: request.left.clone(),
+                head: request.right.clone(),
+            },
+            CompareMode::TwoDot | CompareMode::SingleCommit => VcsCompareSpec::Range {
+                from: request.left.clone(),
+                to: request.right.clone(),
+            },
+        };
+        let compare = VcsCompareRequest {
+            spec,
+            layout: LayoutMode::Unified,
+            renderer: RendererKind::Builtin,
+        };
+        let (additions, deletions) = repo.compare_stats(&compare).map_err(failed)?;
+        let history = repo
+            .compare_history(&request.left, &request.right, DIFF_SIZE_COMMIT_LIMIT + 1)
+            .map_err(failed)?;
+        let files = if repo.location().kind == VcsKind::GIT {
+            let (left, right) = repo.resolve_compare_request(&compare).map_err(failed)?;
+            let git = open_git(&request.repo_path)?;
+            let entries = git.diff_name_status(&left, &right, None).map_err(failed)?;
+            Some(u32::try_from(entries.len()).unwrap_or(u32::MAX))
+        } else {
+            None
+        };
+        Ok(DiffSize {
+            files,
+            additions: u32::try_from(additions).unwrap_or(0),
+            deletions: u32::try_from(deletions).unwrap_or(0),
+            commits: history.len().min(DIFF_SIZE_COMMIT_LIMIT) as u32,
+            commits_capped: history.len() > DIFF_SIZE_COMMIT_LIMIT,
+        })
     }
 
     pub fn load_total_stats(
@@ -411,7 +481,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.placeholders.len(), 1);
-        assert_eq!(result.placeholders[0].0, key_at(1));
+        assert!(result.placeholders.contains_key(&key_at(1)));
+        assert_eq!(result.installs.len(), 3);
+        assert_eq!(result.positions[&key_at(1)], 1);
         assert_eq!(result.manifest.totals, DiffStats::Pending);
         let files = &result.manifest.files;
         assert_eq!(files.len(), 2);
@@ -424,9 +496,9 @@ mod tests {
             result.manifest.file(key_at(1)).unwrap().status,
             FileStatus::Renamed
         );
-        assert_eq!(result.prepared.len(), 1);
-        assert_eq!(result.prepared[0].key(), key_at(0));
-        assert_eq!(result.prepared[0].stats().known(), Some((1, 1)));
+        assert_eq!(result.loaded.len(), 1);
+        assert_eq!(result.loaded[0].key(), key_at(0));
+        assert_eq!(result.loaded[0].stats().known(), Some((1, 1)));
         assert_eq!(result.entries.len(), 2);
     }
 
@@ -493,8 +565,8 @@ mod tests {
         assert_eq!(result.manifest.generation, CompareGeneration(7));
         assert_eq!(result.manifest.files.len(), 1);
         assert_eq!(result.manifest.files[0].paths.display_path(), "src/a.rs");
-        assert_eq!(result.prepared[0].stats().known(), Some((1, 1)));
-        assert!(result.prepared[0].segment().is_some());
+        assert_eq!(result.loaded[0].stats().known(), Some((1, 1)));
+        assert!(result.loaded[0].segment().is_some());
         assert_eq!(result.manifest.totals.known(), Some((1, 1)));
         let loaded = PipelineServices
             .load_file(&FileLoadRequest {
@@ -576,7 +648,7 @@ mod tests {
             );
             assert_ne!(files[0].key, files[1].key);
             let lines = |key| {
-                let prepared = first.prepared.iter().find(|p| p.key() == key).unwrap();
+                let prepared = first.loaded.iter().find(|p| p.key() == key).unwrap();
                 let doc = prepared.document();
                 let line = |side| {
                     let store = doc.text(0, side);
@@ -638,5 +710,61 @@ mod tests {
                 Some("two")
             );
         }
+    }
+
+    #[test]
+    fn diff_size_counts_files_lines_and_commits_between_refs() {
+        use crate::contracts::viewport::pipeline::DiffSizeRequest;
+        use crate::core::compare::CompareMode;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let commit = crate::core::compare::service::tests::commit_file;
+        let base = commit(&repo, "a.rs", "one\n", "a");
+        commit(&repo, "a.rs", "one\ntwo\n", "b");
+        let head = commit(&repo, "b.rs", "x\ny\n", "c");
+        let size = PipelineServices
+            .diff_size(&DiffSizeRequest {
+                token: 1,
+                repo_path: dir.path().to_path_buf(),
+                left: base,
+                right: head,
+                mode: CompareMode::TwoDot,
+            })
+            .unwrap();
+        assert_eq!(size.files, Some(2));
+        assert_eq!((size.additions, size.deletions), (3, 0));
+        assert_eq!(size.commits, 2);
+        assert!(!size.commits_capped);
+    }
+
+    #[test]
+    fn a_clean_working_copy_compares_to_an_empty_manifest() {
+        use crate::contracts::viewport::pipeline::{CompareIntent, CompareJob};
+        use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        crate::core::compare::service::tests::commit_file(&repo, "a.rs", "one\n", "a");
+        let result = PipelineServices
+            .run_compare(
+                &CompareJob {
+                    generation: CompareGeneration(3),
+                    intent: CompareIntent {
+                        repo_path: dir.path().to_path_buf(),
+                        request: VcsCompareRequest {
+                            spec: VcsCompareSpec::WorkingCopy,
+                            layout: LayoutMode::Unified,
+                            renderer: RendererKind::Builtin,
+                        },
+                    },
+                    preparation: None,
+                },
+                &Phases,
+            )
+            .unwrap();
+        assert!(result.manifest.files.is_empty());
+        assert_eq!(result.manifest.totals.known(), Some((0, 0)));
+        assert_eq!(result.installs.len(), 1);
     }
 }

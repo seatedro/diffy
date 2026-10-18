@@ -39,6 +39,7 @@ const UNIT_MASK: u64 = 0x3F_FFFF;
 const FACT_TAG: u64 = 8 << 60;
 const ANNOTATION_TAG: u64 = 9 << 60;
 const MORE_TAG: u64 = 10 << 60;
+const PENDING_TAG: u64 = 11 << 60;
 
 /// Inline results kept per segment before the cache starts over, so
 /// scrolling a huge diff does not grow it without bound.
@@ -208,6 +209,7 @@ pub(crate) enum RowRef {
     Fact { seg: u32, file: u32, fact: u32 },
     Annotation { index: u32 },
     More { hidden: u32 },
+    Pending { seg: u32 },
 }
 
 /// What each row of the list shows, in runs: consecutive projection rows
@@ -477,6 +479,10 @@ impl DiffViewState {
                 ANNOTATION_TAG | (self.annotations.entry(index).annotation.id.0 & ((1 << 60) - 1))
             }
             RowRef::More { .. } => MORE_TAG,
+            RowRef::Pending { seg } => {
+                let unit = u64::from(self.segments[seg as usize].slot) & UNIT_MASK;
+                PENDING_TAG | (unit << UNIT_SHIFT)
+            }
         }
     }
 
@@ -486,6 +492,7 @@ impl DiffViewState {
         match self.refs.get(index)? {
             RowRef::Line { row, .. } => Some(row),
             RowRef::Fact { file, .. } => segment.projection.file_rows.get(file as usize).copied(),
+            RowRef::Pending { .. } => segment.projection.file_rows.first().copied(),
             RowRef::Annotation { .. } | RowRef::More { .. } => {
                 self.refs.range(0..index).rev().find_map(|r| match r {
                     RowRef::Line { row, .. } => Some(row),
@@ -559,6 +566,7 @@ impl DiffViewState {
                 rows.filter(|&i| i != NONE).find(|&i| matches(i))
             }
             t if t == MORE_TAG >> 60 => self.refs.len().checked_sub(1).map(|i| i as u32),
+            t if t == PENDING_TAG >> 60 => row_of(None).map(|header| header.saturating_add(1)),
             t if t == RowKind::FileHeader as u64 => row_of(None),
             t if t == RowKind::Removed as u64 || t == RowKind::Modified as u64 => {
                 row_of(Some(Side::Old))
@@ -623,6 +631,9 @@ impl DiffViewState {
                     // The common case, a run at a time: the header, its
                     // metadata rows, then every other row of the file.
                     shown.push(header, b.push(RowRef::Line { seg, row: header }), 1);
+                    if !folded && segment.pending.is_some() {
+                        b.push(RowRef::Pending { seg });
+                    }
                     if !folded && segment.pending.is_none() {
                         b.file_extras(&segment.doc, outdated, seg, file);
                     }
@@ -700,6 +711,12 @@ impl DiffViewState {
             RowRef::Fact { .. } => None,
             RowRef::Annotation { index } => Some(self.annotation_height(index, m)),
             RowRef::More { .. } => Some((m.line_h * 1.4).round()),
+            RowRef::Pending { seg } => {
+                let lines = self.segments[seg as usize]
+                    .pending
+                    .map_or(1, |(_, lines)| lines.max(1));
+                Some(lines as f32 * m.line_h)
+            }
         }
     }
 }

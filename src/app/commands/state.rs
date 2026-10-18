@@ -820,12 +820,22 @@ impl CommandsController {
         }
         if before.keymap_overrides != next.keymap_overrides {
             self.install_keymap(next);
+        } else if before.viewport.wrap_enabled != next.viewport.wrap_enabled
+            || before.continuous_scroll != next.continuous_scroll
+            || before.theme_mode != next.theme_mode
+        {
+            self.install_menus(next);
         }
     }
 
     fn install_keymap(&self, settings: &Settings) {
         let saved = &settings.keymap_overrides;
         self.request(PlatformRequest::KeyBindings(keymap::key_bindings(saved)));
+        self.install_menus(settings);
+    }
+
+    fn install_menus(&self, settings: &Settings) {
+        let saved = &settings.keymap_overrides;
         let commands = builtin_commands(settings);
         self.request(PlatformRequest::Menus(platform::menus(&commands, |c| {
             if c.id == ids::QUIT {
@@ -1038,6 +1048,47 @@ fn step_scale(current: u16, delta: i32) -> u16 {
         as u16
 }
 
+fn command_detail(id: &str) -> Option<&'static str> {
+    Some(match id {
+        ids::OPEN_REPOSITORY => "Choose a folder to open",
+        ids::SWITCH_REPOSITORY => "Pick a recent repository",
+        ids::WORKING_TREE => "Compare HEAD with uncommitted changes",
+        ids::REFRESH => "Reload refs, status and the current compare",
+        "compare.base" => "Pick the ref to compare from",
+        "compare.head" => "Pick the ref to compare to",
+        "compare.swap" => "Exchange base and head",
+        "compare.start" => "Run the compare with the chosen refs",
+        "compare.menu" => "Mode, working tree and swap",
+        "review.open_pull_request" => "Load a GitHub pull request by URL",
+        ids::TOGGLE_SIDEBAR => "Show or hide the file list",
+        ids::TOGGLE_FILE_TREE => "Switch between a flat list and folders",
+        "view.expand_folders" => "Open every folder in the file tree",
+        "view.collapse_folders" => "Close every folder in the file tree",
+        "view.files_tab" => "Changed files in the sidebar",
+        "view.history_tab" => "Commits in the sidebar",
+        "focus.files" => "Move keyboard focus to the file list",
+        "focus.diff" => "Move keyboard focus to the diff",
+        ids::TOGGLE_WRAP => "Wrap long lines in the diff",
+        "view.unified" => "Old and new lines in one column",
+        "view.split" => "Old and new side by side",
+        ids::TOGGLE_CONTINUOUS => "Show every file in one scrolling view",
+        ids::TOGGLE_THEME_MODE => "Flip between light and dark",
+        ids::THEME => "Browse every installed theme",
+        "font.ui" => "Font for labels and menus",
+        "font.mono" => "Font for diffs and editors",
+        ids::SCALE_UP => "Make the interface larger",
+        ids::SCALE_DOWN => "Make the interface smaller",
+        ids::SCALE_RESET => "Interface at 100%",
+        ids::SETTINGS => "Appearance, diff, keyboard and more",
+        ids::KEYMAPS => "Every shortcut, rebindable",
+        "updates.auto" => "Check for new versions in the background",
+        ids::ABOUT => "Version and updates",
+        ids::WEBSITE => "Open the project page",
+        ids::QUIT => "Close every window and exit",
+        _ => return None,
+    })
+}
+
 pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
     use CommandDescriptor as D;
     use ShortcutCommand as S;
@@ -1046,7 +1097,7 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
         ThemeMode::Light | ThemeMode::System => "Switch to Dark Mode",
     };
     let name = crate::platform::startup::app_display_name();
-    vec![
+    let mut commands = vec![
         D::new(
             ids::PALETTE,
             "Command Palette",
@@ -1230,7 +1281,13 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
             CommandsAction::OpenProjectPage,
         ),
         D::new(ids::QUIT, format!("Quit {name}"), CommandsAction::Quit),
-    ]
+    ];
+    for command in &mut commands {
+        if command.detail.is_none() {
+            command.detail = command_detail(command.id).map(str::to_owned);
+        }
+    }
+    commands
 }
 
 impl Controller for CommandsController {

@@ -185,11 +185,17 @@ pub fn menus(
                 item(ids::SCALE_UP),
                 item(ids::SCALE_DOWN),
                 item(ids::SCALE_RESET),
-                MenuItem::Separator,
-                role(MenuRole::ToggleFullscreen),
             ],
         ),
-        Menu::window(),
+        Menu::new(
+            "Window",
+            vec![
+                role(MenuRole::Minimize),
+                role(MenuRole::Zoom),
+                MenuItem::Separator,
+                role(MenuRole::BringAllToFront),
+            ],
+        ),
         Menu::new("Help", vec![item(ids::KEYMAPS), item(ids::WEBSITE)]),
     ]
 }

@@ -116,10 +116,13 @@ pub(crate) fn rows(
     for (s, side) in sides.iter_mut().enumerate() {
         novel(side, &matching.partner[s]);
     }
-    for &(x, y) in &matching.replaced {
-        replaced(&mut sides, x, y);
-    }
+    let words: Vec<[Vec<Range<u32>>; 2]> = matching
+        .replaced
+        .iter()
+        .filter_map(|&(x, y)| replaced(&mut sides, x, y))
+        .collect();
     let renames = renames(&mut sides, matching);
+    mark_words(&mut sides, words, &renames);
     let moves = moves(&sides, matching);
     for side in &mut sides {
         for spans in &mut side.spans {
@@ -364,7 +367,7 @@ fn novel(side: &mut Side<'_, '_>, partner: &[u32]) {
     }
 }
 
-fn replaced(sides: &mut [Side<'_, '_>; 2], x: u32, y: u32) {
+fn replaced(sides: &mut [Side<'_, '_>; 2], x: u32, y: u32) -> Option<[Vec<Range<u32>>; 2]> {
     let (ra, rb) = (
         sides[0].tree.nodes[x as usize].span.clone(),
         sides[1].tree.nodes[y as usize].span.clone(),
@@ -375,17 +378,46 @@ fn replaced(sides: &mut [Side<'_, '_>; 2], x: u32, y: u32) {
     );
     let words = paired_inline_diff(ta, tb, &InlineOptions::default());
     if words.detail == InlineDetail::Exact && (!words.old.is_empty() || !words.new.is_empty()) {
-        for (side, base, ranges) in [(0, ra.start, &words.old), (1, rb.start, &words.new)] {
-            for range in ranges {
-                sides[side].mark(
-                    base + range.start..base + range.end,
-                    ChangeIntensity::NovelWord,
-                );
-            }
-        }
-    } else if ta != tb {
+        let shift = |base: u32, ranges: &[Range<u32>]| {
+            ranges
+                .iter()
+                .map(|r| base + r.start..base + r.end)
+                .collect()
+        };
+        return Some([shift(ra.start, &words.old), shift(rb.start, &words.new)]);
+    }
+    if ta != tb {
         sides[0].mark(ra, ChangeIntensity::Novel);
         sides[1].mark(rb, ChangeIntensity::Novel);
+    }
+    None
+}
+
+fn mark_words(sides: &mut [Side<'_, '_>; 2], words: Vec<[Vec<Range<u32>>; 2]>, renames: &[Rename]) {
+    for ranges in words {
+        let mut renamed = [vec![false; ranges[0].len()], vec![false; ranges[1].len()]];
+        for rename in renames {
+            let hits = |side: usize, name: &str| -> Vec<usize> {
+                (0..ranges[side].len())
+                    .filter(|&k| sides[side].tree.text(ranges[side][k].clone()) == name)
+                    .collect()
+            };
+            let (old, new) = (hits(0, &rename.old), hits(1, &rename.new));
+            if !old.is_empty() && old.len() == new.len() {
+                old.into_iter().for_each(|k| renamed[0][k] = true);
+                new.into_iter().for_each(|k| renamed[1][k] = true);
+            }
+        }
+        for side in 0..2 {
+            for (k, range) in ranges[side].iter().enumerate() {
+                let intensity = if renamed[side][k] {
+                    ChangeIntensity::Renamed
+                } else {
+                    ChangeIntensity::NovelWord
+                };
+                sides[side].mark(range.clone(), intensity);
+            }
+        }
     }
 }
 

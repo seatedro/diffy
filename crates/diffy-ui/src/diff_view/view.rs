@@ -718,7 +718,7 @@ fn text_cell(
                 (x, count, open, on_event(toggle))
             },
         );
-        let whole = line.whole.then(|| match shown {
+        let whole = line.whole.then_some(match shown {
             Side::Old => RowKind::Removed,
             Side::New => RowKind::Added,
         });

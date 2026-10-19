@@ -17,9 +17,9 @@ use crate::app::commands::keymap::WORKSPACE_CONTEXT;
 use crate::app::icons;
 use crate::app::mutations::{RowAction, change_actions, context_menu, operation_log_actions};
 use crate::app::review::{ReviewController, author_avatar};
-use crate::app::shell::{Slot, empty_state};
+use crate::app::shell::{Slot, empty_state, kbd};
 use crate::app::text_targets::{SIDEBAR, SIDEBAR_FILTER};
-use crate::app::tokens::{self, Ico, Layout, Sp, TextStyle};
+use crate::app::tokens::{self, Ico, Layout, Sp, TextStyle, Tint};
 use crate::contracts::commands::CommandsAction;
 use crate::contracts::navigation::{
     NavigationAction, SelectedFile, SelectionOrigin, SidebarMode, SidebarTab,
@@ -33,6 +33,7 @@ use diffy_diff::FileStatus;
 
 const OVERSCAN_ROWS: usize = 8;
 const MAX_TAG_PILLS: usize = 2;
+const FILE_ROW_GROUP: &str = "sidebar.file-row";
 
 pub fn view(
     nav: &mut NavigationController,
@@ -44,7 +45,6 @@ pub fn view(
     let theme = cx.theme;
     let scale = tokens::ui_scale(theme);
     let filter_focused = cx.is_focused(SIDEBAR_FILTER);
-    let list_focused = cx.is_focused(SIDEBAR);
     let header = header(nav, theme);
     let tab = nav.tab();
     let filter =
@@ -74,7 +74,7 @@ pub fn view(
         history_row: tokens::scaled(Layout::HISTORY_ROW_H, scale),
     });
     let body = match tab {
-        SidebarTab::Files => files(nav, slot.shared, list_h, list_focused, theme),
+        SidebarTab::Files => files(nav, slot.shared, list_h, theme),
         SidebarTab::Commits => history(nav, review, list_h, theme),
         SidebarTab::OperationLog => operations(nav, list_h, theme),
     };
@@ -140,30 +140,36 @@ fn header(nav: &NavigationController, theme: &Theme) -> AnyElement {
         SidebarMode::List => lucide::FOLDER,
         SidebarMode::Tree => lucide::LIST,
     };
+    let control = tokens::scaled(Layout::CONTROL_SM_H, scale);
     view! {
         <div
             class="flex-row items-end w-full shrink-0"
             h={tokens::scaled(Sz::SIDEBAR_LIST_OFFSET, scale)}
-            px={tokens::scaled(Sp::SM, scale)}
-            gap={tokens::scaled(Sp::XS, scale)}
         >
-            <div class="flex-1" min_w={0.0}>{tab_bar(items).label("Sidebar")}</div>
-            if tab == SidebarTab::Files {
-                <div
-                    class="flex-row items-center justify-center shrink-0"
-                    w={theme.metrics.ui_row_height}
-                    h={theme.metrics.ui_row_height}
-                    rounded={theme.metrics.control_radius}
-                    hover_bg={tc.ghost_element_hover}
-                    cursor={CursorHint::Pointer}
-                    id="sidebar.mode"
-                    role="button"
-                    aria-label={mode_label}
-                    on:click={NavigationAction::ToggleSidebarMode}
-                >
-                    <icon svg={mode_icon} size={Ico::SM} color={tc.icon} />
-                </div>
-            }
+            <div class="flex-1 flex-col" min_w={0.0}>{tab_bar(items).label("Sidebar")}</div>
+            <div
+                class="flex-row items-center shrink-0 h-full"
+                pr={tokens::scaled(Sp::SM, scale)}
+                border_b={tc.border_variant}
+            >
+                if tab == SidebarTab::Files {
+                    <div
+                        class="flex-row items-center justify-center"
+                        w={control}
+                        h={control}
+                        rounded={theme.metrics.control_radius}
+                        hover_bg={tc.ghost_element_hover}
+                        cursor={CursorHint::Pointer}
+                        id="sidebar.mode"
+                        role="button"
+                        aria-label={mode_label}
+                        tooltip={mode_label}
+                        on:click={NavigationAction::ToggleSidebarMode}
+                    >
+                        <icon svg={mode_icon} size={Ico::SM} color={tc.icon} />
+                    </div>
+                }
+            </div>
         </div>
     }
 }
@@ -196,9 +202,19 @@ fn filter_field(
         input,
         has_text,
         Some(NavigationAction::ClearFilter.into()),
-        Some("/"),
+        None,
         theme,
     );
+    let hint = (!has_text && !focused).then(|| {
+        div()
+            .absolute()
+            .right(tokens::scaled(Sp::SM, scale))
+            .top(0.0)
+            .bottom(0.0)
+            .flex_row()
+            .items_center()
+            .child(kbd("/", theme))
+    });
     let ring = focused.then(|| {
         let reach = tokens::scaled(Sz::FOCUS_RING_GAP, scale);
         let mut ring = div()
@@ -221,6 +237,7 @@ fn filter_field(
         <div class="w-full shrink-0" px={tokens::scaled(Sp::SM, scale)} py={tokens::scaled(Sp::XS, scale)}>
             <div class="relative w-full" on:key:escape={escape}>
                 {field}
+                {?hint}
                 {?ring}
             </div>
         </div>
@@ -292,7 +309,6 @@ fn files(
     nav: &mut NavigationController,
     cx: &SharedContext,
     height: f32,
-    focused: bool,
     theme: &Theme,
 ) -> AnyElement {
     let status = nav.status().clone();
@@ -351,11 +367,7 @@ fn files(
                     viewed: nav.is_viewed(&path),
                     highlights,
                 };
-                let actions = if state.selected {
-                    file_row_actions(file, cx)
-                } else {
-                    Vec::new()
-                };
+                let actions = file_row_actions(file, cx);
                 file_row(file, *depth, state, &actions, theme)
             }
             Row::Section { bucket, files } => {
@@ -363,11 +375,11 @@ fn files(
             }
         })
         .collect();
-    let tc = &theme.colors;
     view! {
         <div
             class="w-full flex-col overflow-hidden"
             h={height}
+            px={theme.metrics.spacing_sm}
             scroll_y={scroll}
             scroll_total={window.total_extent}
             on:scroll={ScrollActionBuilder::new(|lines| Action::from(NavigationAction::ScrollFiles(lines)).into())
@@ -379,7 +391,6 @@ fn files(
             accessibility_role={if tree { AccessibilityRole::Tree } else { AccessibilityRole::ListBox }}
             aria-label="Changed files"
             test_id="file-list"
-            @when {focused} { border={tc.focus_border} }
         >
             <div class="w-full shrink-0" h={window.top_spacer} />
             {...visible}
@@ -463,22 +474,65 @@ fn file_row(
         tc.text
     };
     let badge = tokens::scaled(Layout::STATUS_BADGE, scale);
+    let base = tc.sidebar_background;
     let row_bg = if state.selected {
-        tc.sidebar_row_selected
+        tokens::selected_fill(base, theme)
     } else {
         Color::TRANSPARENT
     };
+    let hover_bg = if state.selected {
+        row_bg
+    } else {
+        tc.sidebar_row_hover
+    };
+    let group = GroupId::new(FILE_ROW_GROUP);
     let buttons: Vec<AnyElement> = actions.iter().map(|a| icon_action(a, theme)).collect();
+    let viewed_toggle = view! {
+        <div
+            class="flex-row items-center justify-center shrink-0"
+            w={tokens::scaled(Layout::CONTROL_SM_H, scale)}
+            h={tokens::scaled(Layout::CONTROL_SM_H, scale)}
+            rounded={theme.metrics.control_radius}
+            hover_bg={tc.ghost_element_hover}
+            id={format!("file:{}:viewed", key.0)}
+            role="checkbox"
+            aria-label={viewed_label}
+            aria-checked={viewed}
+            tooltip={viewed_label}
+            on:click={NavigationAction::ToggleFileViewed(key)}
+        >
+            <icon
+                svg={if viewed { lucide::EYE_OFF } else { lucide::EYE }}
+                size={Ico::XS}
+                color={tc.icon}
+            />
+        </div>
+    };
+    let tools = div()
+        .absolute()
+        .right(tokens::scaled(Sp::XS, scale))
+        .top(0.0)
+        .bottom(0.0)
+        .flex_row()
+        .items_center()
+        .gap(tokens::scaled(Sp::XXS, scale))
+        .pl(tokens::scaled(Sp::SM, scale))
+        .bg(hover_bg)
+        .show_when(GroupCondition::HoveredOrFocusWithin(group))
+        .children(buttons)
+        .child(viewed_toggle);
     view! {
         <div
-            class="flex-row items-center w-full shrink-0"
+            class="relative flex-row items-center w-full shrink-0"
             h={theme.metrics.ui_row_height.round()}
             pl={tokens::scaled(Sp::SM, scale) + indent}
-            pr={tokens::scaled(Sp::XS, scale)}
+            pr={tokens::scaled(Sp::SM, scale)}
             gap={tokens::scaled(Sp::SM, scale)}
             rounded={theme.metrics.control_radius}
             bg={row_bg}
-            hover_bg={if state.selected { tc.sidebar_row_selected } else { tc.sidebar_row_hover }}
+            hover_bg={hover_bg}
+            @when {state.selected} { border={tokens::selected_edge(base, theme)} }
+            interaction_group={group}
             cursor={CursorHint::Pointer}
             key={format!("file:{}", key.0)}
             id={format!("file:{}", key.0)}
@@ -493,13 +547,13 @@ fn file_row(
                 w={badge}
                 h={badge}
                 rounded={theme.metrics.control_radius * 0.6}
-                bg={theme.colors.sidebar_background.lerp(mark_color, 0.16)}
+                bg={base.lerp(mark_color, Tint::BADGE)}
             >
                 <text size={mono} class="font-mono font-semibold" color={mark_color}>{mark}</text>
             </div>
-            <div class="flex-1 flex-row items-center overflow-hidden" min_w={0.0} gap={tokens::scaled(Sp::XS, scale)}>
+            <div class="flex-1 flex-row items-center overflow-hidden" min_w={0.0} gap={tokens::scaled(Sp::SM - Sp::XXS, scale)}>
                 if deleted {
-                    <text size={TextStyle::Body.font_size(theme)} class="truncate" strikethrough color={name_color}>{name.to_owned()}</text>
+                    <text size={TextStyle::Body.font_size(theme)} class="truncate font-medium" strikethrough color={name_color}>{name.to_owned()}</text>
                 } else {
                     {highlighted_text(name, &name_ranges, name_color, TextStyle::Body.font_size(theme), theme)}
                 }
@@ -509,29 +563,11 @@ fn file_row(
             </div>
             {?stats.map(|(add, del)| view! {
                 <div class="flex-row shrink-0" gap={tokens::scaled(Sp::XS, scale)}>
-                    if add > 0 { <text size={mono} color={tc.line_add_text}>{format!("+{add}")}</text> }
-                    if del > 0 { <text size={mono} color={tc.line_del_text}>{format!("\u{2212}{del}")}</text> }
+                    if add > 0 { <text size={mono} class="font-mono" color={tc.line_add_text}>{format!("+{add}")}</text> }
+                    if del > 0 { <text size={mono} class="font-mono" color={tc.line_del_text}>{format!("\u{2212}{del}")}</text> }
                 </div>
             })}
-            {...buttons}
-            <div
-                class="flex-row items-center justify-center shrink-0"
-                w={tokens::scaled(Sp::XL, scale)}
-                h={tokens::scaled(Sp::XL, scale)}
-                rounded={theme.metrics.control_radius}
-                hover_bg={tc.ghost_element_hover}
-                id={format!("file:{}:viewed", key.0)}
-                role="checkbox"
-                aria-label={viewed_label}
-                aria-checked={viewed}
-                on:click={NavigationAction::ToggleFileViewed(key)}
-            >
-                <icon
-                    svg={if viewed { lucide::CHECK } else { lucide::EYE }}
-                    size={Ico::XS}
-                    color={if viewed { tc.accent } else { tc.text_muted }}
-                />
-            </div>
+            {tools}
         </div>
     }
 }
@@ -806,21 +842,27 @@ fn history(
             )
             .size(Layout::AVATAR_SM);
             let age = relative_age(now, commit.timestamp);
-            let meta = [commit.short_revision.as_str(), commit.author_name.as_str(), age.as_str()]
+            let meta = [commit.author_name.as_str(), age.as_str()]
                 .into_iter()
                 .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>()
-                .join(" \u{00B7} ");
+                .fold(String::new(), |mut meta, part| {
+                    meta.push_str(" \u{00B7} ");
+                    meta.push_str(part);
+                    meta
+                });
+            let base = tc.sidebar_background;
+            let fill = tokens::selected_fill(base, theme);
             view! {
                 <div
                     class="flex-row items-start w-full shrink-0"
                     h={row_height}
                     px={tokens::scaled(Sp::SM, scale)}
-                    pt={tokens::scaled(Sp::XS, scale)}
+                    pt={tokens::scaled(Sp::SM - Sp::XXS, scale)}
                     gap={tokens::scaled(Sp::SM, scale)}
                     rounded={theme.metrics.control_radius}
-                    bg={if is_selected { tc.sidebar_row_selected } else { Color::TRANSPARENT }}
-                    hover_bg={tc.sidebar_row_hover}
+                    bg={if is_selected { fill } else { Color::TRANSPARENT }}
+                    @when {is_selected} { border={tokens::selected_edge(base, theme)} }
+                    hover_bg={if is_selected { fill } else { tc.sidebar_row_hover }}
                     cursor={CursorHint::Pointer}
                     key={revision.clone()}
                     id={format!("commit:{revision}")}
@@ -832,9 +874,14 @@ fn history(
                     on:context_menu={menu}
                 >
                     <div class="shrink-0" pt={tokens::scaled(Sp::XXS, scale)}>{avatar}</div>
-                    <div class="flex-1 flex-col" min_w={0.0} gap={tokens::scaled(Sp::XXS, scale)}>
-                        <text size={TextStyle::Body.font_size(theme)} class="truncate font-medium" color={tc.text}>{commit.summary.clone()}</text>
-                        <text size={small} class="truncate" color={tc.text_muted}>{meta}</text>
+                    <div class="flex-1 flex-col overflow-hidden" min_w={0.0} gap={tokens::scaled(Sp::XXS, scale)}>
+                        <div class="flex-row overflow-hidden" min_w={0.0}>
+                            <text size={TextStyle::Body.font_size(theme)} class="truncate font-medium" color={tc.text}>{commit.summary.clone()}</text>
+                        </div>
+                        <div class="flex-row items-center overflow-hidden" min_w={0.0}>
+                            <text size={TextStyle::MonoSmall.font_size(theme)} class="font-mono" color={tc.text_muted}>{commit.short_revision.clone()}</text>
+                            <text size={small} class="truncate" color={tc.text_muted}>{meta}</text>
+                        </div>
                     </div>
                     {...pills}
                 </div>
@@ -847,6 +894,7 @@ fn history(
             h={height}
             scroll_y={scroll}
             scroll_total={window.total_extent}
+            px={theme.metrics.spacing_sm}
             on:scroll={ScrollActionBuilder::new(|lines| Action::from(NavigationAction::ScrollHistory(lines)).into())}
             key_context={WORKSPACE_CONTEXT}
             accessibility_role={AccessibilityRole::ListBox}
@@ -900,7 +948,7 @@ pub fn viewing_status(nav: &NavigationController, theme: &Theme) -> Option<AnyEl
             >
                 <icon svg={icons::UNDO} size={Ico::XS} color={tc.text_muted} />
                 <text size={small} color={tc.text_muted}>"Back to working tree"</text>
-                {quark_components::kbd("esc", theme)}
+                {kbd("esc", theme)}
             </div>
         </div>
     })

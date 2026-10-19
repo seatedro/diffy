@@ -1003,17 +1003,17 @@ fn theme_picker_offers_and_selects_the_current_default_theme() {
     let mut ui = cmd_harness(Settings::default());
     focus_anchor(&mut ui);
     ui.run(CommandsAction::OpenThemePicker);
-    let current = ui.find(By::role_name(Role::ListBoxOption, "diffy-default"));
+    let current = ui.find(By::role_name(Role::ListBoxOption, "TokyoNight"));
     assert_eq!(
         ui.find_all(Role::ListBoxOption)
             .iter()
-            .filter(|n| n.name.as_deref() == Some("diffy-default"))
+            .filter(|n| n.name.as_deref() == Some("TokyoNight"))
             .count(),
         1
     );
     assert!(current.bounds.height > 0.0);
-    ui.type_text("diffy-def");
-    ui.find(By::role_name(Role::ListBoxOption, "diffy-default"));
+    ui.type_text("tokyo");
+    ui.find(By::role_name(Role::ListBoxOption, "TokyoNight"));
 }
 
 #[test]

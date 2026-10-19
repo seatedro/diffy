@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark::view;
-use quark_components::{AvatarImage, SegmentedControl, SegmentedItem, avatar};
+use quark_components::{AvatarImage, avatar};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -13,11 +13,9 @@ use super::NavigationController;
 use super::view::{now_secs, pill};
 use crate::app::review::ReviewController;
 use crate::app::tokens::{self, Ico, Layout, Sp, TextStyle};
-use crate::contracts::commands::CommandsAction;
 use crate::contracts::navigation::NavigationAction;
-use crate::contracts::shell::{Action, ShellAction};
+use crate::contracts::shell::ShellAction;
 use crate::contracts::viewport::pipeline::FileStats;
-use crate::core::compare::LayoutMode;
 use crate::core::ref_catalog::relative_age;
 
 #[derive(Debug, Clone)]
@@ -29,7 +27,6 @@ pub struct CommitBanner {
     revision: String,
     files: usize,
     totals: Option<(u32, u32)>,
-    unified: bool,
     image: Option<AvatarImage>,
 }
 
@@ -41,7 +38,6 @@ impl PartialEq for CommitBanner {
             && self.revision == other.revision
             && self.files == other.files
             && self.totals == other.totals
-            && self.unified == other.unified
             && self.image.as_ref().map(|i| i.cache_key) == other.image.as_ref().map(|i| i.cache_key)
     }
 }
@@ -86,13 +82,8 @@ impl DiffDecorator for NavigationDecorator {
 pub type BannerCache = Option<(Option<CommitBanner>, u32, Rc<NavigationDecorator>)>;
 
 impl NavigationController {
-    pub fn decorator(
-        &self,
-        review: &ReviewController,
-        unified: bool,
-        theme: &Theme,
-    ) -> Rc<dyn DiffDecorator> {
-        let model = self.banner_model(review, unified);
+    pub fn decorator(&self, review: &ReviewController, theme: &Theme) -> Rc<dyn DiffDecorator> {
+        let model = self.banner_model(review);
         let height = banner_height(theme).to_bits();
         let mut cache = self.banner_cache().borrow_mut();
         if let Some((cached, cached_height, decorator)) = &*cache
@@ -113,7 +104,7 @@ impl NavigationController {
         decorator
     }
 
-    fn banner_model(&self, review: &ReviewController, unified: bool) -> Option<CommitBanner> {
+    fn banner_model(&self, review: &ReviewController) -> Option<CommitBanner> {
         let selected = self.history().selected.as_deref()?;
         let commit = self.find_commit(selected)?;
         let age = relative_age(now_secs(), commit.timestamp);
@@ -149,7 +140,6 @@ impl NavigationController {
             revision: commit.revision.id.clone(),
             files,
             totals,
-            unified,
             image: review.author_face(commit.author_email.as_deref().unwrap_or_default()),
         })
     }
@@ -165,19 +155,6 @@ impl RenderOnce for CommitBanner {
         let face = avatar(self.author.clone())
             .size(Layout::AVATAR_MD)
             .image(self.image.clone());
-        let layout = SegmentedControl::new(vec![
-            SegmentedItem::new(
-                "Unified",
-                Action::from(CommandsAction::SetLayout(LayoutMode::Unified)),
-                self.unified,
-            ),
-            SegmentedItem::new(
-                "Split",
-                Action::from(CommandsAction::SetLayout(LayoutMode::Split)),
-                !self.unified,
-            ),
-        ])
-        .id("commit-header.layout");
         let noun = if self.files == 1 { "file" } else { "files" };
         view! {
             <div
@@ -201,11 +178,11 @@ impl RenderOnce for CommitBanner {
                     <div
                         class="flex-row items-center shrink-0"
                         gap={tokens::scaled(Sp::XS, scale)}
-                        h={theme.metrics.ui_row_height}
+                        h={tokens::scaled(Layout::CONTROL_H, scale)}
                         px={tokens::scaled(Sp::SM, scale)}
                         rounded={theme.metrics.control_radius}
                         bg={tc.element_background}
-                        border={tc.control_border}
+                        border={tc.border_variant}
                         hover_bg={tc.element_hover}
                         cursor={CursorHint::Pointer}
                         id="commit-header.copy"
@@ -218,11 +195,11 @@ impl RenderOnce for CommitBanner {
                     </div>
                     <div
                         class="flex-row items-center shrink-0"
-                        h={theme.metrics.ui_row_height}
-                        px={tokens::scaled(Sp::MD, scale)}
+                        h={tokens::scaled(Layout::CONTROL_H, scale)}
+                        px={tokens::scaled(Sp::SM + Sp::XXS, scale)}
                         rounded={theme.metrics.control_radius}
                         bg={tc.element_background}
-                        border={tc.control_border}
+                        border={tc.border_variant}
                         hover_bg={tc.element_hover}
                         cursor={CursorHint::Pointer}
                         id="commit-header.compare-worktree"
@@ -242,8 +219,6 @@ impl RenderOnce for CommitBanner {
                         </div>
                     })}
                     {pill("Read-only", theme)}
-                    <div class="flex-1" />
-                    <div class="shrink-0">{layout}</div>
                 </div>
             </div>
         }

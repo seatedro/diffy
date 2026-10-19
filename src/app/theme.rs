@@ -1,11 +1,14 @@
-use quark_ui::theme::{Color, Theme, ThemeColors, ThemeMode};
+use quark_ui::theme::{
+    Color, ComponentMetrics, ControlMetrics, SurfaceMetrics, Theme, ThemeColors, ThemeMode,
+};
 
 use std::sync::OnceLock;
 
+use crate::app::tokens::{self, quark_units};
 use crate::core::themes::{SemanticPalette, ThemeRegistry};
 use crate::platform::persistence::Settings;
 
-pub const DEFAULT_THEME: &str = "diffy-default";
+pub const DEFAULT_THEME: &str = "TokyoNight";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThemePair {
@@ -31,10 +34,7 @@ impl ThemePair {
 
 impl Default for ThemePair {
     fn default() -> Self {
-        Self {
-            light: Theme::default_light(),
-            dark: Theme::default_dark(),
-        }
+        Self::load(registry(), DEFAULT_THEME, 1.0)
     }
 }
 
@@ -82,7 +82,7 @@ pub fn theme_for(registry: &ThemeRegistry, name: &str, mode: ThemeMode, ui_scale
             ThemeMode::Dark => &entry.dark,
             ThemeMode::Light => &entry.light,
         }),
-        None => Theme::for_mode(mode),
+        None => base_theme(mode),
     };
     theme.with_ui_scale(ui_scale)
 }
@@ -93,9 +93,68 @@ pub fn from_palette(palette: &SemanticPalette) -> Theme {
     } else {
         ThemeMode::Light
     };
-    let mut theme = Theme::for_mode(mode);
+    let mut theme = base_theme(mode);
     theme.colors = colors(palette);
     theme
+}
+
+pub fn default_dark() -> Theme {
+    theme_for(registry(), DEFAULT_THEME, ThemeMode::Dark, 1.0)
+}
+
+pub fn base_theme(mode: ThemeMode) -> Theme {
+    let mut theme = Theme::for_mode(mode);
+    theme.metrics = tokens::METRICS;
+    theme.components = components();
+    theme
+}
+
+fn control(height: f32, padding_x: f32, font_size: f32) -> ControlMetrics {
+    ControlMetrics {
+        height: Some(quark_units(height)),
+        padding_x: Some(quark_units(padding_x)),
+        font_size: Some(quark_units(font_size)),
+        ..ControlMetrics::default()
+    }
+}
+
+fn components() -> ComponentMetrics {
+    ComponentMetrics {
+        button: ControlMetrics {
+            radius: Some(quark_units(7.0)),
+            gap: Some(quark_units(6.0)),
+            icon_size: Some(quark_units(14.0)),
+            ..control(26.0, 10.0, 12.5)
+        },
+        button_compact: ControlMetrics {
+            radius: Some(quark_units(5.0)),
+            gap: Some(quark_units(4.0)),
+            icon_size: Some(quark_units(13.0)),
+            ..control(22.0, 7.0, 12.0)
+        },
+        select: control(28.0, 10.0, 12.5),
+        option: control(28.0, 8.0, 12.5),
+        popover: SurfaceMetrics {
+            radius: Some(quark_units(9.0)),
+            padding_x: Some(quark_units(4.0)),
+            padding_y: Some(quark_units(4.0)),
+            font_size: Some(quark_units(12.5)),
+            ..SurfaceMetrics::default()
+        },
+        tooltip: SurfaceMetrics {
+            font_size: Some(quark_units(11.5)),
+            ..SurfaceMetrics::default()
+        },
+        toast: SurfaceMetrics {
+            font_size: Some(quark_units(12.5)),
+            ..SurfaceMetrics::default()
+        },
+        modal: SurfaceMetrics {
+            radius: Some(quark_units(12.0)),
+            ..SurfaceMetrics::default()
+        },
+        ..ComponentMetrics::default()
+    }
 }
 
 macro_rules! rgb {
@@ -130,7 +189,7 @@ fn colors(palette: &SemanticPalette) -> ThemeColors {
         modal_surface: rgb!(l.modal_surface),
         overlay_scrim: rgb!(l.overlay_scrim),
         border: rgb!(l.border),
-        control_border: text_muted,
+        control_border: rgb!(l.border_variant).lerp(text_muted, CONTROL_BORDER_TINT),
         border_variant: rgb!(l.border_variant),
         focus_border: rgb!(l.focus_border),
         text: rgb!(l.text),
@@ -182,6 +241,8 @@ fn colors(palette: &SemanticPalette) -> ThemeColors {
     }
 }
 
+const CONTROL_BORDER_TINT: f32 = 0.35;
+
 fn flatten(tint: Color, base: Color) -> Color {
     base.lerp(tint.with_alpha(255), f32::from(tint.a) / 255.0)
         .with_alpha(255)
@@ -228,13 +289,6 @@ mod tests {
     }
 
     #[test]
-    fn default_theme_uses_the_builtin_palette() {
-        let registry = ThemeRegistry::load();
-        let pair = ThemePair::load(&registry, DEFAULT_THEME, 1.0);
-        assert_eq!(pair, ThemePair::default());
-    }
-
-    #[test]
     fn catalog_theme_keeps_semantic_diff_and_syntax_colors() {
         let registry = ThemeRegistry::load();
         let name = registry
@@ -267,7 +321,7 @@ mod tests {
     fn ui_scale_scales_metrics() {
         let registry = ThemeRegistry::load();
         let theme = theme_for(&registry, DEFAULT_THEME, ThemeMode::Dark, 1.5);
-        let base = Theme::default_dark();
+        let base = base_theme(ThemeMode::Dark);
         assert_eq!(
             theme.metrics.title_bar_height,
             base.metrics.title_bar_height * 1.5

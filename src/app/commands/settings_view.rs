@@ -1,7 +1,7 @@
 use quark::view;
 use quark_app::ViewContext;
 use quark_components::{
-    Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem, kbd, slider, switch,
+    Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem, slider, switch,
 };
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
@@ -13,7 +13,7 @@ use super::CommandsController;
 use super::keymap::{self, KEYMAP};
 use super::state::SettingsPage;
 use crate::app::icons;
-use crate::app::shell::Slot;
+use crate::app::shell::{self, Slot, kbd};
 use crate::app::text_targets::{SETTINGS, SETTINGS_SEARCH};
 use crate::app::tokens::{self, Ico, Layout, Rad, Sp, Sz, TextStyle};
 use crate::contracts::commands::{CommandsAction, SettingsSection};
@@ -515,7 +515,7 @@ fn control(control: Control, settings: &Settings, theme: &Theme) -> AnyElement {
     let scale = tokens::ui_scale(theme);
     match control {
         Control::Theme => theme_button(settings, theme),
-        Control::Mode => segmented(
+        Control::Mode => choice(
             "settings.mode",
             &[
                 (
@@ -534,6 +534,7 @@ fn control(control: Control, settings: &Settings, theme: &Theme) -> AnyElement {
                     settings.theme_mode == ThemeMode::Light,
                 ),
             ],
+            theme,
         ),
         Control::Size => size_slider(settings, theme),
         Control::UiFont => select_button(
@@ -554,7 +555,7 @@ fn control(control: Control, settings: &Settings, theme: &Theme) -> AnyElement {
                 .as_ref()
                 .map(|c| c.renderer)
                 .unwrap_or_default();
-            segmented(
+            choice(
                 "settings.engine",
                 &[
                     (
@@ -568,11 +569,12 @@ fn control(control: Control, settings: &Settings, theme: &Theme) -> AnyElement {
                         renderer == RendererKind::Difftastic,
                     ),
                 ],
+                theme,
             )
         }
         Control::Layout => {
             let layout = settings.viewport.layout;
-            segmented(
+            choice(
                 "settings.layout",
                 &[
                     (
@@ -586,6 +588,7 @@ fn control(control: Control, settings: &Settings, theme: &Theme) -> AnyElement {
                         layout == LayoutMode::Split,
                     ),
                 ],
+                theme,
             )
         }
         Control::Wrap => toggle(
@@ -605,7 +608,7 @@ fn control(control: Control, settings: &Settings, theme: &Theme) -> AnyElement {
                     )
                 })
                 .collect();
-            segmented("settings.wrap-column", &items)
+            choice("settings.wrap-column", &items, theme)
         }
         Control::Continuous => toggle(
             "Continuous scroll",
@@ -633,7 +636,7 @@ fn control(control: Control, settings: &Settings, theme: &Theme) -> AnyElement {
     }
 }
 
-fn segmented(id: &str, items: &[(&str, CommandsAction, bool)]) -> AnyElement {
+fn choice(id: &str, items: &[(&str, CommandsAction, bool)], theme: &Theme) -> AnyElement {
     let control = SegmentedControl::new(
         items
             .iter()
@@ -643,7 +646,11 @@ fn segmented(id: &str, items: &[(&str, CommandsAction, bool)]) -> AnyElement {
             .collect(),
     )
     .id(id);
-    view! { <div class="shrink-0">{control}</div> }
+    shell::segmented(
+        control,
+        theme.metrics.control_radius,
+        theme.colors.border_variant,
+    )
 }
 
 fn toggle(label: &str, on: bool, action: CommandsAction) -> AnyElement {
@@ -805,7 +812,7 @@ fn keyboard(settings: &Settings, page: &SettingsPage, query: &str, theme: &Theme
                             aria-label={if capturing { format!("Press keys for {}", entry.description) } else { format!("Rebind {}", entry.description) }}
                             on:click={action}
                         >
-                            {kbd(binding, theme)}
+                            {kbd(&binding, theme)}
                             <icon svg={lucide::PENCIL} size={Ico::XS} color={tc.text_muted} />
                         </div>
                     </div>

@@ -27,7 +27,7 @@ use super::composer::{ComposerEditor, ComposerTarget};
 use super::controls::{self, Tone};
 use super::state::ReviewController;
 use crate::app::text_targets::REVIEW_COMPOSER;
-use crate::app::tokens::{Ico, Rad, Sp, TextStyle};
+use crate::app::tokens::{self, Ico, Rad, Sp, TextStyle};
 use crate::contracts::review::{CardKey, ComposerFormat, ReviewAction};
 use crate::contracts::shared::{FileKey, SharedContext, SourceTarget};
 use crate::core::review::{
@@ -127,7 +127,7 @@ impl RowDecorator for CommentChrome {
             .next()
             .unwrap_or("?")
             .to_owned();
-        let scale = theme.metrics.ui_scale();
+        let scale = tokens::ui_scale(theme);
         let size = TextStyle::BodySmall.font_size(theme);
         let face = self
             .faces
@@ -381,7 +381,7 @@ impl CardHost {
                         doc.width = 0.0;
                     }
                 }
-                let ui = theme.metrics.ui_scale();
+                let ui = tokens::ui_scale(&theme);
                 let pad = (Sp::SM * ui).round();
                 let font = document_font(&theme);
                 let text = cx.frame.text();
@@ -1052,7 +1052,10 @@ impl ReviewPresentation {
         self.host.record_width(&card.key, width, composing);
         let mut inner = self.host.0.try_borrow_mut().ok()?;
         let inner = &mut *inner;
-        let theme = inner.theme.clone().unwrap_or_else(Theme::default_dark);
+        let theme = inner
+            .theme
+            .clone()
+            .unwrap_or_else(crate::app::theme::default_dark);
         Some(card_view(
             card,
             self.composer.as_ref(),
@@ -1091,7 +1094,7 @@ impl ReviewPresentation {
         let (theme, viewport, width) = self
             .host
             .with(|inner| (inner.theme.clone(), inner.viewport, inner.default_width))?;
-        let theme = theme.unwrap_or_else(Theme::default_dark);
+        let theme = theme.unwrap_or_else(crate::app::theme::default_dark);
         let label = match keys.len() {
             1 => "1 file comment".to_owned(),
             n => format!("{n} file comments"),
@@ -1108,7 +1111,7 @@ impl ReviewPresentation {
                 .iter()
                 .filter_map(|key| self.card_element(key, width))
                 .collect();
-            let scale = theme.metrics.ui_scale();
+            let scale = tokens::ui_scale(&theme);
             let gap = (Sp::XS * scale).round();
             let panel = popover_panel(&theme)
                 .flex_col()
@@ -1156,7 +1159,7 @@ fn card_view(
     width: f32,
 ) -> AnyElement {
     let tc = &theme.colors;
-    let scale = theme.metrics.ui_scale();
+    let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);
     let composer = composer.filter(|c| c.card == card.key);
     let key = card.key.clone();
@@ -1240,7 +1243,7 @@ fn header_view(
     status_color: quark_ui::theme::Color,
 ) -> AnyElement {
     let tc = &theme.colors;
-    let scale = theme.metrics.ui_scale();
+    let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);
     let toggle = match &card.key {
         CardKey::Thread(id) => {
@@ -1352,7 +1355,7 @@ fn footer_view(card: &CardModel, composing: bool) -> Option<AnyElement> {
 
 fn composer_view(composer: &ComposerView, inner: &mut HostInner, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
-    let scale = theme.metrics.ui_scale();
+    let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);
     let tab = |label: &str, preview: bool| {
         controls::button(

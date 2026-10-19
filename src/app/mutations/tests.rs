@@ -1058,10 +1058,7 @@ fn decorator_outputs_follow_the_displayed_compare() {
     cx.manifest = Some(Rc::new(manifest));
     controller.apply_intent(&Intent::PublishManifest(cx.manifest.clone().unwrap()), &cx);
     let presentation = controller.presentation();
-    assert_eq!(
-        presentation.file_state(&header(REVISION.0)).as_deref(),
-        Some("Read-only")
-    );
+    assert!(presentation.file_state(&header(REVISION.0)).is_none());
     assert!(
         presentation
             .header_slot(HeaderSlot::Actions, &header(REVISION.0))

@@ -425,9 +425,13 @@ fn tree_mode_groups_folders_and_reveals_the_selection() {
 fn viewed_markers_toggle_by_path() {
     let mut ui = nav_harness();
     open(&mut ui, three_files());
-    let first = ui.find_all(By::role_name(Role::CheckBox, "Mark viewed"));
-    assert_eq!(first.len(), 3);
-    ui.click(first[0].center());
+    assert!(
+        ui.try_find(By::role_name(Role::CheckBox, "Mark viewed"))
+            .is_none()
+    );
+    ui.pointer_move(ui.find(file_node(1)).center());
+    let toggle = ui.find(By::role_name(Role::CheckBox, "Mark viewed"));
+    ui.click(toggle.center());
     assert!(ui.app().nav.is_viewed("src/a.rs"));
     ui.find(By::role_name(Role::CheckBox, "Mark unviewed"));
 }

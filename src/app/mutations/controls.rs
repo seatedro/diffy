@@ -7,7 +7,7 @@ use quark_ui::element::*;
 use quark_ui::style::Styled;
 use quark_ui::theme::{Color, Theme};
 
-use crate::app::tokens::{self, Ico, Sp, TextStyle};
+use crate::app::tokens::{self, Ico, Layout, Sp, TextStyle};
 use crate::contracts::shell::Action;
 
 const ROW_FILL: f32 = 0.72;
@@ -118,10 +118,10 @@ impl Chrome {
         let tc = &theme.colors;
         let scale = tokens::ui_scale(theme);
         Self {
-            height: theme.metrics.ui_row_height,
+            height: tokens::scaled(Layout::CONTROL_H, scale),
             radius: theme.metrics.control_radius,
             pad_x: tokens::scaled(Sp::SM, scale),
-            gap: tokens::scaled(Sp::XS, scale),
+            gap: tokens::scaled(Sp::SM - Sp::XXS, scale),
             font: TextStyle::BodySmall.font_size(theme),
             small: TextStyle::Caption.font_size(theme),
             icon: tokens::scaled(Ico::SM, scale),
@@ -131,7 +131,7 @@ impl Chrome {
             element: tc.element_background,
             element_hover: tc.element_hover,
             ghost_hover: tc.ghost_element_hover,
-            border: tc.control_border,
+            border: tc.border_variant,
             text: tc.text,
             muted: tc.text_muted,
             danger: tc.status_error,
@@ -160,7 +160,7 @@ impl Chrome {
 
 impl Default for Chrome {
     fn default() -> Self {
-        Self::from_theme(&Theme::default_dark())
+        Self::from_theme(&crate::app::theme::default_dark())
     }
 }
 
@@ -188,7 +188,12 @@ pub fn render(control: Control, chrome: &Chrome) -> AnyElement {
             Some(chrome.border),
         ),
         Tone::Ghost => (Color::TRANSPARENT, chrome.ghost_hover, chrome.muted, None),
-        Tone::Destructive => (Color::TRANSPARENT, chrome.ghost_hover, chrome.danger, None),
+        Tone::Destructive => (
+            chrome.element,
+            chrome.element_hover,
+            chrome.danger,
+            Some(chrome.border),
+        ),
     };
     let fg = if control.disabled {
         fg.with_alpha(Alpha::MUTED)

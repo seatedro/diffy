@@ -43,7 +43,7 @@ impl PresentationStyle {
 
 impl Default for PresentationStyle {
     fn default() -> Self {
-        Self::from_theme(&Theme::default_dark())
+        Self::from_theme(&crate::app::theme::default_dark())
     }
 }
 
@@ -312,11 +312,7 @@ impl DiffDecorator for MutationPresentation {
     fn file_state(&self, cx: &HeaderContext) -> Option<String> {
         let source = cx.source?;
         let buckets = self.shown(source.id, file_revision(source))?;
-        Some(if self.working() {
-            state_label(cx.status, buckets)
-        } else {
-            "Read-only".to_owned()
-        })
+        self.working().then(|| state_label(cx.status, buckets))
     }
 
     fn hunk_actions(&self, cx: &SeparatorContext) -> Option<AnyElement> {

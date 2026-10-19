@@ -12,7 +12,7 @@ use quark_ui::theme::Theme;
 use super::DeliveryController;
 use super::state::UpdateState;
 use crate::app::shell::Slot;
-use crate::app::tokens::{self, Sp, Sz, TextStyle};
+use crate::app::tokens::{self, Ico, Layout, Sp, Sz, TextStyle};
 use crate::contracts::delivery::DeliveryAction;
 use crate::core::syntax::grammar;
 
@@ -25,6 +25,25 @@ pub fn view(delivery: &mut DeliveryController, slot: &Slot, cx: &mut ViewContext
     let failed = delivery.failed_grammars().next().is_some();
     let restart = matches!(delivery.update(), UpdateState::ReadyToRestart(_));
     let open = delivery.languages_open();
+    let tc = &theme.colors;
+    let small = TextStyle::BodySmall.font_size(theme);
+    let language = slot
+        .shared
+        .selected_file
+        .and_then(|selected| {
+            let manifest = slot.shared.manifest.as_ref()?;
+            let file = manifest
+                .files
+                .iter()
+                .find(|file| file.key == selected.key)?;
+            Some(
+                grammar::language_for_path(&file.paths.display_path()).map_or_else(
+                    || "Plain text".to_owned(),
+                    |language| title_case(language.name),
+                ),
+            )
+        })
+        .unwrap_or_else(|| "Languages".to_owned());
     view! {
         <div
             h={slot.height}
@@ -49,19 +68,38 @@ pub fn view(delivery: &mut DeliveryController, slot: &Slot, cx: &mut ViewContext
                 on:key:escape={DeliveryAction::CloseLanguages}
                 test_id="delivery.languages.toggle"
             >
-                <Button
+                <div
+                    class="flex-row items-center"
+                    h={tokens::scaled(Layout::CONTROL_SM_H, scale)}
+                    px={tokens::scaled(Sp::XS, scale)}
+                    gap={tokens::scaled(Sp::XS, scale)}
+                    rounded={theme.metrics.control_radius}
+                    hover_bg={tc.ghost_element_hover}
+                    @when {open} { bg={tc.ghost_element_selected} }
+                    cursor={CursorHint::Pointer}
+                    role="button"
+                    aria-label="Syntax languages"
+                    tooltip="Syntax languages"
                     on:click={DeliveryAction::ToggleLanguages}
-                    label="Syntax languages"
-                    icon={if failed { lucide::ALERT_CIRCLE } else { lucide::CODE }}
-                    active={open}
-                    size={ButtonSize::Compact}
-                />
+                >
+                    if failed {
+                        <icon svg={lucide::ALERT_CIRCLE} size={Ico::XS} color={tc.status_warning} />
+                    }
+                    <text size={small} color={tc.text_muted}>{language}</text>
+                </div>
             </div>
             <text size={TextStyle::Caption.font_size(theme)} color={theme.colors.text_muted}>
                 {VERSION}
             </text>
         </div>
     }
+}
+
+fn title_case(name: &str) -> String {
+    let mut chars = name.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 pub fn overlay(

@@ -1,7 +1,45 @@
-pub use quark_ui::design::{
-    Alpha, Bp, Elevation, Ico, Rad, Shadow, ShadowLayer, Sp, Sz, TextStyle,
+use quark_ui::design::Ico as QuarkIco;
+pub use quark_ui::design::{Alpha, Bp, Elevation, Rad, Shadow, ShadowLayer, Sp, Sz, TextStyle};
+use quark_ui::theme::{Color, Theme, ThemeMetrics};
+
+pub const METRICS: ThemeMetrics = ThemeMetrics {
+    title_bar_height: 42.0,
+    status_bar_height: 26.0,
+    sidebar_width: 292.0,
+    panel_radius: 10.0,
+    control_radius: 7.0,
+    modal_radius: 12.0,
+    spacing_xs: 4.0,
+    spacing_sm: 6.0,
+    spacing_md: 12.0,
+    spacing_lg: 16.0,
+    ui_font_size: 13.0,
+    ui_small_font_size: 12.0,
+    heading_font_size: 15.0,
+    mono_font_size: 12.5,
+    ui_row_height: 30.0,
+    code_row_height: 22.0,
 };
-use quark_ui::theme::Theme;
+
+const QUARK_ANCHOR_FONT: f32 = 16.0;
+
+pub const fn quark_units(points: f32) -> f32 {
+    points * QUARK_ANCHOR_FONT / METRICS.ui_font_size
+}
+
+pub struct Ico;
+
+impl Ico {
+    pub const XS: f32 = quark_units(QuarkIco::XS);
+    pub const SM: f32 = quark_units(QuarkIco::SM);
+    pub const MD: f32 = quark_units(QuarkIco::MD);
+    pub const LG: f32 = quark_units(QuarkIco::LG);
+    pub const XL: f32 = quark_units(QuarkIco::XL);
+    pub const XXL: f32 = quark_units(QuarkIco::XXL);
+    pub const HERO: f32 = quark_units(QuarkIco::HERO);
+    pub const BUTTON_COMPACT: f32 = quark_units(QuarkIco::BUTTON_COMPACT);
+    pub const BUTTON_DEFAULT: f32 = quark_units(QuarkIco::BUTTON_DEFAULT);
+}
 
 pub struct Shell;
 
@@ -14,7 +52,23 @@ impl Shell {
 }
 
 pub fn ui_scale(theme: &Theme) -> f32 {
-    theme.metrics.ui_scale()
+    theme.metrics.ui_font_size / METRICS.ui_font_size
+}
+
+pub struct Tint;
+
+impl Tint {
+    pub const SELECTED: f32 = 0.15;
+    pub const SELECTED_EDGE: f32 = 0.4;
+    pub const BADGE: f32 = 0.16;
+}
+
+pub fn selected_fill(base: Color, theme: &Theme) -> Color {
+    base.lerp(theme.colors.accent, Tint::SELECTED)
+}
+
+pub fn selected_edge(base: Color, theme: &Theme) -> Color {
+    base.lerp(theme.colors.accent, Tint::SELECTED_EDGE)
 }
 
 pub fn scaled(value: f32, scale: f32) -> f32 {
@@ -52,6 +106,10 @@ impl Layout {
     pub const REF_PICKER_W: f32 = 540.0;
     pub const HOVER_CARD_W: f32 = 330.0;
     pub const POPOVER_GAP: f32 = 4.0;
+    pub const CONTROL_H: f32 = 26.0;
+    pub const CONTROL_SM_H: f32 = 22.0;
+    pub const KBD_H: f32 = 17.0;
+    pub const STATUS_DOT: f32 = 7.0;
     pub const COMPARE_CHIP_H: f32 = 26.0;
     pub const COMPARE_BAR_H: f32 = 32.0;
     pub const COMPARE_ARROW_MARGIN: f32 = 6.0;

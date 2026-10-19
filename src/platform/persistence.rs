@@ -75,7 +75,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme_mode: ThemeMode::Dark,
-            theme_name: "diffy-default".to_owned(),
+            theme_name: crate::app::theme::DEFAULT_THEME.to_owned(),
             ui_scale_pct: 100,
             fonts: FontSettings::default(),
             sidebar_width_px: None,

@@ -15,7 +15,8 @@ use quark_ui::style::Styled;
 use quark_ui::theme::{Color, Theme};
 
 use super::scopes::SharedScopes;
-use crate::app::tokens::{self, Sp};
+use crate::app::shell::segmented;
+use crate::app::tokens::{self, Ico, Layout, Sp};
 use crate::contracts::commands::{CommandsAction, ContextMenuEntry};
 use crate::contracts::shell::{Action, ShellAction};
 use crate::contracts::viewport::interaction::InteractionAction;
@@ -38,6 +39,8 @@ struct Palette {
     accent: Color,
     hover: Color,
     selected: Color,
+    divider: Color,
+    radius: f32,
 }
 
 impl Palette {
@@ -51,10 +54,12 @@ impl Palette {
             accent: tc.accent,
             hover: tc.ghost_element_hover,
             selected: tc.ghost_element_selected,
+            divider: tc.border_variant,
+            radius: theme.metrics.control_radius,
         }
     }
 
-    fn key(&self) -> [u32; 7] {
+    fn key(&self) -> [u32; 9] {
         let c = |c: Color| u32::from_le_bytes([c.r, c.g, c.b, c.a]);
         [
             self.scale.to_bits(),
@@ -64,6 +69,8 @@ impl Palette {
             c(self.accent),
             c(self.hover),
             c(self.selected),
+            c(self.divider),
+            self.radius.to_bits(),
         ]
     }
 }
@@ -140,8 +147,14 @@ impl Decorations {
             .size(ButtonSize::Compact)
             .active(controls.search_open);
         let more = overflow(cx, palette);
+        let layout = segmented(layout, palette.radius, palette.divider);
         view! {
             <div class="flex-row items-center" gap={tokens::scaled(Sp::XS, scale)}>
+                <div
+                    w={1.0}
+                    h={tokens::scaled(Sp::LG + Sp::XXS, scale)}
+                    bg={palette.divider}
+                />
                 {layout}
                 {icon_toggle(lucide::WRAP_TEXT, "Wrap lines", controls.wrap, CommandsAction::ToggleWrap.into(), palette)}
                 {find}
@@ -159,7 +172,7 @@ fn icon_toggle(
     palette: Palette,
 ) -> AnyElement {
     let scale = palette.scale;
-    let size = tokens::scaled(Sp::XL, scale);
+    let size = tokens::scaled(Layout::CONTROL_SM_H, scale);
     let color = if on { palette.accent } else { palette.icon };
     view! {
         <div
@@ -176,7 +189,7 @@ fn icon_toggle(
             on:click={quark_ui::Action::from(action)}
             test_id="diff.wrap"
         >
-            <icon svg={icon} size={(size * 0.6).round()} color={color} />
+            <icon svg={icon} size={Ico::SM} color={color} />
         </div>
     }
 }
@@ -193,7 +206,7 @@ fn overflow(cx: &HeaderContext, palette: Palette) -> AnyElement {
             ShellAction::CopyText(cx.title.to_owned()),
         ));
     }
-    let size = tokens::scaled(Sp::XL, scale);
+    let size = tokens::scaled(Layout::CONTROL_SM_H, scale);
     let handler = ClickHandler::new(move |event| {
         vec![
             Action::from(CommandsAction::OpenContextMenu {
@@ -217,7 +230,7 @@ fn overflow(cx: &HeaderContext, palette: Palette) -> AnyElement {
             on_click_handler={handler}
             test_id="diff.more"
         >
-            <icon svg={lucide::MORE_HORIZONTAL} size={(size * 0.6).round()} color={palette.icon} />
+            <icon svg={lucide::MORE_HORIZONTAL} size={Ico::SM} color={palette.icon} />
         </div>
     }
 }

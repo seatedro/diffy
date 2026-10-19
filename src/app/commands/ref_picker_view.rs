@@ -1,6 +1,6 @@
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::{SegmentedControl, SegmentedItem, kbd};
+use quark_components::{SegmentedControl, SegmentedItem};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -11,6 +11,7 @@ use super::CommandsController;
 use super::list;
 use super::ref_picker::{REF_PICKER_VISIBLE_ROWS, RefPicker};
 use crate::app::icons;
+use crate::app::shell::{kbd, segmented};
 use crate::app::text_targets::PICKER;
 use crate::app::tokens::{self, Ico, Layout, Rad, Sp, Sz, TextStyle};
 use crate::contracts::commands::{CommandsAction, RefPickerAction};
@@ -120,7 +121,7 @@ pub fn ref_picker_panel(
                     px={tokens::scaled(Sp::MD, scale)}
                     border_b={tc.border_variant}
                 >
-                    <div class="shrink-0">{sides}</div>
+                    {segmented(sides, theme.metrics.control_radius, theme.colors.border_variant)}
                     <icon svg={lucide::SEARCH} size={Ico::SM} color={tc.text_muted} />
                     <div class="flex-1 min-w-0">{input}</div>
                     <div class="flex-row items-center shrink-0" gap={tokens::scaled(Sp::XS, scale)}>
@@ -283,10 +284,10 @@ fn footer(picker: &RefPicker, theme: &Theme) -> AnyElement {
             aria-label="Compare options"
         >
             <text size={small} color={tc.text_muted}>"Compare"</text>
-            <div class="shrink-0">{modes}</div>
+            {segmented(modes, theme.metrics.control_radius, theme.colors.border_variant)}
             <div class="flex-1" />
             <text size={small} color={tc.text_muted}>"Engine"</text>
-            <div class="shrink-0">{engines}</div>
+            {segmented(engines, theme.metrics.control_radius, theme.colors.border_variant)}
         </div>
     }
 }

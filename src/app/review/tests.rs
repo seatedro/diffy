@@ -2066,10 +2066,8 @@ fn sign_in_dialog_fits_its_content_with_actions_on_the_right() {
     let primary = ui
         .find(By::role_name(Role::Button, "Continue with GitHub"))
         .bounds;
-    let padding = crate::app::tokens::scaled(
-        crate::app::tokens::Sp::XL,
-        crate::app::tokens::ui_scale(ui.theme()),
-    );
+    let padding =
+        crate::app::tokens::scaled(crate::app::tokens::Sp::XL, ui.theme().metrics.ui_scale());
 
     assert!((cancel.y - primary.y).abs() < 0.5);
     assert!(cancel.x + cancel.width <= primary.x);

@@ -89,7 +89,7 @@ impl SemanticPalette {
 
         let element_hover = s.panel.lerp(overlay, if d { 0.12 } else { 0.08 });
         let element_active = s.panel.lerp(overlay, if d { 0.20 } else { 0.14 });
-        let ghost_hover = overlay.with_alpha(if d { 18 } else { 22 });
+        let ghost_hover = overlay.with_alpha(if d { 26 } else { 22 });
         let ghost_active = overlay.with_alpha(if d { 32 } else { 40 });
 
         // Accent-tinted hover for "primary" slots (sidebar rows, selected

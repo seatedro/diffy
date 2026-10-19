@@ -6,19 +6,18 @@ use std::sync::Arc;
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
 use quark_app::{AppEvent as WindowEvent, InputEvent, UiApp, UiContext, UiSender, ViewContext};
-use quark_components::{Axis, Pane, Split, SplitEvent, SplitState};
+use quark_components::{Axis, Pane, SegmentedControl, Split, SplitEvent, SplitState};
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
-use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
-use quark_ui::theme::Theme;
+use quark_ui::theme::{Color, Theme};
 
 use crate::app::diff_slots::DiffSlots;
 use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
 use crate::app::text_targets::{self, TextCx};
-use crate::app::tokens::{self, Ico, Sp, TextStyle};
+use crate::app::tokens::{self, Layout, Rad, Sp, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, ToastUpdate};
@@ -27,7 +26,7 @@ use crate::contracts::shell::{
     Action, AppMessage, AppStartup, Effect, Intent, Reduction, ShellAction, ShellEffect, ShellEvent,
 };
 use crate::contracts::viewport::ViewportAction;
-use crate::core::compare::{LayoutMode, RendererKind};
+use crate::core::compare::RendererKind;
 use crate::core::vcs::model::RefKind;
 
 pub trait EffectDispatcher: 'static {
@@ -60,7 +59,7 @@ struct ShellState {
 
 impl ShellState {
     fn new(display_name: String) -> Self {
-        let theme = Theme::default_dark();
+        let theme = crate::app::theme::default_dark();
         let sidebar =
             Pane::fixed("Files", tokens::sidebar_default(&theme)).min(tokens::sidebar_min(&theme));
         let main = Pane::flex("Diff").min(tokens::main_surface_min(&theme));
@@ -410,11 +409,10 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             .viewport
             .interaction
             .sync_review(&presentation);
-        let unified = self.shared.settings.settings.viewport.layout == LayoutMode::Unified;
-        let banner =
-            self.controllers
-                .navigation
-                .decorator(&self.controllers.review, unified, theme);
+        let banner = self
+            .controllers
+            .navigation
+            .decorator(&self.controllers.review, theme);
         let decorator = self.slots.decorator(
             presentation,
             self.controllers.mutations.presentation(),
@@ -496,6 +494,33 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 {delivery}
             </div>
         }
+    }
+}
+
+pub fn segmented(control: SegmentedControl, radius: f32, border: Color) -> AnyElement {
+    view! {
+        <div class="shrink-0 flex-row" rounded={radius} border={border}>
+            {control}
+        </div>
+    }
+}
+
+pub fn kbd(label: &str, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    view! {
+        <div
+            class="shrink-0 flex-row items-center justify-center"
+            h={tokens::scaled(Layout::KBD_H, scale)}
+            min_w={tokens::scaled(Layout::KBD_H, scale)}
+            px={tokens::scaled(Sp::XS, scale)}
+            rounded={tokens::scaled(Rad::SM, scale)}
+            border={tc.border_variant}
+        >
+            <text size={TextStyle::Caption.font_size(theme)} class="font-mono" color={tc.text_muted}>
+                {label.to_owned()}
+            </text>
+        </div>
     }
 }
 
@@ -725,7 +750,12 @@ fn branch_status(shared: &SharedContext, theme: &Theme) -> Option<AnyElement> {
             aria-label={format!("Branch {}", active.name)}
             test_id="status.branch"
         >
-            <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={tc.text_muted} />
+            <div
+                w={tokens::scaled(Layout::STATUS_DOT, scale)}
+                h={tokens::scaled(Layout::STATUS_DOT, scale)}
+                rounded={tokens::scaled(Layout::STATUS_DOT, scale)}
+                bg={tc.line_add_text}
+            />
             <text size={small} color={tc.text}>{active.name.clone()}</text>
             {?sync}
         </div>

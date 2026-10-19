@@ -676,14 +676,10 @@ impl CommandsController {
     fn open_theme_picker(&mut self) -> Reduction {
         let registry = crate::app::theme::registry();
         let current = &self.settings.settings.theme_name;
-        let default = crate::app::theme::DEFAULT_THEME;
-        let builtin = registry.get(default).is_none().then_some(default);
-        let candidates = builtin
-            .into_iter()
-            .chain(registry.names())
+        let candidates = registry
+            .names()
             .map(|name| {
                 let detail = match registry.variant(name) {
-                    _ if builtin == Some(name) => "Light and dark",
                     crate::core::themes::ThemeVariant::Dual => "Light and dark",
                     crate::core::themes::ThemeVariant::Dark => "Dark",
                     crate::core::themes::ThemeVariant::Light => "Light",
@@ -1029,6 +1025,12 @@ fn normalize(settings: &mut Settings) {
         .ui_scale_pct
         .clamp(MIN_UI_SCALE_PCT, MAX_UI_SCALE_PCT);
     settings.fonts = settings.fonts.normalized();
+    if crate::app::theme::registry()
+        .get(&settings.theme_name)
+        .is_none()
+    {
+        settings.theme_name = crate::app::theme::DEFAULT_THEME.to_owned();
+    }
     settings.wheel_scroll_lines = settings.wheel_scroll_lines.clamp(1, 10);
 }
 

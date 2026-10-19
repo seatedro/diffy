@@ -371,7 +371,9 @@ impl DiffColors {
         }
         let gutter_text = pick(o.gutter_text, c.gutter_text);
         let surface = pick(o.surface, c.editor_surface);
-        let gutter = pick(o.gutter, c.gutter_bg);
+        let gutter = pick(o.gutter, surface);
+        let add_marker = pick(o.add_marker, c.line_add_text);
+        let del_marker = pick(o.del_marker, c.line_del_text);
         Self {
             surface,
             empty_side: pick(o.empty_side, c.background),
@@ -385,14 +387,14 @@ impl DiffColors {
             del_line: pick(o.del_line, c.line_del),
             add_word: pick(o.add_word, c.line_add_word_bg),
             del_word: pick(o.del_word, c.line_del_word_bg),
-            add_marker: pick(o.add_marker, c.line_add_text),
-            del_marker: pick(o.del_marker, c.line_del_text),
-            add_number: pick(o.add_number, gutter_text),
-            del_number: pick(o.del_number, gutter_text),
+            add_marker,
+            del_marker,
+            add_number: pick(o.add_number, gutter_text.lerp(add_marker, NUMBER_TINT)),
+            del_number: pick(o.del_number, gutter_text.lerp(del_marker, NUMBER_TINT)),
             add_text: c.line_add_text,
             del_text: c.line_del_text,
             file_header: pick(o.file_header, c.file_header_bg),
-            separator: pick(o.separator, gutter),
+            separator: pick(o.separator, surface.lerp(text, SEPARATOR_LIFT)),
             hover: c.ghost_element_hover,
             search_match: pick(o.search_match, c.search_match_bg),
             search_active: pick(o.search_active, c.search_match_active_bg),
@@ -474,6 +476,8 @@ impl DiffColors {
 
 const TINT: f32 = 0.14;
 const PICKED_WASH: f32 = 0.09;
+const SEPARATOR_LIFT: f32 = 0.035;
+const NUMBER_TINT: f32 = 0.45;
 const PICKED_GUTTER: f32 = 0.16;
 const PICKED_NUMBER: f32 = 0.6;
 

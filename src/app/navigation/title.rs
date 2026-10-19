@@ -63,7 +63,7 @@ pub fn compare_bar(
             px={tokens::scaled(Sp::XXS, scale)}
             rounded={theme.metrics.control_radius * 1.5}
             bg={tc.element_background}
-            border={tc.control_border}
+            border={tc.border_variant}
             accessibility_role={AccessibilityRole::Toolbar}
             aria-label="Compare"
             test_id="title.compare"

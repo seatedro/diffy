@@ -873,7 +873,7 @@ impl NavigationController {
                 .unwrap_or(settings.viewport.layout),
             renderer: args
                 .renderer
-                .or(persisted.map(|c| c.renderer))
+                .or(settings.last_compare.as_ref().map(|c| c.renderer))
                 .unwrap_or_default(),
             working_copy: false,
         };

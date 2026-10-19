@@ -986,6 +986,7 @@ impl DiffViewState {
             }
             merge.push(shown, piece.side, range);
         }
+        let words = super::paint::join_whitespace_gaps(words, &composed);
         let m = self.metrics();
         let params = TextParams::new(composed, self.text_style())
             .spans(text_spans)

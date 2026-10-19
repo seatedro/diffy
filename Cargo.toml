@@ -80,6 +80,9 @@ gix = { version = "0.83", default-features = false, features = ["blob-diff", "ma
 rfd = "0.17.2"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 heed = "0.22"
+rusqlite = { version = "0.38", default-features = false, features = ["bundled"] }
+sea-query = { version = "1.0", default-features = false, features = ["backend-sqlite", "derive"] }
+sea-query-rusqlite = { version = "0.8", default-features = false }
 parking_lot = "0.12"
 rayon = { version = "1.10", optional = true }
 tempfile = "3.14"

@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use heed::types::{SerdeBincode, Str};
-use heed::{Database, EnvOpenOptions};
+use heed::{Database as LmdbDatabase, EnvOpenOptions};
+use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use serde::{Deserialize, Serialize};
+
+use crate::core::error::Result;
+use crate::platform::database::{Database, Frecency};
 
 const DECAY_CONSTANT: f64 = 0.0693;
 const SECONDS_PER_DAY: f64 = 86400.0;
@@ -24,167 +27,157 @@ struct FrecencyData {
     entries: BTreeMap<String, FrecencyEntry>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct FrecencyStore {
-    path: Arc<PathBuf>,
-    data: Arc<Mutex<FrecencyData>>,
-}
-
-impl std::fmt::Debug for FrecencyStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FrecencyStore")
-            .field("path", &self.path)
-            .finish_non_exhaustive()
-    }
+    db: Database,
 }
 
 impl FrecencyStore {
-    pub fn open(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let path = frecency_file_path(path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let (data, migrated_legacy) = match std::fs::read(&path) {
-            Ok(contents) => (
-                serde_json::from_slice(&contents).unwrap_or_else(|error| {
-                    tracing::warn!("corrupt frecency store at {}: {error}", path.display());
-                    FrecencyData::default()
-                }),
-                false,
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let legacy_path = legacy_frecency_dir_for_json_path(&path);
-                match legacy_path.as_deref().and_then(|path| {
-                    match read_legacy_frecency_store(path) {
-                        Ok(data) => data,
-                        Err(error) => {
-                            tracing::warn!(
-                                "failed to migrate legacy frecency store at {}: {error}",
-                                path.display()
-                            );
-                            None
-                        }
-                    }
-                }) {
-                    Some(data) => (data, true),
-                    None => (FrecencyData::default(), false),
-                }
-            }
-            Err(error) => return Err(Box::new(error)),
-        };
-        let store = Self {
-            path: Arc::new(path),
-            data: Arc::new(Mutex::new(data)),
-        };
-        if migrated_legacy {
-            let data = store.data.lock().ok().map(|data| data.clone());
-            if let Some(data) = data {
-                store.save(data, "legacy migration");
-            }
-        }
-        Ok(store)
+    pub fn open(path: &Path) -> Result<Self> {
+        let dir = store_dir(path);
+        let db = Database::in_dir(&dir)?;
+        db.import_once("frecency", |db| import_legacy(db, &dir));
+        Ok(Self { db })
     }
 
     pub fn record_access(&self, key: &str) {
-        let now_ms = now_ms();
-        let Some(data) = self.update_data(|data| {
-            let entry = data.entries.entry(key.to_owned()).or_insert(FrecencyEntry {
-                access_count: 0,
-                last_access_ms: now_ms,
-            });
-            entry.access_count = entry.access_count.saturating_add(1);
-            entry.last_access_ms = now_ms;
-        }) else {
-            return;
-        };
-        self.save(data, "record_access");
+        let now = now_ms() as i64;
+        let insert = Query::insert()
+            .into_table(Frecency::Table)
+            .columns([Frecency::Key, Frecency::AccessCount, Frecency::LastAccessMs])
+            .values_panic([key.into(), 1.into(), now.into()])
+            .on_conflict(
+                OnConflict::column(Frecency::Key)
+                    .value(
+                        Frecency::AccessCount,
+                        Expr::col(Frecency::AccessCount).add(1),
+                    )
+                    .update_column(Frecency::LastAccessMs)
+                    .to_owned(),
+            )
+            .to_owned();
+        if let Err(error) = self.db.execute(&insert) {
+            tracing::warn!("frecency record_access failed: {error}");
+        }
     }
 
     pub fn score(&self, key: &str) -> f64 {
-        let Ok(data) = self.data.lock() else {
-            tracing::warn!("frecency score failed: store lock poisoned");
-            return 0.0;
-        };
-        data.entries
-            .get(key)
-            .map(frecency_score)
+        self.entries(Some(key))
+            .first()
+            .map(|(_, entry)| frecency_score(entry))
             .unwrap_or_default()
     }
 
     pub fn recent(&self, limit: usize) -> Vec<String> {
-        let entries = {
-            let Ok(data) = self.data.lock() else {
-                tracing::warn!("frecency recent failed: store lock poisoned");
-                return Vec::new();
-            };
-            data.entries
-                .iter()
-                .map(|(key, entry)| (key.clone(), frecency_score(entry)))
-                .filter(|(_, score)| *score > 0.001)
-                .collect::<Vec<_>>()
-        };
-
-        let mut sorted = entries;
-        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        sorted.truncate(limit);
-        sorted.into_iter().map(|(key, _)| key).collect()
+        let mut scored: Vec<(String, f64)> = self
+            .entries(None)
+            .into_iter()
+            .map(|(key, entry)| {
+                let score = frecency_score(&entry);
+                (key, score)
+            })
+            .filter(|(_, score)| *score > 0.001)
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        scored.into_iter().map(|(key, _)| key).collect()
     }
 
     pub fn last_access_secs(&self, key: &str) -> Option<i64> {
-        let data = self.data.lock().ok()?;
-        let entry = data.entries.get(key)?;
+        let (_, entry) = self.entries(Some(key)).into_iter().next()?;
         i64::try_from(entry.last_access_ms / 1000).ok()
     }
 
     pub fn remove(&self, key: &str) {
-        let Some(data) = self.update_data(|data| {
-            data.entries.remove(key);
-        }) else {
-            return;
-        };
-        self.save(data, "remove");
-    }
-
-    fn update_data(&self, update: impl FnOnce(&mut FrecencyData)) -> Option<FrecencyData> {
-        let Ok(mut data) = self.data.lock() else {
-            tracing::warn!("frecency update failed: store lock poisoned");
-            return None;
-        };
-        update(&mut data);
-        Some(data.clone())
-    }
-
-    fn save(&self, data: FrecencyData, operation: &str) {
-        if let Err(error) = serde_json::to_vec(&data)
-            .map_err(std::io::Error::other)
-            .and_then(|contents| std::fs::write(self.path.as_ref(), contents))
-        {
-            tracing::warn!("frecency {operation} failed: {error}");
+        let delete = Query::delete()
+            .from_table(Frecency::Table)
+            .and_where(Expr::col(Frecency::Key).eq(key))
+            .to_owned();
+        if let Err(error) = self.db.execute(&delete) {
+            tracing::warn!("frecency remove failed: {error}");
         }
+    }
+
+    fn entries(&self, key: Option<&str>) -> Vec<(String, FrecencyEntry)> {
+        let mut select = Query::select()
+            .columns([Frecency::Key, Frecency::AccessCount, Frecency::LastAccessMs])
+            .from(Frecency::Table)
+            .to_owned();
+        if let Some(key) = key {
+            select.and_where(Expr::col(Frecency::Key).eq(key));
+        }
+        let rows = self.db.query(&select, |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                FrecencyEntry {
+                    access_count: row.get::<_, u32>(1)?,
+                    last_access_ms: u64::try_from(row.get::<_, i64>(2)?).unwrap_or_default(),
+                },
+            ))
+        });
+        rows.unwrap_or_else(|error| {
+            tracing::warn!("frecency read failed: {error}");
+            Vec::new()
+        })
     }
 }
 
 pub fn open_default_store() -> Option<FrecencyStore> {
     let base = crate::platform::startup::app_config_dir()?;
-    let path = base.join(STORE_FILE_NAME);
-    match FrecencyStore::open(&path) {
+    match FrecencyStore::open(&base) {
         Ok(store) => Some(store),
         Err(error) => {
             tracing::warn!(
-                "failed to open frecency store at {}: {error}",
-                path.display()
+                "failed to open frecency store in {}: {error}",
+                base.display()
             );
             None
         }
     }
 }
 
-fn frecency_file_path(path: &Path) -> PathBuf {
+fn store_dir(path: &Path) -> PathBuf {
     if path.extension().is_none() {
-        path.join(STORE_FILE_NAME)
-    } else {
         path.to_path_buf()
+    } else {
+        path.parent().unwrap_or(Path::new(".")).to_path_buf()
     }
+}
+
+fn import_legacy(db: &Database, dir: &Path) -> Result<()> {
+    let json = dir.join(STORE_FILE_NAME);
+    let data = match std::fs::read(&json) {
+        Ok(contents) => serde_json::from_slice(&contents).unwrap_or_else(|error| {
+            tracing::warn!("corrupt frecency store at {}: {error}", json.display());
+            FrecencyData::default()
+        }),
+        Err(_) => match legacy_frecency_dir_for_json_path(&json)
+            .as_deref()
+            .map(read_legacy_frecency_store)
+        {
+            Some(Ok(Some(data))) => data,
+            Some(Err(error)) => {
+                tracing::warn!("failed to read legacy frecency store: {error}");
+                FrecencyData::default()
+            }
+            _ => FrecencyData::default(),
+        },
+    };
+    for (key, entry) in data.entries {
+        db.execute(
+            &Query::insert()
+                .into_table(Frecency::Table)
+                .columns([Frecency::Key, Frecency::AccessCount, Frecency::LastAccessMs])
+                .values_panic([
+                    key.into(),
+                    entry.access_count.into(),
+                    (entry.last_access_ms as i64).into(),
+                ])
+                .on_conflict(OnConflict::column(Frecency::Key).do_nothing().to_owned())
+                .to_owned(),
+        )?;
+    }
+    Ok(())
 }
 
 fn legacy_frecency_dir_for_json_path(path: &Path) -> Option<PathBuf> {
@@ -193,7 +186,7 @@ fn legacy_frecency_dir_for_json_path(path: &Path) -> Option<PathBuf> {
 
 fn read_legacy_frecency_store(
     path: &Path,
-) -> Result<Option<FrecencyData>, Box<dyn std::error::Error>> {
+) -> std::result::Result<Option<FrecencyData>, Box<dyn std::error::Error>> {
     if !path.is_dir() {
         return Ok(None);
     }
@@ -203,7 +196,7 @@ fn read_legacy_frecency_store(
         opts.open(path)?
     };
     let rtxn = env.read_txn()?;
-    let Some(db): Option<Database<Str, SerdeBincode<FrecencyEntry>>> =
+    let Some(db): Option<LmdbDatabase<Str, SerdeBincode<FrecencyEntry>>> =
         env.open_database(&rtxn, None)?
     else {
         return Ok(None);
@@ -252,7 +245,7 @@ mod tests {
     use super::{FrecencyEntry, FrecencyStore, LEGACY_MAP_SIZE, recent_repo_paths};
 
     #[test]
-    fn json_store_round_trips_recent_repos() {
+    fn store_round_trips_recent_repos() {
         let dir = TempDir::new().unwrap();
         let store = FrecencyStore::open(dir.path()).unwrap();
         store.record_access("repo:/tmp/old");
@@ -267,7 +260,25 @@ mod tests {
     }
 
     #[test]
-    fn remove_deletes_key_from_json_store() {
+    fn imports_the_json_store_once() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join(super::STORE_FILE_NAME),
+            format!(
+                r#"{{"entries":{{"repo:/tmp/json":{{"access_count":2,"last_access_ms":{}}}}}}}"#,
+                super::now_ms()
+            ),
+        )
+        .unwrap();
+        let store = FrecencyStore::open(dir.path()).unwrap();
+        assert_eq!(
+            recent_repo_paths(Some(&store), 1),
+            vec![std::path::PathBuf::from("/tmp/json")]
+        );
+    }
+
+    #[test]
+    fn remove_deletes_key() {
         let dir = TempDir::new().unwrap();
         let store = FrecencyStore::open(dir.path()).unwrap();
         store.record_access("repo:/tmp/demo");
@@ -306,6 +317,10 @@ mod tests {
         let recents = recent_repo_paths(Some(&store), 1);
 
         assert_eq!(recents, vec![std::path::PathBuf::from("/tmp/legacy")]);
-        assert!(dir.path().join(super::STORE_FILE_NAME).is_file());
+        assert!(
+            dir.path()
+                .join(crate::platform::database::DATABASE_FILE_NAME)
+                .is_file()
+        );
     }
 }

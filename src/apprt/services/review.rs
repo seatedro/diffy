@@ -98,13 +98,7 @@ impl ReviewServices {
     }
 
     fn dev_token_path(&self) -> Result<PathBuf> {
-        let parent = self.settings_store.path().parent().ok_or_else(|| {
-            DiffyError::General(format!(
-                "settings path has no parent directory: {}",
-                self.settings_store.path().display()
-            ))
-        })?;
-        Ok(parent.join(DEV_GITHUB_TOKEN_FILE_NAME))
+        Ok(self.settings_store.dir().join(DEV_GITHUB_TOKEN_FILE_NAME))
     }
 
     pub fn load_session(

@@ -1,16 +1,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use serde::{Deserialize, Serialize};
 
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
-use crate::core::error::{DiffyError, Result};
+use crate::core::error::Result;
 use crate::core::forge::github::GitHubUser;
 use crate::core::keymap::KeymapOverride;
 use crate::core::theme_types::ThemeMode;
 use crate::fonts::FontSettings;
+use crate::platform::database::{DATABASE_FILE_NAME, Database, Settings as SettingsTable};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const SETTINGS_ROW: i32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedCompare {
@@ -114,7 +117,7 @@ impl Default for Settings {
 
 #[derive(Debug, Clone)]
 pub struct SettingsStore {
-    path: PathBuf,
+    dir: PathBuf,
 }
 
 impl SettingsStore {
@@ -125,43 +128,71 @@ impl SettingsStore {
     }
 
     pub fn new_in(path: impl Into<PathBuf>) -> Self {
-        let mut path = path.into();
-        if path.extension().is_none() {
-            path = path.join(SETTINGS_FILE_NAME);
+        let mut dir = path.into();
+        if dir.extension().is_some() {
+            dir.pop();
         }
-        Self { path }
+        Self { dir }
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn path(&self) -> PathBuf {
+        self.dir.join(DATABASE_FILE_NAME)
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     pub fn load(&self) -> Result<Settings> {
-        if !self.path.exists() {
+        let db = self.database()?;
+        let select = Query::select()
+            .column(SettingsTable::Json)
+            .from(SettingsTable::Table)
+            .and_where(Expr::col(SettingsTable::Id).eq(SETTINGS_ROW))
+            .to_owned();
+        let Some(json) = db.query(&select, |row| row.get::<_, String>(0))?.pop() else {
             return Ok(Settings::default());
-        }
-
-        let contents = fs::read_to_string(&self.path)?;
-        match serde_json::from_str(&contents) {
+        };
+        match serde_json::from_str(&json) {
             Ok(settings) => Ok(settings),
             Err(e) => {
-                tracing::warn!("corrupt settings file, using defaults: {e}");
+                tracing::warn!("corrupt settings, using defaults: {e}");
                 Ok(Settings::default())
             }
         }
     }
 
     pub fn save(&self, settings: &Settings) -> Result<()> {
-        let parent = self.path.parent().ok_or_else(|| {
-            DiffyError::General(format!(
-                "settings path has no parent directory: {}",
-                self.path.display()
-            ))
-        })?;
-        fs::create_dir_all(parent)?;
-        fs::write(&self.path, serde_json::to_vec_pretty(settings)?)?;
-        Ok(())
+        write_settings(&self.database()?, &serde_json::to_string(settings)?)
     }
+
+    fn database(&self) -> Result<Database> {
+        let db = Database::in_dir(&self.dir)?;
+        let legacy = self.dir.join(SETTINGS_FILE_NAME);
+        db.import_once("settings", |db| match fs::read_to_string(&legacy) {
+            Ok(json) if serde_json::from_str::<Settings>(&json).is_ok() => {
+                write_settings(db, &json)
+            }
+            _ => Ok(()),
+        });
+        Ok(db)
+    }
+}
+
+fn write_settings(db: &Database, json: &str) -> Result<()> {
+    db.execute(
+        &Query::insert()
+            .into_table(SettingsTable::Table)
+            .columns([SettingsTable::Id, SettingsTable::Json])
+            .values_panic([SETTINGS_ROW.into(), json.into()])
+            .on_conflict(
+                OnConflict::column(SettingsTable::Id)
+                    .update_column(SettingsTable::Json)
+                    .to_owned(),
+            )
+            .to_owned(),
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -172,7 +203,29 @@ mod tests {
     use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 
     #[test]
-    fn round_trips_settings_json() {
+    fn imports_settings_json_once() {
+        let dir = TempDir::new().unwrap();
+        let legacy = Settings {
+            theme_name: "legacy".to_owned(),
+            ..Settings::default()
+        };
+        std::fs::write(
+            dir.path().join("settings.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let store = SettingsStore::new_in(dir.path());
+        assert_eq!(store.load().unwrap(), legacy);
+        let next = Settings {
+            theme_name: "next".to_owned(),
+            ..Settings::default()
+        };
+        store.save(&next).unwrap();
+        assert_eq!(SettingsStore::new_in(dir.path()).load().unwrap(), next);
+    }
+
+    #[test]
+    fn round_trips_settings() {
         let dir = TempDir::new().unwrap();
         let store = SettingsStore::new_in(dir.path());
         let settings = Settings {

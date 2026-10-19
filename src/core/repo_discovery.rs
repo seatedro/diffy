@@ -5,12 +5,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use ignore::{DirEntry, WalkBuilder, WalkState};
-use serde::{Deserialize, Serialize};
+use sea_query::{Expr, ExprTrait, OnConflict, Order, Query, SqliteQueryBuilder};
+use sea_query_rusqlite::RusqliteBinder;
 
 use crate::core::error::Result;
+use crate::platform::database::{Database, Meta, Repositories};
 use crate::platform::persistence::RepoDiscovery;
 
-const CACHE_FILE_NAME: &str = "repositories.json";
+const SCANNED_AT: &str = "repositories.scanned_at";
+const SCAN_MILLIS: &str = "repositories.millis";
 const REPO_MARKERS: &[&str] = &[".git", ".jj"];
 const SKIPPED_DIRS: &[&str] = &[
     "Library",
@@ -23,19 +26,18 @@ const SKIPPED_DIRS: &[&str] = &[
 ];
 const SHORT_SHA: usize = 7;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveredRepo {
     pub path: PathBuf,
     pub branch: Option<String>,
     pub active: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepoScan {
     pub scanned_at: i64,
     pub millis: u64,
     pub repos: Vec<DiscoveredRepo>,
-    #[serde(default)]
     pub known: Vec<DiscoveredRepo>,
 }
 
@@ -112,18 +114,104 @@ fn describe(path: PathBuf) -> DiscoveredRepo {
 }
 
 pub fn load_cache(dir: &Path) -> Option<RepoScan> {
-    let bytes = fs::read(dir.join(CACHE_FILE_NAME)).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    let db = Database::in_dir(dir).ok()?;
+    let meta = |key: &str| -> Option<i64> {
+        let select = Query::select()
+            .column(Meta::Value)
+            .from(Meta::Table)
+            .and_where(Expr::col(Meta::Key).eq(key))
+            .to_owned();
+        db.query(&select, |row| row.get::<_, String>(0))
+            .ok()?
+            .first()?
+            .parse()
+            .ok()
+    };
+    let scanned_at = meta(SCANNED_AT)?;
+    let millis = meta(SCAN_MILLIS).and_then(|ms| u64::try_from(ms).ok())?;
+    let select = Query::select()
+        .columns([
+            Repositories::Path,
+            Repositories::Branch,
+            Repositories::Active,
+            Repositories::Discovered,
+        ])
+        .from(Repositories::Table)
+        .order_by(Repositories::Path, Order::Asc)
+        .to_owned();
+    let rows = db
+        .query(&select, |row| {
+            Ok((
+                DiscoveredRepo {
+                    path: PathBuf::from(row.get::<_, String>(0)?),
+                    branch: row.get(1)?,
+                    active: row.get(2)?,
+                },
+                row.get::<_, bool>(3)?,
+            ))
+        })
+        .ok()?;
+    let (repos, known): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(_, found)| *found);
+    Some(RepoScan {
+        scanned_at,
+        millis,
+        repos: repos.into_iter().map(|(repo, _)| repo).collect(),
+        known: known.into_iter().map(|(repo, _)| repo).collect(),
+    })
 }
 
 pub fn save_cache(dir: &Path, scan: &RepoScan) -> Result<()> {
-    fs::create_dir_all(dir)?;
-    let path = dir.join(CACHE_FILE_NAME);
-    let temp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec(scan)?;
-    fs::write(&temp, bytes)?;
-    fs::rename(&temp, &path)?;
-    Ok(())
+    let db = Database::in_dir(dir)?;
+    let mut statements = vec![
+        Query::delete()
+            .from_table(Repositories::Table)
+            .to_owned()
+            .build_rusqlite(SqliteQueryBuilder),
+    ];
+    let rows = scan
+        .repos
+        .iter()
+        .map(|repo| (repo, true))
+        .chain(scan.known.iter().map(|repo| (repo, false)));
+    for (repo, discovered) in rows {
+        statements.push(
+            Query::insert()
+                .into_table(Repositories::Table)
+                .columns([
+                    Repositories::Path,
+                    Repositories::Branch,
+                    Repositories::Active,
+                    Repositories::Discovered,
+                ])
+                .values_panic([
+                    repo.path.to_string_lossy().into_owned().into(),
+                    repo.branch.clone().into(),
+                    repo.active.into(),
+                    discovered.into(),
+                ])
+                .to_owned()
+                .build_rusqlite(SqliteQueryBuilder),
+        );
+    }
+    for (key, value) in [
+        (SCANNED_AT, scan.scanned_at.to_string()),
+        (SCAN_MILLIS, scan.millis.to_string()),
+    ] {
+        statements.push(
+            Query::insert()
+                .into_table(Meta::Table)
+                .columns([Meta::Key, Meta::Value])
+                .values_panic([key.into(), value.into()])
+                .on_conflict(
+                    OnConflict::column(Meta::Key)
+                        .update_column(Meta::Value)
+                        .to_owned(),
+                )
+                .to_owned()
+                .build_rusqlite(SqliteQueryBuilder),
+        );
+    }
+    db.transaction(statements)
 }
 
 pub fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {

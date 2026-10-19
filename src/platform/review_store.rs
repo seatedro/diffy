@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
+use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use serde::{Deserialize, Serialize};
 
-use crate::core::error::{DiffyError, Result};
+use crate::core::error::Result;
 use crate::core::review::{ReviewSession, ReviewSessionKey, ReviewTarget};
+use crate::platform::database::{Database, ReviewSessions};
 use crate::platform::persistence::SettingsStore;
 
 const REVIEW_STORE_FILE_NAME: &str = "review-sessions.json";
@@ -16,59 +17,36 @@ struct ReviewStoreData {
     sessions: BTreeMap<String, ReviewSession>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ReviewStore {
-    path: Arc<PathBuf>,
-    data: Arc<Mutex<ReviewStoreData>>,
-}
-
-impl std::fmt::Debug for ReviewStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReviewStore")
-            .field("path", &self.path)
-            .finish_non_exhaustive()
-    }
+    dir: PathBuf,
 }
 
 impl ReviewStore {
     pub fn new_default() -> Self {
         let base = crate::platform::startup::app_config_dir()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        Self::open_or_default(base.join(REVIEW_STORE_FILE_NAME))
+        Self { dir: base }
     }
 
     pub fn for_settings_store(settings_store: &SettingsStore) -> Self {
-        let path = settings_store
-            .path()
-            .parent()
-            .map(|parent| parent.join(REVIEW_STORE_FILE_NAME))
-            .unwrap_or_else(|| PathBuf::from(REVIEW_STORE_FILE_NAME));
-        Self::open_or_default(path)
+        Self {
+            dir: settings_store.dir().to_path_buf(),
+        }
     }
 
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
-        let path = review_store_file_path(path.into());
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+        let mut dir = path.into();
+        if dir.extension().is_some() {
+            dir.pop();
         }
-        let data = match fs::read(&path) {
-            Ok(contents) => serde_json::from_slice(&contents).unwrap_or_else(|error| {
-                tracing::warn!("corrupt review store at {}: {error}", path.display());
-                ReviewStoreData::default()
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                ReviewStoreData::default()
-            }
-            Err(error) => return Err(error.into()),
-        };
-        Ok(Self {
-            path: Arc::new(path),
-            data: Arc::new(Mutex::new(data)),
-        })
+        let store = Self { dir };
+        store.database()?;
+        Ok(store)
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     pub fn load_session(
@@ -77,67 +55,90 @@ impl ReviewStore {
         head_sha: &str,
     ) -> Result<Option<ReviewSession>> {
         let key = ReviewSessionKey::new(target.clone(), head_sha.to_owned()).storage_key();
-        let data = self.lock_data()?;
-        Ok(data.sessions.get(&key).cloned())
+        let select = Query::select()
+            .column(ReviewSessions::Json)
+            .from(ReviewSessions::Table)
+            .and_where(Expr::col(ReviewSessions::Key).eq(key))
+            .to_owned();
+        let rows = self
+            .database()?
+            .query(&select, |row| row.get::<_, String>(0))?;
+        Ok(rows.first().and_then(|json| parse(json)))
     }
 
     pub fn load_sessions_for_target(&self, target: &ReviewTarget) -> Result<Vec<ReviewSession>> {
-        let data = self.lock_data()?;
-        Ok(data
-            .sessions
-            .values()
+        let select = Query::select()
+            .column(ReviewSessions::Json)
+            .from(ReviewSessions::Table)
+            .to_owned();
+        let rows = self
+            .database()?
+            .query(&select, |row| row.get::<_, String>(0))?;
+        Ok(rows
+            .iter()
+            .filter_map(|json| parse(json))
             .filter(|session| &session.target == target)
-            .cloned()
             .collect())
     }
 
     pub fn save_session(&self, session: &ReviewSession) -> Result<()> {
-        let mut data = self.lock_data()?;
-        data.sessions
-            .insert(session.key().storage_key(), session.clone());
-        self.save_locked(&data)
+        write_session(
+            &self.database()?,
+            &session.key().storage_key(),
+            &serde_json::to_string(session)?,
+        )
     }
 
     pub fn remove_session(&self, key: &ReviewSessionKey) -> Result<()> {
-        let mut data = self.lock_data()?;
-        data.sessions.remove(&key.storage_key());
-        self.save_locked(&data)
-    }
-
-    fn open_or_default(path: PathBuf) -> Self {
-        match Self::open(&path) {
-            Ok(store) => store,
-            Err(error) => {
-                tracing::warn!("failed to open review store at {}: {error}", path.display());
-                Self {
-                    path: Arc::new(path),
-                    data: Arc::new(Mutex::new(ReviewStoreData::default())),
-                }
-            }
-        }
-    }
-
-    fn lock_data(&self) -> Result<std::sync::MutexGuard<'_, ReviewStoreData>> {
-        self.data
-            .lock()
-            .map_err(|_| DiffyError::General("review store lock poisoned".to_owned()))
-    }
-
-    fn save_locked(&self, data: &ReviewStoreData) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(self.path.as_ref(), serde_json::to_vec_pretty(data)?)?;
+        self.database()?.execute(
+            &Query::delete()
+                .from_table(ReviewSessions::Table)
+                .and_where(Expr::col(ReviewSessions::Key).eq(key.storage_key()))
+                .to_owned(),
+        )?;
         Ok(())
+    }
+
+    fn database(&self) -> Result<Database> {
+        let db = Database::in_dir(&self.dir)?;
+        let legacy = self.dir.join(REVIEW_STORE_FILE_NAME);
+        db.import_once("review_sessions", |db| {
+            let Ok(contents) = fs::read(&legacy) else {
+                return Ok(());
+            };
+            let data: ReviewStoreData = serde_json::from_slice(&contents).unwrap_or_else(|error| {
+                tracing::warn!("corrupt review store at {}: {error}", legacy.display());
+                ReviewStoreData::default()
+            });
+            for (key, session) in data.sessions {
+                write_session(db, &key, &serde_json::to_string(&session)?)?;
+            }
+            Ok(())
+        });
+        Ok(db)
     }
 }
 
-fn review_store_file_path(path: PathBuf) -> PathBuf {
-    if path.extension().is_none() {
-        path.join(REVIEW_STORE_FILE_NAME)
-    } else {
-        path
-    }
+fn parse(json: &str) -> Option<ReviewSession> {
+    serde_json::from_str(json)
+        .map_err(|error| tracing::warn!("skipping unreadable review session: {error}"))
+        .ok()
+}
+
+fn write_session(db: &Database, key: &str, json: &str) -> Result<()> {
+    db.execute(
+        &Query::insert()
+            .into_table(ReviewSessions::Table)
+            .columns([ReviewSessions::Key, ReviewSessions::Json])
+            .values_panic([key.into(), json.into()])
+            .on_conflict(
+                OnConflict::column(ReviewSessions::Key)
+                    .update_column(ReviewSessions::Json)
+                    .to_owned(),
+            )
+            .to_owned(),
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

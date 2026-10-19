@@ -3,6 +3,7 @@
 //! unchanged frame replays without building or allocating and a scrolled
 //! frame builds only the rows entering the window.
 
+use diffy_syntax::HighlightKind;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -416,6 +417,7 @@ fn cue(kind: RowKind, side: Side) -> Option<Cue> {
     match (kind, side) {
         (RowKind::Removed, _) | (RowKind::Modified, Side::Old) => Some(Cue::Removed),
         (RowKind::Added | RowKind::Merged, _) | (RowKind::Modified, Side::New) => Some(Cue::Added),
+        (RowKind::Moved, _) => Some(Cue::Moved),
         _ => None,
     }
 }
@@ -550,7 +552,9 @@ fn gutter_cell(
                                 presentation.markers
                             },
                             &numbers[..count],
-                            cue(kind, shown).filter(|_| !quiet || kind == RowKind::Removed),
+                            cue(kind, shown).filter(|_| {
+                                !quiet || matches!(kind, RowKind::Removed | RowKind::Moved)
+                            }),
                             pick.on,
                             colors,
                         );
@@ -589,6 +593,7 @@ fn paint_gutter(
             (true, _) => Some(colors.accent),
             (false, Some(Cue::Added)) => Some(colors.add_marker),
             (false, Some(Cue::Removed)) => Some(colors.del_marker),
+            (false, Some(Cue::Moved)) => Some(colors.tone(HighlightKind::Keyword)),
             (false, None) => None,
         };
         if let Some(color) = color {
@@ -608,6 +613,7 @@ fn paint_gutter(
         _ if picked => colors.picked_number,
         Some(Cue::Added) => colors.add_number,
         Some(Cue::Removed) => colors.del_number,
+        Some(Cue::Moved) => colors.tone(HighlightKind::Keyword),
         None => colors.gutter_text,
     };
     for &number in numbers {
@@ -633,7 +639,7 @@ fn paint_gutter(
     let sign = match cue {
         Some(Cue::Removed) => Some(("-", colors.del_marker)),
         Some(Cue::Added) => Some(("+", colors.add_marker)),
-        None => None,
+        Some(Cue::Moved) | None => None,
     };
     if markers == DiffMarkers::Signs
         && let Some((sign, color)) = sign

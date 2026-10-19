@@ -85,6 +85,7 @@ pub(crate) enum Step {
     Merged(u32, u32),
     Hidden(u32),
     Reflowed(u32),
+    Moved(u32),
     /// Old and new lines equal under the whitespace policy.
     Equivalent(u32, u32),
 }
@@ -139,6 +140,7 @@ impl Comparison {
                         {
                             out.merge_pairs(doc, file, start as usize);
                             out.fold_reflows(doc, file, start as usize);
+                            out.fold_moves(doc, file, start as usize);
                         } else {
                             let (h, l) = out.align_block(old, new, olds, news, &mut keys);
                             hidden += h;
@@ -276,6 +278,60 @@ impl Comparison {
             );
             if merged.is_some() {
                 *step = Step::Merged(o, n);
+            }
+        }
+    }
+
+    fn fold_moves(&mut self, doc: &DiffDocument, file: u32, start: usize) {
+        let Some(moves) = doc
+            .semantics(file)
+            .map(|s| s.moves())
+            .filter(|m| !m.is_empty())
+        else {
+            return;
+        };
+        let old = doc.text(file, Side::Old);
+        let hidden_old = |line: u32| {
+            let within = |line: u32| {
+                moves
+                    .iter()
+                    .find(|m| (m.old_line..m.old_line + m.old_lines).contains(&line))
+            };
+            let blank = |line: u32| old.line(line).is_some_and(|t| t.trim().is_empty());
+            if let Some(m) = within(line) {
+                let new_line = m.new_line + (line - m.old_line);
+                return !removes(doc, file, line) || moved_from(doc, file, new_line) == Some(line);
+            }
+            blank(line)
+                && (within(line + 1).is_some() || line.checked_sub(1).and_then(within).is_some())
+                && !removes(doc, file, line)
+        };
+        let moved_new = |line: u32| {
+            moves
+                .iter()
+                .any(|m| (m.new_line..m.new_line + m.lines).contains(&line))
+        };
+        let block = self.steps.split_off(start);
+        for step in block {
+            let (o, n) = step.lines();
+            let hide = o != NONE && hidden_old(o);
+            let moved = n != NONE && moved_new(n);
+            match step {
+                Step::Removed(o) if hide => self.steps.push(Step::Hidden(o)),
+                Step::Added(n) if moved => self.steps.push(Step::Moved(n)),
+                Step::Paired(o, n) if hide || moved => {
+                    self.steps.push(if hide {
+                        Step::Hidden(o)
+                    } else {
+                        Step::Removed(o)
+                    });
+                    self.steps.push(if moved {
+                        Step::Moved(n)
+                    } else {
+                        Step::Added(n)
+                    });
+                }
+                _ => self.steps.push(step),
             }
         }
     }
@@ -419,10 +475,38 @@ impl Step {
     pub(crate) fn lines(self) -> (u32, u32) {
         match self {
             Self::Removed(o) | Self::Hidden(o) => (o, NONE),
-            Self::Added(n) | Self::Reflowed(n) => (NONE, n),
+            Self::Added(n) | Self::Reflowed(n) | Self::Moved(n) => (NONE, n),
             Self::Paired(o, n) | Self::Merged(o, n) | Self::Equivalent(o, n) => (o, n),
         }
     }
+}
+
+pub fn moved_from(doc: &DiffDocument, file: u32, new_line: u32) -> Option<u32> {
+    let semantics = doc.semantics(file)?;
+    let m = semantics
+        .moves()
+        .iter()
+        .find(|m| (m.new_line..m.new_line + m.lines).contains(&new_line))?;
+    let old_line = m.old_line + (new_line - m.new_line);
+    if old_line >= m.old_line + m.old_lines || !removes(doc, file, old_line) {
+        return None;
+    }
+    merge_pair(
+        doc.text(file, Side::Old).display_line(old_line)?,
+        doc.text(file, Side::New).display_line(new_line)?,
+        doc.semantic_spans(file, Side::Old, old_line),
+        doc.semantic_spans(file, Side::New, new_line),
+    )
+    .map(|_| old_line)
+}
+
+fn removes(doc: &DiffDocument, file: u32, line: u32) -> bool {
+    doc.semantic_spans(file, Side::Old, line).iter().any(|s| {
+        matches!(
+            s.intensity,
+            crate::semantic::ChangeIntensity::Novel | crate::semantic::ChangeIntensity::NovelWord
+        )
+    })
 }
 
 fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {

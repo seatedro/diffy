@@ -5,7 +5,7 @@ use crate::compute::hunk_groups;
 use crate::model::{BlockKind, DiffDocument, FileMeta, FileStatus, IntegrityError, Side};
 use crate::myers::Change;
 use crate::semantic::{
-    AlignedRow, FileSemantics, LineSpans, OutlineItem, Rename, SemanticError, SemanticSpan,
+    AlignedRow, FileSemantics, LineSpans, Move, OutlineItem, Rename, SemanticError, SemanticSpan,
 };
 use crate::source::SourceCoverage;
 use crate::text::TextStore;
@@ -88,6 +88,7 @@ impl DocumentBuilder {
             structural: false,
             outline: Vec::new(),
             renames: Vec::new(),
+            moves: Vec::new(),
             spans: [Vec::new(), Vec::new()],
             error: None,
         }
@@ -120,6 +121,7 @@ pub struct FileBuilder<'a> {
     structural: bool,
     outline: Vec<OutlineItem>,
     renames: Vec<Rename>,
+    moves: Vec<Move>,
     spans: [Vec<(u32, Vec<SemanticSpan>)>; 2],
     error: Option<BuildError>,
 }
@@ -179,6 +181,11 @@ impl FileBuilder<'_> {
 
     pub fn renames(&mut self, renames: Vec<Rename>) -> &mut Self {
         self.renames = renames;
+        self
+    }
+
+    pub fn moves(&mut self, moves: Vec<Move>) -> &mut Self {
+        self.moves = moves;
         self
     }
 
@@ -328,6 +335,7 @@ impl FileBuilder<'_> {
             structural: self.structural,
             outline: std::mem::take(&mut self.outline),
             renames: std::mem::take(&mut self.renames),
+            moves: std::mem::take(&mut self.moves),
             ..FileSemantics::default()
         };
         for hunk in &mut self.hunks {

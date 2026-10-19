@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use diffy_diff::{
     ChangeIntensity, DiffDocument, FileStatus, InlineDetail, InlineMode, InlineOptions, Mode,
-    RowKind, Side, line_detail, merge_pair,
+    RowKind, Side, line_detail, merge_pair, moved_from,
 };
 use diffy_syntax::HighlightKind;
 use quark_render::FontKind;
@@ -734,12 +734,25 @@ impl DiffViewState {
                 paint.sides[Side::New as usize] = Some(line);
             }
             RowKind::Merged
-                if let Some(line) = self.merged_line(seg, row, text, layouts, scale, columns) =>
+                if let (Some(old), Some(new)) =
+                    (p.line(row, Side::Old), p.line(row, Side::New))
+                    && let Some(line) =
+                        self.merged_line(seg, file, [old, new], text, layouts, scale, columns) =>
             {
                 for side in [Side::Old, Side::New] {
                     paint.source_lines[side as usize] =
                         p.line(row, side).map(|i| source_line(doc, file, side, i));
                 }
+                paint.sides[Side::New as usize] = Some(line);
+            }
+            RowKind::Moved
+                if let Some(new) = p.line(row, Side::New)
+                    && let Some(old) = moved_from(doc, file, new)
+                    && let Some(line) =
+                        self.merged_line(seg, file, [old, new], text, layouts, scale, columns) =>
+            {
+                paint.source_lines[Side::New as usize] =
+                    Some(source_line(doc, file, Side::New, new));
                 paint.sides[Side::New as usize] = Some(line);
             }
             _ => {
@@ -824,7 +837,12 @@ impl DiffViewState {
                 }
             }
         }
-        if let Some(line) = &paint.sides[Side::New as usize]
+        if kind == RowKind::Moved
+            && let Some(index) = p.line(row, Side::New)
+        {
+            let line = source_line(doc, file, Side::New, index);
+            paint.hint = move_hint(doc, file, line);
+        } else if let Some(line) = &paint.sides[Side::New as usize]
             && !line.renamed.is_empty()
         {
             let text = line.layout.text();
@@ -883,19 +901,18 @@ impl DiffViewState {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn merged_line(
         &self,
         seg: usize,
-        row: u32,
+        file: u32,
+        index: [u32; 2],
         text: &mut TextSystem,
         layouts: &mut LayoutCache,
         scale: f32,
         columns: &Columns,
     ) -> Option<LinePaint> {
-        let segment = &self.segments[seg];
-        let (doc, p) = (&segment.doc, &segment.projection);
-        let file = p.file[row as usize];
-        let index = [p.line(row, Side::Old)?, p.line(row, Side::New)?];
+        let doc = &self.segments[seg].doc;
         let lines = [Side::Old, Side::New].map(|side| {
             doc.text(file, side)
                 .display_line(index[side as usize])
@@ -1129,6 +1146,14 @@ fn renamed_ranges(doc: &DiffDocument, file: u32, side: Side, line: u32) -> Vec<R
         .filter(|span| span.intensity == ChangeIntensity::Renamed)
         .map(|span| span.start as usize..span.end as usize)
         .collect()
+}
+
+fn move_hint(doc: &DiffDocument, file: u32, line: u32) -> Option<Arc<str>> {
+    let moves = doc.semantics(file)?.moves();
+    let found = moves
+        .iter()
+        .find(|m| (m.new_line..m.new_line + m.lines).contains(&line))?;
+    Some(format!("Moved from line {}", found.old_line + 1).into())
 }
 
 fn rename_hint(doc: &DiffDocument, file: u32, names: &[&str]) -> Option<Arc<str>> {

@@ -36,6 +36,7 @@ pub(super) fn whole_pixels(points: f32, scale: f32) -> f32 {
 pub(super) enum Cue {
     Added,
     Removed,
+    Moved,
 }
 
 /// Diagonal hatch lines over `rect`, clipped to it. `phase` is the

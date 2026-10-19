@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use diffy_diff::{
-    ChangeIntensity, InlineDetail, InlineOptions, ItemChange, OutlineItem, Rename, SemanticSpan,
-    Side as DiffSide, myers, paired_inline_diff,
+    ChangeIntensity, InlineDetail, InlineOptions, ItemChange, Move, OutlineItem, Rename,
+    SemanticSpan, Side as DiffSide, myers, paired_inline_diff,
 };
 
 use crate::Row;
@@ -107,7 +107,7 @@ pub(crate) fn rows(
     old: &Tree<'_>,
     new: &Tree<'_>,
     matching: &Matching,
-) -> (Vec<Vec<Row>>, Vec<OutlineItem>, Vec<Rename>) {
+) -> (Vec<Vec<Row>>, Vec<OutlineItem>, Vec<Rename>, Vec<Move>) {
     let mut sides = [old, new].map(|tree| {
         let lines = Lines::new(tree.src);
         let spans = vec![Vec::new(); lines.count() as usize];
@@ -120,6 +120,7 @@ pub(crate) fn rows(
         replaced(&mut sides, x, y);
     }
     let renames = renames(&mut sides, matching);
+    let moves = moves(&sides, matching);
     for side in &mut sides {
         for spans in &mut side.spans {
             spans.sort_by_key(|span| span.start);
@@ -128,7 +129,29 @@ pub(crate) fn rows(
     let outline = outline(&sides, matching);
     let anchors = anchors(&sides, matching);
     let aligned = align(&sides, &anchors);
-    (chunks(&mut sides, aligned), outline, renames)
+    (chunks(&mut sides, aligned), outline, renames, moves)
+}
+
+fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<Move> {
+    let mut out = Vec::new();
+    for &(o, n) in &matching.moved {
+        let (a, b) = (
+            sides[0].tree.nodes[o as usize].span.clone(),
+            sides[1].tree.nodes[n as usize].span.clone(),
+        );
+        let old_line = sides[0].lines.of(a.start);
+        let new_line = sides[1].lines.of(b.start);
+        let old_lines = sides[0].lines.of(a.end.saturating_sub(1).max(a.start)) + 1 - old_line;
+        let lines = sides[1].lines.of(b.end.saturating_sub(1).max(b.start)) + 1 - new_line;
+        out.push(Move {
+            old_line,
+            old_lines,
+            new_line,
+            lines,
+        });
+    }
+    out.sort_by_key(|m| m.new_line);
+    out
 }
 
 fn plain_counts<'a>(tree: &Tree<'a>) -> HashMap<&'a str, u32> {
@@ -199,7 +222,11 @@ struct Owned {
     inside_unmatched: bool,
 }
 
-fn owned(side: &Side<'_, '_>, partner: &[u32]) -> (Vec<Owned>, Vec<Option<usize>>) {
+fn owned(
+    side: &Side<'_, '_>,
+    partner: &[u32],
+    moved: &HashSet<u32>,
+) -> (Vec<Owned>, Vec<Option<usize>>) {
     let tree = side.tree;
     let mut items: Vec<Owned> = tree
         .items
@@ -225,8 +252,9 @@ fn owned(side: &Side<'_, '_>, partner: &[u32]) -> (Vec<Owned>, Vec<Option<usize>
         while open.last().is_some_and(|&(end, _)| item.node >= end) {
             open.pop();
         }
-        item.inside_unmatched = open.iter().any(|&(_, unmatched)| unmatched);
-        open.push((tree.nodes[item.node as usize].next, item.unmatched));
+        item.inside_unmatched = open.iter().any(|&(_, folded)| folded);
+        let folded = item.unmatched || moved.contains(&item.node);
+        open.push((tree.nodes[item.node as usize].next, folded));
     }
     let mut owner = vec![None; side.lines.count() as usize];
     let mut order: Vec<usize> = (0..items.len()).collect();
@@ -242,8 +270,10 @@ fn owned(side: &Side<'_, '_>, partner: &[u32]) -> (Vec<Owned>, Vec<Option<usize>
 }
 
 fn outline(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<OutlineItem> {
-    let (mut old_items, old_owner) = owned(&sides[0], &matching.partner[0]);
-    let (mut new_items, new_owner) = owned(&sides[1], &matching.partner[1]);
+    let moved_old: HashSet<u32> = matching.moved.iter().map(|&(o, _)| o).collect();
+    let moved_new: HashSet<u32> = matching.moved.iter().map(|&(_, n)| n).collect();
+    let (mut old_items, old_owner) = owned(&sides[0], &matching.partner[0], &moved_old);
+    let (mut new_items, new_owner) = owned(&sides[1], &matching.partner[1], &moved_new);
     let marked = |side: &Side<'_, '_>, line: usize| {
         side.spans[line]
             .iter()
@@ -294,6 +324,7 @@ fn outline(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<OutlineItem> {
                 continue;
             }
             let change = match (item.unmatched, which) {
+                (false, DiffSide::New) if moved_new.contains(&item.node) => ItemChange::Moved,
                 (true, DiffSide::New) => ItemChange::Added,
                 (true, DiffSide::Old) => ItemChange::Removed,
                 (false, DiffSide::New) if item.edits.max(item.old_edits) > 0 => {
@@ -375,9 +406,14 @@ fn anchors(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<(u32, u32, u64
             out.push((la, lb, weight));
         }
     };
+    let mut moved = vec![false; old.tree.nodes.len()];
+    for &(o, _) in &matching.moved {
+        let end = old.tree.nodes[o as usize].next;
+        moved[o as usize..end as usize].fill(true);
+    }
     for (index, node) in old.tree.nodes.iter().enumerate() {
         let partner = matching.partner[0][index];
-        if partner == NONE {
+        if partner == NONE || moved[index] {
             continue;
         }
         let other = &new.tree.nodes[partner as usize];

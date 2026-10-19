@@ -14,11 +14,15 @@ const TEXT_SIMILARITY: f32 = 0.5;
 const SIMILAR_DEPTH: usize = 2;
 const CLOCK_STRIDE: u64 = 1 << 16;
 const WIDEN_SIMILARITY: f32 = 0.5;
+const MIN_MOVE_NODES: u32 = 12;
+const MOVE_SIMILARITY: f32 = 0.8;
+const MAX_MOVE_CANDIDATES: usize = 512;
 
 pub(crate) struct Matching {
     pub(crate) partner: [Vec<u32>; 2],
     pub(crate) replaced: Vec<(u32, u32)>,
     pub(crate) renamed: Vec<(u32, u32)>,
+    pub(crate) moved: Vec<(u32, u32)>,
 }
 
 pub(crate) fn run(
@@ -32,16 +36,19 @@ pub(crate) fn run(
         partner: [vec![NONE; old.nodes.len()], vec![NONE; new.nodes.len()]],
         replaced: Vec::new(),
         renamed: Vec::new(),
+        moved: Vec::new(),
         work: 0,
         max_work,
         clock_at: CLOCK_STRIDE,
         deadline,
     };
     matcher.pair_lists(0, 0)?;
+    matcher.detect_moves()?;
     Ok(Matching {
         partner: matcher.partner,
         replaced: matcher.replaced,
         renamed: matcher.renamed,
+        moved: matcher.moved,
     })
 }
 
@@ -57,6 +64,7 @@ struct Matcher<'t, 'a> {
     partner: [Vec<u32>; 2],
     replaced: Vec<(u32, u32)>,
     renamed: Vec<(u32, u32)>,
+    moved: Vec<(u32, u32)>,
     work: u64,
     max_work: u64,
     clock_at: u64,
@@ -367,6 +375,70 @@ impl Matcher<'_, '_> {
             }
         }
         best.map(|(similarity, index)| (((similarity * size as f32) as u32).max(1), index))
+    }
+
+    fn detect_moves(&mut self) -> Result<(), Fallback> {
+        let old = self.unmatched_blocks(0)?;
+        let mut new = self.unmatched_blocks(1)?;
+        let mut by_hash: HashMap<u64, Vec<u32>> = HashMap::new();
+        for &o in &old {
+            by_hash.entry(self.hash(0, o)).or_default().push(o);
+        }
+        let mut taken = vec![false; self.trees[0].nodes.len()];
+        new.retain(|&n| {
+            let Some(o) = by_hash.get_mut(&self.hash(1, n)).and_then(Vec::pop) else {
+                return true;
+            };
+            if self.same(o, n) {
+                taken[o as usize] = true;
+                self.moved.push((o, n));
+                return false;
+            }
+            true
+        });
+        let old: Vec<(u32, Vec<u64>)> = old
+            .into_iter()
+            .filter(|&o| !taken[o as usize])
+            .map(|o| (o, self.signature(0, o)))
+            .collect();
+        let mut used = vec![false; old.len()];
+        for n in new {
+            self.spend(old.len())?;
+            let own = self.signature(1, n);
+            let best = old
+                .iter()
+                .enumerate()
+                .filter(|&(i, (o, _))| !used[i] && self.pairable_lists(*o, n))
+                .map(|(i, (o, signature))| (i, *o, dice(&own, signature)))
+                .filter(|&(_, _, similarity)| similarity >= MOVE_SIMILARITY)
+                .max_by(|a, b| a.2.total_cmp(&b.2));
+            if let Some((i, o, _)) = best {
+                used[i] = true;
+                self.pair_lists(o, n)?;
+                self.moved.push((o, n));
+            }
+        }
+        Ok(())
+    }
+
+    fn unmatched_blocks(&mut self, side: usize) -> Result<Vec<u32>, Fallback> {
+        let tree = self.trees[side];
+        let mut out = Vec::new();
+        let mut at = 1;
+        while at < tree.nodes.len() as u32 && out.len() < MAX_MOVE_CANDIDATES {
+            let node = &tree.nodes[at as usize];
+            let size = node.next - at;
+            if node.class == Class::List && size >= MIN_MOVE_NODES {
+                self.spend(size as usize)?;
+                if (at..node.next).all(|k| self.partner[side][k as usize] == NONE) {
+                    out.push(at);
+                    at = node.next;
+                    continue;
+                }
+            }
+            at += 1;
+        }
+        Ok(out)
     }
 
     fn identifier(&self, side: usize, node: u32) -> bool {

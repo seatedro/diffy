@@ -141,6 +141,7 @@ impl DiffViewState {
                         | RowKind::Modified
                         | RowKind::Merged
                         | RowKind::Reflowed
+                        | RowKind::Moved
                 )
                 .then_some((seg, row, kind))
             }

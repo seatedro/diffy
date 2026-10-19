@@ -85,7 +85,16 @@ pub enum ItemChange {
     Added,
     Removed,
     Renamed,
+    Moved,
     Edited(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Move {
+    pub old_line: u32,
+    pub old_lines: u32,
+    pub new_line: u32,
+    pub lines: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -109,6 +118,7 @@ pub struct FileSemantics {
     pub(crate) structural: bool,
     pub(crate) outline: Vec<OutlineItem>,
     pub(crate) renames: Vec<Rename>,
+    pub(crate) moves: Vec<Move>,
     pub(crate) rows: Vec<AlignedRow>,
     pub(crate) hunk_rows: Vec<Range<u32>>,
     pub(crate) spans: [LineSpans; 2],
@@ -125,6 +135,10 @@ impl FileSemantics {
 
     pub fn renames(&self) -> &[Rename] {
         &self.renames
+    }
+
+    pub fn moves(&self) -> &[Move] {
+        &self.moves
     }
 
     pub fn rows(&self, local_hunk: u32) -> &[AlignedRow] {

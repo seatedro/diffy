@@ -600,6 +600,7 @@ fn item_row(file: &ManifestFile, index: u32, tree: bool, theme: &Theme) -> AnyEl
         ItemChange::Added => "added".to_owned(),
         ItemChange::Removed => "removed".to_owned(),
         ItemChange::Renamed => "rename".to_owned(),
+        ItemChange::Moved => "moved".to_owned(),
         ItemChange::Edited(1) => "1 edit".to_owned(),
         ItemChange::Edited(n) => format!("{n} edits"),
     };

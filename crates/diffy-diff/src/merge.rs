@@ -34,11 +34,12 @@ pub fn merge_pair(
     {
         return None;
     }
+    let renamed = renamed(new_spans);
+    let renamed_len: usize = renamed.iter().map(|r| solid(&new[r.clone()])).sum();
     let longest = solid(old).max(solid(new));
-    if longest > 0 && (new_kept.len() as f32) < MIN_MERGE_KEPT * longest as f32 {
+    if longest > 0 && ((new_kept.len() + renamed_len) as f32) < MIN_MERGE_KEPT * longest as f32 {
         return None;
     }
-    let renamed = renamed(new_spans);
     let mut removed: Vec<(usize, Range<usize>)> = Vec::new();
     for range in old_marks
         .into_iter()

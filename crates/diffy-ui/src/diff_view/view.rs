@@ -693,7 +693,11 @@ fn text_cell(
     let build = move || {
         let line = paint.sides[shown as usize].as_ref().expect("shown line");
         let canvas_paint = paint.clone();
-        let bg = match (pick.on, colors.line(kind, shown)) {
+        let whole = line.whole.then(|| match shown {
+            Side::Old => RowKind::Removed,
+            Side::New => RowKind::Added,
+        });
+        let bg = match (pick.on, colors.line(whole.unwrap_or(kind), shown)) {
             (true, Some(bg)) => Some(DiffColors::tint(bg, colors.accent)),
             (true, None) => Some(colors.picked_wash),
             (false, bg) => bg,
@@ -725,6 +729,7 @@ fn text_cell(
                                 scene,
                                 line,
                                 shown,
+                                bg,
                                 &search,
                                 selected,
                                 pad,
@@ -752,6 +757,7 @@ fn paint_text(
     scene: &mut Scene,
     line: &LinePaint,
     side: Side,
+    bg: Option<Color>,
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
     pad: f32,
@@ -772,7 +778,10 @@ fn paint_text(
         scene,
         (bounds.x + pad + window_x, bounds.y),
         &line.layout,
-        line.tones.iter().map(|&k| colors.tone(k)).collect(),
+        {
+            let tones = colors.tones_on(bg);
+            line.tones.iter().map(|&k| tones[k as usize]).collect()
+        },
         &line.words,
         search,
         selected,

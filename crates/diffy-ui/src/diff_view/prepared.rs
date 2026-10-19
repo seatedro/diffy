@@ -152,6 +152,9 @@ pub struct LinePaint {
     pub tones: Arc<[HighlightKind]>,
     /// Changed words, as byte ranges of the layout's text.
     pub words: Vec<Range<usize>>,
+    /// Every word of the line changed: it is tinted as a changed line
+    /// instead of painting `words`.
+    pub whole: bool,
     pub detail: LineDetail,
     /// Whether `words` is the whole story for this line.
     pub word_detail: WordDetail,

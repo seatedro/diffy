@@ -734,17 +734,22 @@ impl DiffViewState {
                     let Ok(layout) = layouts.layout(text, &params) else {
                         continue;
                     };
-                    let words = super::paint::join_whitespace_gaps(
+                    let mut words = super::paint::join_whitespace_gaps(
                         match &window {
                             Some(w) => super::long_lines::clip_to_window(&words[side as usize], w),
                             None => clip_ranges(&words[side as usize], shown),
                         },
                         line,
                     );
+                    let whole = super::paint::covers_text(&words, line);
+                    if whole {
+                        words.clear();
+                    }
                     paint.sides[side as usize] = Some(LinePaint {
                         layout,
                         tones,
                         words,
+                        whole,
                         detail,
                         word_detail,
                         window,
@@ -977,7 +982,8 @@ mod tests {
         assert_eq!(state.content_height(), before);
     }
 
-    /// Each prepared line row as `old | new`, changed words in brackets.
+    /// Each prepared line row as `old | new`, changed words in brackets
+    /// and wholly changed lines marked.
     fn split_rows(state: &DiffViewState) -> Vec<String> {
         let frame = state.frame().unwrap();
         let side = |row: &FrameRow, side: Side| {
@@ -993,6 +999,9 @@ mod tests {
                 at = r.end;
             }
             out.push_str(&text[at..]);
+            if line.whole {
+                out.push_str(" (whole)");
+            }
             out
         };
         frame
@@ -1084,7 +1093,7 @@ mod tests {
             [
                 "fn f() { | fn f() {",
                 "    foo([1]) |     foo([2])",
-                " |     [bar()]",
+                " |     bar() (whole)",
                 "} | }",
             ]
         );

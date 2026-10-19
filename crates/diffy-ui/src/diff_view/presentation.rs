@@ -15,7 +15,7 @@ use std::hash::{Hash, Hasher};
 use diffy_diff::{Mode, RowKind, Side};
 use diffy_syntax::HighlightKind;
 use quark_ui::design::Alpha;
-use quark_ui::theme::{Color, Theme, ThemeMode};
+use quark_ui::theme::{Color, Theme, ThemeMode, contrast_ratio};
 
 use super::prepared::{Columns, Metrics};
 
@@ -341,6 +341,10 @@ pub(crate) struct DiffColors {
     pub picked_gutter: Color,
     pub picked_number: Color,
     pub syntax: [Color; HIGHLIGHT_KINDS],
+    /// `syntax` lifted where needed to stay legible on `add_line` and
+    /// `del_line`.
+    pub syntax_on_add: [Color; HIGHLIGHT_KINDS],
+    pub syntax_on_del: [Color; HIGHLIGHT_KINDS],
 }
 
 impl DiffColors {
@@ -374,6 +378,10 @@ impl DiffColors {
         let gutter = pick(o.gutter, surface);
         let add_marker = pick(o.add_marker, c.line_add_text);
         let del_marker = pick(o.del_marker, c.line_del_text);
+        let add_line = pick(o.add_line, c.line_add);
+        let del_line = pick(o.del_line, c.line_del);
+        let on = |line: Color| syntax.map(|tone| legible(tone, opaque(line, surface), text));
+        let (syntax_on_add, syntax_on_del) = (on(add_line), on(del_line));
         Self {
             surface,
             empty_side: pick(o.empty_side, c.background),
@@ -383,8 +391,8 @@ impl DiffColors {
             border: c.border_variant,
             gutter,
             gutter_text,
-            add_line: pick(o.add_line, c.line_add),
-            del_line: pick(o.del_line, c.line_del),
+            add_line,
+            del_line,
             add_word: pick(o.add_word, c.line_add_word_bg),
             del_word: pick(o.del_word, c.line_del_word_bg),
             add_marker,
@@ -409,6 +417,8 @@ impl DiffColors {
             picked_gutter: gutter.lerp(c.accent, PICKED_GUTTER),
             picked_number: gutter_text.lerp(c.accent, PICKED_NUMBER),
             syntax,
+            syntax_on_add,
+            syntax_on_del,
         }
     }
 
@@ -460,6 +470,15 @@ impl DiffColors {
         self.syntax[kind as usize]
     }
 
+    /// Syntax colors for text on `bg`, a line's background.
+    pub fn tones_on(&self, bg: Option<Color>) -> &[Color; HIGHLIGHT_KINDS] {
+        match bg {
+            Some(bg) if bg == self.add_line => &self.syntax_on_add,
+            Some(bg) if bg == self.del_line => &self.syntax_on_del,
+            _ => &self.syntax,
+        }
+    }
+
     pub fn tint(base: Color, tone: Color) -> Color {
         base.lerp(tone, TINT)
     }
@@ -472,6 +491,25 @@ impl DiffColors {
             _ => None,
         }
     }
+}
+
+/// Least contrast a syntax color keeps against a changed line's
+/// background.
+const MIN_TONE_CONTRAST: f32 = 3.0;
+const LEGIBLE_STEPS: u8 = 10;
+
+/// `bg` composited over `surface`.
+fn opaque(bg: Color, surface: Color) -> Color {
+    surface.lerp(bg.with_alpha(255), f32::from(bg.a) / 255.0)
+}
+
+/// `tone`, moved toward `text` just far enough to reach
+/// [`MIN_TONE_CONTRAST`] on `bg`.
+fn legible(tone: Color, bg: Color, text: Color) -> Color {
+    (0..=LEGIBLE_STEPS)
+        .map(|step| tone.lerp(text, f32::from(step) / f32::from(LEGIBLE_STEPS)))
+        .find(|color| contrast_ratio(*color, bg) >= MIN_TONE_CONTRAST)
+        .unwrap_or(text)
 }
 
 const TINT: f32 = 0.14;
@@ -501,3 +539,19 @@ const ALL_KINDS: [HighlightKind; HIGHLIGHT_KINDS] = [
     HighlightKind::Label,
     HighlightKind::Preprocessor,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn faint_tones_are_lifted_to_stay_legible_on_a_changed_line() {
+        let bg = Color::rgba(44, 60, 46, 255);
+        let text = Color::rgba(220, 220, 220, 255);
+        let faint = Color::rgba(86, 95, 137, 255);
+        let lifted = legible(faint, bg, text);
+        assert!(contrast_ratio(faint, bg) < MIN_TONE_CONTRAST);
+        assert!(contrast_ratio(lifted, bg) >= MIN_TONE_CONTRAST);
+        assert_eq!(legible(text, bg, text), text);
+    }
+}

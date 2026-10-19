@@ -84,6 +84,17 @@ pub(super) fn join_whitespace_gaps(ranges: Vec<Range<usize>>, text: &str) -> Vec
     joined
 }
 
+/// Whether `ranges` cover all of `text` but its leading and trailing
+/// whitespace.
+pub(super) fn covers_text(ranges: &[Range<usize>], text: &str) -> bool {
+    let start = text.len() - text.trim_start().len();
+    let end = text.trim_end().len();
+    start < end
+        && ranges
+            .iter()
+            .any(|range| range.start <= start && range.end >= end)
+}
+
 /// A vertical hairline one physical pixel wide at `x`.
 pub(super) fn vertical_hairline(
     scene: &mut Scene,
@@ -304,6 +315,13 @@ mod tests {
                 "text"
             ]
         );
+    }
+
+    #[test]
+    fn words_cover_a_line_only_when_they_span_its_text() {
+        assert!(covers_text(&[2..9], "  let x;  "));
+        assert!(!covers_text(&[2..5], "  let x;  "));
+        assert!(!covers_text(&[], "   "));
     }
 
     #[test]

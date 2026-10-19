@@ -1053,6 +1053,10 @@ impl UiApp for App {
     type Action = Action;
     type Message = ReviewEvent;
 
+    fn init(&mut self, cx: &mut UiContext) {
+        cx.set_theme(crate::app::theme::default_dark());
+    }
+
     fn message(&mut self, event: ReviewEvent, cx: &mut UiContext) {
         self.driver.deliver(event);
         self.apply_focus(cx);

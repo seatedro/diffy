@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark_ui::FocusId;
-use quark_ui::text_input::{Editor, EditorMode, TextEditCommand, TextEditOutcome, TextField};
+use quark_ui::text_input::{
+    Editor, EditorMode, InlineStyle, StyleSpan, TextEditCommand, TextEditOutcome, TextField,
+};
 
 use super::presentation::{MutationPresentation, PresentationStyle};
 use crate::ai::{DEFAULT_STEERING_PROMPT, Provider};
@@ -156,6 +158,18 @@ impl std::fmt::Debug for MutationsController {
     }
 }
 
+fn commit_editor() -> Editor {
+    let mut editor = Editor::new(EditorMode::ProseInput);
+    editor.set_style_highlighter(Arc::new(|text: &str| {
+        let subject = text.find('\n').unwrap_or(text.len());
+        if subject == 0 {
+            return Vec::new();
+        }
+        vec![StyleSpan::new(0..subject, InlineStyle::BOLD)]
+    }));
+    editor
+}
+
 impl Default for MutationsController {
     fn default() -> Self {
         Self {
@@ -166,7 +180,7 @@ impl Default for MutationsController {
             pending: Vec::new(),
             jobs: HashMap::new(),
             next_job: JOB_BASE,
-            commit: Editor::new(EditorMode::ProseInput),
+            commit: commit_editor(),
             commit_menu: false,
             amend: None,
             amend_loading: false,

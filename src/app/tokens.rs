@@ -1,5 +1,6 @@
-use quark_ui::design::Ico as QuarkIco;
-pub use quark_ui::design::{Alpha, Bp, Elevation, Rad, Shadow, ShadowLayer, Sp, Sz, TextStyle};
+pub use quark_ui::design::{
+    Alpha, Bp, Elevation, Ico, Rad, Shadow, ShadowLayer, Sp, Sz, TextStyle,
+};
 use quark_ui::theme::{Color, Theme, ThemeMetrics};
 
 pub const METRICS: ThemeMetrics = ThemeMetrics {
@@ -19,27 +20,8 @@ pub const METRICS: ThemeMetrics = ThemeMetrics {
     mono_font_size: 12.5,
     ui_row_height: 30.0,
     code_row_height: 22.0,
+    zoom: 1.0,
 };
-
-const QUARK_ANCHOR_FONT: f32 = 16.0;
-
-pub const fn quark_units(points: f32) -> f32 {
-    points * QUARK_ANCHOR_FONT / METRICS.ui_font_size
-}
-
-pub struct Ico;
-
-impl Ico {
-    pub const XS: f32 = quark_units(QuarkIco::XS);
-    pub const SM: f32 = quark_units(QuarkIco::SM);
-    pub const MD: f32 = quark_units(QuarkIco::MD);
-    pub const LG: f32 = quark_units(QuarkIco::LG);
-    pub const XL: f32 = quark_units(QuarkIco::XL);
-    pub const XXL: f32 = quark_units(QuarkIco::XXL);
-    pub const HERO: f32 = quark_units(QuarkIco::HERO);
-    pub const BUTTON_COMPACT: f32 = quark_units(QuarkIco::BUTTON_COMPACT);
-    pub const BUTTON_DEFAULT: f32 = quark_units(QuarkIco::BUTTON_DEFAULT);
-}
 
 pub struct Shell;
 
@@ -52,7 +34,7 @@ impl Shell {
 }
 
 pub fn ui_scale(theme: &Theme) -> f32 {
-    theme.metrics.ui_font_size / METRICS.ui_font_size
+    theme.metrics.ui_scale()
 }
 
 pub struct Tint;
@@ -111,7 +93,6 @@ impl Layout {
     pub const POPOVER_GAP: f32 = 4.0;
     pub const CONTROL_H: f32 = 26.0;
     pub const CONTROL_SM_H: f32 = 22.0;
-    pub const KBD_H: f32 = 17.0;
     pub const STATUS_DOT: f32 = 7.0;
     pub const COMPARE_CHIP_H: f32 = 26.0;
     pub const COMPARE_BAR_H: f32 = 32.0;

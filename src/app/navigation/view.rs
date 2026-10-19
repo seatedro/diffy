@@ -18,7 +18,7 @@ use crate::app::commands::keymap::WORKSPACE_CONTEXT;
 use crate::app::icons;
 use crate::app::mutations::{RowAction, change_actions, context_menu, operation_log_actions};
 use crate::app::review::{ReviewController, author_avatar};
-use crate::app::shell::{Slot, empty_state, kbd};
+use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SIDEBAR, SIDEBAR_FILTER};
 use crate::app::tokens::{self, Ico, Layout, Sp, TextStyle, Tint};
 use crate::contracts::commands::CommandsAction;
@@ -31,6 +31,7 @@ use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
 use crate::core::ref_catalog::relative_age;
 use crate::core::vcs::model::{ChangeBucket, VcsChange};
 use diffy_diff::FileStatus;
+use quark_components::kbd;
 
 const OVERSCAN_ROWS: usize = 8;
 const MAX_TAG_PILLS: usize = 2;
@@ -148,7 +149,7 @@ fn header(nav: &NavigationController, theme: &Theme) -> AnyElement {
             class="flex-row items-end w-full shrink-0"
             h={tokens::scaled(Sz::SIDEBAR_LIST_OFFSET, scale)}
         >
-            <div class="flex-1 flex-col" min_w={0.0}>{tab_bar(items).label("Sidebar")}</div>
+            <div class="flex-1" min_w={0.0}>{tab_bar(items).label("Sidebar").full_width()}</div>
             <div
                 class="flex-row items-center shrink-0 h-full"
                 pr={tokens::scaled(Sp::SM, scale)}
@@ -204,19 +205,9 @@ fn filter_field(
         input,
         has_text,
         Some(NavigationAction::ClearFilter.into()),
-        None,
+        (!focused).then_some("/"),
         theme,
     );
-    let hint = (!has_text && !focused).then(|| {
-        div()
-            .absolute()
-            .right(tokens::scaled(Sp::SM, scale))
-            .top(0.0)
-            .bottom(0.0)
-            .flex_row()
-            .items_center()
-            .child(kbd("/", theme))
-    });
     let ring = focused.then(|| {
         let reach = tokens::scaled(Sz::FOCUS_RING_GAP, scale);
         let mut ring = div()
@@ -239,7 +230,6 @@ fn filter_field(
         <div class="w-full shrink-0" px={tokens::scaled(Sp::SM, scale)} py={tokens::scaled(Sp::XS, scale)}>
             <div class="relative w-full" on:key:escape={escape}>
                 {field}
-                {?hint}
                 {?ring}
             </div>
         </div>

@@ -7,7 +7,7 @@ use diffy_ui::diff_view::decorator::{
     LineMark, SeparatorContext,
 };
 use quark::view;
-use quark_components::{Button, ButtonSize};
+use quark_components::{Button, ButtonSize, SegmentedControl, SegmentedItem};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -15,7 +15,6 @@ use quark_ui::style::Styled;
 use quark_ui::theme::{Color, Theme};
 
 use super::scopes::SharedScopes;
-use crate::app::segmented::{Segment, SegmentStyle, segmented};
 use crate::app::tokens::{self, Ico, Layout, Sp};
 use crate::contracts::commands::{CommandsAction, ContextMenuEntry};
 use crate::contracts::shell::{Action, ShellAction};
@@ -40,7 +39,6 @@ struct Palette {
     hover: Color,
     selected: Color,
     divider: Color,
-    segments: SegmentStyle,
 }
 
 impl Palette {
@@ -55,11 +53,10 @@ impl Palette {
             hover: tc.ghost_element_hover,
             selected: tc.ghost_element_selected,
             divider: tc.border_variant,
-            segments: SegmentStyle::from_theme(theme),
         }
     }
 
-    fn key(&self) -> [u64; 9] {
+    fn key(&self) -> [u64; 8] {
         let c = |c: Color| u64::from(u32::from_le_bytes([c.r, c.g, c.b, c.a]));
         [
             u64::from(self.scale.to_bits()),
@@ -70,7 +67,6 @@ impl Palette {
             c(self.hover),
             c(self.selected),
             c(self.divider),
-            self.segments.key(),
         ]
     }
 }
@@ -128,22 +124,19 @@ impl Decorations {
         let scale = palette.scale;
         let unified = controls.layout == LayoutMode::Unified;
         let file = cx.source.map_or(u64::from(cx.file), |s| s.id.0);
-        let layout = segmented(
-            &format!("diff.layout.{file}"),
-            vec![
-                Segment::new(
-                    "Unified",
-                    Action::from(CommandsAction::SetLayout(LayoutMode::Unified)),
-                    unified,
-                ),
-                Segment::new(
-                    "Split",
-                    Action::from(CommandsAction::SetLayout(LayoutMode::Split)),
-                    !unified,
-                ),
-            ],
-            palette.segments,
-        );
+        let layout = SegmentedControl::new(vec![
+            SegmentedItem::new(
+                "Unified",
+                Action::from(CommandsAction::SetLayout(LayoutMode::Unified)),
+                unified,
+            ),
+            SegmentedItem::new(
+                "Split",
+                Action::from(CommandsAction::SetLayout(LayoutMode::Split)),
+                !unified,
+            ),
+        ])
+        .id(format!("diff.layout.{file}"));
         let find = Button::new(Action::from(InteractionAction::OpenSearch))
             .icon(lucide::SEARCH)
             .tooltip("Find in diff \u{2318}F")
@@ -155,6 +148,7 @@ impl Decorations {
                 <div
                     w={1.0}
                     h={tokens::scaled(Sp::LG + Sp::XXS, scale)}
+                    mx={tokens::scaled(Sp::XS, scale)}
                     bg={palette.divider}
                 />
                 {layout}

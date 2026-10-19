@@ -1,5 +1,6 @@
 use quark::view;
 use quark_app::ViewContext;
+use quark_components::{SegmentedControl, SegmentedItem, kbd};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -10,8 +11,6 @@ use super::CommandsController;
 use super::list;
 use super::ref_picker::{REF_PICKER_VISIBLE_ROWS, RefPicker};
 use crate::app::icons;
-use crate::app::segmented::{Segment, SegmentStyle, segmented};
-use crate::app::shell::kbd;
 use crate::app::text_targets::PICKER;
 use crate::app::tokens::{self, Ico, Layout, Rad, Sp, Sz, TextStyle};
 use crate::contracts::commands::{CommandsAction, RefPickerAction};
@@ -52,22 +51,19 @@ pub fn ref_picker_panel(
     let top = theme.metrics.title_bar_height + tokens::scaled(Layout::POPOVER_GAP, scale);
     let left = ((size.0 - width) / 2.0).max(0.0);
     let side = picker.side();
-    let sides = segmented(
-        "ref-picker.side",
-        vec![
-            Segment::new(
-                "Base",
-                act(RefPickerAction::SetSide(CompareField::Left)),
-                side == CompareField::Left,
-            ),
-            Segment::new(
-                "Head",
-                act(RefPickerAction::SetSide(CompareField::Right)),
-                side == CompareField::Right,
-            ),
-        ],
-        SegmentStyle::from_theme(theme),
-    );
+    let sides = SegmentedControl::new(vec![
+        SegmentedItem::new(
+            "Base",
+            act(RefPickerAction::SetSide(CompareField::Left)),
+            side == CompareField::Left,
+        ),
+        SegmentedItem::new(
+            "Head",
+            act(RefPickerAction::SetSide(CompareField::Right)),
+            side == CompareField::Right,
+        ),
+    ])
+    .id("ref-picker.side");
     let input = text_input("Search refs", "")
         .field(&picker.query)
         .placeholder("Search refs or type a revision")
@@ -249,38 +245,32 @@ fn footer(picker: &RefPicker, theme: &Theme) -> AnyElement {
     let small = TextStyle::BodySmall.font_size(theme);
     let mode = picker.request.mode;
     let renderer = picker.request.renderer;
-    let modes = segmented(
-        "ref-picker.mode",
-        vec![
-            Segment::new(
-                "Since merge base",
-                act(RefPickerAction::SetMode(CompareMode::ThreeDot)),
-                !picker.request.working_copy && mode == CompareMode::ThreeDot,
-            ),
-            Segment::new(
-                "Directly",
-                act(RefPickerAction::SetMode(CompareMode::TwoDot)),
-                !picker.request.working_copy && mode == CompareMode::TwoDot,
-            ),
-        ],
-        SegmentStyle::from_theme(theme),
-    );
-    let engines = segmented(
-        "ref-picker.engine",
-        vec![
-            Segment::new(
-                "Git",
-                act(RefPickerAction::SetEngine(RendererKind::Builtin)),
-                renderer == RendererKind::Builtin,
-            ),
-            Segment::new(
-                "Difftastic",
-                act(RefPickerAction::SetEngine(RendererKind::Difftastic)),
-                renderer == RendererKind::Difftastic,
-            ),
-        ],
-        SegmentStyle::from_theme(theme),
-    );
+    let modes = SegmentedControl::new(vec![
+        SegmentedItem::new(
+            "Since merge base",
+            act(RefPickerAction::SetMode(CompareMode::ThreeDot)),
+            !picker.request.working_copy && mode == CompareMode::ThreeDot,
+        ),
+        SegmentedItem::new(
+            "Directly",
+            act(RefPickerAction::SetMode(CompareMode::TwoDot)),
+            !picker.request.working_copy && mode == CompareMode::TwoDot,
+        ),
+    ])
+    .id("ref-picker.mode");
+    let engines = SegmentedControl::new(vec![
+        SegmentedItem::new(
+            "Git",
+            act(RefPickerAction::SetEngine(RendererKind::Builtin)),
+            renderer == RendererKind::Builtin,
+        ),
+        SegmentedItem::new(
+            "Difftastic",
+            act(RefPickerAction::SetEngine(RendererKind::Difftastic)),
+            renderer == RendererKind::Difftastic,
+        ),
+    ])
+    .id("ref-picker.engine");
     view! {
         <div
             class="flex-row items-center w-full"

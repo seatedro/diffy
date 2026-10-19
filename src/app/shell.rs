@@ -17,7 +17,7 @@ use quark_ui::theme::Theme;
 use crate::app::diff_slots::DiffSlots;
 use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
 use crate::app::text_targets::{self, TextCx};
-use crate::app::tokens::{self, Layout, Rad, Sp, TextStyle};
+use crate::app::tokens::{self, Layout, Sp, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, ToastUpdate};
@@ -514,25 +514,6 @@ impl<D: EffectDispatcher> DiffyApp<D> {
     }
 }
 
-pub fn kbd(label: &str, theme: &Theme) -> AnyElement {
-    let tc = &theme.colors;
-    let scale = tokens::ui_scale(theme);
-    view! {
-        <div
-            class="shrink-0 flex-row items-center justify-center"
-            h={tokens::scaled(Layout::KBD_H, scale)}
-            min_w={tokens::scaled(Layout::KBD_H, scale)}
-            px={tokens::scaled(Sp::XS, scale)}
-            rounded={tokens::scaled(Rad::SM, scale)}
-            border={tc.border_variant}
-        >
-            <text size={TextStyle::Caption.font_size(theme)} class="font-mono" color={tc.text_muted}>
-                {label.to_owned()}
-            </text>
-        </div>
-    }
-}
-
 pub fn empty_state(title: &str, detail: &str, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
@@ -719,11 +700,6 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn event(&mut self, event: &InputEvent, cx: &mut UiContext) -> bool {
         self.tick(cx);
-        if let Some((target, command)) = commands::editor_command(cx.focus(), event) {
-            self.edit_text(target, command);
-            cx.window.request_redraw();
-            return true;
-        }
         let Some(action) = commands::key_action(&self.controllers, event, cx.focus()) else {
             return false;
         };

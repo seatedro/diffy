@@ -1,6 +1,8 @@
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::{Button, ButtonSize, ButtonStyle, slider, switch};
+use quark_components::{
+    Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem, kbd, slider, switch,
+};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -11,8 +13,7 @@ use super::CommandsController;
 use super::keymap::{self, KEYMAP};
 use super::state::SettingsPage;
 use crate::app::icons;
-use crate::app::segmented::{Segment, SegmentStyle, segmented};
-use crate::app::shell::{Slot, kbd};
+use crate::app::shell::Slot;
 use crate::app::text_targets::{SETTINGS, SETTINGS_SEARCH};
 use crate::app::tokens::{self, Ico, Layout, Rad, Sp, Sz, TextStyle};
 use crate::contracts::commands::{CommandsAction, SettingsSection};
@@ -574,7 +575,6 @@ fn control(
                     settings.theme_mode == ThemeMode::Light,
                 ),
             ],
-            theme,
         ),
         Control::Size => size_slider(settings, theme),
         Control::UiFont => select_button(
@@ -609,7 +609,6 @@ fn control(
                         renderer == RendererKind::Difftastic,
                     ),
                 ],
-                theme,
             )
         }
         Control::Layout => {
@@ -628,7 +627,6 @@ fn control(
                         layout == LayoutMode::Split,
                     ),
                 ],
-                theme,
             )
         }
         Control::Wrap => toggle(
@@ -648,7 +646,7 @@ fn control(
                     )
                 })
                 .collect();
-            choice("settings.wrap-column", &items, theme)
+            choice("settings.wrap-column", &items)
         }
         Control::Continuous => toggle(
             "Continuous scroll",
@@ -688,7 +686,7 @@ fn control(
                     )
                 })
                 .collect();
-            choice("settings.repo-depth", &items, theme)
+            choice("settings.repo-depth", &items)
         }
         Control::RepoHidden => toggle(
             "Include hidden folders",
@@ -813,12 +811,12 @@ fn repo_scan_status(commands: &CommandsController, theme: &Theme) -> AnyElement 
     }
 }
 
-fn choice(id: &str, items: &[(&str, CommandsAction, bool)], theme: &Theme) -> AnyElement {
+fn choice(id: &str, items: &[(&str, CommandsAction, bool)]) -> AnyElement {
     let segments = items
         .iter()
-        .map(|(label, action, on)| Segment::new(*label, Action::from(action.clone()), *on))
+        .map(|(label, action, on)| SegmentedItem::new(*label, Action::from(action.clone()), *on))
         .collect();
-    segmented(id, segments, SegmentStyle::from_theme(theme))
+    SegmentedControl::new(segments).id(id).into_any()
 }
 
 fn toggle(label: &str, on: bool, action: CommandsAction) -> AnyElement {
@@ -981,7 +979,7 @@ fn keyboard(settings: &Settings, page: &SettingsPage, query: &str, theme: &Theme
                             aria-label={if capturing { format!("Press keys for {}", entry.description) } else { format!("Rebind {}", entry.description) }}
                             on:click={action}
                         >
-                            {kbd(&binding, theme)}
+                            {kbd(binding, theme)}
                             <icon svg={lucide::PENCIL} size={Ico::XS} color={tc.text_muted} />
                         </div>
                     </div>

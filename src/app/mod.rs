@@ -7,7 +7,6 @@ pub mod navigation;
 pub mod review;
 pub mod route;
 pub mod runtime;
-pub mod segmented;
 pub mod shell;
 #[cfg(test)]
 pub mod testing;

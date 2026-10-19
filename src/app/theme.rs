@@ -4,7 +4,7 @@ use quark_ui::theme::{
 
 use std::sync::OnceLock;
 
-use crate::app::tokens::{self, quark_units};
+use crate::app::tokens;
 use crate::core::themes::{SemanticPalette, ThemeRegistry};
 use crate::platform::persistence::Settings;
 
@@ -111,49 +111,65 @@ pub fn base_theme(mode: ThemeMode) -> Theme {
 
 fn control(height: f32, padding_x: f32, font_size: f32) -> ControlMetrics {
     ControlMetrics {
-        height: Some(quark_units(height)),
-        padding_x: Some(quark_units(padding_x)),
-        font_size: Some(quark_units(font_size)),
+        height: Some(height),
+        padding_x: Some(padding_x),
+        font_size: Some(font_size),
         ..ControlMetrics::default()
     }
 }
 
 fn components() -> ComponentMetrics {
+    let compact = ComponentMetrics::compact();
     ComponentMetrics {
         button: ControlMetrics {
-            radius: Some(quark_units(7.0)),
-            gap: Some(quark_units(6.0)),
-            icon_size: Some(quark_units(14.0)),
+            radius: Some(7.0),
+            gap: Some(6.0),
+            icon_size: Some(14.0),
             ..control(26.0, 10.0, 12.5)
         },
         button_compact: ControlMetrics {
-            radius: Some(quark_units(5.0)),
-            gap: Some(quark_units(4.0)),
-            icon_size: Some(quark_units(13.0)),
+            radius: Some(5.0),
+            gap: Some(4.0),
+            icon_size: Some(13.0),
             ..control(22.0, 7.0, 12.0)
         },
         select: control(28.0, 10.0, 12.5),
         option: control(28.0, 8.0, 12.5),
         popover: SurfaceMetrics {
-            radius: Some(quark_units(9.0)),
-            padding_x: Some(quark_units(4.0)),
-            padding_y: Some(quark_units(4.0)),
-            font_size: Some(quark_units(12.5)),
-            ..SurfaceMetrics::default()
+            radius: Some(9.0),
+            padding_x: Some(4.0),
+            padding_y: Some(4.0),
+            font_size: Some(12.5),
+            ..compact.popover
         },
         tooltip: SurfaceMetrics {
-            font_size: Some(quark_units(11.5)),
-            ..SurfaceMetrics::default()
+            font_size: Some(11.5),
+            ..compact.tooltip
         },
         toast: SurfaceMetrics {
-            font_size: Some(quark_units(12.5)),
-            ..SurfaceMetrics::default()
+            font_size: Some(12.5),
+            ..compact.toast
         },
         modal: SurfaceMetrics {
-            radius: Some(quark_units(12.0)),
-            ..SurfaceMetrics::default()
+            radius: Some(12.0),
+            ..compact.modal
         },
-        ..ComponentMetrics::default()
+        segmented: ControlMetrics {
+            height: Some(26.0),
+            radius: Some(7.0),
+            gap: Some(2.0),
+            padding_x: Some(10.0),
+            font_size: Some(12.0),
+            ..ControlMetrics::default()
+        },
+        kbd: ControlMetrics {
+            height: Some(17.0),
+            radius: Some(4.0),
+            padding_x: Some(4.0),
+            font_size: Some(11.0),
+            ..ControlMetrics::default()
+        },
+        ..compact
     }
 }
 
@@ -213,6 +229,7 @@ fn colors(palette: &SemanticPalette) -> ThemeColors {
         empty_state_background: rgb!(l.empty_state_background),
         empty_state_border: rgb!(l.empty_state_border),
         scrollbar_thumb: flatten(rgb!(l.scrollbar_thumb), editor),
+        slider_track: rgb!(l.border),
         status_info: rgb!(l.status_info),
         status_warning: rgb!(l.status_warning),
         status_error: rgb!(l.status_error),

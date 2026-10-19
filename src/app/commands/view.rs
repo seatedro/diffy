@@ -12,11 +12,12 @@ use super::CommandsController;
 use super::list::{self, OptionRow};
 use super::picker::{PickerChoice, PickerKind, PickerRow, RowKind, TYPED_PATH};
 use super::state::{CONFIRM_ACCEPT, CONFIRM_CANCEL, LayerKind};
-use crate::app::shell::{Slot, kbd};
+use crate::app::shell::Slot;
 use crate::app::text_targets::PICKER;
 use crate::app::tokens::{self, Ico, Layout, Rad, Sp, Sz, TextStyle};
 use crate::contracts::commands::{CommandsAction, ToastKind};
 use crate::contracts::shell::Action;
+use quark_components::kbd;
 
 fn palette_event(event: PaletteEvent) -> quark_ui::Action {
     Action::from(CommandsAction::Palette(event)).into()

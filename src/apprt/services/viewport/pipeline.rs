@@ -610,7 +610,7 @@ mod tests {
         std::fs::write(dir.path().join("new.txt"), "fresh\n").unwrap();
         let blob = |text: &str| repo.blob(text.as_bytes()).unwrap().to_string();
 
-        for renderer in [RendererKind::Builtin, RendererKind::Difftastic] {
+        for renderer in [RendererKind::Builtin, RendererKind::Semantic] {
             let request = VcsCompareRequest {
                 spec: VcsCompareSpec::WorkingCopy,
                 layout: LayoutMode::Unified,

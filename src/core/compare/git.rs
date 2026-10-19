@@ -248,8 +248,7 @@ fn worktree_document(
         ..FileMeta::default()
     });
     let (old, new) = (old.unwrap_or_default(), new.unwrap_or_default());
-    #[cfg(feature = "difftastic")]
-    if renderer == RendererKind::Difftastic {
+    if renderer == RendererKind::Semantic {
         let changed = crate::core::compare::semantic::ChangedPath {
             status: meta.status,
             old_path: meta.old_path.as_deref().map(str::to_owned),

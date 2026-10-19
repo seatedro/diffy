@@ -761,7 +761,6 @@ impl GitService {
         self.read_file_bytes_from_tree(reference, path)
     }
 
-    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     pub(crate) fn read_file_bytes_batch_at<'a>(
         &self,
         reference: &str,
@@ -801,7 +800,6 @@ impl GitService {
             .clone())
     }
 
-    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     fn read_file_bytes_batch_from_index(&self, paths: &[&str]) -> Vec<Option<Vec<u8>>> {
         let Ok(repo) = self.repo() else {
             return vec![None; paths.len()];
@@ -843,7 +841,6 @@ impl GitService {
             .clone())
     }
 
-    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     fn read_file_bytes_batch_from_tree(
         &self,
         reference: &str,
@@ -1105,7 +1102,6 @@ impl GitService {
         self.diff_between_refs_path(left, right, path, false)
     }
 
-    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     pub(crate) fn diff_name_status(
         &self,
         left: &str,
@@ -1878,7 +1874,6 @@ fn parse_porcelain_status(bytes: &[u8]) -> Vec<(String, Option<String>, StatusBi
     out
 }
 
-#[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
 fn parse_name_status(bytes: &[u8]) -> Vec<(String, Option<String>, Option<String>)> {
     let mut out = Vec::new();
     let mut fields = bytes

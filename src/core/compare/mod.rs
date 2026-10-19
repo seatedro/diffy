@@ -2,7 +2,6 @@ pub mod backends;
 pub mod git;
 pub mod output;
 pub mod progress;
-#[cfg(feature = "difftastic")]
 pub mod semantic;
 pub mod service;
 pub mod spec;

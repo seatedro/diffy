@@ -85,7 +85,7 @@ const ITEMS: &[Item] = &[
         section: SettingsSection::Editor,
         control: Control::Engine,
         title: "Engine",
-        description: "Git's line diff or Difftastic's syntax-aware diff",
+        description: "Git's line diff or a syntax-aware diff",
     },
     Item {
         section: SettingsSection::Editor,
@@ -604,9 +604,9 @@ fn control(
                         renderer == RendererKind::Builtin,
                     ),
                     (
-                        "Difftastic",
-                        CommandsAction::SetEngine(RendererKind::Difftastic),
-                        renderer == RendererKind::Difftastic,
+                        "Semantic",
+                        CommandsAction::SetEngine(RendererKind::Semantic),
+                        renderer == RendererKind::Semantic,
                     ),
                 ],
             )

@@ -1,6 +1,5 @@
 use crate::core::compare::git;
 use crate::core::compare::output::CompareOutput;
-use crate::core::compare::service::SEMANTIC_UNAVAILABLE;
 use crate::core::compare::spec::RendererKind;
 use crate::core::error::Result;
 
@@ -11,16 +10,10 @@ pub fn compare_text(
     renderer: RendererKind,
 ) -> Result<CompareOutput> {
     let display_path = normalized_display_path(display_path);
-    if renderer == RendererKind::Difftastic {
-        #[cfg(feature = "difftastic")]
+    if renderer == RendererKind::Semantic {
         return crate::core::compare::semantic::compare_text(left_text, right_text, &display_path);
     }
-    let mut output = git::compare_text(left_text, right_text, &display_path)?;
-    if renderer == RendererKind::Difftastic {
-        output.used_fallback = true;
-        output.fallback_message = SEMANTIC_UNAVAILABLE.to_owned();
-    }
-    Ok(output)
+    git::compare_text(left_text, right_text, &display_path)
 }
 
 fn normalized_display_path(path: &str) -> String {
@@ -82,21 +75,20 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "difftastic")]
     #[test]
     fn semantic_text_compare_keeps_change_intensities() {
         let output = compare_text(
             "fn value() -> u32 {\n    1\n}\n",
             "fn value() -> u32 {\n    2\n}\n",
             "snippet.rs",
-            RendererKind::Difftastic,
+            RendererKind::Semantic,
         )
         .unwrap();
         assert!(!output.used_fallback);
         let doc = output.document(0).unwrap();
         assert_eq!(doc.stats(0).known(), Some((1, 1)));
         let novel = doc.semantic_spans(0, Side::New, 1);
-        assert!(!novel.is_empty(), "difftastic marks the changed literal");
+        assert!(!novel.is_empty(), "the changed literal is marked");
         assert!(novel.iter().all(|span| span.end as usize <= "    2".len()));
     }
 }

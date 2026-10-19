@@ -3,7 +3,6 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::contracts::navigation::RepositorySyncReason;
-#[cfg(feature = "difftastic")]
 use crate::core::compare::semantic;
 use crate::core::compare::{
     COMPARE_SUMMARY_FILE_LIMIT, CompareEntry, CompareOutput, ProgressSink, RendererKind,
@@ -11,9 +10,7 @@ use crate::core::compare::{
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::cache::VcsReadCache;
-use crate::core::vcs::compare_port::{
-    deferred_entry, entry_stats, output_from_patch, patch_stats, with_semantic_fallback,
-};
+use crate::core::vcs::compare_port::{deferred_entry, entry_stats, output_from_patch, patch_stats};
 use crate::core::vcs::jj::cli::JjCli;
 use crate::core::vcs::jj::parse::{
     parse_bookmark_list, parse_change_log, parse_conflict_list, parse_diff_summary,
@@ -165,8 +162,8 @@ impl JjRepository {
             args.extend(only_path.map(jj_root_pathspec));
             args
         };
-        let semantic = request.renderer == RendererKind::Difftastic;
-        if only_path.is_none() || (semantic && cfg!(feature = "difftastic")) {
+        let semantic = request.renderer == RendererKind::Semantic;
+        if only_path.is_none() || semantic {
             let summary = self
                 .cli
                 .run_ignored_wc(&path_args(self.diff_summary_args_for_spec(&request.spec)?))?;
@@ -174,7 +171,6 @@ impl JjRepository {
             if only_path.is_none() && changes.len() > COMPARE_SUMMARY_FILE_LIMIT {
                 return Ok(CompareOutput::deferred(compare_entries(&changes)));
             }
-            #[cfg(feature = "difftastic")]
             if semantic {
                 let (old_rev, new_rev) = semantic_revisions(&request.spec);
                 let changed = changes
@@ -184,19 +180,12 @@ impl JjRepository {
                 return semantic::compare_changed_paths(changed, reporter);
             }
         }
-        let _ = reporter;
         let raw_diff = self
             .cli
             .run_bytes_ignored_wc(&path_args(self.diff_args_for_spec(&request.spec)?))?;
-        let output = output_from_patch(&raw_diff)?;
-        Ok(if semantic {
-            with_semantic_fallback(output)
-        } else {
-            output
-        })
+        output_from_patch(&raw_diff)
     }
 
-    #[cfg(feature = "difftastic")]
     fn changed_path(
         &self,
         change: &FileChange,
@@ -1469,7 +1458,6 @@ fn jj_fork_point_revset(base: &str, head: &str) -> String {
     format!("fork_point(({base})|({head}))")
 }
 
-#[cfg(feature = "difftastic")]
 fn semantic_revisions(spec: &VcsCompareSpec) -> (String, String) {
     match spec {
         VcsCompareSpec::WorkingCopy => ("@-".to_owned(), "@".to_owned()),
@@ -1620,7 +1608,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "difftastic")]
     #[test]
     fn jj_semantic_revisions_follow_compare_spec() {
         assert_eq!(

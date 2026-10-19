@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
+use std::time::Instant;
 
 use diffy_diff::myers;
 
@@ -11,19 +12,27 @@ const SIGNATURE_LEAVES: usize = 64;
 const MIN_SIMILARITY: f32 = 0.3;
 const TEXT_SIMILARITY: f32 = 0.5;
 const SIMILAR_DEPTH: usize = 2;
+const CLOCK_STRIDE: u64 = 1 << 16;
 
 pub(crate) struct Matching {
     pub(crate) partner: [Vec<u32>; 2],
     pub(crate) replaced: Vec<(u32, u32)>,
 }
 
-pub(crate) fn run(old: &Tree<'_>, new: &Tree<'_>, max_work: u64) -> Result<Matching, Fallback> {
+pub(crate) fn run(
+    old: &Tree<'_>,
+    new: &Tree<'_>,
+    max_work: u64,
+    deadline: Instant,
+) -> Result<Matching, Fallback> {
     let mut matcher = Matcher {
         trees: [old, new],
         partner: [vec![NONE; old.nodes.len()], vec![NONE; new.nodes.len()]],
         replaced: Vec::new(),
         work: 0,
         max_work,
+        clock_at: CLOCK_STRIDE,
+        deadline,
     };
     matcher.pair_lists(0, 0)?;
     Ok(Matching {
@@ -45,6 +54,8 @@ struct Matcher<'t, 'a> {
     replaced: Vec<(u32, u32)>,
     work: u64,
     max_work: u64,
+    clock_at: u64,
+    deadline: Instant,
 }
 
 impl Matcher<'_, '_> {
@@ -52,6 +63,12 @@ impl Matcher<'_, '_> {
         self.work += units as u64;
         if self.work > self.max_work {
             return Err(Fallback::Budget);
+        }
+        if self.work >= self.clock_at {
+            self.clock_at = self.work + CLOCK_STRIDE;
+            if Instant::now() > self.deadline {
+                return Err(Fallback::Timeout);
+            }
         }
         Ok(())
     }

@@ -4,6 +4,7 @@ mod matcher;
 mod syntax;
 
 use std::fmt;
+use std::time::{Duration, Instant};
 
 use diffy_diff::SemanticSpan;
 use tree_sitter as ts;
@@ -23,6 +24,7 @@ pub struct Limits {
     pub max_bytes: usize,
     pub max_errors: usize,
     pub max_work: u64,
+    pub max_time: Duration,
 }
 
 impl Default for Limits {
@@ -31,6 +33,7 @@ impl Default for Limits {
             max_bytes: 1_000_000,
             max_errors: 100,
             max_work: 20_000_000,
+            max_time: Duration::from_secs(1),
         }
     }
 }
@@ -41,6 +44,7 @@ pub enum Fallback {
     ParseErrors(usize),
     Unparsed,
     Budget,
+    Timeout,
 }
 
 impl fmt::Display for Fallback {
@@ -50,6 +54,7 @@ impl fmt::Display for Fallback {
             Self::ParseErrors(count) => write!(f, "{count} parse errors"),
             Self::Unparsed => f.write_str("the parser gave up"),
             Self::Budget => f.write_str("exceeded the semantic work budget"),
+            Self::Timeout => f.write_str("exceeded the semantic time budget"),
         }
     }
 }
@@ -63,6 +68,7 @@ pub fn diff(
     new: &str,
     limits: &Limits,
 ) -> Result<Vec<Vec<Row>>, Fallback> {
+    let deadline = Instant::now() + limits.max_time;
     let bytes = old.len().max(new.len());
     if bytes > limits.max_bytes {
         return Err(Fallback::TooLarge(bytes));
@@ -79,6 +85,6 @@ pub fn diff(
     if errors > limits.max_errors {
         return Err(Fallback::ParseErrors(errors));
     }
-    let matching = matcher::run(&old, &new, limits.max_work)?;
+    let matching = matcher::run(&old, &new, limits.max_work, deadline)?;
     Ok(align::rows(&old, &new, &matching))
 }

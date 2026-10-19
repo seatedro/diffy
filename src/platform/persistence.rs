@@ -241,7 +241,7 @@ mod tests {
                 right_ref: "feature".to_owned(),
                 mode: CompareMode::ThreeDot,
                 layout: LayoutMode::Split,
-                renderer: RendererKind::Difftastic,
+                renderer: RendererKind::Semantic,
             }),
             ..Settings::default()
         };

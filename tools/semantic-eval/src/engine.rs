@@ -1,10 +1,9 @@
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use std::path::Path;
-
 use diffy::core::compare::semantic::{
-    ChangedPath, document_from_changed, document_from_native_with,
+    ChangedPath, document_from_difftastic, document_from_native_with,
 };
 use diffy::core::syntax::grammar::{legacy_storage_dir, trusted_keys};
 use diffy_diff::{DEFAULT_CONTEXT, DiffDocument, FileStatus, diff_texts};
@@ -61,7 +60,7 @@ pub fn run(engine: Engine, path: &str, old: &[u8], new: &[u8]) -> Result<Run, St
             let changed = changed();
             capture::take_fallback();
             let start = Instant::now();
-            let doc = document_from_changed(&changed).map_err(|error| error.to_string())?;
+            let doc = document_from_difftastic(&changed).map_err(|error| error.to_string())?;
             let micros = start.elapsed().as_micros() as u64;
             Ok(Run {
                 doc,

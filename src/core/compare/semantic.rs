@@ -1,6 +1,6 @@
-use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::time::Duration;
 
 use diffy_diff::{
     AlignedRow, ChangeIntensity, DiffDocument, DocumentBuilder, FileMeta, FileStatus, SemanticSpan,
@@ -8,7 +8,7 @@ use diffy_diff::{
 };
 use diffy_semantic::{Limits, Row};
 use diffy_syntax::{GrammarStore, LanguageId, legacy_pack};
-use rayon::prelude::*;
+#[cfg(feature = "difftastic")]
 use vendored_difftastic::{
     ChangeIntensity as DftIntensity, ChangeSpan, DiffRequest, DiffStatus, SemanticDiffResult,
 };
@@ -21,11 +21,14 @@ use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::spec::CompareSpec;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result};
+use crate::core::syntax::grammar::Grammars;
 use crate::core::vcs::git::{GitService, INDEX_REF, StatusItem, StatusScope, WORKDIR_REF};
 
 const LOADING_FILE_EMIT_STRIDE: u32 = 16;
 const MAX_WORKERS: usize = 4;
 const MIN_FILES_FOR_PARALLEL: usize = 4;
+const WORKER_STACK_BYTES: usize = 16 << 20;
+const FILE_TIME_BUDGET: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone)]
 pub struct ChangedPath {
@@ -173,19 +176,7 @@ pub fn compare_changed_paths(
         }
         Ok(Arc::new(doc))
     };
-    let workers = worker_count(changed.len());
-    let docs = if workers == 1 {
-        changed.iter().map(load).collect::<Result<Vec<_>>>()?
-    } else {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .thread_name(|index| format!("diffy-difftastic-{index}"))
-            .build()
-            .map_err(|error| {
-                DiffyError::General(format!("difftastic worker setup failed: {error}"))
-            })?
-            .install(|| changed.par_iter().map(load).collect::<Result<Vec<_>>>())?
-    };
+    let docs = load_parallel(&changed, worker_count(changed.len()), &load)?;
     let mut output = CompareOutput::default();
     for doc in docs {
         output.push_document(doc);
@@ -193,7 +184,63 @@ pub fn compare_changed_paths(
     Ok(output)
 }
 
+fn load_parallel(
+    changed: &[ChangedPath],
+    workers: usize,
+    load: &(dyn Fn(&ChangedPath) -> Result<Arc<DiffDocument>> + Sync),
+) -> Result<Vec<Arc<DiffDocument>>> {
+    let next = AtomicUsize::new(0);
+    let mut done = std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|index| {
+                std::thread::Builder::new()
+                    .name(format!("diffy-semantic-{index}"))
+                    .stack_size(WORKER_STACK_BYTES)
+                    .spawn_scoped(scope, || {
+                        let mut done = Vec::new();
+                        loop {
+                            let at = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(item) = changed.get(at) else {
+                                return done;
+                            };
+                            done.push((at, load(item)));
+                        }
+                    })
+                    .map_err(|error| {
+                        DiffyError::General(format!("semantic worker setup failed: {error}"))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut done = Vec::with_capacity(changed.len());
+        for handle in handles {
+            let part = handle
+                .join()
+                .map_err(|_| DiffyError::General("semantic worker panicked".to_owned()))?;
+            done.extend(part);
+        }
+        Ok::<_, DiffyError>(done)
+    })?;
+    done.sort_unstable_by_key(|(at, _)| *at);
+    done.into_iter().map(|(_, doc)| doc).collect()
+}
+
 pub fn document_from_changed(changed: &ChangedPath) -> Result<DiffDocument> {
+    let (doc, fallback) = document_from_native(changed, &Grammars::shared().store())?;
+    if let Some(reason) = fallback {
+        tracing::info!(
+            target: "diffy::semantic",
+            path = %changed.display_path(),
+            reason,
+            old_bytes = changed.old_content.len(),
+            new_bytes = changed.new_content.len(),
+            "semantic diff fell back to line diff"
+        );
+    }
+    Ok(doc)
+}
+
+#[cfg(feature = "difftastic")]
+pub fn document_from_difftastic(changed: &ChangedPath) -> Result<DiffDocument> {
     let meta = changed.meta();
     if is_binary_bytes(&changed.old_content) || is_binary_bytes(&changed.new_content) {
         return binary_document(meta);
@@ -211,8 +258,8 @@ pub fn document_from_changed(changed: &ChangedPath) -> Result<DiffDocument> {
     }
     let result = vendored_difftastic::diff_bytes_semantic(DiffRequest {
         display_path: changed.display_path(),
-        lhs_path: changed.old_path.as_deref().map(Path::new),
-        rhs_path: changed.new_path.as_deref().map(Path::new),
+        lhs_path: changed.old_path.as_deref().map(std::path::Path::new),
+        rhs_path: changed.new_path.as_deref().map(std::path::Path::new),
         lhs_bytes: old.as_str().as_bytes(),
         rhs_bytes: new.as_str().as_bytes(),
     })
@@ -280,7 +327,8 @@ struct HunkRange {
     segments: std::ops::Range<usize>,
 }
 
-pub(crate) fn document_from_semantic(
+#[cfg(feature = "difftastic")]
+fn document_from_semantic(
     meta: FileMeta,
     old: TextStore,
     new: TextStore,
@@ -333,13 +381,11 @@ pub fn document_from_native_with(
     ) else {
         return line_diff(format!("{} grammar unavailable", language.name));
     };
-    match diffy_semantic::diff(
-        &grammar,
-        config,
-        old.as_str(),
-        new.as_str(),
-        &Limits::default(),
-    ) {
+    let limits = Limits {
+        max_time: FILE_TIME_BUDGET,
+        ..Limits::default()
+    };
+    match diffy_semantic::diff(&grammar, config, old.as_str(), new.as_str(), &limits) {
         Ok(chunks) => {
             let chunks = clean_rows(chunks, &old, &new);
             Ok((document_from_rows(meta, old, new, chunks, true)?, None))
@@ -440,6 +486,7 @@ fn document_from_rows(
     })
 }
 
+#[cfg(feature = "difftastic")]
 fn sanitize(result: &SemanticDiffResult, old: &TextStore, new: &TextStore) -> Vec<Vec<Row>> {
     let side_spans = |store: &TextStore, line: Option<u32>, spans: &[ChangeSpan]| {
         line.and_then(|line| store.display_line(line))
@@ -470,6 +517,7 @@ fn sanitize(result: &SemanticDiffResult, old: &TextStore, new: &TextStore) -> Ve
         .collect()
 }
 
+#[cfg(feature = "difftastic")]
 fn sanitize_spans(spans: &[ChangeSpan], text: &str) -> Vec<SemanticSpan> {
     let spans = spans
         .iter()
@@ -509,6 +557,7 @@ fn clean_spans(spans: Vec<SemanticSpan>, text: &str) -> Vec<SemanticSpan> {
     out
 }
 
+#[cfg(feature = "difftastic")]
 fn intensity(intensity: DftIntensity) -> ChangeIntensity {
     match intensity {
         DftIntensity::Novel => ChangeIntensity::Novel,
@@ -688,12 +737,14 @@ fn worker_count(files: usize) -> usize {
     files.min(available).clamp(1, MAX_WORKERS)
 }
 
+#[cfg(feature = "difftastic")]
 fn line_fallback_reason(language: &str) -> Option<&str> {
     language
         .strip_prefix("Text (")
         .and_then(|reason| reason.strip_suffix(')'))
 }
 
+#[cfg(feature = "difftastic")]
 fn log_line_fallback(changed: &ChangedPath, result: &SemanticDiffResult) {
     if let Some(reason) = result
         .line_fallback_reason
@@ -745,54 +796,43 @@ fn read_changed_paths(
 #[cfg(test)]
 mod tests {
     use diffy_diff::{
-        BlockKind, ChangeIntensity as Intensity, FileMeta, FileStatus, Side, TextStore,
+        BlockKind, ChangeIntensity as Intensity, DiffDocument, FileMeta, FileStatus, SemanticSpan,
+        Side, TextStore,
     };
-    use vendored_difftastic::{
-        ChangeIntensity as DftIntensity, ChangeSpan, DiffStatus, HighlightKind, SemanticChunk,
-        SemanticDiffResult, SemanticLine,
-    };
+    use diffy_semantic::Row;
 
     use super::{
-        ChangedPath, compare, compare_path, document_from_changed, document_from_semantic,
+        ChangedPath, clean_rows, compare, compare_path, document_from_changed, document_from_rows,
     };
     use crate::core::compare::service::tests::commit_file;
     use crate::core::compare::spec::{CompareMode, CompareSpec, LayoutMode, RendererKind};
     use crate::core::vcs::git::{GitService, WORKDIR_REF};
 
-    fn span(start: u32, end: u32, intensity: DftIntensity) -> ChangeSpan {
-        ChangeSpan {
-            start_col: start,
-            end_col: end,
-            highlight: HighlightKind::Normal,
+    fn span(start: u32, end: u32, intensity: Intensity) -> SemanticSpan {
+        SemanticSpan {
+            start,
+            end,
             intensity,
         }
     }
 
     fn line(
-        lhs: Option<u32>,
-        rhs: Option<u32>,
-        lhs_changes: Vec<ChangeSpan>,
-        rhs_changes: Vec<ChangeSpan>,
-    ) -> SemanticLine {
-        SemanticLine {
-            lhs_line: lhs,
-            rhs_line: rhs,
-            lhs_changes,
-            rhs_changes,
+        old: Option<u32>,
+        new: Option<u32>,
+        old_spans: Vec<SemanticSpan>,
+        new_spans: Vec<SemanticSpan>,
+    ) -> Row {
+        Row {
+            old,
+            new,
+            spans: [old_spans, new_spans],
         }
     }
 
-    fn result(chunks: Vec<Vec<SemanticLine>>) -> SemanticDiffResult {
-        SemanticDiffResult {
-            status: DiffStatus::Changed,
-            language: "Rust".to_owned(),
-            line_fallback_reason: None,
-            aligned_lines: Vec::new(),
-            chunks: chunks
-                .into_iter()
-                .map(|lines| SemanticChunk { lines })
-                .collect(),
-        }
+    fn rows_document(old: &str, new: &str, chunks: Vec<Vec<Row>>) -> DiffDocument {
+        let (old, new) = (TextStore::new(old), TextStore::new(new));
+        let chunks = clean_rows(chunks, &old, &new);
+        document_from_rows(meta(), old, new, chunks, true).unwrap()
     }
 
     fn meta() -> FileMeta {
@@ -815,27 +855,25 @@ mod tests {
     fn semantic_rows_keep_intensities_pairing_and_full_sources() {
         let old = "fn a() {}\nlet x = \"foo\";\nkeep();\n";
         let new = "fn a() {}\nlet x = \"bar\";\nextra();\nkeep();\n";
-        let doc = document_from_semantic(
-            meta(),
-            TextStore::new(old),
-            TextStore::new(new),
-            &result(vec![vec![
+        let doc = rows_document(
+            old,
+            new,
+            vec![vec![
                 line(Some(0), Some(0), vec![], vec![]),
                 line(
                     Some(1),
                     Some(1),
                     vec![
-                        span(8, 9, DftIntensity::UnchangedContext),
-                        span(9, 12, DftIntensity::NovelWord),
-                        span(12, 13, DftIntensity::UnchangedContext),
+                        span(8, 9, Intensity::UnchangedContext),
+                        span(9, 12, Intensity::NovelWord),
+                        span(12, 13, Intensity::UnchangedContext),
                     ],
-                    vec![span(9, 12, DftIntensity::NovelWord)],
+                    vec![span(9, 12, Intensity::NovelWord)],
                 ),
-                line(None, Some(2), vec![], vec![span(0, 7, DftIntensity::Novel)]),
+                line(None, Some(2), vec![], vec![span(0, 7, Intensity::Novel)]),
                 line(Some(2), Some(3), vec![], vec![]),
-            ]]),
-        )
-        .unwrap();
+            ]],
+        );
         doc.verify_integrity().unwrap();
         assert_eq!(hunks(&doc), [(1, 3, 1, 4)]);
         assert_eq!(
@@ -878,26 +916,24 @@ mod tests {
     fn lines_that_differ_between_chunks_become_changes() {
         let old = "a\nb\nsame\nc\nd\n";
         let new = "A\nb\nsame2\nc\nD\n";
-        let doc = document_from_semantic(
-            meta(),
-            TextStore::new(old),
-            TextStore::new(new),
-            &result(vec![
+        let doc = rows_document(
+            old,
+            new,
+            vec![
                 vec![line(
                     Some(0),
                     Some(0),
-                    vec![span(0, 1, DftIntensity::Novel)],
-                    vec![span(0, 1, DftIntensity::Novel)],
+                    vec![span(0, 1, Intensity::Novel)],
+                    vec![span(0, 1, Intensity::Novel)],
                 )],
                 vec![line(
                     Some(4),
                     Some(4),
-                    vec![span(0, 1, DftIntensity::Novel)],
-                    vec![span(0, 1, DftIntensity::Novel)],
+                    vec![span(0, 1, Intensity::Novel)],
+                    vec![span(0, 1, Intensity::Novel)],
                 )],
-            ]),
-        )
-        .unwrap();
+            ],
+        );
         doc.verify_integrity().unwrap();
         assert_eq!(hunks(&doc), [(1, 1, 1, 1), (3, 1, 3, 1), (5, 1, 5, 1)]);
         assert_eq!(doc.stats(0).known(), Some((3, 3)));
@@ -907,29 +943,22 @@ mod tests {
     fn separate_chunks_stay_separate_hunks_and_bad_spans_are_dropped() {
         let old = "a\n1\n2\n3\n4\nb\n";
         let new = "x\n1\n2\n3\n4\ny\n";
-        let doc = document_from_semantic(
-            meta(),
-            TextStore::new(old),
-            TextStore::new(new),
-            &result(vec![
+        let doc = rows_document(
+            old,
+            new,
+            vec![
                 vec![line(
                     Some(0),
                     Some(0),
-                    vec![span(0, 9, DftIntensity::Novel)],
+                    vec![span(0, 9, Intensity::Novel)],
                     vec![],
                 )],
                 vec![
-                    line(
-                        Some(5),
-                        Some(5),
-                        vec![],
-                        vec![span(3, 2, DftIntensity::Novel)],
-                    ),
+                    line(Some(5), Some(5), vec![], vec![span(3, 2, Intensity::Novel)]),
                     line(Some(6), Some(6), vec![], vec![]),
                 ],
-            ]),
-        )
-        .unwrap();
+            ],
+        );
         assert_eq!(hunks(&doc), [(1, 1, 1, 1), (6, 1, 6, 1)]);
         assert_eq!(doc.semantic_spans(0, Side::Old, 0)[0].end, 1);
         assert!(doc.semantic_spans(0, Side::New, 5).is_empty());
@@ -955,7 +984,7 @@ mod tests {
             mode: CompareMode::TwoDot,
             left_ref: left.to_owned(),
             right_ref: right.to_owned(),
-            renderer: RendererKind::Difftastic,
+            renderer: RendererKind::Semantic,
             layout: LayoutMode::Unified,
         }
     }

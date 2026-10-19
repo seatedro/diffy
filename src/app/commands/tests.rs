@@ -841,7 +841,7 @@ fn ref_picker_tab_swaps_sides_and_footer_sets_mode_and_engine() {
     ui.find(By::role_name(Role::Dialog, "Head ref"));
     assert_eq!(ui.focus(), Some(PICKER));
     ui.click_node(By::role_name(Role::RadioButton, "Directly"));
-    ui.click_node(By::role_name(Role::RadioButton, "Difftastic"));
+    ui.click_node(By::role_name(Role::RadioButton, "Semantic"));
     assert_eq!(
         ui.app().dispatched,
         vec![
@@ -850,7 +850,7 @@ fn ref_picker_tab_swaps_sides_and_footer_sets_mode_and_engine() {
             )),
             Action::from(
                 crate::contracts::viewport::pipeline::PipelineAction::SetRenderer(
-                    crate::core::compare::RendererKind::Difftastic
+                    crate::core::compare::RendererKind::Semantic
                 )
             ),
         ]

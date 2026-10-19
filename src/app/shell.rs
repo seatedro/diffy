@@ -515,7 +515,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             .as_ref()
             .map(|compare| compare.renderer)
         {
-            Some(RendererKind::Difftastic) => "Difftastic",
+            Some(RendererKind::Semantic) => "Semantic",
             _ => "Git diff",
         };
         view! {

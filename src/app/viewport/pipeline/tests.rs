@@ -275,15 +275,14 @@ fn renderer_changes_rerun_the_current_compare_and_persist() {
             _ => None,
         })
     };
-    let idle = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
+    let idle = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Semantic), &cx);
     assert!(pipeline_effects(&idle).is_empty());
     let first = request(&mut controller);
-    let rerun =
-        controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
+    let rerun = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Semantic), &cx);
     match pipeline_effects(&rerun).as_slice() {
         [PipelineEffect::RunCompare(job)] => {
             assert!(job.generation > first);
-            assert_eq!(job.intent.request.renderer, RendererKind::Difftastic);
+            assert_eq!(job.intent.request.renderer, RendererKind::Semantic);
         }
         other => panic!("expected a new compare, got {other:?}"),
     }
@@ -291,7 +290,7 @@ fn renderer_changes_rerun_the_current_compare_and_persist() {
         revision: 1,
         settings: crate::platform::persistence::Settings {
             last_compare: Some(crate::platform::persistence::PersistedCompare {
-                renderer: RendererKind::Difftastic,
+                renderer: RendererKind::Semantic,
                 ..Default::default()
             }),
             ..Default::default()
@@ -301,13 +300,13 @@ fn renderer_changes_rerun_the_current_compare_and_persist() {
         settings: saved,
         ..SharedContext::default()
     };
-    let same = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Difftastic), &cx);
+    let same = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Semantic), &cx);
     assert!(pipeline_effects(&same).is_empty());
     assert_eq!(persisted(&same), None);
     let back = controller.reduce_action(PipelineAction::SetRenderer(RendererKind::Builtin), &cx);
     assert_eq!(persisted(&back), Some(RendererKind::Builtin));
-    assert_eq!(persisted(&idle), Some(RendererKind::Difftastic));
-    assert_eq!(persisted(&rerun), Some(RendererKind::Difftastic));
+    assert_eq!(persisted(&idle), Some(RendererKind::Semantic));
+    assert_eq!(persisted(&rerun), Some(RendererKind::Semantic));
 }
 
 #[test]

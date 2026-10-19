@@ -3,7 +3,6 @@ use std::sync::{LazyLock, Mutex};
 
 use crate::contracts::navigation::{RepositoryChangeKind, RepositorySyncReason};
 use crate::core::compare::backends::GitDiffBackend;
-#[cfg(feature = "difftastic")]
 use crate::core::compare::semantic;
 use crate::core::compare::{
     CompareEntry, CompareMode, CompareOutput, ComparePhase, CompareService, CompareSpec,
@@ -12,7 +11,7 @@ use crate::core::compare::{
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::cache::VcsReadCache;
-use crate::core::vcs::compare_port::{entry_stats, patch_stats, with_semantic_fallback};
+use crate::core::vcs::compare_port::{entry_stats, patch_stats};
 use crate::core::vcs::git::service::is_full_hex_oid;
 use crate::core::vcs::git::status::StatusBits;
 use crate::core::vcs::git::{
@@ -139,21 +138,10 @@ impl GitRepository {
             output.push_document(doc);
             return Ok(output);
         }
-        if request.renderer == RendererKind::Difftastic {
-            #[cfg(feature = "difftastic")]
+        if request.renderer == RendererKind::Semantic {
             return semantic::compare_path(&spec, path, &self.service);
         }
-        Ok(renderer_output(
-            request.renderer,
-            git::compare_path(&spec, path, &self.service, true)?,
-        ))
-    }
-}
-
-fn renderer_output(renderer: RendererKind, output: CompareOutput) -> CompareOutput {
-    match renderer {
-        RendererKind::Builtin => output,
-        RendererKind::Difftastic => with_semantic_fallback(output),
+        git::compare_path(&spec, path, &self.service, true)
     }
 }
 
@@ -352,14 +340,10 @@ impl VcsRepository for GitRepository {
         renderer: RendererKind,
     ) -> Result<CompareOutput> {
         let item = status_item_from_file_change(change);
-        if renderer == RendererKind::Difftastic {
-            #[cfg(feature = "difftastic")]
+        if renderer == RendererKind::Semantic {
             return semantic::compare_status_item(&item, &self.service);
         }
-        Ok(renderer_output(
-            renderer,
-            self.service.diff_status_item(&item)?,
-        ))
+        self.service.diff_status_item(&item)
     }
 
     fn commit_diff(&mut self, has_staged: bool) -> Result<String> {

@@ -9,27 +9,20 @@ use crate::core::compare::spec::{CompareSpec, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::git::GitService;
 
-pub const SEMANTIC_UNAVAILABLE: &str = "difftastic unavailable, fell back to built-in backend";
-
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CompareService;
 
 impl CompareService {
-    pub const fn semantic_available() -> bool {
-        cfg!(feature = "difftastic")
-    }
-
     pub fn compare(
         &self,
         spec: &CompareSpec,
         repo: &GitService,
         reporter: Option<&dyn ProgressSink>,
     ) -> Result<CompareOutput> {
-        if spec.renderer == RendererKind::Difftastic {
-            #[cfg(feature = "difftastic")]
+        if spec.renderer == RendererKind::Semantic {
             return crate::core::compare::semantic::compare(spec, repo, reporter);
         }
-        fallback(spec.renderer, git::compare(spec, repo, reporter))
+        git::compare(spec, repo, reporter)
     }
 
     pub fn compare_file(
@@ -39,12 +32,9 @@ impl CompareService {
         repo: &GitService,
     ) -> Result<Arc<DiffDocument>> {
         let path = entry.path().into_owned();
-        if spec.renderer == RendererKind::Difftastic && !entry.is_binary() {
-            #[cfg(feature = "difftastic")]
-            {
-                let output = crate::core::compare::semantic::compare_path(spec, &path, repo)?;
-                return matching_document(output, entry);
-            }
+        if spec.renderer == RendererKind::Semantic && !entry.is_binary() {
+            let output = crate::core::compare::semantic::compare_path(spec, &path, repo)?;
+            return matching_document(output, entry);
         }
         if let Some(doc) = git::compare_entry(entry, repo)? {
             return Ok(Arc::new(doc));
@@ -72,15 +62,6 @@ pub fn matching_document(output: CompareOutput, entry: &CompareEntry) -> Result<
     index
         .and_then(|index| output.document(index).cloned())
         .ok_or_else(|| DiffyError::General(format!("no diff for {}", entry.path())))
-}
-
-fn fallback(renderer: RendererKind, output: Result<CompareOutput>) -> Result<CompareOutput> {
-    let mut output = output?;
-    if renderer == RendererKind::Difftastic {
-        output.used_fallback = true;
-        output.fallback_message = SEMANTIC_UNAVAILABLE.to_owned();
-    }
-    Ok(output)
 }
 
 #[cfg(test)]

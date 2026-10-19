@@ -16,17 +16,12 @@ fn stdout_logging_filter(log_debug: bool) -> tracing_subscriber::EnvFilter {
         return EnvFilter::new("debug");
     }
 
-    // Keep difftastic internals and Diffy's difftastic diagnostics out of
-    // stdout during normal runs. DIFFY_LOG_DEBUG=1 still enables them.
+    // Keep semantic diff diagnostics out of stdout during normal runs.
+    // DIFFY_LOG_DEBUG=1 still enables them.
     let base = logging_env_base();
-    let filter =
-        format!("{base},difftastic=off,vendored_difftastic=off,difft=off,diffy::difftastic=off");
+    let filter = format!("{base},diffy::semantic=off");
 
-    EnvFilter::try_new(filter).unwrap_or_else(|_| {
-        EnvFilter::new(
-            "info,difftastic=off,vendored_difftastic=off,difft=off,diffy::difftastic=off",
-        )
-    })
+    EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info,diffy::semantic=off"))
 }
 
 fn file_logging_filter(log_debug: bool) -> tracing_subscriber::EnvFilter {
@@ -36,18 +31,11 @@ fn file_logging_filter(log_debug: bool) -> tracing_subscriber::EnvFilter {
         return EnvFilter::new("debug");
     }
 
-    // Log concise Diffy-owned difftastic diagnostics to the file log, but keep
-    // vendored difftastic's chatty info-level internals disabled unless debug is
-    // explicitly requested.
+    // Log concise semantic diff diagnostics to the file log.
     let base = logging_env_base();
-    let filter =
-        format!("{base},difftastic=off,vendored_difftastic=off,difft=off,diffy::difftastic=info");
+    let filter = format!("{base},diffy::semantic=info");
 
-    EnvFilter::try_new(filter).unwrap_or_else(|_| {
-        EnvFilter::new(
-            "info,difftastic=off,vendored_difftastic=off,difft=off,diffy::difftastic=info",
-        )
-    })
+    EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info,diffy::semantic=info"))
 }
 
 pub fn init_logging(log_debug: bool) {

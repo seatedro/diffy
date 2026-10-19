@@ -120,6 +120,8 @@ pub(super) fn vertical_hairline(
 pub(super) struct LineColors {
     pub text: Color,
     pub word: Color,
+    pub struck: Color,
+    pub strike: Color,
     pub search: Color,
     pub search_active: Color,
     pub search_outline: Color,
@@ -138,6 +140,7 @@ pub(super) fn line(
     layout: &Arc<TextLayout>,
     span_colors: Arc<[Color]>,
     words: &[Range<usize>],
+    struck: &[Range<usize>],
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
     colors: LineColors,
@@ -156,6 +159,11 @@ pub(super) fn line(
     for range in words {
         for rect in rects(range.clone()) {
             scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.word));
+        }
+    }
+    for range in struck {
+        for rect in rects(range.clone()) {
+            scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.struck));
         }
     }
     for mark in search {
@@ -227,6 +235,19 @@ pub(super) fn line(
         default_color: colors.text,
         span_colors,
     });
+    let thickness = whole_pixels(1.0, scale);
+    for range in struck {
+        for rect in rects(range.clone()) {
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    y: rect.y + (rect.height - thickness) / 2.0,
+                    height: thickness,
+                    ..rect
+                },
+                color: colors.strike,
+            });
+        }
+    }
 }
 
 /// The keyboard focus outline of a row, inset so neighbors do not cover
@@ -269,6 +290,8 @@ mod tests {
         let colors = LineColors {
             text: color(1),
             word: color(2),
+            struck: color(7),
+            strike: color(8),
             search: color(3),
             search_active: color(4),
             search_outline: color(5),
@@ -282,6 +305,7 @@ mod tests {
             &layout,
             Arc::from([]),
             &words,
+            &[],
             &[SearchMark {
                 range: 4..9,
                 active: true,

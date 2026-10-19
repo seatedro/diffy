@@ -360,7 +360,11 @@ impl DiffViewState {
             let byte = if x < column.text_x {
                 0
             } else {
-                start + paint.layout.hit(tx as f32, y - row.top).get()
+                let hit = paint.layout.hit(tx as f32, y - row.top).get();
+                match &paint.merge {
+                    Some(merge) => merge.to_source(hit),
+                    None => start + hit,
+                }
             };
             return Some(SelectionPoint::new(key_of(seg, r, line_side, index), byte));
         }

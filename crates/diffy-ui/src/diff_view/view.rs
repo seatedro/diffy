@@ -415,7 +415,7 @@ fn shown_side(mode: Mode, kind: RowKind, side: Side) -> Side {
 fn cue(kind: RowKind, side: Side) -> Option<Cue> {
     match (kind, side) {
         (RowKind::Removed, _) | (RowKind::Modified, Side::Old) => Some(Cue::Removed),
-        (RowKind::Added, _) | (RowKind::Modified, Side::New) => Some(Cue::Added),
+        (RowKind::Added | RowKind::Merged, _) | (RowKind::Modified, Side::New) => Some(Cue::Added),
         _ => None,
     }
 }
@@ -710,7 +710,7 @@ fn text_cell(
                 @when {let Some(bg) = bg} { bg={bg} }
                 @when {env.accessible} {
                     accessibility_role={Role::ListItem}
-                    aria-label={line.layout.text().to_string()}
+                    aria-label={line.label()}
                     aria-description={kind.description()}
                     aria-valuetext={match (mode, paint.numbers()) {
                         (Mode::Unified, [o, n]) if o != 0 && n != 0 => {
@@ -730,6 +730,7 @@ fn text_cell(
                                 line,
                                 shown,
                                 bg,
+                                kind == RowKind::Reflowed,
                                 &search,
                                 selected,
                                 pad,
@@ -758,6 +759,7 @@ fn paint_text(
     line: &LinePaint,
     side: Side,
     bg: Option<Color>,
+    dim: bool,
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
     pad: f32,
@@ -774,20 +776,36 @@ fn paint_text(
     // A long line's layout holds only its window, which starts this far in:
     // from the origin the cell is laid out at, in f64 until it is small.
     let window_x = (line.window.map_or(0.0, |w| w.x) - origin) as f32;
+    let removed = |i: usize| line.removed_spans.get(i).copied().unwrap_or(false);
     paint::line(
         scene,
         (bounds.x + pad + window_x, bounds.y),
         &line.layout,
         {
             let tones = colors.tones_on(bg);
-            line.tones.iter().map(|&k| tones[k as usize]).collect()
+            line.tones
+                .iter()
+                .enumerate()
+                .map(|(i, &k)| {
+                    if removed(i) {
+                        colors.del_text
+                    } else if dim {
+                        colors.muted
+                    } else {
+                        tones[k as usize]
+                    }
+                })
+                .collect()
         },
         &line.words,
+        &line.struck,
         search,
         selected,
         LineColors {
-            text: colors.text,
+            text: if dim { colors.muted } else { colors.text },
             word,
+            struck: colors.del_word,
+            strike: colors.del_marker,
             search: colors.search_match,
             search_active: colors.search_active,
             search_outline: colors.search_outline,

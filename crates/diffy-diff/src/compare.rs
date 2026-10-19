@@ -8,6 +8,7 @@
 
 use std::ops::Range;
 
+use crate::merge::merge_pair;
 use crate::model::{BlockKind, DiffDocument, Side};
 use crate::myers::{diff, intern};
 use crate::projection::NONE;
@@ -79,6 +80,9 @@ pub(crate) enum Step {
     Removed(u32),
     Added(u32),
     Paired(u32, u32),
+    Merged(u32, u32),
+    Hidden(u32),
+    Reflowed(u32),
     /// Old and new lines equal under the whitespace policy.
     Equivalent(u32, u32),
 }
@@ -128,9 +132,12 @@ impl Comparison {
                         let olds = b.old_store[bi]..b.old_store[bi] + b.old_len[bi];
                         let news = b.new_store[bi]..b.new_store[bi] + b.new_len[bi];
                         let lines = (b.old_line[bi] - 1, b.new_line[bi] - 1);
-                        if rows.is_empty()
-                            || !out.align_structural(rows, lines, olds.clone(), news.clone())
+                        if !rows.is_empty()
+                            && out.align_structural(rows, lines, olds.clone(), news.clone())
                         {
+                            out.merge_pairs(doc, file, start as usize);
+                            out.fold_reflows(doc, file, start as usize);
+                        } else {
                             let (h, l) = out.align_block(old, new, olds, news, &mut keys);
                             hidden += h;
                             limited += l;
@@ -253,6 +260,54 @@ impl Comparison {
         true
     }
 
+    fn merge_pairs(&mut self, doc: &DiffDocument, file: u32, start: usize) {
+        let (old, new) = (doc.text(file, Side::Old), doc.text(file, Side::New));
+        for step in &mut self.steps[start..] {
+            let Step::Paired(o, n) = *step else {
+                continue;
+            };
+            let merged = merge_pair(
+                old.display_line(o).unwrap_or(""),
+                new.display_line(n).unwrap_or(""),
+                doc.semantic_spans(file, Side::Old, o),
+                doc.semantic_spans(file, Side::New, n),
+            );
+            if merged.is_some() {
+                *step = Step::Merged(o, n);
+            }
+        }
+    }
+
+    fn fold_reflows(&mut self, doc: &DiffDocument, file: u32, start: usize) {
+        let block = self.steps.split_off(start);
+        let mut at = 0;
+        while at < block.len() {
+            let end = block[at..]
+                .iter()
+                .position(|s| matches!(s, Step::Equivalent(..) | Step::Merged(..)))
+                .map_or(block.len(), |p| at + p);
+            let run = &block[at..end];
+            let uneven = run
+                .iter()
+                .any(|s| matches!(s, Step::Removed(_) | Step::Added(_)));
+            if uneven && reflowed(doc, file, run) {
+                for &step in run {
+                    let (old, new) = step.lines();
+                    if old != NONE {
+                        self.steps.push(Step::Hidden(old));
+                    }
+                    if new != NONE {
+                        self.steps.push(Step::Reflowed(new));
+                    }
+                }
+            } else {
+                self.steps.extend_from_slice(run);
+            }
+            self.steps.extend(block.get(end).copied());
+            at = end + 1;
+        }
+    }
+
     /// Appends the steps of a run of removed lines replaced by added
     /// lines. Returns whether similarity pairing hit its budget.
     fn pair_run(
@@ -361,11 +416,47 @@ impl Step {
     /// Old and new store index, [`NONE`] for a missing side.
     pub(crate) fn lines(self) -> (u32, u32) {
         match self {
-            Self::Removed(o) => (o, NONE),
-            Self::Added(n) => (NONE, n),
-            Self::Paired(o, n) | Self::Equivalent(o, n) => (o, n),
+            Self::Removed(o) | Self::Hidden(o) => (o, NONE),
+            Self::Added(n) | Self::Reflowed(n) => (NONE, n),
+            Self::Paired(o, n) | Self::Merged(o, n) | Self::Equivalent(o, n) => (o, n),
         }
     }
+}
+
+fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
+    let (old, new) = (doc.text(file, Side::Old), doc.text(file, Side::New));
+    let mut old_text = String::new();
+    let mut new_text = String::new();
+    for &step in run {
+        let (o, n) = step.lines();
+        if o != NONE {
+            let marked = doc
+                .semantic_spans(file, Side::Old, o)
+                .iter()
+                .any(|s| s.intensity != crate::semantic::ChangeIntensity::UnchangedContext);
+            if marked {
+                return false;
+            }
+            old_text.extend(
+                old.display_line(o)
+                    .unwrap_or("")
+                    .chars()
+                    .filter(|c| !c.is_whitespace()),
+            );
+        }
+        if n != NONE {
+            let line = new.display_line(n).unwrap_or("");
+            let spans = doc.semantic_spans(file, Side::New, n);
+            new_text.extend(line.char_indices().filter_map(|(at, c)| {
+                let added = spans.iter().any(|s| {
+                    s.intensity != crate::semantic::ChangeIntensity::UnchangedContext
+                        && (s.start as usize..s.end as usize).contains(&at)
+                });
+                (!added && !c.is_whitespace()).then_some(c)
+            }));
+        }
+    }
+    !old_text.is_empty() && old_text == new_text
 }
 
 /// A broken [`Comparison`] invariant.

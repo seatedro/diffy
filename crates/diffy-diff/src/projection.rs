@@ -54,6 +54,8 @@ pub enum RowKind {
     Added,
     /// Side by side only: a removed line beside the added line it became.
     Modified,
+    Merged,
+    Reflowed,
 }
 
 impl RowKind {
@@ -61,7 +63,12 @@ impl RowKind {
     pub const fn is_line(self) -> bool {
         matches!(
             self,
-            Self::Context | Self::Removed | Self::Added | Self::Modified
+            Self::Context
+                | Self::Removed
+                | Self::Added
+                | Self::Modified
+                | Self::Merged
+                | Self::Reflowed
         )
     }
 
@@ -74,7 +81,8 @@ impl RowKind {
             Self::Context => "unchanged",
             Self::Removed => "removed",
             Self::Added => "added",
-            Self::Modified => "changed",
+            Self::Modified | Self::Merged => "changed",
+            Self::Reflowed => "reformatted",
         }
     }
 }
@@ -299,7 +307,7 @@ impl Projection {
     pub fn line_pair(&self, row: u32) -> Option<LinePair> {
         let r = row as usize;
         let (old, new) = match *self.kind.get(r)? {
-            RowKind::Modified => (self.old[r], self.new[r]),
+            RowKind::Modified | RowKind::Merged => (self.old[r], self.new[r]),
             RowKind::Removed => (self.old[r], self.pair[r]),
             RowKind::Added => (self.pair[r], self.new[r]),
             _ => return None,
@@ -357,7 +365,9 @@ impl Projection {
                 gap.id.hunk.map_or(u64::from(u32::MAX), u64::from)
             }
             RowKind::Removed | RowKind::Modified => u64::from(self.old[r]),
-            RowKind::Context | RowKind::Added => u64::from(self.new[r]),
+            RowKind::Context | RowKind::Added | RowKind::Merged | RowKind::Reflowed => {
+                u64::from(self.new[r])
+            }
         };
         (tag << 60) | (file << 38) | (index & 0x3F_FFFF_FFFF)
     }
@@ -489,9 +499,9 @@ impl Projection {
             for &step in steps {
                 let (old, new) = step.lines();
                 let kind = match step {
-                    Step::Removed(_) => RowKind::Removed,
-                    Step::Added(_) => RowKind::Added,
-                    Step::Paired(..) => RowKind::Modified,
+                    Step::Removed(_) | Step::Hidden(_) => RowKind::Removed,
+                    Step::Added(_) | Step::Reflowed(_) => RowKind::Added,
+                    Step::Paired(..) | Step::Merged(..) => RowKind::Modified,
                     Step::Equivalent(..) => RowKind::Context,
                 };
                 self.push(kind, file, hunk, old, new, NONE);
@@ -502,7 +512,15 @@ impl Projection {
         while start < steps.len() {
             let end = steps[start..]
                 .iter()
-                .position(|s| matches!(s, Step::Equivalent(..)))
+                .position(|s| {
+                    matches!(
+                        s,
+                        Step::Equivalent(..)
+                            | Step::Merged(..)
+                            | Step::Hidden(_)
+                            | Step::Reflowed(_)
+                    )
+                })
                 .map_or(steps.len(), |at| start + at);
             let run = &steps[start..end];
             for &step in run {
@@ -517,8 +535,17 @@ impl Projection {
                     self.push(RowKind::Added, file, hunk, NONE, new, pair);
                 }
             }
-            if let Some(&Step::Equivalent(old, new)) = steps.get(end) {
-                self.push(RowKind::Context, file, hunk, old, new, NONE);
+            match steps.get(end) {
+                Some(&Step::Equivalent(old, new)) => {
+                    self.push(RowKind::Context, file, hunk, old, new, NONE);
+                }
+                Some(&Step::Merged(old, new)) => {
+                    self.push(RowKind::Merged, file, hunk, old, new, NONE);
+                }
+                Some(&Step::Reflowed(new)) => {
+                    self.push(RowKind::Reflowed, file, hunk, NONE, new, NONE);
+                }
+                _ => {}
             }
             start = end + 1;
         }
@@ -616,9 +643,9 @@ impl Projection {
             }
             let lines = (self.old[row] != NONE, self.new[row] != NONE);
             let shape = match self.kind[row] {
-                RowKind::Context | RowKind::Modified => lines == (true, true),
+                RowKind::Context | RowKind::Modified | RowKind::Merged => lines == (true, true),
                 RowKind::Removed => lines == (true, false),
-                RowKind::Added => lines == (false, true),
+                RowKind::Added | RowKind::Reflowed => lines == (false, true),
                 RowKind::Gap => self.hunk[row] < self.gaps.len() as u32,
                 RowKind::FileHeader | RowKind::HunkHeader => lines == (false, false),
             };

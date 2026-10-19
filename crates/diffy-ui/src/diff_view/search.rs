@@ -407,8 +407,18 @@ impl DiffViewState {
                     break;
                 }
                 let (from, to) = (hit.range.start as usize, hit.range.end as usize);
-                let range =
-                    from.clamp(start, start + len) - start..to.clamp(start, start + len) - start;
+                let merge = paint.sides[slot as usize]
+                    .as_ref()
+                    .and_then(|l| l.merge.as_ref());
+                let range = match merge {
+                    Some(merge) => match (merge.to_layout(side, from), merge.to_layout(side, to)) {
+                        (Some(a), Some(b)) => a..b,
+                        _ => continue,
+                    },
+                    None => {
+                        from.clamp(start, start + len) - start..to.clamp(start, start + len) - start
+                    }
+                };
                 if range.start < range.end && !marks[slot as usize].iter().any(|m| m.range == range)
                 {
                     marks[slot as usize].push(SearchMark {

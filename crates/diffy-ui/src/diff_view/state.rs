@@ -571,7 +571,11 @@ impl DiffViewState {
             t if t == RowKind::Removed as u64 || t == RowKind::Modified as u64 => {
                 row_of(Some(Side::Old))
             }
-            t if t == RowKind::Context as u64 || t == RowKind::Added as u64 => {
+            t if t == RowKind::Context as u64
+                || t == RowKind::Added as u64
+                || t == RowKind::Merged as u64
+                || t == RowKind::Reflowed as u64 =>
+            {
                 row_of(Some(Side::New))
             }
             _ => {

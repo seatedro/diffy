@@ -6,15 +6,16 @@ use std::sync::Arc;
 
 use diffy_diff::{
     ChangeIntensity, DiffDocument, FileStatus, InlineDetail, InlineMode, InlineOptions, Mode,
-    RowKind, Side, line_detail,
+    RowKind, Side, line_detail, merge_pair,
 };
+use diffy_syntax::HighlightKind;
 use quark_render::FontKind;
-use quark_text::{LayoutCache, TextParams, TextStyle, TextSystem};
+use quark_text::{LayoutCache, TextParams, TextSpan, TextStyle, TextSystem};
 use quark_ui::virtual_list::VariableList;
 
 use super::prepared::{
-    Columns, FileFact, FrameRow, LineDetail, LinePaint, LineWindow, Metrics, PreparedKind,
-    RowPaint, ViewFrame, WordDetail,
+    Columns, FileFact, FrameRow, LineDetail, LineMerge, LinePaint, LineWindow, Metrics,
+    PreparedKind, RowPaint, ViewFrame, WordDetail,
 };
 use super::prepared_update::file_facts;
 use super::state::{RowRef, Segment, source_line};
@@ -54,6 +55,18 @@ pub(crate) fn floor_boundary(text: &str, byte: usize) -> usize {
         at -= 1;
     }
     at
+}
+
+fn plain_span(range: Range<usize>) -> TextSpan {
+    TextSpan {
+        range,
+        weight: None,
+        style: None,
+        kind: None,
+        size: None,
+        letter_spacing: None,
+        keep_together: false,
+    }
 }
 
 /// `@@ -a,b +c,d @@ section` of a hunk.
@@ -229,6 +242,13 @@ impl DiffViewState {
                 RowRef::Line { seg, row } => {
                     let selected = [Side::Old, Side::New].map(|side| {
                         let line = paint.sides[side as usize].as_ref()?;
+                        if let Some(merge) = &line.merge {
+                            let (lo, hi) =
+                                self.row_selection(ordered, (seg, row), side, merge.source_len())?;
+                            let lo = merge.to_layout(Side::New, lo)?;
+                            let hi = merge.to_layout(Side::New, hi)?;
+                            return (lo < hi).then_some((lo, hi));
+                        }
                         // In line bytes, then in the bytes of a window's text.
                         let start = line.window.map_or(0, |w| w.start);
                         let len = line.layout.text().len();
@@ -691,6 +711,15 @@ impl DiffViewState {
                 }
                 paint.title = title.into();
             }
+            RowKind::Merged
+                if let Some(line) = self.merged_line(seg, row, text, layouts, scale, columns) =>
+            {
+                for side in [Side::Old, Side::New] {
+                    paint.source_lines[side as usize] =
+                        p.line(row, side).map(|i| source_line(doc, file, side, i));
+                }
+                paint.sides[Side::New as usize] = Some(line);
+            }
             _ => {
                 let m = self.metrics();
                 let (words, word_detail) = self.word_ranges(segment, row);
@@ -753,11 +782,112 @@ impl DiffViewState {
                         detail,
                         word_detail,
                         window,
+                        struck: Vec::new(),
+                        removed_spans: Arc::from([]),
+                        merge: None,
                     });
                 }
             }
         }
         paint
+    }
+
+    fn merged_line(
+        &self,
+        seg: usize,
+        row: u32,
+        text: &mut TextSystem,
+        layouts: &mut LayoutCache,
+        scale: f32,
+        columns: &Columns,
+    ) -> Option<LinePaint> {
+        let segment = &self.segments[seg];
+        let (doc, p) = (&segment.doc, &segment.projection);
+        let file = p.file[row as usize];
+        let index = [p.line(row, Side::Old)?, p.line(row, Side::New)?];
+        let lines = [Side::Old, Side::New].map(|side| {
+            doc.text(file, side)
+                .display_line(index[side as usize])
+                .unwrap_or("")
+        });
+        let spans = [Side::Old, Side::New].map(|side| {
+            let line = source_line(doc, file, side, index[side as usize]);
+            doc.semantic_spans(file, side, line)
+        });
+        let pieces = merge_pair(lines[0], lines[1], spans[0], spans[1])?;
+        let syntax = self.syntax_of(seg, file);
+        let mut composed = String::new();
+        let mut text_spans = Vec::new();
+        let mut tones = Vec::new();
+        let mut removed = Vec::new();
+        let mut words = Vec::new();
+        let mut struck = Vec::new();
+        let mut merge = LineMerge::default();
+        let mut previous_old: Option<usize> = None;
+        for piece in pieces {
+            if let Some(end) = previous_old.take()
+                && piece.side == Side::New
+                && piece.changed
+            {
+                let at = composed.len();
+                composed.push(' ');
+                merge.push(at..composed.len(), Side::Old, end..end);
+            }
+            let side = piece.side as usize;
+            let range = piece.range.start as usize..piece.range.end as usize;
+            let start = composed.len();
+            composed.push_str(&lines[side][range.clone()]);
+            let shown = start..composed.len();
+            if piece.side == Side::Old {
+                text_spans.push(plain_span(shown.clone()));
+                tones.push(HighlightKind::Normal);
+                removed.push(true);
+            } else if let Some((syntax, file)) = &syntax {
+                let base = doc
+                    .text(*file, Side::New)
+                    .display_range(index[side])
+                    .map_or(0, |r| r.start);
+                let (piece_spans, piece_tones) =
+                    syntax.spans(*file, Side::New, base + range.start..base + range.end);
+                for (span, tone) in piece_spans.into_iter().zip(piece_tones.iter()) {
+                    text_spans.push(TextSpan {
+                        range: span.range.start + start..span.range.end + start,
+                        ..span
+                    });
+                    tones.push(*tone);
+                    removed.push(false);
+                }
+            }
+            if piece.side == Side::Old {
+                previous_old = Some(range.end);
+            }
+            match (piece.side, piece.changed) {
+                (Side::Old, _) => struck.push(shown.clone()),
+                (Side::New, true) => words.push(shown.clone()),
+                (Side::New, false) => {}
+            }
+            merge.push(shown, piece.side, range);
+        }
+        let m = self.metrics();
+        let params = TextParams::new(composed, self.text_style())
+            .spans(text_spans)
+            .scale_factor(scale)
+            .wrap_width(self.style.wrap.then(|| {
+                super::presentation::wrap_width(columns, Side::New, &m, &self.presentation)
+            }));
+        let layout = layouts.layout(text, &params).ok()?;
+        Some(LinePaint {
+            layout,
+            tones: tones.into(),
+            words,
+            detail: LineDetail::Complete,
+            word_detail: WordDetail::Done(InlineDetail::Exact),
+            window: None,
+            struck,
+            removed_spans: removed.into(),
+            merge: Some(Arc::new(merge)),
+            whole: false,
+        })
     }
 
     /// Changed words of `row`'s lines, by side, and how complete they are:

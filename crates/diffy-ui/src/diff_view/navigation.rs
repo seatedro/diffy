@@ -134,8 +134,15 @@ impl DiffViewState {
             RowRef::Line { seg, row } => {
                 let p = &state.segments[seg as usize].projection;
                 let kind = p.kind[row as usize];
-                matches!(kind, RowKind::Added | RowKind::Removed | RowKind::Modified)
-                    .then_some((seg, row, kind))
+                matches!(
+                    kind,
+                    RowKind::Added
+                        | RowKind::Removed
+                        | RowKind::Modified
+                        | RowKind::Merged
+                        | RowKind::Reflowed
+                )
+                .then_some((seg, row, kind))
             }
             _ => None,
         };

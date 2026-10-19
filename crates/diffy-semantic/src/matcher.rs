@@ -13,6 +13,7 @@ const MIN_SIMILARITY: f32 = 0.3;
 const TEXT_SIMILARITY: f32 = 0.5;
 const SIMILAR_DEPTH: usize = 2;
 const CLOCK_STRIDE: u64 = 1 << 16;
+const WIDEN_SIMILARITY: f32 = 0.5;
 
 pub(crate) struct Matching {
     pub(crate) partner: [Vec<u32>; 2],
@@ -198,21 +199,62 @@ impl Matcher<'_, '_> {
             (Some(_), None) => true,
             _ => false,
         };
-        if let Some(s) = into_new.filter(|_| new_wins) {
+        if let Some(mut s) = into_new.filter(|_| new_wins) {
             let children = self.trees[1].children(s.list);
+            s.wanted = self.widen(0, a, s.wanted, 1, &children);
             self.gap(&a[..s.wanted.start], &b[..s.item])?;
             self.seq(&a[s.wanted.clone()], &children)?;
             self.gap(&a[s.wanted.end..], &b[s.item + 1..])?;
             return Ok(true);
         }
-        if let Some(s) = into_old {
+        if let Some(mut s) = into_old {
             let children = self.trees[0].children(s.list);
+            s.wanted = self.widen(1, b, s.wanted, 0, &children);
             self.gap(&a[..s.item], &b[..s.wanted.start])?;
             self.seq(&children, &b[s.wanted.clone()])?;
             self.gap(&a[s.item + 1..], &b[s.wanted.end..])?;
             return Ok(true);
         }
         Ok(false)
+    }
+
+    fn widen(
+        &self,
+        side: usize,
+        items: &[u32],
+        range: Range<usize>,
+        other: usize,
+        children: &[u32],
+    ) -> Range<usize> {
+        let taken: Vec<u64> = items.iter().map(|&n| self.hash(side, n)).collect();
+        let signatures: Vec<(u32, Vec<u64>)> = children
+            .iter()
+            .filter(|&&c| {
+                self.trees[other].is_list(c)
+                    && self.partner[other][c as usize] == NONE
+                    && !taken.contains(&self.hash(other, c))
+            })
+            .map(|&c| (c, self.signature(other, c)))
+            .collect();
+        let fits = |item: u32| {
+            let own = self.signature(side, item);
+            signatures.iter().any(|(c, signature)| {
+                let pairable = if side == 0 {
+                    self.pairable_lists(item, *c)
+                } else {
+                    self.pairable_lists(*c, item)
+                };
+                pairable && dice(&own, signature) >= WIDEN_SIMILARITY
+            })
+        };
+        let (mut start, mut end) = (range.start, range.end);
+        while start > 0 && fits(items[start - 1]) {
+            start -= 1;
+        }
+        while end < items.len() && fits(items[end]) {
+            end += 1;
+        }
+        start..end
     }
 
     fn wrapper(

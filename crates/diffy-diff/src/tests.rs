@@ -984,3 +984,65 @@ fn report_large_inputs() {
         );
     }
 }
+
+fn reflow_doc(old_marks: &[crate::SemanticSpan]) -> DiffDocument {
+    use crate::{AlignedRow, ChangeIntensity, DocumentBuilder, FileMeta, SemanticSpan};
+    let old = TextStore::new("a();\ncall(x, y);\nb();\n");
+    let new = TextStore::new("a();\ncall(\n    x,\n    y,\n);\nb();\n");
+    let mut builder = DocumentBuilder::new();
+    let mut file = builder.file(FileMeta::default(), SourceCoverage::Full, old, new);
+    file.structural(true);
+    file.hunk(0, 0).context(1).change(1, 4).context(1);
+    for (old, new) in [
+        (Some(0), Some(0)),
+        (Some(1), Some(1)),
+        (None, Some(2)),
+        (None, Some(3)),
+        (None, Some(4)),
+        (Some(2), Some(5)),
+    ] {
+        file.row(AlignedRow { old, new });
+    }
+    let comma = SemanticSpan {
+        start: 5,
+        end: 6,
+        intensity: ChangeIntensity::Novel,
+    };
+    file.spans(Side::New, 3, &[comma]);
+    if !old_marks.is_empty() {
+        file.spans(Side::Old, 1, old_marks);
+    }
+    file.finish().unwrap();
+    builder.build()
+}
+
+fn unified_kinds(doc: &DiffDocument) -> Vec<RowKind> {
+    let comparison = Comparison::new(doc, ComparisonOptions::default());
+    let p = Projection::with_comparison(doc, Mode::Unified, &Expansion::new(doc), &comparison);
+    p.verify_integrity(doc).unwrap();
+    (0..p.len())
+        .map(|r| p.kind[r as usize])
+        .filter(|k| k.is_line())
+        .collect()
+}
+
+#[test]
+fn a_reflowed_call_shows_only_its_new_lines() {
+    use RowKind::{Context, Reflowed};
+    assert_eq!(
+        unified_kinds(&reflow_doc(&[])),
+        [Context, Reflowed, Reflowed, Reflowed, Reflowed, Context]
+    );
+}
+
+#[test]
+fn a_reflow_that_also_removes_a_token_keeps_the_old_line() {
+    let removed = crate::SemanticSpan {
+        start: 8,
+        end: 9,
+        intensity: crate::ChangeIntensity::Novel,
+    };
+    let kinds = unified_kinds(&reflow_doc(&[removed]));
+    assert!(kinds.contains(&RowKind::Removed));
+    assert!(!kinds.contains(&RowKind::Reflowed));
+}

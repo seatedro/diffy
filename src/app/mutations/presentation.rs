@@ -147,7 +147,7 @@ pub fn hunk_controls(target: &HunkTarget, buckets: &[ChangeBucket]) -> Vec<Contr
                     format!("{key}.discard"),
                     "Discard hunk",
                     MutationsAction::DiscardHunkAt(target.clone()),
-                    Tone::Destructive,
+                    Tone::Ghost,
                 ),
             ],
             ChangeBucket::Staged => vec![Control::new(
@@ -166,7 +166,7 @@ pub fn hunk_controls(target: &HunkTarget, buckets: &[ChangeBucket]) -> Vec<Contr
                 format!("{key}.discard"),
                 "Discard hunk",
                 MutationsAction::DiscardHunkAt(target.clone()),
-                Tone::Destructive,
+                Tone::Ghost,
             )],
             ChangeBucket::Conflicted => Vec::new(),
         };

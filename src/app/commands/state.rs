@@ -781,7 +781,7 @@ impl CommandsController {
                 });
             }
         }
-        self.focus(Some(SETTINGS));
+        self.focus(Some(SETTINGS_SEARCH));
         Reduction::changed()
     }
 

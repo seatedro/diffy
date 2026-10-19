@@ -381,7 +381,7 @@ fn card(rows: Vec<AnyElement>, theme: &Theme) -> AnyElement {
     view! {
         <div
             class="flex-col w-full shrink-0 overflow-hidden"
-            bg={tc.surface}
+            bg={tc.editor_surface}
             border={tc.border_variant}
             rounded={tokens::scaled(Rad::XL, scale)}
         >
@@ -393,10 +393,13 @@ fn card(rows: Vec<AnyElement>, theme: &Theme) -> AnyElement {
 fn setting_row(item: &Item, control: AnyElement, last: bool, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
+    let stacked = item.control == Control::Size;
     view! {
         <div
-            class="flex-row items-center w-full"
-            gap={tokens::scaled(Sp::LG, scale)}
+            class="w-full"
+            @when {stacked} { class="flex-col" }
+            @when {!stacked} { class="flex-row items-center" }
+            gap={tokens::scaled(if stacked { Sp::SM } else { Sp::LG }, scale)}
             px={tokens::scaled(Sp::MD, scale)}
             py={tokens::scaled(Sp::MD, scale)}
             @when {!last} { border_b={tc.border_variant} }
@@ -715,7 +718,7 @@ fn theme_button(settings: &Settings, theme: &Theme) -> AnyElement {
 fn size_slider(settings: &Settings, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
-    let width = tokens::scaled(Layout::SETTINGS_SLIDER_W, scale);
+    let width = tokens::scaled(Layout::SETTINGS_SHEET_W, scale);
     let (min, max) = (SIZE_STOPS[0], SIZE_STOPS[SIZE_STOPS.len() - 1]);
     let control = slider(
         "settings.interface-size",
@@ -727,14 +730,15 @@ fn size_slider(settings: &Settings, theme: &Theme) -> AnyElement {
     )
     .step(5.0)
     .width(width);
+    let control = div().flex_row().w_full().child(control);
     let stops: Vec<AnyElement> = SIZE_STOPS
         .iter()
         .map(|stop| view! { <text size={TextStyle::Caption.font_size(theme)} class="font-mono" color={tc.text_muted}>{stop.to_string()}</text> })
         .collect();
     view! {
-        <div class="flex-col shrink-0" w={width} gap={tokens::scaled(Sp::XXS, scale)}>
+        <div class="flex-col w-full" gap={tokens::scaled(Sp::XXS, scale)}>
             {control}
-            <div class="flex-row items-center justify-between w-full">{...stops}</div>
+            <div class="flex-row items-center justify-between w-full" pr={tokens::scaled(Sp::XXL, scale)}>{...stops}</div>
         </div>
     }
 }

@@ -16,7 +16,7 @@ use super::harness::{self, effects, no_args, startup};
 use super::state::{CONFIRM_ACCEPT, CONFIRM_CANCEL};
 use super::{CommandsController, LayerKind, PlatformRequest};
 use crate::app::shell::Slot;
-use crate::app::text_targets::{self, PICKER, SETTINGS, SIDEBAR, TextCx, TextHost};
+use crate::app::text_targets::{self, PICKER, SETTINGS_SEARCH, SIDEBAR, TextCx, TextHost};
 use crate::contracts::commands::{
     CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
     RefPickerRequest, SettingsSnapshot, ToastUpdate,
@@ -429,7 +429,14 @@ fn settings_open_from_the_shortcut_and_escape_returns_focus() {
     let filter = ui.focus();
     ui.key("mod+,");
     ui.find(By::role_name(Role::Dialog, "Settings"));
-    assert_eq!(ui.focus(), Some(SETTINGS));
+    assert_eq!(ui.focus(), Some(SETTINGS_SEARCH));
+    ui.key("escape");
+    assert!(
+        ui.try_find(By::role_name(Role::Dialog, "Settings"))
+            .is_none()
+    );
+    assert_eq!(ui.focus(), filter);
+    ui.key("mod+,");
     ui.find(By::role_name(Role::Navigation, "Files"));
 
     ui.click_node(By::role_name(Role::Tab, "Diff"));

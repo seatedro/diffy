@@ -1415,7 +1415,7 @@ fn separator(
                 aria-label={paint.title.to_string()}
             }
         >
-            <div w={gutter_w} h={height} class="flex-row items-center justify-center shrink-0" gap={pad * 0.25}>
+            <div min_w={gutter_w} h={height} px={pad * 0.5} class="flex-row items-center justify-center shrink-0" gap={pad * 0.25}>
                 if let Some(gap) = controls {
                     for (reveal, icon, label) in gap_controls(gap) {
                         {expand_button(gap, reveal, icon, label, height, colors, env, on_event)}

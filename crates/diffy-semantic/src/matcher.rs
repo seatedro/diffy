@@ -207,8 +207,12 @@ impl Matcher<'_, '_> {
     }
 
     fn splice(&mut self, a: &[u32], b: &[u32], similar: bool) -> Result<bool, Fallback> {
-        let into_new = self.wrapper(1, b, 0, a, similar)?;
-        let into_old = self.wrapper(0, a, 1, b, similar)?;
+        let into_new = self
+            .wrapper(1, b, 0, a, similar)?
+            .filter(|s| !self.twin(1, b[s.item], 0, a, &s.wanted));
+        let into_old = self
+            .wrapper(0, a, 1, b, similar)?
+            .filter(|s| !self.twin(0, a[s.item], 1, b, &s.wanted));
         let new_wins = match (&into_new, &into_old) {
             (Some(n), Some(o)) => n.score >= o.score,
             (Some(_), None) => true,
@@ -231,6 +235,27 @@ impl Matcher<'_, '_> {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    fn twin(
+        &self,
+        side: usize,
+        wrapper: u32,
+        other: usize,
+        items: &[u32],
+        wanted: &Range<usize>,
+    ) -> bool {
+        let own = self.signature(side, wrapper);
+        items.iter().enumerate().any(|(index, &item)| {
+            let pairable = if side == 0 {
+                self.pairable_lists(wrapper, item)
+            } else {
+                self.pairable_lists(item, wrapper)
+            };
+            !wanted.contains(&index)
+                && pairable
+                && dice(&own, &self.signature(other, item)) >= WIDEN_SIMILARITY
+        })
     }
 
     fn widen(

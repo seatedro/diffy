@@ -88,6 +88,18 @@ fn show(args: ShowArgs) -> Result<(), String> {
     };
     let run = engine::run(args.engine, &path, &old, &new)?;
     print!("{}", render::render(&run.doc, run.fallback.as_deref()));
+    if let Some(semantics) = run.doc.semantics(0) {
+        for item in semantics.outline() {
+            println!(
+                "outline {:?} {} {} {} {:?}",
+                item.side,
+                item.line + 1,
+                item.kind,
+                item.name,
+                item.change
+            );
+        }
+    }
     let (_, violations) = check::check(&run.doc);
     println!("\n{:.2} ms", run.micros as f64 / 1000.0);
     for violation in &violations {

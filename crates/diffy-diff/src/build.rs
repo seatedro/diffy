@@ -4,7 +4,9 @@ use std::sync::Arc;
 use crate::compute::hunk_groups;
 use crate::model::{BlockKind, DiffDocument, FileMeta, FileStatus, IntegrityError, Side};
 use crate::myers::Change;
-use crate::semantic::{AlignedRow, FileSemantics, LineSpans, SemanticError, SemanticSpan};
+use crate::semantic::{
+    AlignedRow, FileSemantics, LineSpans, OutlineItem, SemanticError, SemanticSpan,
+};
 use crate::source::SourceCoverage;
 use crate::text::TextStore;
 
@@ -84,6 +86,7 @@ impl DocumentBuilder {
             new,
             hunks: Vec::new(),
             structural: false,
+            outline: Vec::new(),
             spans: [Vec::new(), Vec::new()],
             error: None,
         }
@@ -114,6 +117,7 @@ pub struct FileBuilder<'a> {
     new: TextStore,
     hunks: Vec<HunkDraft>,
     structural: bool,
+    outline: Vec<OutlineItem>,
     spans: [Vec<(u32, Vec<SemanticSpan>)>; 2],
     error: Option<BuildError>,
 }
@@ -163,6 +167,11 @@ impl FileBuilder<'_> {
 
     pub fn structural(&mut self, structural: bool) -> &mut Self {
         self.structural = structural;
+        self
+    }
+
+    pub fn outline(&mut self, items: Vec<OutlineItem>) -> &mut Self {
+        self.outline = items;
         self
     }
 
@@ -310,6 +319,7 @@ impl FileBuilder<'_> {
     fn semantics(&mut self) -> Result<Option<FileSemantics>, BuildError> {
         let mut semantics = FileSemantics {
             structural: self.structural,
+            outline: std::mem::take(&mut self.outline),
             ..FileSemantics::default()
         };
         for hunk in &mut self.hunks {

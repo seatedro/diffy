@@ -71,7 +71,10 @@ pub use projection::{
     REVEAL_STEP, Reveal, RowKind,
 };
 pub use remap::{LineMap, RemapError, SourceRemap};
-pub use semantic::{AlignedRow, ChangeIntensity, FileSemantics, SemanticError, SemanticSpan};
+pub use semantic::{
+    AlignedRow, ChangeIntensity, FileSemantics, ItemChange, OutlineItem, SemanticError,
+    SemanticSpan,
+};
 pub use session::{
     DiffSession, DiffUpdate, FileDiffSnapshot, FileId, Placeholder, Revision,
     SessionIntegrityError, Slot, SlotState, SourcePurpose, SourceRequest, UpdateError,

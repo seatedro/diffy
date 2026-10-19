@@ -6,7 +6,7 @@ use diffy_diff::{
     AlignedRow, ChangeIntensity, DiffDocument, DocumentBuilder, FileMeta, FileStatus, SemanticSpan,
     Side, SourceCoverage, TextStore,
 };
-use diffy_semantic::{Limits, Row};
+use diffy_semantic::{Limits, OutlineItem, Row};
 use diffy_syntax::{GrammarStore, LanguageId, legacy_pack};
 #[cfg(feature = "difftastic")]
 use vendored_difftastic::{
@@ -337,7 +337,7 @@ fn document_from_semantic(
     let chunks = sanitize(result, &old, &new);
     let structural =
         result.line_fallback_reason.is_none() && line_fallback_reason(&result.language).is_none();
-    document_from_rows(meta, old, new, chunks, structural)
+    document_from_rows(meta, old, new, chunks, structural, Vec::new())
 }
 
 pub fn document_from_native(
@@ -386,9 +386,10 @@ pub fn document_from_native_with(
         ..Limits::default()
     };
     match diffy_semantic::diff(&grammar, config, old.as_str(), new.as_str(), &limits) {
-        Ok(chunks) => {
-            let chunks = clean_rows(chunks, &old, &new);
-            Ok((document_from_rows(meta, old, new, chunks, true)?, None))
+        Ok(diff) => {
+            let chunks = clean_rows(diff.chunks, &old, &new);
+            let doc = document_from_rows(meta, old, new, chunks, true, diff.outline)?;
+            Ok((doc, None))
         }
         Err(fallback) => line_diff(fallback.to_string()),
     }
@@ -429,6 +430,7 @@ fn document_from_rows(
     new: TextStore,
     chunks: Vec<Vec<Row>>,
     structural: bool,
+    outline: Vec<OutlineItem>,
 ) -> Result<DiffDocument> {
     let segments = canonical_segments(&chunks, &old, &new);
     let hunks = hunk_ranges(&segments);
@@ -466,6 +468,7 @@ fn document_from_rows(
     }
     build(DocumentBuilder::new(), meta, old, new, |file| {
         file.structural(structural);
+        file.outline(outline);
         for (hunk, hunk_rows) in hunks.iter().zip(rows) {
             file.hunk(hunk.old.start, hunk.new.start);
             for segment in &segments[hunk.segments.clone()] {
@@ -832,7 +835,7 @@ mod tests {
     fn rows_document(old: &str, new: &str, chunks: Vec<Vec<Row>>) -> DiffDocument {
         let (old, new) = (TextStore::new(old), TextStore::new(new));
         let chunks = clean_rows(chunks, &old, &new);
-        document_from_rows(meta(), old, new, chunks, true).unwrap()
+        document_from_rows(meta(), old, new, chunks, true, Vec::new()).unwrap()
     }
 
     fn meta() -> FileMeta {

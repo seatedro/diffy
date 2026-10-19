@@ -1,5 +1,6 @@
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::model::{DiffDocument, Side, lines_before};
 
@@ -78,9 +79,26 @@ impl LineSpans {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ItemChange {
+    Added,
+    Removed,
+    Edited(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OutlineItem {
+    pub side: Side,
+    pub line: u32,
+    pub kind: Arc<str>,
+    pub name: Arc<str>,
+    pub change: ItemChange,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileSemantics {
     pub(crate) structural: bool,
+    pub(crate) outline: Vec<OutlineItem>,
     pub(crate) rows: Vec<AlignedRow>,
     pub(crate) hunk_rows: Vec<Range<u32>>,
     pub(crate) spans: [LineSpans; 2],
@@ -89,6 +107,10 @@ pub struct FileSemantics {
 impl FileSemantics {
     pub fn structural(&self) -> bool {
         self.structural
+    }
+
+    pub fn outline(&self) -> &[OutlineItem] {
+        &self.outline
     }
 
     pub fn rows(&self, local_hunk: u32) -> &[AlignedRow] {

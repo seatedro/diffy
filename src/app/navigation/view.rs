@@ -29,12 +29,15 @@ use crate::contracts::navigation::{
     NavigationAction, SelectedFile, SelectionOrigin, SidebarMode, SidebarTab,
 };
 use crate::contracts::shared::SharedContext;
+use crate::contracts::shared::SourceTarget;
 use crate::contracts::shell::{Action, LogicalFocus, ShellAction};
+use crate::contracts::viewport::interaction::InteractionAction;
 use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
 use crate::core::compare::CompareMode;
 use crate::core::ref_catalog::relative_age;
 use crate::core::vcs::model::{ChangeBucket, VcsChange};
 use diffy_diff::FileStatus;
+use diffy_diff::ItemChange;
 use quark_components::kbd;
 
 const OVERSCAN_ROWS: usize = 8;
@@ -377,6 +380,10 @@ fn files(
             Row::Section { bucket, files } => {
                 section_row(*bucket, *files, group_action(*bucket, cx), theme)
             }
+            Row::Item { file, item } => {
+                let file = &manifest.files[*file as usize];
+                item_row(file, *item, tree, theme)
+            }
         })
         .collect();
     view! {
@@ -579,6 +586,60 @@ fn file_row(
                 </div>
             })}
             {tools}
+        </div>
+    }
+}
+
+fn item_row(file: &ManifestFile, index: u32, tree: bool, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let Some(item) = file.outline.get(index as usize) else {
+        return view! { <div h={theme.metrics.ui_row_height.round()} /> };
+    };
+    let summary = match item.change {
+        ItemChange::Added => "added".to_owned(),
+        ItemChange::Removed => "removed".to_owned(),
+        ItemChange::Edited(1) => "1 edit".to_owned(),
+        ItemChange::Edited(n) => format!("{n} edits"),
+    };
+    let removed = item.change == ItemChange::Removed;
+    let target = SourceTarget {
+        file: file.key,
+        revision: file.revision,
+        side: item.side,
+        lines: item.line..item.line + 1,
+    };
+    let mono = TextStyle::MonoSmall.font_size(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let indent = tokens::scaled(Sp::LG, scale) + tokens::scaled(Layout::STATUS_BADGE, scale);
+    let label = format!("{} {}, {summary}", item.kind, item.name);
+    view! {
+        <div
+            class="relative flex-row items-center w-full shrink-0"
+            h={theme.metrics.ui_row_height.round()}
+            pl={tokens::scaled(Sp::SM, scale) + indent}
+            pr={tokens::scaled(Sp::SM, scale)}
+            gap={tokens::scaled(Sp::SM, scale)}
+            rounded={theme.metrics.control_radius}
+            hover_bg={tc.sidebar_row_hover}
+            cursor={CursorHint::Pointer}
+            key={format!("file:{}:item:{index}", file.key.0)}
+            id={format!("file:{}:item:{index}", file.key.0)}
+            accessibility_role={if tree { AccessibilityRole::TreeItem } else { AccessibilityRole::ListBoxOption }}
+            aria-label={label}
+            on:click={Action::from(InteractionAction::SetSourceSelection(Some(target)))}
+        >
+            <div class="flex-1 flex-row items-center overflow-hidden" min_w={0.0} gap={tokens::scaled(Sp::XS, scale)}>
+                <text size={mono} class="font-mono" color={tc.syntax_keyword}>{item.kind.to_string()}</text>
+                if removed {
+                    <text size={mono} class="font-mono truncate" strikethrough color={tc.text_muted}>{item.name.to_string()}</text>
+                } else {
+                    <text size={mono} class="font-mono truncate" color={tc.text}>{item.name.to_string()}</text>
+                }
+            </div>
+            <div class="shrink-0">
+                <text size={small} color={tc.text_muted}>{summary}</text>
+            </div>
         </div>
     }
 }

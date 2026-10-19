@@ -985,8 +985,11 @@ fn report_large_inputs() {
     }
 }
 
-fn reflow_doc(old_marks: &[crate::SemanticSpan]) -> DiffDocument {
-    use crate::{AlignedRow, ChangeIntensity, DocumentBuilder, FileMeta, SemanticSpan};
+fn reflow_doc(
+    old_marks: &[crate::SemanticSpan],
+    new_marks: &[(u32, crate::SemanticSpan)],
+) -> DiffDocument {
+    use crate::{AlignedRow, DocumentBuilder, FileMeta};
     let old = TextStore::new("a();\ncall(x, y);\nb();\n");
     let new = TextStore::new("a();\ncall(\n    x,\n    y,\n);\nb();\n");
     let mut builder = DocumentBuilder::new();
@@ -1003,17 +1006,22 @@ fn reflow_doc(old_marks: &[crate::SemanticSpan]) -> DiffDocument {
     ] {
         file.row(AlignedRow { old, new });
     }
-    let comma = SemanticSpan {
-        start: 5,
-        end: 6,
-        intensity: ChangeIntensity::Novel,
-    };
-    file.spans(Side::New, 3, &[comma]);
+    for (line, span) in new_marks {
+        file.spans(Side::New, *line, &[*span]);
+    }
     if !old_marks.is_empty() {
         file.spans(Side::Old, 1, old_marks);
     }
     file.finish().unwrap();
     builder.build()
+}
+
+fn novel(start: u32, end: u32) -> crate::SemanticSpan {
+    crate::SemanticSpan {
+        start,
+        end,
+        intensity: crate::ChangeIntensity::Novel,
+    }
 }
 
 fn unified_kinds(doc: &DiffDocument) -> Vec<RowKind> {
@@ -1029,20 +1037,22 @@ fn unified_kinds(doc: &DiffDocument) -> Vec<RowKind> {
 #[test]
 fn a_reflowed_call_shows_only_its_new_lines() {
     use RowKind::{Context, Reflowed};
+    let comma = [(3, novel(5, 6))];
     assert_eq!(
-        unified_kinds(&reflow_doc(&[])),
+        unified_kinds(&reflow_doc(&[], &comma)),
         [Context, Reflowed, Context]
     );
 }
 
 #[test]
 fn a_reflow_that_also_removes_a_token_keeps_the_old_line() {
-    let removed = crate::SemanticSpan {
-        start: 8,
-        end: 9,
-        intensity: crate::ChangeIntensity::Novel,
-    };
-    let kinds = unified_kinds(&reflow_doc(&[removed]));
+    let kinds = unified_kinds(&reflow_doc(&[novel(8, 9)], &[(3, novel(5, 6))]));
     assert!(kinds.contains(&RowKind::Removed));
     assert!(!kinds.contains(&RowKind::Reflowed));
+}
+
+#[test]
+fn new_code_inside_a_reflow_is_not_folded() {
+    let marks = [(2, novel(4, 6)), (3, novel(4, 6))];
+    assert!(!unified_kinds(&reflow_doc(&[], &marks)).contains(&RowKind::Reflowed));
 }

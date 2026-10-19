@@ -105,6 +105,9 @@ pub fn compare_result(
         .map(|(index, entry)| {
             let mut file = ManifestFile::from_entry(key_at(index), revision, entry);
             file.buckets.extend(entry.bucket);
+            if let Some(semantics) = output.document(index).and_then(|doc| doc.semantics(0)) {
+                file.outline = semantics.outline().into();
+            }
             file
         })
         .collect();

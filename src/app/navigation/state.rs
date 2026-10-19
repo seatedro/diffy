@@ -587,6 +587,9 @@ impl NavigationController {
                 self.filter.text(),
                 &self.expanded,
                 self.expanded_revision,
+                self.selected_key()
+                    .and_then(|key| manifest.files.iter().position(|f| f.key == key))
+                    .map(|i| i as u32),
             ),
             None => self.rows.invalidate(),
         }

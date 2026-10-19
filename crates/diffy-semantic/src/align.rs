@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use diffy_diff::{
-    ChangeIntensity, InlineDetail, InlineOptions, SemanticSpan, myers, paired_inline_diff,
+    ChangeIntensity, InlineDetail, InlineOptions, ItemChange, OutlineItem, SemanticSpan,
+    Side as DiffSide, myers, paired_inline_diff,
 };
 
 use crate::Row;
@@ -101,7 +102,11 @@ impl Side<'_, '_> {
     }
 }
 
-pub(crate) fn rows(old: &Tree<'_>, new: &Tree<'_>, matching: &Matching) -> Vec<Vec<Row>> {
+pub(crate) fn rows(
+    old: &Tree<'_>,
+    new: &Tree<'_>,
+    matching: &Matching,
+) -> (Vec<Vec<Row>>, Vec<OutlineItem>) {
     let mut sides = [old, new].map(|tree| {
         let lines = Lines::new(tree.src);
         let spans = vec![Vec::new(); lines.count() as usize];
@@ -118,9 +123,123 @@ pub(crate) fn rows(old: &Tree<'_>, new: &Tree<'_>, matching: &Matching) -> Vec<V
             spans.sort_by_key(|span| span.start);
         }
     }
+    let outline = outline(&sides, matching);
     let anchors = anchors(&sides, matching);
     let aligned = align(&sides, &anchors);
-    chunks(&mut sides, aligned)
+    (chunks(&mut sides, aligned), outline)
+}
+
+struct Owned {
+    lines: Range<u32>,
+    node: u32,
+    kind: &'static str,
+    name: Range<u32>,
+    edits: u32,
+    old_edits: u32,
+    unmatched: bool,
+    inside_unmatched: bool,
+}
+
+fn owned(side: &Side<'_, '_>, partner: &[u32]) -> (Vec<Owned>, Vec<Option<usize>>) {
+    let tree = side.tree;
+    let mut items: Vec<Owned> = tree
+        .items
+        .iter()
+        .map(|item| {
+            let span = &tree.nodes[item.node as usize].span;
+            let last = span.end.saturating_sub(1).max(span.start);
+            Owned {
+                lines: side.lines.of(span.start)..side.lines.of(last) + 1,
+                node: item.node,
+                kind: item.kind,
+                name: item.name.clone(),
+                edits: 0,
+                old_edits: 0,
+                unmatched: partner[item.node as usize] == NONE,
+                inside_unmatched: false,
+            }
+        })
+        .collect();
+    let mut open: Vec<(u32, bool)> = Vec::new();
+    for item in &mut items {
+        while open.last().is_some_and(|&(end, _)| item.node >= end) {
+            open.pop();
+        }
+        item.inside_unmatched = open.iter().any(|&(_, unmatched)| unmatched);
+        open.push((tree.nodes[item.node as usize].next, item.unmatched));
+    }
+    let mut owner = vec![None; side.lines.count() as usize];
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(items[i].lines.len()));
+    for i in order {
+        for line in items[i].lines.clone() {
+            if let Some(slot) = owner.get_mut(line as usize) {
+                *slot = Some(i);
+            }
+        }
+    }
+    (items, owner)
+}
+
+fn outline(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<OutlineItem> {
+    let (mut old_items, old_owner) = owned(&sides[0], &matching.partner[0]);
+    let (mut new_items, new_owner) = owned(&sides[1], &matching.partner[1]);
+    let marked = |side: &Side<'_, '_>, line: usize| {
+        side.spans[line]
+            .iter()
+            .any(|s| s.intensity != ChangeIntensity::UnchangedContext)
+    };
+    for (line, owner) in new_owner.iter().enumerate() {
+        if let Some(i) = owner
+            && marked(&sides[1], line)
+        {
+            new_items[*i].edits += 1;
+        }
+    }
+    let by_node: HashMap<u32, usize> = new_items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| (item.node, i))
+        .collect();
+    for (line, owner) in old_owner.iter().enumerate() {
+        let Some(i) = *owner else {
+            continue;
+        };
+        if !marked(&sides[0], line) {
+            continue;
+        }
+        let partner = matching.partner[0][old_items[i].node as usize];
+        match by_node.get(&partner) {
+            Some(&j) => new_items[j].old_edits += 1,
+            None => old_items[i].edits += 1,
+        }
+    }
+    let mut out = Vec::new();
+    let mut emit = |items: &[Owned], side: &Side<'_, '_>, which: DiffSide| {
+        for item in items {
+            if item.inside_unmatched {
+                continue;
+            }
+            let change = match (item.unmatched, which) {
+                (true, DiffSide::New) => ItemChange::Added,
+                (true, DiffSide::Old) => ItemChange::Removed,
+                (false, DiffSide::New) if item.edits.max(item.old_edits) > 0 => {
+                    ItemChange::Edited(item.edits.max(item.old_edits))
+                }
+                _ => continue,
+            };
+            out.push(OutlineItem {
+                side: which,
+                line: item.lines.start,
+                kind: item.kind.into(),
+                name: side.tree.text(item.name.clone()).into(),
+                change,
+            });
+        }
+    };
+    emit(&new_items, &sides[1], DiffSide::New);
+    emit(&old_items, &sides[0], DiffSide::Old);
+    out
 }
 
 fn novel(side: &mut Side<'_, '_>, partner: &[u32]) {

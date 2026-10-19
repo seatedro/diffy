@@ -28,9 +28,16 @@ pub(crate) struct Node {
     pub(crate) class: Class,
 }
 
+pub(crate) struct Item {
+    pub(crate) node: u32,
+    pub(crate) kind: &'static str,
+    pub(crate) name: Range<u32>,
+}
+
 pub(crate) struct Tree<'a> {
     pub(crate) src: &'a str,
     pub(crate) nodes: Vec<Node>,
+    pub(crate) items: Vec<Item>,
     pub(crate) errors: usize,
 }
 
@@ -39,6 +46,7 @@ impl<'a> Tree<'a> {
         let mut out = Self {
             src,
             nodes: Vec::new(),
+            items: Vec::new(),
             errors: 0,
         };
         let root = tree.root_node();
@@ -92,6 +100,7 @@ impl<'a> Tree<'a> {
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
         let delims = self.delimiters(&children, config);
+        self.note_item(node);
         let Some((i, j)) = delims else {
             let at = self.open_list(node.kind_id(), span(node), 0..0, 0..0);
             for child in children {
@@ -116,6 +125,22 @@ impl<'a> Tree<'a> {
         }
         if let Some(outer) = outer {
             self.close_list(outer);
+        }
+    }
+
+    fn note_item(&mut self, node: ts::Node<'_>) {
+        let Some(kind) = item_kind(node.kind()) else {
+            return;
+        };
+        let name = node
+            .child_by_field_name("name")
+            .or_else(|| node.child_by_field_name("type"));
+        if let Some(name) = name {
+            self.items.push(Item {
+                node: self.nodes.len() as u32,
+                kind,
+                name: span(name),
+            });
         }
     }
 
@@ -208,6 +233,31 @@ impl<'a> Tree<'a> {
         }
         out
     }
+}
+
+fn item_kind(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "function_item" | "function_signature_item" => "fn",
+        "struct_item" | "struct_specifier" => "struct",
+        "enum_item" | "enum_declaration" | "enum_specifier" => "enum",
+        "union_item" => "union",
+        "trait_item" => "trait",
+        "impl_item" => "impl",
+        "mod_item" => "mod",
+        "const_item" => "const",
+        "static_item" => "static",
+        "type_item" | "type_alias_declaration" | "type_spec" => "type",
+        "macro_definition" => "macro",
+        "function_declaration" | "generator_function_declaration" => "function",
+        "method_definition" | "method_declaration" => "method",
+        "class_declaration"
+        | "abstract_class_declaration"
+        | "class_definition"
+        | "class_specifier" => "class",
+        "interface_declaration" => "interface",
+        "function_definition" => "def",
+        _ => return None,
+    })
 }
 
 fn span(node: ts::Node<'_>) -> Range<u32> {

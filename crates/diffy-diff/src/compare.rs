@@ -56,6 +56,8 @@ pub const PAIRING_COMPARISONS_PER_LINE: u32 = 4;
 /// Bytes compared from each end of a line when scoring similarity.
 pub const SIMILARITY_SCAN_BYTES: usize = 256;
 
+const MAX_REFLOW_ADDED: usize = 2;
+
 /// Fewest sample lines a shift is scored from.
 const MIN_PAIRING_SAMPLES: u64 = 4;
 
@@ -427,6 +429,7 @@ fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
     let (old, new) = (doc.text(file, Side::Old), doc.text(file, Side::New));
     let mut old_text = String::new();
     let mut new_text = String::new();
+    let mut added = 0usize;
     for &step in run {
         let (o, n) = step.lines();
         if o != NONE {
@@ -447,16 +450,20 @@ fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
         if n != NONE {
             let line = new.display_line(n).unwrap_or("");
             let spans = doc.semantic_spans(file, Side::New, n);
-            new_text.extend(line.char_indices().filter_map(|(at, c)| {
-                let added = spans.iter().any(|s| {
+            for (at, c) in line.char_indices().filter(|(_, c)| !c.is_whitespace()) {
+                let novel = spans.iter().any(|s| {
                     s.intensity != crate::semantic::ChangeIntensity::UnchangedContext
                         && (s.start as usize..s.end as usize).contains(&at)
                 });
-                (!added && !c.is_whitespace()).then_some(c)
-            }));
+                if novel {
+                    added += 1;
+                } else {
+                    new_text.push(c);
+                }
+            }
         }
     }
-    !old_text.is_empty() && old_text == new_text
+    !old_text.is_empty() && added <= MAX_REFLOW_ADDED && old_text == new_text
 }
 
 /// A broken [`Comparison`] invariant.

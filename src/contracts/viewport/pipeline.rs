@@ -5,7 +5,7 @@ use std::sync::Arc;
 pub use diffy_diff::DiffStats as FileStats;
 use diffy_diff::{
     ChangeSummary, ContentChange, DiffDocument, FileDiffSnapshot, FileStatus, ObjectId,
-    Placeholder, SourcePurpose,
+    OutlineItem, Placeholder, SourcePurpose,
 };
 pub use diffy_ui::diff_view::{Preparation, PreparedSegment};
 
@@ -58,6 +58,7 @@ pub struct ManifestFile {
     pub old_id: Option<ObjectId>,
     pub new_id: Option<ObjectId>,
     pub buckets: Vec<ChangeBucket>,
+    pub outline: Arc<[OutlineItem]>,
 }
 
 impl ManifestFile {
@@ -79,6 +80,7 @@ impl ManifestFile {
             old_id: None,
             new_id: None,
             buckets: Vec::new(),
+            outline: Arc::from([]),
         }
     }
 
@@ -95,6 +97,7 @@ impl ManifestFile {
             old_id: entry.old_id.clone(),
             new_id: entry.new_id.clone(),
             buckets: Vec::new(),
+            outline: Arc::from([]),
         }
     }
 

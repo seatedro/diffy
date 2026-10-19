@@ -349,6 +349,12 @@ pub fn document_from_native(
     })
 }
 
+pub fn semantic_language(path: &str) -> Option<&'static str> {
+    legacy_pack::language_for_path(path)
+        .map(|language| language.name)
+        .filter(|name| diffy_semantic::config(name).is_some())
+}
+
 pub fn document_from_native_with(
     changed: &ChangedPath,
     grammar: impl FnOnce(&str) -> Option<diffy_semantic::Language>,
@@ -372,14 +378,12 @@ pub fn document_from_native_with(
         document_from_bytes(meta.clone(), &changed.old_content, &changed.new_content)
             .map(|doc| (doc, Some(reason)))
     };
-    let Some(language) = legacy_pack::language_for_path(changed.display_path()) else {
+    let Some(language) = semantic_language(changed.display_path()) else {
         return line_diff("no grammar for this file".to_owned());
     };
-    let (Some(grammar), Some(config)) = (
-        grammar(language.name),
-        diffy_semantic::config(language.name),
-    ) else {
-        return line_diff(format!("{} grammar unavailable", language.name));
+    let (Some(grammar), Some(config)) = (grammar(language), diffy_semantic::config(language))
+    else {
+        return line_diff(format!("{language} grammar unavailable"));
     };
     let limits = Limits {
         max_time: FILE_TIME_BUDGET,

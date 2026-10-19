@@ -20,7 +20,8 @@ pub use crate::contracts::viewport::pipeline::{
     WORKING_SET_LINES,
 };
 use crate::core::compare::git::bucket_refs;
-use crate::core::compare::{CompareEntry, ComparePhase};
+use crate::core::compare::semantic::semantic_language;
+use crate::core::compare::{CompareEntry, ComparePhase, RendererKind};
 use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
 use crate::platform::persistence::{PersistedCompare, Settings};
 
@@ -85,6 +86,7 @@ pub struct PipelineController {
     preparation: Option<Preparation>,
     queue: VecDeque<PipelineInstall>,
     resuming: bool,
+    grammars: Arc<[String]>,
 }
 
 impl PipelineController {
@@ -313,6 +315,38 @@ impl PipelineController {
         };
         self.set_slot(key, SlotState::Loading);
         Reduction::changed().effect(PipelineEffect::LoadFile(Box::new(request)))
+    }
+
+    fn grammars_arrived(&mut self, installed: Arc<[String]>) -> Reduction {
+        let previous = std::mem::replace(&mut self.grammars, installed.clone());
+        let Some(active) = self
+            .active
+            .as_mut()
+            .filter(|active| active.intent.request.renderer == RendererKind::Semantic)
+        else {
+            return Reduction::default();
+        };
+        let arrived = |path: &str| {
+            semantic_language(path).is_some_and(|name| {
+                installed.iter().any(|l| l == name) && !previous.iter().any(|l| l == name)
+            })
+        };
+        let stale: Vec<FileKey> = active
+            .loaded
+            .iter()
+            .filter(|(_, prepared)| {
+                !prepared.document().prefers_structural(0) && arrived(&prepared.document().path(0))
+            })
+            .map(|(&key, _)| key)
+            .collect();
+        let mut reduction = Reduction::default();
+        for key in stale {
+            if let Some(active) = self.active.as_mut() {
+                active.loaded.remove(&key);
+            }
+            reduction.merge(self.load(key, CompareWorkPriority::VisibleViewportDiff));
+        }
+        reduction
     }
 
     fn load_stats(&mut self, keys: Vec<FileKey>, priority: CompareWorkPriority) -> Reduction {
@@ -814,6 +848,9 @@ impl Controller for PipelineController {
         let reduction = match intent {
             Intent::RequestCompare(intent) => self.start_compare(intent.clone()),
             Intent::SelectFile(selected) => self.select(selected.map(|file| file.key)),
+            Intent::GrammarAvailable(availability) => {
+                self.grammars_arrived(availability.installed.clone())
+            }
             Intent::ActivateWorkspace { .. } => {
                 retire(self.active.take());
                 self.queue.clear();

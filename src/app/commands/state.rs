@@ -32,7 +32,7 @@ use crate::contracts::shell::{
 };
 use crate::contracts::viewport::pipeline::{DiffSizeRequest, PipelineAction};
 use crate::core::compare::LayoutMode;
-use crate::core::frecency::{FrecencyStore, recent_repo_paths};
+use crate::core::frecency::{FrecencyStore, recent_repo_paths, repo_last_opened};
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
 use crate::core::ref_catalog::{RefCatalog, RefEntryKind, WORKING_TREE_LABEL};
 use crate::core::theme_types::ThemeMode;
@@ -1321,8 +1321,25 @@ impl Controller for CommandsController {
                 {
                     recent.insert(0, current.clone());
                 }
-                let candidates = picker::repository_candidates(&recent, current.as_deref());
+                let store = self.frecency.as_ref();
+                let mut recent: Vec<picker::RecentRepository> = recent
+                    .into_iter()
+                    .map(|path| picker::RecentRepository {
+                        opened: repo_last_opened(store, &path),
+                        path,
+                    })
+                    .collect();
+                recent.sort_by_key(|repo| std::cmp::Reverse(repo.opened));
+                let now = crate::core::ref_catalog::now_secs();
+                let candidates = picker::repository_candidates(&recent, current.as_deref(), now);
                 self.open_picker(PickerKind::Repository, candidates)
+            }
+            A::OpenRepositoryFolder => {
+                self.pop_layer(LayerKind::Picker);
+                self.request(PlatformRequest::Dispatch(
+                    NavigationAction::OpenRepositoryDialog.into(),
+                ));
+                Reduction::changed()
             }
             A::OpenRefPicker(field) => {
                 self.request(PlatformRequest::Dispatch(

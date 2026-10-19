@@ -77,7 +77,7 @@ pub fn option_row(row: OptionRow, theme: &Theme, on_click: quark_ui::Action) -> 
             px={tokens::scaled(Sp::SM, scale)}
             gap={tokens::scaled(Sp::SM, scale)}
             rounded={theme.metrics.control_radius}
-            bg={if row.selected { tc.ghost_element_selected } else { Color::TRANSPARENT }}
+            bg={if row.selected { tokens::selected_fill(tc.elevated_surface, true, theme) } else { Color::TRANSPARENT }}
             @when {!row.selected} { hover_bg={tc.ghost_element_hover} }
             cursor={CursorHint::Pointer}
             id={row.id.clone()}
@@ -87,7 +87,7 @@ pub fn option_row(row: OptionRow, theme: &Theme, on_click: quark_ui::Action) -> 
             aria-selected={row.selected}
             on:click={on_click}
         >
-            {?row.icon.map(|svg| view! { <icon svg={svg} size={Ico::SM} color={tc.icon} /> })}
+            {?row.icon.map(|svg| view! { <icon svg={svg} size={Ico::SM} color={if row.current { tc.accent } else { tc.icon }} /> })}
             {highlighted(row.label, row.highlights, if row.selected { tc.text_strong } else { tc.text }, theme)}
             {?row.detail.filter(|d| !d.is_empty()).map(|d| view! {
                 <div class="flex-1 flex-row overflow-hidden" min_w={0.0}>

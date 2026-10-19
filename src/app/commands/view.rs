@@ -10,11 +10,11 @@ use quark_ui::theme::Theme;
 
 use super::CommandsController;
 use super::list::{self, OptionRow};
-use super::picker::PICKER_VISIBLE_ROWS;
+use super::picker::{PICKER_VISIBLE_ROWS, PickerChoice, PickerKind, TYPED_PATH};
 use super::state::{CONFIRM_ACCEPT, CONFIRM_CANCEL, LayerKind};
-use crate::app::shell::Slot;
+use crate::app::shell::{Slot, kbd};
 use crate::app::text_targets::PICKER;
-use crate::app::tokens::{self, Ico, Rad, Sp, Sz, TextStyle};
+use crate::app::tokens::{self, Ico, Layout, Rad, Sp, Sz, TextStyle};
 use crate::contracts::commands::{CommandsAction, ToastKind};
 use crate::contracts::shell::Action;
 
@@ -84,9 +84,14 @@ fn picker_panel(
     picker.reveal_pending(row_stride);
     let picker = &*picker;
     let title = picker.kind.title();
-    let panel_w = (Sz::MODAL_MD * scale)
-        .min(size.0 - tokens::scaled(Sz::MODAL_MARGIN, scale))
-        .max(1.0);
+    let repository = picker.kind == PickerKind::Repository;
+    let panel_w = if repository {
+        tokens::scaled(Layout::REPO_PICKER_W, scale)
+    } else {
+        Sz::MODAL_MD * scale
+    }
+    .min(size.0 - tokens::scaled(Sz::MODAL_MARGIN, scale))
+    .max(1.0);
     let input = text_input(title, "")
         .field(&picker.query)
         .placeholder(picker.kind.placeholder())
@@ -117,8 +122,15 @@ fn picker_panel(
                         label: &row.label,
                         highlights: &row.highlights,
                         detail: row.detail.as_deref(),
-                        rhs: None,
-                        icon: None,
+                        rhs: row.meta.as_deref(),
+                        icon: repository.then(|| match row.choice {
+                            PickerChoice::Repository(_)
+                                if row.detail.as_deref() == Some(TYPED_PATH) =>
+                            {
+                                lucide::ARROW_RIGHT
+                            }
+                            _ => lucide::FOLDER_GIT,
+                        }),
                         selected: i == picker.selected,
                         current: row.current,
                     },
@@ -131,20 +143,40 @@ fn picker_panel(
             }),
         )
     };
+    let section = (repository && picker.query.text().trim().is_empty() && !picker.rows.is_empty())
+        .then(|| {
+            view! {
+                <div class="flex-row items-center" px={tokens::scaled(Sp::MD, scale)} pt={tokens::scaled(Sp::SM, scale)} pb={tokens::scaled(Sp::XS, scale)}>
+                    <text size={TextStyle::Caption.font_size(theme)} class="font-semibold" color={tc.text_muted}>"RECENT"</text>
+                </div>
+            }
+        });
+    let footer = repository.then(|| repository_footer(theme));
+    let left = if repository {
+        tokens::title_leading_inset(theme).min((size.0 - panel_w).max(0.0))
+    } else {
+        ((size.0 - panel_w) / 2.0).max(0.0)
+    };
+    let top = if repository {
+        theme.metrics.title_bar_height + tokens::scaled(Layout::POPOVER_GAP, scale)
+    } else {
+        tokens::scaled(Sz::MODAL_TOP_OFFSET, scale)
+    };
     Some(view! {
         <div
-            class="absolute top-0 left-0 flex-col items-center"
+            class="absolute top-0 left-0"
             w={size.0}
             h={size.1}
             z_index={300}
-            pt={tokens::scaled(Sz::MODAL_TOP_OFFSET, scale)}
             bg={tc.overlay_scrim}
             test_id="picker-backdrop"
             on:click={CommandsAction::BackdropDismiss}
             block_mouse
         >
             <div
-                class="flex-col overflow-hidden"
+                class="absolute flex-col overflow-hidden"
+                left={left}
+                top={top}
                 w={panel_w}
                 bg={tc.elevated_surface}
                 border={tc.border}
@@ -166,10 +198,52 @@ fn picker_panel(
                     <icon svg={lucide::SEARCH} size={Ico::SM} color={tc.icon} />
                     <div class="flex-1 min-w-0">{input}</div>
                 </div>
+                {?section}
                 <div p={tokens::scaled(Sp::XS, scale)}>{list}</div>
+                {?footer}
             </div>
         </div>
     })
+}
+
+fn repository_footer(theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    view! {
+        <div
+            class="flex-row items-center w-full"
+            gap={tokens::scaled(Sp::SM, scale)}
+            px={tokens::scaled(Sp::XS, scale)}
+            py={tokens::scaled(Sp::XS, scale)}
+            border_t={tc.border_variant}
+            bg={tc.panel}
+        >
+            <div
+                class="flex-row items-center"
+                h={tokens::scaled(Layout::CONTROL_H, scale)}
+                px={tokens::scaled(Sp::SM, scale)}
+                gap={tokens::scaled(Sp::SM - Sp::XXS, scale)}
+                rounded={theme.metrics.control_radius}
+                hover_bg={tc.ghost_element_hover}
+                cursor={CursorHint::Pointer}
+                id="picker.open-folder"
+                role="button"
+                aria-label="Open folder"
+                on:click={CommandsAction::OpenRepositoryFolder}
+            >
+                <icon svg={lucide::FOLDER_OPEN} size={Ico::SM} color={tc.icon} />
+                <text size={small} class="font-medium" color={tc.text}>"Open folder\u{2026}"</text>
+            </div>
+            <div class="flex-1" />
+            <div class="flex-row items-center" gap={tokens::scaled(Sp::XS, scale)} pr={tokens::scaled(Sp::SM, scale)}>
+                {kbd("\u{21B5}", theme)}
+                <text size={small} color={tc.text_muted}>"open"</text>
+                {kbd("\u{21E5}", theme)}
+                <text size={small} color={tc.text_muted}>"complete"</text>
+            </div>
+        </div>
+    }
 }
 
 fn confirmation(

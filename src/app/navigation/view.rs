@@ -763,11 +763,7 @@ fn commit_matches(commit: &VcsChange, query: &str) -> bool {
         || commit.author_name.to_lowercase().contains(&query)
 }
 
-pub(super) fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
-}
+pub(super) use crate::core::ref_catalog::now_secs;
 
 fn history(
     nav: &mut NavigationController,

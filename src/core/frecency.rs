@@ -130,6 +130,12 @@ impl FrecencyStore {
         sorted.into_iter().map(|(key, _)| key).collect()
     }
 
+    pub fn last_access_secs(&self, key: &str) -> Option<i64> {
+        let data = self.data.lock().ok()?;
+        let entry = data.entries.get(key)?;
+        i64::try_from(entry.last_access_ms / 1000).ok()
+    }
+
     pub fn remove(&self, key: &str) {
         let Some(data) = self.update_data(|data| {
             data.entries.remove(key);
@@ -221,6 +227,10 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+pub fn repo_last_opened(store: Option<&FrecencyStore>, path: &Path) -> Option<i64> {
+    store?.last_access_secs(&format!("repo:{}", path.display()))
 }
 
 pub fn recent_repo_paths(store: Option<&FrecencyStore>, limit: usize) -> Vec<PathBuf> {

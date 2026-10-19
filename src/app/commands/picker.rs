@@ -7,6 +7,7 @@ use quark_ui::text_input::TextField;
 use crate::contracts::navigation::{CompareField, NavigationAction};
 use crate::contracts::shell::Action;
 use crate::core::compare::CompareMode;
+use crate::core::ref_catalog::relative_age;
 use crate::fonts::{FontFamilyEntry, FontRole};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,7 @@ pub enum PickerChoice {
 pub struct PickerRow {
     pub label: String,
     pub detail: Option<String>,
+    pub meta: Option<String>,
     pub highlights: Vec<(usize, usize)>,
     pub choice: PickerChoice,
     pub current: bool,
@@ -68,6 +70,8 @@ pub struct PickerRow {
 pub struct PickerCandidate {
     pub label: String,
     pub detail: Option<String>,
+    pub meta: Option<String>,
+    pub alias: Option<String>,
     pub choice: PickerChoice,
     pub current: bool,
 }
@@ -77,6 +81,8 @@ impl PickerCandidate {
         Self {
             label: label.into(),
             detail: None,
+            meta: None,
+            alias: None,
             choice,
             current: false,
         }
@@ -84,6 +90,16 @@ impl PickerCandidate {
 
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn alias(mut self, alias: impl Into<String>) -> Self {
+        self.alias = Some(alias.into());
+        self
+    }
+
+    pub fn meta(mut self, meta: impl Into<String>) -> Self {
+        self.meta = Some(meta.into()).filter(|meta: &String| !meta.is_empty());
         self
     }
 
@@ -106,6 +122,7 @@ pub struct PickerState {
 }
 
 pub const PICKER_VISIBLE_ROWS: usize = 9;
+pub const TYPED_PATH: &str = "Open this path";
 
 impl PickerState {
     pub fn new(kind: PickerKind, candidates: Vec<PickerCandidate>) -> Self {
@@ -143,6 +160,12 @@ impl PickerState {
                 positions.clear();
                 if let Some(score) = self.matcher.score(&candidate.label, &mut positions) {
                     scored.push((score, i, match_ranges(&candidate.label, &positions)));
+                } else if let Some(score) = candidate
+                    .alias
+                    .as_deref()
+                    .and_then(|alias| self.matcher.score(alias, &mut positions))
+                {
+                    scored.push((score, i, Vec::new()));
                 }
             }
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
@@ -171,8 +194,9 @@ impl PickerState {
         }
         Some(PickerRow {
             label: query.to_owned(),
+            meta: None,
             detail: Some(match self.kind {
-                PickerKind::Repository => "Open this path".to_owned(),
+                PickerKind::Repository => TYPED_PATH.to_owned(),
                 PickerKind::PullRequest => "Load this pull request".to_owned(),
                 _ => "Use this revision".to_owned(),
             }),
@@ -241,6 +265,7 @@ fn row(candidate: &PickerCandidate, highlights: Vec<(usize, usize)>) -> PickerRo
     PickerRow {
         label: candidate.label.clone(),
         detail: candidate.detail.clone(),
+        meta: candidate.meta.clone(),
         highlights,
         choice: candidate.choice.clone(),
         current: candidate.current,
@@ -257,19 +282,77 @@ pub fn expand_path(query: &str) -> PathBuf {
     }
 }
 
-pub fn repository_candidates(recent: &[PathBuf], current: Option<&Path>) -> Vec<PickerCandidate> {
+pub struct RecentRepository {
+    pub path: PathBuf,
+    pub opened: Option<i64>,
+}
+
+pub fn repository_candidates(
+    recent: &[RecentRepository],
+    current: Option<&Path>,
+    now: i64,
+) -> Vec<PickerCandidate> {
+    let home = dirs::home_dir();
     recent
         .iter()
-        .map(|path| {
+        .map(|repo| {
+            let path = &repo.path;
             let label = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.display().to_string());
+            let age = repo
+                .opened
+                .map(|opened| relative_age(now, opened))
+                .unwrap_or_default();
+            let alias = match home
+                .as_deref()
+                .and_then(|home| path.strip_prefix(home).ok())
+            {
+                Some(rest) => format!("~/{}", rest.display()),
+                None => path.display().to_string(),
+            };
             PickerCandidate::new(label, PickerChoice::Repository(path.clone()))
-                .detail(path.display().to_string())
+                .detail(parent_label(path, home.as_deref()))
+                .alias(alias)
+                .meta(age)
                 .current(current == Some(path.as_path()))
         })
         .collect()
+}
+
+const PARENT_COMPONENTS: usize = 2;
+
+fn parent_label(path: &Path, home: Option<&Path>) -> String {
+    let Some(parent) = path.parent() else {
+        return String::new();
+    };
+    let (prefix, rest) = match home.and_then(|home| parent.strip_prefix(home).ok()) {
+        Some(rest) => ("~", rest),
+        None => ("", parent),
+    };
+    let parts: Vec<String> = rest
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect();
+    let rooted = if prefix.is_empty() { "/" } else { "~/" };
+    if parts.len() > PARENT_COMPONENTS {
+        format!(
+            "\u{2026}/{}",
+            parts[parts.len() - PARENT_COMPONENTS..].join("/")
+        )
+    } else if parts.is_empty() {
+        if prefix.is_empty() {
+            "/".to_owned()
+        } else {
+            "~".to_owned()
+        }
+    } else {
+        format!("{rooted}{}", parts.join("/"))
+    }
 }
 
 pub fn font_candidates(entries: &[FontFamilyEntry], current: &str) -> Vec<PickerCandidate> {

@@ -199,6 +199,12 @@ pub fn filter(catalog: &RefCatalog, query: &str) -> RefResults {
     RefResults { rows }
 }
 
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
 pub fn relative_age(now: i64, timestamp: i64) -> String {
     if timestamp <= 0 {
         return String::new();

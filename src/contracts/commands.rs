@@ -133,6 +133,7 @@ pub trait CommandSource {
 pub enum CommandsAction {
     OpenCommandPalette,
     OpenRepoPicker,
+    OpenRepositoryFolder,
     OpenRefPicker(CompareField),
     ShowRefPicker(Box<RefPickerRequest>),
     RefPicker(RefPickerAction),

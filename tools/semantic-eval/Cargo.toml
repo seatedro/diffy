@@ -12,8 +12,6 @@ diffy = { path = "../..", features = ["difftastic"] }
 diffy-diff = { path = "../../crates/diffy-diff" }
 diffy-syntax = { path = "../../crates/diffy-syntax", features = ["download"] }
 diffy-semantic = { path = "../../crates/diffy-semantic" }
-libloading = "0.8"
-tree-sitter-language = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1.44"

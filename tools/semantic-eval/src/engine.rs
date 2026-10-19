@@ -1,5 +1,4 @@
-use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use diffy::core::compare::semantic::{
@@ -7,7 +6,7 @@ use diffy::core::compare::semantic::{
 };
 use diffy::core::syntax::grammar::{legacy_storage_dir, trusted_keys};
 use diffy_diff::{DEFAULT_CONTEXT, DiffDocument, FileStatus, diff_texts};
-use diffy_syntax::{GrammarStore, LanguageId, LegacyPacks, StoreConfig, legacy_pack};
+use diffy_syntax::{GrammarStore, LanguageId, LegacyPacks, StoreConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::capture;
@@ -88,40 +87,7 @@ pub fn run(engine: Engine, path: &str, old: &[u8], new: &[u8]) -> Result<Run, St
 }
 
 fn language(name: &str) -> Option<diffy_semantic::Language> {
-    let id = LanguageId::from_fence(name)?;
-    grammars()
-        .tree_sitter_language(&id)
-        .or_else(|| direct(name))
-}
-
-fn direct(name: &str) -> Option<diffy_semantic::Language> {
-    static LOADED: Mutex<Vec<(String, Option<diffy_semantic::Language>)>> = Mutex::new(Vec::new());
-    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, language)) = loaded.iter().find(|(n, _)| n == name) {
-        return language.clone();
-    }
-    let language = legacy_storage_dir().and_then(|dir| load_pack(&dir.join(name), name));
-    loaded.push((name.to_owned(), language.clone()));
-    language
-}
-
-fn load_pack(dir: &Path, name: &str) -> Option<diffy_semantic::Language> {
-    let version = std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .max()?;
-    let library = version.join(legacy_pack::platform()).join("parser.dylib");
-    let symbol = format!("tree_sitter_{}", name.replace('-', "_"));
-    unsafe {
-        let library: &'static libloading::Library =
-            Box::leak(Box::new(libloading::Library::new(library).ok()?));
-        let function: libloading::Symbol<'static, unsafe extern "C" fn() -> *const ()> =
-            library.get(symbol.as_bytes()).ok()?;
-        Some(diffy_semantic::Language::new(
-            tree_sitter_language::LanguageFn::from_raw(*function),
-        ))
-    }
+    grammars().tree_sitter_language(&LanguageId::from_fence(name)?)
 }
 
 fn grammars() -> &'static GrammarStore {

@@ -5701,12 +5701,10 @@ dependencies = [
  "diffy-diff",
  "diffy-semantic",
  "diffy-syntax",
- "libloading",
  "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
- "tree-sitter-language",
 ]
 
 [[package]]

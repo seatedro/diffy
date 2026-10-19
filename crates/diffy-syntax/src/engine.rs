@@ -119,7 +119,7 @@ impl Grammar {
             });
         }
         let query =
-            ts::Query::new(&language, highlights).map_err(|e| PackError::Query(e.to_string()))?;
+            lenient_query(&language, highlights).map_err(|e| PackError::Query(e.to_string()))?;
         let capture_kinds = query
             .capture_names()
             .iter()
@@ -266,7 +266,7 @@ struct InjectionPattern {
 impl Injections {
     fn compile(language: &ts::Language, text: &str) -> Result<Self, PackError> {
         let query =
-            ts::Query::new(language, text).map_err(|e| PackError::InjectionQuery(e.to_string()))?;
+            lenient_query(language, text).map_err(|e| PackError::InjectionQuery(e.to_string()))?;
         let patterns = (0..query.pattern_count())
             .map(|index| {
                 let mut pattern = InjectionPattern::default();
@@ -395,6 +395,66 @@ enum Target {
 /// The ranges of `nodes` (without their children's unless
 /// `include_children`), sorted, merged, and clipped to `parent`. Each
 /// child walked spends one unit of `budget`; `None` when it runs out.
+const MAX_DROPPED_PATTERNS: usize = 16;
+
+fn lenient_query(language: &ts::Language, text: &str) -> Result<ts::Query, ts::QueryError> {
+    let mut text = std::borrow::Cow::Borrowed(text);
+    let mut dropped = 0;
+    loop {
+        let error = match ts::Query::new(language, &text) {
+            Ok(query) => return Ok(query),
+            Err(error) => error,
+        };
+        let Some(cut) = (dropped < MAX_DROPPED_PATTERNS)
+            .then(|| pattern_at(&text, error.offset))
+            .flatten()
+        else {
+            return Err(error);
+        };
+        tracing::warn!(%error, "dropping a query pattern the grammar rejects");
+        text.to_mut().replace_range(cut, "");
+        dropped += 1;
+    }
+}
+
+fn pattern_at(text: &str, offset: usize) -> Option<std::ops::Range<usize>> {
+    let bytes = text.as_bytes();
+    let mut starts = Vec::new();
+    let (mut depth, mut at) = (0usize, 0);
+    while at < bytes.len() {
+        match bytes[at] {
+            b';' => {
+                while at < bytes.len() && bytes[at] != b'\n' {
+                    at += 1;
+                }
+            }
+            b'"' => {
+                if depth == 0 {
+                    starts.push(at);
+                }
+                at += 1;
+                while at < bytes.len() && bytes[at] != b'"' {
+                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'(' | b'[' => {
+                if depth == 0 {
+                    starts.push(at);
+                }
+                depth += 1;
+            }
+            b')' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        at += 1;
+    }
+    let index = starts
+        .partition_point(|&start| start <= offset)
+        .checked_sub(1)?;
+    let end = starts.get(index + 1).copied().unwrap_or(bytes.len());
+    Some(starts[index]..end)
+}
+
 fn content_ranges(
     nodes: &[ts::Node<'_>],
     include_children: bool,

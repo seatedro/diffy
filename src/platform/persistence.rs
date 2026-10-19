@@ -10,7 +10,9 @@ use crate::core::forge::github::GitHubUser;
 use crate::core::keymap::KeymapOverride;
 use crate::core::theme_types::ThemeMode;
 use crate::fonts::FontSettings;
-use crate::platform::database::{DATABASE_FILE_NAME, Database, Settings as SettingsTable};
+use crate::platform::database::{
+    DATABASE_FILE_NAME, Database, Settings as SettingsTable, remove_imported,
+};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const SETTINGS_ROW: i32 = 1;
@@ -171,7 +173,9 @@ impl SettingsStore {
         let legacy = self.dir.join(SETTINGS_FILE_NAME);
         db.import_once("settings", |db| match fs::read_to_string(&legacy) {
             Ok(json) if serde_json::from_str::<Settings>(&json).is_ok() => {
-                write_settings(db, &json)
+                write_settings(db, &json)?;
+                remove_imported(&legacy);
+                Ok(())
             }
             _ => Ok(()),
         });
@@ -216,6 +220,7 @@ mod tests {
         .unwrap();
         let store = SettingsStore::new_in(dir.path());
         assert_eq!(store.load().unwrap(), legacy);
+        assert!(!dir.path().join("settings.json").exists());
         let next = Settings {
             theme_name: "next".to_owned(),
             ..Settings::default()

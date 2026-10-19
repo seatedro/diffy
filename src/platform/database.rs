@@ -211,6 +211,23 @@ impl Database {
     }
 }
 
+pub fn remove_imported(path: &Path) {
+    let removed = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match removed {
+        Ok(()) => {
+            tracing::info!(path = %path.display(), "removed store imported into the database")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "removing imported store failed")
+        }
+    }
+}
+
 fn migrate(connection: &mut Connection) -> Result<()> {
     let version: usize = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     for (index, migration) in MIGRATIONS.iter().enumerate().skip(version) {

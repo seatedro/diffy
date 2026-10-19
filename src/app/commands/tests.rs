@@ -521,9 +521,15 @@ fn existing_settings_files_load_and_round_trip() {
     let reloaded = store.load().unwrap();
     assert_eq!(reloaded, written);
     assert!(!reloaded.continuous_scroll);
-    let json = std::fs::read_to_string(&path).unwrap();
+    assert!(!path.exists());
+    let json: String = crate::platform::database::Database::in_dir(dir.path())
+        .unwrap()
+        .connection()
+        .unwrap()
+        .query_row("SELECT json FROM settings", [], |row| row.get(0))
+        .unwrap();
     for key in [
-        "\"theme_mode\": \"light\"",
+        "\"theme_mode\":\"light\"",
         "\"toggle-wrap\"",
         "\"two-dot\"",
         "\"keymap_overrides\"",

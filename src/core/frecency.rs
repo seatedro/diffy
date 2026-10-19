@@ -2,19 +2,16 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use heed::types::{SerdeBincode, Str};
-use heed::{Database as LmdbDatabase, EnvOpenOptions};
 use sea_query::{Expr, ExprTrait, OnConflict, Query};
 use serde::{Deserialize, Serialize};
 
 use crate::core::error::Result;
-use crate::platform::database::{Database, Frecency};
+use crate::platform::database::{Database, Frecency, remove_imported};
 
 const DECAY_CONSTANT: f64 = 0.0693;
 const SECONDS_PER_DAY: f64 = 86400.0;
 const STORE_FILE_NAME: &str = "frecency.json";
 const LEGACY_STORE_DIR_NAME: &str = "frecency.mdb";
-const LEGACY_MAP_SIZE: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FrecencyEntry {
@@ -146,22 +143,16 @@ fn store_dir(path: &Path) -> PathBuf {
 
 fn import_legacy(db: &Database, dir: &Path) -> Result<()> {
     let json = dir.join(STORE_FILE_NAME);
-    let data = match std::fs::read(&json) {
-        Ok(contents) => serde_json::from_slice(&contents).unwrap_or_else(|error| {
-            tracing::warn!("corrupt frecency store at {}: {error}", json.display());
-            FrecencyData::default()
-        }),
-        Err(_) => match legacy_frecency_dir_for_json_path(&json)
-            .as_deref()
-            .map(read_legacy_frecency_store)
-        {
-            Some(Ok(Some(data))) => data,
-            Some(Err(error)) => {
-                tracing::warn!("failed to read legacy frecency store: {error}");
-                FrecencyData::default()
-            }
-            _ => FrecencyData::default(),
-        },
+    let Ok(contents) = std::fs::read(&json) else {
+        remove_imported(&dir.join(LEGACY_STORE_DIR_NAME));
+        return Ok(());
+    };
+    let Ok(data) = serde_json::from_slice::<FrecencyData>(&contents) else {
+        tracing::warn!(
+            "corrupt frecency store at {}, leaving it in place",
+            json.display()
+        );
+        return Ok(());
     };
     for (key, entry) in data.entries {
         db.execute(
@@ -177,36 +168,9 @@ fn import_legacy(db: &Database, dir: &Path) -> Result<()> {
                 .to_owned(),
         )?;
     }
+    remove_imported(&json);
+    remove_imported(&dir.join(LEGACY_STORE_DIR_NAME));
     Ok(())
-}
-
-fn legacy_frecency_dir_for_json_path(path: &Path) -> Option<PathBuf> {
-    (path.file_name()? == STORE_FILE_NAME).then(|| path.with_file_name(LEGACY_STORE_DIR_NAME))
-}
-
-fn read_legacy_frecency_store(
-    path: &Path,
-) -> std::result::Result<Option<FrecencyData>, Box<dyn std::error::Error>> {
-    if !path.is_dir() {
-        return Ok(None);
-    }
-    let env = unsafe {
-        let mut opts = EnvOpenOptions::new();
-        opts.map_size(LEGACY_MAP_SIZE);
-        opts.open(path)?
-    };
-    let rtxn = env.read_txn()?;
-    let Some(db): Option<LmdbDatabase<Str, SerdeBincode<FrecencyEntry>>> =
-        env.open_database(&rtxn, None)?
-    else {
-        return Ok(None);
-    };
-    let mut data = FrecencyData::default();
-    for result in db.iter(&rtxn)? {
-        let (key, entry) = result?;
-        data.entries.insert(key.to_owned(), entry);
-    }
-    Ok(Some(data))
 }
 
 fn frecency_score(entry: &FrecencyEntry) -> f64 {
@@ -242,7 +206,7 @@ pub fn recent_repo_paths(store: Option<&FrecencyStore>, limit: usize) -> Vec<Pat
 mod tests {
     use tempfile::TempDir;
 
-    use super::{FrecencyEntry, FrecencyStore, LEGACY_MAP_SIZE, recent_repo_paths};
+    use super::{FrecencyStore, recent_repo_paths};
 
     #[test]
     fn store_round_trips_recent_repos() {
@@ -275,6 +239,7 @@ mod tests {
             recent_repo_paths(Some(&store), 1),
             vec![std::path::PathBuf::from("/tmp/json")]
         );
+        assert!(!dir.path().join(super::STORE_FILE_NAME).exists());
     }
 
     #[test]
@@ -286,41 +251,5 @@ mod tests {
 
         let reopened = FrecencyStore::open(dir.path()).unwrap();
         assert!(recent_repo_paths(Some(&reopened), 1).is_empty());
-    }
-
-    #[test]
-    fn migrates_legacy_lmdb_store_once() {
-        let dir = TempDir::new().unwrap();
-        let legacy_dir = dir.path().join(super::LEGACY_STORE_DIR_NAME);
-        std::fs::create_dir_all(&legacy_dir).unwrap();
-        let env = unsafe {
-            let mut opts = heed::EnvOpenOptions::new();
-            opts.map_size(LEGACY_MAP_SIZE);
-            opts.open(&legacy_dir).unwrap()
-        };
-        let mut wtxn = env.write_txn().unwrap();
-        let db: heed::Database<heed::types::Str, heed::types::SerdeBincode<FrecencyEntry>> =
-            env.create_database(&mut wtxn, None).unwrap();
-        db.put(
-            &mut wtxn,
-            "repo:/tmp/legacy",
-            &FrecencyEntry {
-                access_count: 4,
-                last_access_ms: super::now_ms(),
-            },
-        )
-        .unwrap();
-        wtxn.commit().unwrap();
-        drop(env);
-
-        let store = FrecencyStore::open(dir.path()).unwrap();
-        let recents = recent_repo_paths(Some(&store), 1);
-
-        assert_eq!(recents, vec![std::path::PathBuf::from("/tmp/legacy")]);
-        assert!(
-            dir.path()
-                .join(crate::platform::database::DATABASE_FILE_NAME)
-                .is_file()
-        );
     }
 }

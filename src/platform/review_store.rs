@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::error::Result;
 use crate::core::review::{ReviewSession, ReviewSessionKey, ReviewTarget};
-use crate::platform::database::{Database, ReviewSessions};
+use crate::platform::database::{Database, ReviewSessions, remove_imported};
 use crate::platform::persistence::SettingsStore;
 
 const REVIEW_STORE_FILE_NAME: &str = "review-sessions.json";
@@ -106,13 +106,20 @@ impl ReviewStore {
             let Ok(contents) = fs::read(&legacy) else {
                 return Ok(());
             };
-            let data: ReviewStoreData = serde_json::from_slice(&contents).unwrap_or_else(|error| {
-                tracing::warn!("corrupt review store at {}: {error}", legacy.display());
-                ReviewStoreData::default()
-            });
+            let data: ReviewStoreData = match serde_json::from_slice(&contents) {
+                Ok(data) => data,
+                Err(error) => {
+                    tracing::warn!(
+                        "corrupt review store at {}, leaving it in place: {error}",
+                        legacy.display()
+                    );
+                    return Ok(());
+                }
+            };
             for (key, session) in data.sessions {
                 write_session(db, &key, &serde_json::to_string(&session)?)?;
             }
+            remove_imported(&legacy);
             Ok(())
         });
         Ok(db)

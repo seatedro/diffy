@@ -58,17 +58,17 @@ pub fn ui_scale(theme: &Theme) -> f32 {
 pub struct Tint;
 
 impl Tint {
-    pub const SELECTED: f32 = 0.15;
-    pub const SELECTED_EDGE: f32 = 0.4;
+    pub const SELECTED: f32 = 0.2;
+    pub const SELECTED_IDLE: f32 = 0.08;
     pub const BADGE: f32 = 0.16;
 }
 
-pub fn selected_fill(base: Color, theme: &Theme) -> Color {
-    base.lerp(theme.colors.accent, Tint::SELECTED)
-}
-
-pub fn selected_edge(base: Color, theme: &Theme) -> Color {
-    base.lerp(theme.colors.accent, Tint::SELECTED_EDGE)
+pub fn selected_fill(base: Color, focused: bool, theme: &Theme) -> Color {
+    if focused {
+        base.lerp(theme.colors.accent, Tint::SELECTED)
+    } else {
+        base.lerp(theme.colors.text, Tint::SELECTED_IDLE)
+    }
 }
 
 pub fn scaled(value: f32, scale: f32) -> f32 {

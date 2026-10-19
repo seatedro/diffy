@@ -1,6 +1,7 @@
 use quark::view;
 use quark_app::ViewContext;
 use quark_components::{TabItem, progress_bar, search_field, tab_bar};
+use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::design::Sz;
 use quark_ui::element::*;
@@ -45,6 +46,7 @@ pub fn view(
     let theme = cx.theme;
     let scale = tokens::ui_scale(theme);
     let filter_focused = cx.is_focused(SIDEBAR_FILTER);
+    let focus = cx.focus();
     let header = header(nav, theme);
     let tab = nav.tab();
     let filter =
@@ -74,8 +76,8 @@ pub fn view(
         history_row: tokens::scaled(Layout::HISTORY_ROW_H, scale),
     });
     let body = match tab {
-        SidebarTab::Files => files(nav, slot.shared, list_h, theme),
-        SidebarTab::Commits => history(nav, review, list_h, theme),
+        SidebarTab::Files => files(nav, slot.shared, list_h, focus, theme),
+        SidebarTab::Commits => history(nav, review, list_h, focus, theme),
         SidebarTab::OperationLog => operations(nav, list_h, theme),
     };
     let commit_box = commit_box.map(|(element, _)| element);
@@ -309,6 +311,7 @@ fn files(
     nav: &mut NavigationController,
     cx: &SharedContext,
     height: f32,
+    focus: Option<FocusId>,
     theme: &Theme,
 ) -> AnyElement {
     let status = nav.status().clone();
@@ -346,6 +349,10 @@ fn files(
         };
     }
     let row_height = theme.metrics.ui_row_height.round();
+    let active = within(
+        focus,
+        selected.map(|key| format!("file:{}", key.0)).as_deref(),
+    );
     let window = virtual_list_window(rows.len(), scroll, height, row_height, 0.0, OVERSCAN_ROWS);
     let visible: Vec<AnyElement> = window
         .range
@@ -364,6 +371,7 @@ fn files(
                 let state = RowState {
                     tree,
                     selected: primary || nav.is_marked(file.key),
+                    focused: active,
                     viewed: nav.is_viewed(&path),
                     highlights,
                 };
@@ -399,6 +407,12 @@ fn files(
     }
 }
 
+fn within(focus: Option<FocusId>, row: Option<&str>) -> bool {
+    focus.is_some_and(|focus| {
+        focus == SIDEBAR || row.is_some_and(|row| focus == FocusId::from_key(row))
+    })
+}
+
 fn status_badge(file: &ManifestFile, theme: &Theme) -> (&'static str, Color) {
     let tc = &theme.colors;
     if file.binary {
@@ -419,6 +433,7 @@ fn status_badge(file: &ManifestFile, theme: &Theme) -> (&'static str, Color) {
 struct RowState<'a> {
     tree: bool,
     selected: bool,
+    focused: bool,
     viewed: bool,
     highlights: &'a [(usize, usize)],
 }
@@ -476,7 +491,7 @@ fn file_row(
     let badge = tokens::scaled(Layout::STATUS_BADGE, scale);
     let base = tc.sidebar_background;
     let row_bg = if state.selected {
-        tokens::selected_fill(base, theme)
+        tokens::selected_fill(base, state.focused, theme)
     } else {
         Color::TRANSPARENT
     };
@@ -531,7 +546,6 @@ fn file_row(
             rounded={theme.metrics.control_radius}
             bg={row_bg}
             hover_bg={hover_bg}
-            @when {state.selected} { border={tokens::selected_edge(base, theme)} }
             interaction_group={group}
             cursor={CursorHint::Pointer}
             key={format!("file:{}", key.0)}
@@ -759,6 +773,7 @@ fn history(
     nav: &mut NavigationController,
     review: &ReviewController,
     height: f32,
+    focus: Option<FocusId>,
     theme: &Theme,
 ) -> AnyElement {
     let tc = &theme.colors;
@@ -851,7 +866,8 @@ fn history(
                     meta
                 });
             let base = tc.sidebar_background;
-            let fill = tokens::selected_fill(base, theme);
+            let focused = is_selected && within(focus, Some(&format!("commit:{revision}")));
+            let fill = tokens::selected_fill(base, focused, theme);
             view! {
                 <div
                     class="flex-row items-start w-full shrink-0"
@@ -861,7 +877,6 @@ fn history(
                     gap={tokens::scaled(Sp::SM, scale)}
                     rounded={theme.metrics.control_radius}
                     bg={if is_selected { fill } else { Color::TRANSPARENT }}
-                    @when {is_selected} { border={tokens::selected_edge(base, theme)} }
                     hover_bg={if is_selected { fill } else { tc.sidebar_row_hover }}
                     cursor={CursorHint::Pointer}
                     key={revision.clone()}

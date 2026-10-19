@@ -132,9 +132,15 @@ impl<'a> Tree<'a> {
         let Some(kind) = item_kind(node.kind()) else {
             return;
         };
-        let name = node
-            .child_by_field_name("name")
-            .or_else(|| node.child_by_field_name("type"));
+        if node.kind().ends_with("_specifier") && node.child_by_field_name("body").is_none() {
+            return;
+        }
+        let (kind, name) = match node.child_by_field_name("name") {
+            Some(name) => (kind, Some(name)),
+            None if node.kind() == "impl_item" => (kind, node.child_by_field_name("type")),
+            None if node.kind() == "function_definition" => ("fn", declared_name(node)),
+            None => (kind, None),
+        };
         if let Some(name) = name {
             self.items.push(Item {
                 node: self.nodes.len() as u32,
@@ -258,6 +264,14 @@ fn item_kind(kind: &str) -> Option<&'static str> {
         "function_definition" => "def",
         _ => return None,
     })
+}
+
+fn declared_name(node: ts::Node<'_>) -> Option<ts::Node<'_>> {
+    let mut at = node.child_by_field_name("declarator")?;
+    while let Some(inner) = at.child_by_field_name("declarator") {
+        at = inner;
+    }
+    at.kind().ends_with("identifier").then_some(at)
 }
 
 fn span(node: ts::Node<'_>) -> Range<u32> {

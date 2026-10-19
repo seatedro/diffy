@@ -922,8 +922,8 @@ impl DiffViewState {
         let mut joined = String::from(indent);
         for line in first..first + count {
             let part = store.display_line(line).unwrap_or("").trim();
-            let tight = joined.ends_with(['(', '[', '{'])
-                || part.starts_with([')', ']', '}', ',', ';', '.'])
+            let tight = joined.ends_with(['(', '['])
+                || part.starts_with([')', ']', ',', ';', '.'])
                 || joined.len() == indent.len();
             if !tight {
                 joined.push(' ');

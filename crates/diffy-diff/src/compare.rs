@@ -57,6 +57,7 @@ pub const PAIRING_COMPARISONS_PER_LINE: u32 = 4;
 pub const SIMILARITY_SCAN_BYTES: usize = 256;
 
 const MAX_REFLOW_ADDED: usize = 2;
+const MAX_REFLOW_STEPS: usize = 64;
 
 /// Fewest sample lines a shift is scored from.
 const MIN_PAIRING_SAMPLES: u64 = 4;
@@ -145,8 +146,8 @@ impl Comparison {
                             && out.align_structural(rows, lines, olds.clone(), news.clone())
                         {
                             out.merge_pairs(doc, file, start as usize);
-                            out.fold_reflows(doc, file, start as usize);
                             out.fold_moves(doc, file, start as usize);
+                            out.fold_reflows(doc, file, start as usize);
                         } else {
                             let (h, l) = out.align_block(old, new, olds, news, &mut keys);
                             hidden += h;
@@ -419,25 +420,47 @@ impl Comparison {
                 .iter()
                 .position(|s| matches!(s, Step::Equivalent(..) | Step::Merged(..)))
                 .map_or(block.len(), |p| at + p);
-            let run = &block[at..end];
-            let uneven = run
-                .iter()
-                .any(|s| matches!(s, Step::Removed(_) | Step::Added(_)));
-            if uneven && reflowed(doc, file, run) {
-                for &step in run {
-                    let (old, new) = step.lines();
-                    if old != NONE {
-                        self.steps.push(Step::Hidden(old));
-                    }
-                    if new != NONE {
-                        self.steps.push(Step::Reflowed(new));
-                    }
-                }
-            } else {
-                self.steps.extend_from_slice(run);
-            }
+            self.fold_run(doc, file, &block[at..end]);
             self.steps.extend(block.get(end).copied());
             at = end + 1;
+        }
+    }
+
+    fn fold_run(&mut self, doc: &DiffDocument, file: u32, run: &[Step]) {
+        let mut from = 0;
+        while from < run.len() {
+            let rest = &run[from..];
+            let starts = matches!(rest[0], Step::Removed(_) | Step::Paired(..));
+            let fold = (1..=rest.len().min(MAX_REFLOW_STEPS))
+                .rev()
+                .filter(|_| starts)
+                .find(|&k| {
+                    let part = &rest[..k];
+                    let uneven = part
+                        .iter()
+                        .any(|s| matches!(s, Step::Removed(_) | Step::Added(_)));
+                    uneven && reflowed(doc, file, part)
+                });
+            let Some(k) = fold else {
+                self.steps.push(rest[0]);
+                from += 1;
+                continue;
+            };
+            for &step in &rest[..k] {
+                match step {
+                    Step::Hidden(_) | Step::Moved(_) => self.steps.push(step),
+                    _ => {
+                        let (old, new) = step.lines();
+                        if old != NONE {
+                            self.steps.push(Step::Hidden(old));
+                        }
+                        if new != NONE {
+                            self.steps.push(Step::Reflowed(new));
+                        }
+                    }
+                }
+            }
+            from += k;
         }
     }
 
@@ -589,6 +612,9 @@ fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
     let mut texts = [String::new(), String::new()];
     let mut added = 0usize;
     for &step in run {
+        if matches!(step, Step::Hidden(_) | Step::Moved(_)) {
+            continue;
+        }
         let (o, n) = step.lines();
         for (side, line) in [(Side::Old, o), (Side::New, n)] {
             if line == NONE {

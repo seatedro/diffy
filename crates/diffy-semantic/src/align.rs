@@ -170,6 +170,9 @@ fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching, chain: &[(u32, u32, u64
             old_lines,
             new_line,
             lines,
+            from: enclosing(sides[0].tree, o),
+            into: enclosing(sides[1].tree, n),
+            item: own_item(sides[0].tree, o),
         });
     }
     out.sort_by_key(|m| (m.new_line, std::cmp::Reverse(m.lines)));
@@ -193,6 +196,31 @@ fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching, chain: &[(u32, u32, u64
         }
     }
     kept
+}
+
+fn enclosing(tree: &Tree<'_>, node: u32) -> Option<std::sync::Arc<str>> {
+    let end = tree.nodes[node as usize].next;
+    let item = tree
+        .items
+        .iter()
+        .rev()
+        .find(|item| item.node < node && tree.nodes[item.node as usize].next >= end)?;
+    Some(item_label(tree, item, true))
+}
+
+fn own_item(tree: &Tree<'_>, node: u32) -> Option<std::sync::Arc<str>> {
+    let item = tree.items.iter().find(|item| item.node == node)?;
+    Some(item_label(tree, item, false))
+}
+
+fn item_label(tree: &Tree<'_>, item: &crate::syntax::Item, call: bool) -> std::sync::Arc<str> {
+    let name = tree.text(item.name.clone());
+    let callable = matches!(item.kind, "fn" | "function" | "method" | "def");
+    match (callable, call) {
+        (true, true) => format!("{name}()"),
+        _ => format!("{} {name}", item.kind),
+    }
+    .into()
 }
 
 fn parent(tree: &Tree<'_>, node: u32) -> Option<u32> {

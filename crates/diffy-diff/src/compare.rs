@@ -93,6 +93,8 @@ pub(crate) enum Step {
     Hidden(u32),
     Reflowed(u32),
     Moved(u32),
+    MovedHere(u32),
+    MovedAway(u32),
     /// Old and new lines equal under the whitespace policy.
     Equivalent(u32, u32),
 }
@@ -387,11 +389,22 @@ impl Comparison {
                 .iter()
                 .any(|m| (m.new_line..m.new_line + m.lines).contains(&line))
         };
+        let mut noted = vec![[false; 2]; moves.len()];
         let block = self.steps.split_off(start);
         for step in block {
             let (o, n) = step.lines();
             let hide = o != NONE && hidden_old(o);
             let moved = n != NONE && moved_new(n);
+            for (i, m) in moves.iter().enumerate() {
+                if o != NONE && o == m.old_line && !noted[i][0] {
+                    noted[i][0] = true;
+                    self.steps.push(Step::MovedAway(i as u32));
+                }
+                if moved && n == m.new_line && !noted[i][1] {
+                    noted[i][1] = true;
+                    self.steps.push(Step::MovedHere(i as u32));
+                }
+            }
             match step {
                 Step::Removed(o) if hide => self.steps.push(Step::Hidden(o)),
                 Step::Added(n) if moved => self.steps.push(Step::Moved(n)),
@@ -448,7 +461,9 @@ impl Comparison {
             };
             for &step in &rest[..k] {
                 match step {
-                    Step::Hidden(_) | Step::Moved(_) => self.steps.push(step),
+                    Step::Hidden(_) | Step::Moved(_) | Step::MovedHere(_) | Step::MovedAway(_) => {
+                        self.steps.push(step)
+                    }
                     _ => {
                         let (old, new) = step.lines();
                         if old != NONE {
@@ -574,6 +589,7 @@ impl Step {
         match self {
             Self::Removed(o) | Self::Hidden(o) => (o, NONE),
             Self::Added(n) | Self::Reflowed(n) | Self::Moved(n) => (NONE, n),
+            Self::MovedHere(_) | Self::MovedAway(_) => (NONE, NONE),
             Self::Paired(o, n) | Self::Merged(o, n) | Self::Equivalent(o, n) => (o, n),
         }
     }
@@ -612,7 +628,10 @@ fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
     let mut texts = [String::new(), String::new()];
     let mut added = 0usize;
     for &step in run {
-        if matches!(step, Step::Hidden(_) | Step::Moved(_)) {
+        if matches!(
+            step,
+            Step::Hidden(_) | Step::Moved(_) | Step::MovedHere(_) | Step::MovedAway(_)
+        ) {
             continue;
         }
         let (o, n) = step.lines();

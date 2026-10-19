@@ -89,12 +89,15 @@ pub enum ItemChange {
     Edited(u32),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Move {
     pub old_line: u32,
     pub old_lines: u32,
     pub new_line: u32,
     pub lines: u32,
+    pub from: Option<Arc<str>>,
+    pub into: Option<Arc<str>>,
+    pub item: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

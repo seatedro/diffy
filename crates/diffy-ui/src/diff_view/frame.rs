@@ -14,7 +14,7 @@ use quark_text::{LayoutCache, TextParams, TextSpan, TextStyle, TextSystem};
 use quark_ui::virtual_list::VariableList;
 
 use super::prepared::{
-    Columns, FileFact, FrameRow, LineDetail, LineMerge, LinePaint, LineWindow, Metrics,
+    Columns, FileFact, FrameRow, LineDetail, LineMerge, LinePaint, LineWindow, Metrics, MoveNote,
     PreparedKind, RowPaint, ViewFrame, WordDetail,
 };
 use super::prepared_update::file_facts;
@@ -630,6 +630,7 @@ impl DiffViewState {
             quiet: false,
             fold: None,
             hint: None,
+            note: None,
             summary: None,
         };
         match r {
@@ -729,6 +730,7 @@ impl DiffViewState {
                 .reflow(row)
                 .map(|count| (count, segment.expansion.reflow_open(file, p.new[r]))),
             hint: None,
+            note: None,
             summary: None,
         };
         match kind {
@@ -746,6 +748,25 @@ impl DiffViewState {
                 paint.summary = semantic_summary(doc, file);
             }
             RowKind::HunkHeader => paint.title = hunk_title(doc, p.hunk[r]).into(),
+            RowKind::MovedHere | RowKind::MovedAway => {
+                let here = kind == RowKind::MovedHere;
+                let other = if here {
+                    RowKind::MovedAway
+                } else {
+                    RowKind::MovedHere
+                };
+                let index = p.pair[r];
+                let partner = (0..p.len()).find(|&k| {
+                    p.kind[k as usize] == other
+                        && p.file[k as usize] == file
+                        && p.pair[k as usize] == index
+                });
+                let up = partner.map(|k| k < row);
+                paint.note = Some(MoveNote { index, here, up });
+                paint.title = move_note(doc, file, index, here, up)
+                    .unwrap_or_default()
+                    .into();
+            }
             RowKind::Gap => {
                 let gap = p.gap(row).expect("gap row");
                 paint.hidden = gap.hidden;
@@ -1220,6 +1241,58 @@ fn semantic_summary(doc: &DiffDocument, file: u32) -> Option<Arc<str>> {
         .map(|(n, one, many)| format!("{n} {}", if n == 1 { one } else { many }))
         .collect();
     (!parts.is_empty()).then(|| parts.join(" \u{00b7} ").into())
+}
+
+fn move_note(
+    doc: &DiffDocument,
+    file: u32,
+    index: u32,
+    here: bool,
+    up: Option<bool>,
+) -> Option<String> {
+    let m = doc.semantics(file)?.moves().get(index as usize)?;
+    let elsewhere = m.from.is_some() && m.from != m.into;
+    let toward = match up {
+        Some(true) => " up",
+        Some(false) => " down",
+        None => "",
+    };
+    let away = match up {
+        Some(true) => " down",
+        Some(false) => " up",
+        None => "",
+    };
+    let lines = |n: u32| {
+        if n == 1 {
+            "1 line".to_owned()
+        } else {
+            format!("{n} lines")
+        }
+    };
+    Some(match (here, elsewhere) {
+        (true, true) => format!(
+            "moved from {} \u{00b7} line {}",
+            m.from.as_deref().unwrap_or(""),
+            m.old_line + 1
+        ),
+        (true, false) => format!("moved{away} from line {}", m.old_line + 1),
+        (false, _) if m.item.is_some() && !elsewhere => format!(
+            "{} moved{toward} to line {}",
+            m.item.as_deref().unwrap_or(""),
+            m.new_line + 1
+        ),
+        (false, true) => format!(
+            "{} moved into {} \u{00b7} line {}",
+            lines(m.old_lines),
+            m.into.as_deref().unwrap_or("another item"),
+            m.new_line + 1
+        ),
+        (false, false) => format!(
+            "{} moved{toward} to line {}",
+            lines(m.old_lines),
+            m.new_line + 1
+        ),
+    })
 }
 
 fn move_hint(doc: &DiffDocument, file: u32, line: u32) -> Option<Arc<str>> {

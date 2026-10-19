@@ -295,6 +295,13 @@ pub enum FileFact {
     NoNewlineAtEof(Side),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MoveNote {
+    pub index: u32,
+    pub here: bool,
+    pub up: Option<bool>,
+}
+
 /// What a prepared row shows.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PreparedKind {
@@ -357,6 +364,7 @@ pub struct RowPaint {
     pub quiet: bool,
     pub fold: Option<(u32, bool)>,
     pub hint: Option<Arc<str>>,
+    pub note: Option<MoveNote>,
     pub summary: Option<Arc<str>>,
 }
 

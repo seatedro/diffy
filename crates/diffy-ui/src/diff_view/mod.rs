@@ -145,6 +145,11 @@ pub enum DiffEvent {
         file: u32,
         line: u32,
     },
+    JumpMove {
+        file: u32,
+        index: u32,
+        here: bool,
+    },
     /// The open control of a bounded preview's last row.
     OpenFull,
     /// The add-annotation control of a line (gutter utility or focused

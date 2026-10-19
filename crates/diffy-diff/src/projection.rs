@@ -57,6 +57,10 @@ pub enum RowKind {
     Merged,
     Reflowed,
     Moved,
+    /// A moved block's note at its new place, naming where it came from.
+    MovedHere,
+    /// A moved block's note at its old place, naming where it went.
+    MovedAway,
 }
 
 impl RowKind {
@@ -86,6 +90,7 @@ impl RowKind {
             Self::Modified | Self::Merged => "changed",
             Self::Reflowed => "reformatted",
             Self::Moved => "moved",
+            Self::MovedHere | Self::MovedAway => "move",
         }
     }
 }
@@ -388,6 +393,7 @@ impl Projection {
             | RowKind::Merged
             | RowKind::Reflowed
             | RowKind::Moved => u64::from(self.new[r]),
+            RowKind::MovedHere | RowKind::MovedAway => u64::from(self.pair[r]),
         };
         (tag << 60) | (file << 38) | (index & 0x3F_FFFF_FFFF)
     }
@@ -536,6 +542,14 @@ impl Projection {
                     Step::Added(_) | Step::Reflowed(_) | Step::Moved(_) => RowKind::Added,
                     Step::Paired(..) | Step::Merged(..) => RowKind::Modified,
                     Step::Equivalent(..) => RowKind::Context,
+                    Step::MovedHere(i) => {
+                        self.push(RowKind::MovedHere, file, hunk, NONE, NONE, i);
+                        continue;
+                    }
+                    Step::MovedAway(i) => {
+                        self.push(RowKind::MovedAway, file, hunk, NONE, NONE, i);
+                        continue;
+                    }
                 };
                 self.push(kind, file, hunk, old, new, NONE);
             }
@@ -553,6 +567,8 @@ impl Projection {
                             | Step::Hidden(_)
                             | Step::Reflowed(_)
                             | Step::Moved(_)
+                            | Step::MovedHere(_)
+                            | Step::MovedAway(_)
                     )
                 })
                 .map_or(steps.len(), |at| start + at);
@@ -579,10 +595,24 @@ impl Projection {
                 Some(&Step::Moved(new)) => {
                     self.push(RowKind::Moved, file, hunk, NONE, new, NONE);
                 }
+                Some(&Step::MovedHere(i)) => {
+                    self.push(RowKind::MovedHere, file, hunk, NONE, NONE, i);
+                }
+                Some(&Step::MovedAway(i)) => {
+                    self.push(RowKind::MovedAway, file, hunk, NONE, NONE, i);
+                }
                 Some(Step::Hidden(_) | Step::Reflowed(_)) => {
                     let run = steps[end..]
                         .iter()
-                        .take_while(|s| matches!(s, Step::Hidden(_) | Step::Reflowed(_)))
+                        .take_while(|s| {
+                            matches!(
+                                s,
+                                Step::Hidden(_)
+                                    | Step::Reflowed(_)
+                                    | Step::MovedHere(_)
+                                    | Step::MovedAway(_)
+                            )
+                        })
                         .count();
                     let lines: Vec<u32> = steps[end..end + run]
                         .iter()
@@ -600,6 +630,17 @@ impl Projection {
                                 let pair = if k == 0 && count > 1 { count } else { NONE };
                                 self.push(RowKind::Reflowed, file, hunk, NONE, line, pair);
                             }
+                        }
+                    }
+                    for step in &steps[end..end + run] {
+                        match *step {
+                            Step::MovedHere(i) => {
+                                self.push(RowKind::MovedHere, file, hunk, NONE, NONE, i)
+                            }
+                            Step::MovedAway(i) => {
+                                self.push(RowKind::MovedAway, file, hunk, NONE, NONE, i)
+                            }
+                            _ => {}
                         }
                     }
                     start = end + run;
@@ -707,7 +748,10 @@ impl Projection {
                 RowKind::Removed => lines == (true, false),
                 RowKind::Added | RowKind::Reflowed | RowKind::Moved => lines == (false, true),
                 RowKind::Gap => self.hunk[row] < self.gaps.len() as u32,
-                RowKind::FileHeader | RowKind::HunkHeader => lines == (false, false),
+                RowKind::FileHeader
+                | RowKind::HunkHeader
+                | RowKind::MovedHere
+                | RowKind::MovedAway => lines == (false, false),
             };
             if !shape {
                 return Err(ProjectionError::Line { row: row as u32 });

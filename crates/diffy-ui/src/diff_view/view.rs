@@ -1070,6 +1070,10 @@ fn band(
         PreparedKind::Diff(RowKind::FileHeader) => file_header(
             &paint, id, width, height, pad, font_size, look, &deco, on_event,
         ),
+        PreparedKind::Diff(RowKind::MovedHere | RowKind::MovedAway) => {
+            let indent = columns.sides[Side::New as usize].map_or(pad, |c| c.text_x);
+            move_note(&paint, width, height, indent, font_size, look, on_event)
+        }
         PreparedKind::Pending { state, .. } => {
             let header_h = header_h.min(height);
             let header = file_header(
@@ -1410,6 +1414,53 @@ fn file_header(
                 <div class="shrink-0" w={1.0} h={(height * 0.45).round()} bg={colors.border} />
                 <div class="shrink-0">{trailing}</div>
             }
+        </div>
+    }
+}
+
+fn move_note(
+    paint: &RowPaint,
+    width: f32,
+    height: f32,
+    indent: f32,
+    font_size: f32,
+    look: Look,
+    on_event: fn(DiffEvent) -> Action,
+) -> AnyElement {
+    let colors = look.colors;
+    let env = look.env;
+    let Some(note) = paint.note else {
+        return view! { <div w={width} h={height} /> };
+    };
+    let jump = on_event(DiffEvent::JumpMove {
+        file: paint.file,
+        index: note.index,
+        here: note.here,
+    });
+    let arrow = match note.up {
+        Some(false) => lucide::ARROW_DOWN,
+        _ => lucide::ARROW_UP,
+    };
+    let size = font_size * 0.9;
+    let label = paint.title.to_string();
+    view! {
+        <div w={width} h={height} class="flex-row items-center" pl={indent}>
+            <div
+                class="flex-row items-center cursor-pointer"
+                gap={size * 0.4}
+                px={size * 0.4}
+                h={(height - 2.0).max(size)}
+                rounded={4.0}
+                hover_bg={colors.hover}
+                on:click={jump}
+                @when {env.accessible} {
+                    accessibility_role={Role::Button}
+                    aria-label={label.clone()}
+                }
+            >
+                <icon svg={arrow} size={size.round()} color={colors.tone(HighlightKind::Keyword)} />
+                <text size={size} color={colors.muted}>{label}</text>
+            </div>
         </div>
     }
 }

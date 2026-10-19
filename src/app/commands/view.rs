@@ -12,12 +12,12 @@ use super::CommandsController;
 use super::list::{self, OptionRow};
 use super::picker::{PickerChoice, PickerKind, PickerRow, RowKind, TYPED_PATH};
 use super::state::{CONFIRM_ACCEPT, CONFIRM_CANCEL, LayerKind};
+use crate::app::icons;
 use crate::app::shell::Slot;
 use crate::app::text_targets::PICKER;
-use crate::app::tokens::{self, Ico, Layout, Rad, Sp, Sz, TextStyle};
+use crate::app::tokens::{self, Ico, Layout, Rad, Shadow, Sp, Sz, TextStyle};
 use crate::contracts::commands::{CommandsAction, ToastKind};
 use crate::contracts::shell::Action;
-use quark_components::kbd;
 
 fn palette_event(event: PaletteEvent) -> quark_ui::Action {
     Action::from(CommandsAction::Palette(event)).into()
@@ -276,9 +276,11 @@ fn repo_row(row: &PickerRow, index: usize, selected: bool, theme: &Theme) -> Any
             >
                 <icon svg={if expanded { lucide::CHEVRON_DOWN } else { lucide::CHEVRON_RIGHT }} size={Ico::XS} color={tc.text_muted} />
                 <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.icon} />
-                <text size={TextStyle::Body.font_size(theme)} class="font-medium" color={tc.text}>{row.label.clone()}</text>
+                <div class="flex-row items-center overflow-hidden" min_w={0.0}>
+                    <text size={TextStyle::Body.font_size(theme)} class="font-medium truncate" color={tc.text}>{row.label.clone()}</text>
+                </div>
                 <div
-                    class="flex-row items-center"
+                    class="flex-row items-center shrink-0"
                     px={tokens::scaled(Sp::XS + Sp::XXS, scale)}
                     rounded={tokens::scaled(Sp::SM, scale)}
                     bg={tc.element_background}
@@ -345,6 +347,7 @@ fn repository_footer(browsing: bool, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);
+    let inner = (tokens::scaled(Rad::XL, scale) - 1.0).max(0.0);
     view! {
         <div
             class="flex-row items-center w-full"
@@ -353,6 +356,7 @@ fn repository_footer(browsing: bool, theme: &Theme) -> AnyElement {
             py={tokens::scaled(Sp::XS, scale)}
             border_t={tc.border_variant}
             bg={tc.panel}
+            rounded_corners={[0.0, 0.0, inner, inner]}
         >
             <div
                 class="flex-row items-center"
@@ -373,17 +377,42 @@ fn repository_footer(browsing: bool, theme: &Theme) -> AnyElement {
             <div class="flex-1" />
             <div class="flex-row items-center" gap={tokens::scaled(Sp::XS, scale)} pr={tokens::scaled(Sp::SM, scale)}>
                 if browsing {
-                    {kbd("\u{2191}\u{2193}", theme)}
+                    {key_icons(&[lucide::ARROW_UP, lucide::ARROW_DOWN], theme)}
                     <text size={small} color={tc.text_muted}>"move"</text>
-                    {kbd("\u{2192}", theme)}
+                    {key_icons(&[lucide::ARROW_RIGHT], theme)}
                     <text size={small} color={tc.text_muted}>"expand"</text>
                 } else {
-                    {kbd("\u{21E5}", theme)}
+                    {key_icons(&[icons::ARROW_RIGHT_TO_LINE], theme)}
                     <text size={small} color={tc.text_muted}>"complete"</text>
                 }
-                {kbd("\u{21B5}", theme)}
+                {key_icons(&[icons::CORNER_DOWN_LEFT], theme)}
                 <text size={small} color={tc.text_muted}>"open"</text>
             </div>
+        </div>
+    }
+}
+
+fn key_icons(svgs: &[&'static str], theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let recipe = theme.components.kbd;
+    let height = (recipe.height.unwrap_or(Ico::MD) * scale).round();
+    let icons: Vec<AnyElement> = svgs
+        .iter()
+        .map(
+            |svg| view! { <icon svg={*svg} size={(height * 0.6).round()} color={tc.text_muted} /> },
+        )
+        .collect();
+    view! {
+        <div
+            class="shrink-0 flex-row items-center justify-center"
+            h={height}
+            min_w={height}
+            px={tokens::scaled(Sp::XXS, scale)}
+            rounded={recipe.radius.unwrap_or(Rad::SM) * scale}
+            border={tc.border_variant}
+        >
+            {...icons}
         </div>
     }
 }
@@ -517,56 +546,62 @@ pub fn toasts(
     let rows: Vec<AnyElement> = items
         .iter()
         .map(|toast| {
-            let stripe = match toast.kind {
-                ToastKind::Info => tc.status_info,
-                ToastKind::Success => tc.line_add_text,
-                ToastKind::Error => tc.status_error,
+            let (icon, tint) = match toast.kind {
+                ToastKind::Info => (lucide::INFO, tc.text_muted),
+                ToastKind::Success => (icons::CIRCLE_CHECK, tc.line_add_text),
+                ToastKind::Error => (lucide::ALERT_CIRCLE, tc.status_error),
             };
             let role = match toast.kind {
                 ToastKind::Error => AccessibilityRole::Alert,
                 ToastKind::Info | ToastKind::Success => AccessibilityRole::Status,
             };
             let progress = toast.fraction().map(|f| view! { <div class="w-full">{progress_bar(f)}</div> });
+            let control = tokens::scaled(Layout::CONTROL_SM_H, scale);
             view! {
                 <div
-                    class="flex-row w-full overflow-hidden"
+                    class="flex-row items-start w-full"
+                    gap={tokens::scaled(Sp::SM, scale)}
+                    pl={tokens::scaled(Sp::MD, scale)}
+                    pr={tokens::scaled(Sp::XS, scale)}
+                    py={tokens::scaled(Sp::XS, scale)}
                     bg={tc.elevated_surface}
-                    border={tc.border}
-                    rounded={tokens::scaled(Rad::XL, scale)}
+                    border={tc.border_variant}
+                    rounded={tokens::scaled(Rad::LG, scale)}
+                    shadow_preset={Shadow::TOAST}
                     key={toast.id.to_string()}
                     accessibility_role={role}
                     aria-label={toast.message.clone()}
                     test_id="toast"
                 >
-                    <div class="shrink-0" w={tokens::scaled(Sz::TOAST_STRIPE_W, scale)} bg={stripe} />
-                    <div class="flex-1 flex-col" min_w={0.0} gap={tokens::scaled(Sp::XXS, scale)} p={tokens::scaled(Sp::MD, scale)}>
-                        <text size={TextStyle::Body.font_size(theme)} class="font-medium" color={tc.text}>{toast.message.clone()}</text>
-                        {?toast.description.clone().map(|d| view! { <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>{d}</text> })}
+                    <div class="flex-row items-center shrink-0" h={control}>
+                        <icon svg={icon} size={Ico::SM} color={tint} />
+                    </div>
+                    <div class="flex-1 flex-col justify-center" min_w={0.0} min_h={control} gap={tokens::scaled(Sp::XXS, scale)} py={tokens::scaled(Sp::XXS, scale)}>
+                        <text size={TextStyle::BodySmall.font_size(theme)} class="font-medium" color={tc.text}>{toast.message.clone()}</text>
+                        {?toast.description.clone().map(|d| view! { <text size={TextStyle::Caption.font_size(theme)} color={tc.text_muted}>{d}</text> })}
                         {?progress}
                     </div>
                     if toast.undo.is_some() {
-                        <div class="flex-row items-center shrink-0" pr={tokens::scaled(Sp::XS, scale)}>
-                            <div
-                                class="flex-row items-center"
-                                h={theme.metrics.ui_row_height}
-                                px={tokens::scaled(Sp::MD, scale)}
-                                rounded={theme.metrics.control_radius}
-                                bg={tc.element_background}
-                                border={tc.control_border}
-                                hover_bg={tc.element_hover}
-                                cursor={CursorHint::Pointer}
-                                id={format!("toast.undo.{}", toast.id)}
-                                role="button"
-                                aria-label="Undo"
-                                on:click={CommandsAction::UndoToast(toast.id)}
-                            >
-                                <text size={TextStyle::BodySmall.font_size(theme)} class="font-medium" color={tc.text}>"Undo"</text>
-                            </div>
+                        <div
+                            class="flex-row items-center shrink-0"
+                            h={control}
+                            px={tokens::scaled(Sp::SM, scale)}
+                            rounded={theme.metrics.control_radius}
+                            hover_bg={tc.ghost_element_hover}
+                            cursor={CursorHint::Pointer}
+                            id={format!("toast.undo.{}", toast.id)}
+                            role="button"
+                            aria-label="Undo"
+                            on:click={CommandsAction::UndoToast(toast.id)}
+                        >
+                            <text size={TextStyle::BodySmall.font_size(theme)} class="font-medium" color={tc.accent}>"Undo"</text>
                         </div>
                     }
                     <div
                         class="flex-row items-center justify-center shrink-0"
-                        w={theme.metrics.ui_row_height}
+                        w={control}
+                        h={control}
+                        rounded={theme.metrics.control_radius}
                         hover_bg={tc.ghost_element_hover}
                         cursor={CursorHint::Pointer}
                         id={format!("toast.dismiss.{}", toast.id)}
@@ -574,7 +609,7 @@ pub fn toasts(
                         aria-label="Dismiss"
                         on:click={CommandsAction::DismissToast(toast.id)}
                     >
-                        <icon svg={lucide::X} size={Ico::XS} color={tc.icon} />
+                        <icon svg={lucide::X} size={Ico::XS} color={tc.text_muted} />
                     </div>
                 </div>
             }

@@ -277,6 +277,20 @@ impl NavigationController {
         self.manifest.as_ref()
     }
 
+    pub fn merge_base_hint(&self) -> Option<(String, String)> {
+        if self.compare.working_copy || self.compare.mode != CompareMode::ThreeDot {
+            return None;
+        }
+        let manifest = self.manifest.as_ref().filter(|m| m.files.is_empty())?;
+        let (base, head) = self.compare_labels();
+        let detail = if manifest.resolved_left == manifest.resolved_right {
+            format!("{base} already contains every commit in {head}")
+        } else {
+            format!("{head} has no changes since it branched from {base}")
+        };
+        Some(("No changes since the merge base".to_owned(), detail))
+    }
+
     pub fn selected_key(&self) -> Option<FileKey> {
         self.selection.as_ref().map(|s| s.key)
     }

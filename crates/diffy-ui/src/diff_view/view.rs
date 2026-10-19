@@ -1432,6 +1432,8 @@ fn separator(
     }
 }
 
+const UNFOLD: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-6"/><path d="M12 8V2"/><path d="M4 12H2"/><path d="M10 12H8"/><path d="M16 12h-2"/><path d="M22 12h-2"/><path d="m15 19-3 3-3-3"/><path d="m15 5-3-3-3 3"/></svg>"#;
+
 /// The expand controls of a gap: up and down between hunks, down only
 /// after the last hunk, and all.
 fn gap_controls(gap: GapId) -> Vec<(Reveal, &'static str, String)> {
@@ -1448,11 +1450,7 @@ fn gap_controls(gap: GapId) -> Vec<(Reveal, &'static str, String)> {
         lucide::CHEVRON_DOWN,
         format!("Show {REVEAL_STEP} more lines below the previous change"),
     ));
-    controls.push((
-        Reveal::All,
-        lucide::LIST,
-        "Show all unchanged lines".to_owned(),
-    ));
+    controls.push((Reveal::All, UNFOLD, "Show all unchanged lines".to_owned()));
     controls
 }
 
@@ -1475,6 +1473,8 @@ fn expand_button(
             rounded={4.0}
             class="flex-row items-center justify-center"
             hover_bg={colors.hover}
+            cursor={CursorHint::Pointer}
+            tooltip={label.clone()}
             on:click={on_event(DiffEvent::Expand(gap, reveal))}
             @when {env.accessible} { accessibility_role={Role::Button} aria-label={label} }
         >

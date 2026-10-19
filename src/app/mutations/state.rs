@@ -407,6 +407,15 @@ impl MutationsController {
             .map(|(id, _)| *id)
     }
 
+    pub fn syncing(&self) -> bool {
+        self.jobs.values().any(|job| {
+            matches!(
+                job,
+                Job::Fetch(_) | Job::Push(_) | Job::Pull(_) | Job::Publish
+            )
+        })
+    }
+
     pub fn ai(&self) -> &AiState {
         &self.ai
     }
@@ -1830,7 +1839,10 @@ impl Controller for MutationsController {
                 } else if behind == 0 {
                     format!("Pulled {branch} from {remote}")
                 } else {
-                    format!("Fast-forwarded {branch} by {behind} commit(s) from {remote}")
+                    format!(
+                        "Fast-forwarded {branch} by {} from {remote}",
+                        super::view::commits(behind)
+                    )
                 };
                 Reduction::changed().intent(toast(ToastKind::Success, Some(job), message))
             }

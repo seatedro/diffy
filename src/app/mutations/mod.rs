@@ -7,7 +7,7 @@ mod state;
 mod tests;
 mod view;
 
-pub use controls::{Chrome, Control, Tone};
+pub use controls::{Chrome, Control, Tone, render as render_control};
 pub use operations::{
     RowAction, change_actions, context_menu, file_row_actions, group_action, operation_log_actions,
     selection_actions,
@@ -15,4 +15,4 @@ pub use operations::{
 pub use presentation::{MutationPresentation, PresentationStyle};
 pub use settings::clankers_settings;
 pub use state::{LineKey, MutationsController, working_tree};
-pub use view::{commit_box, panel, selection_bar, view};
+pub use view::{commit_box, commits, panel, selection_bar, sync_controls, view};

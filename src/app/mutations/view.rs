@@ -5,6 +5,7 @@ use quark_ui::element::*;
 use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
 use quark_ui::text_input::text_editor_element;
+use quark_ui::theme::Theme;
 
 use super::MutationsController;
 use super::controls::{self, Chrome, Control, Tone};
@@ -14,7 +15,7 @@ use crate::app::shell::Slot;
 use crate::app::text_targets::COMMIT_MESSAGE;
 use crate::app::tokens::{self, Shadow, Sp, TextStyle};
 use crate::contracts::mutations::MutationsAction;
-use crate::core::vcs::model::ChangeBucket;
+use crate::core::vcs::model::{ChangeBucket, RefKind};
 
 const PANEL_WIDTH: f32 = 420.0;
 const EDITOR_MIN_LINES: f32 = 3.0;
@@ -48,6 +49,79 @@ pub fn view(mutations: &mut MutationsController, slot: &Slot, cx: &mut ViewConte
         <div h={slot.height} class="flex-row items-center shrink-0" test_id="status.changes">
             {?control}
         </div>
+    }
+}
+
+pub fn sync_controls(
+    mutations: &MutationsController,
+    slot: &Slot,
+    theme: &Theme,
+) -> Option<AnyElement> {
+    let repo = slot.shared.repository.as_ref()?;
+    let snapshot = &repo.snapshot;
+    if !snapshot.capabilities.remotes {
+        return None;
+    }
+    let active = snapshot.refs.iter().find(|reference| {
+        reference.active && matches!(reference.kind, RefKind::Branch | RefKind::Bookmark)
+    })?;
+    let busy = mutations.syncing();
+    let mut items = Vec::new();
+    if let Some((ahead, behind)) = active.ahead_behind {
+        if behind > 0 && snapshot.capabilities.pull_fast_forward {
+            items.push(
+                Control::new(
+                    "status.pull",
+                    behind.to_string(),
+                    MutationsAction::PullCurrentBranch,
+                    Tone::Ghost,
+                )
+                .icon(lucide::ARROW_DOWN)
+                .title(format!("Pull {}", commits(behind)))
+                .disabled(busy),
+            );
+        }
+        if ahead > 0 {
+            items.push(
+                Control::new(
+                    "status.push",
+                    ahead.to_string(),
+                    MutationsAction::PublishDefault,
+                    Tone::Ghost,
+                )
+                .icon(lucide::ARROW_UP)
+                .title(format!("Push {}", commits(ahead)))
+                .disabled(busy),
+            );
+        }
+    }
+    items.push(
+        Control::new(
+            "status.fetch",
+            if busy { "Syncing\u{2026}" } else { "Fetch" },
+            MutationsAction::FetchAllRemotes,
+            Tone::Ghost,
+        )
+        .icon_only(lucide::REFRESH)
+        .disabled(busy),
+    );
+    let chrome = Chrome::from_theme(theme).fit(slot.height);
+    let items: Vec<AnyElement> = items
+        .into_iter()
+        .map(|control| controls::render(control, &chrome))
+        .collect();
+    Some(view! {
+        <div class="flex-row items-center shrink-0" test_id="status.sync">
+            {...items}
+        </div>
+    })
+}
+
+pub fn commits(count: usize) -> String {
+    if count == 1 {
+        "1 commit".to_owned()
+    } else {
+        format!("{count} commits")
     }
 }
 

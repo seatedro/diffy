@@ -1123,24 +1123,19 @@ impl CommandsController {
         }
     }
 
-    fn startup(&mut self, settings: &Settings) -> Reduction {
-        let mut settings = settings.clone();
-        normalize(&mut settings);
+    fn startup(&mut self, snapshot: &Rc<SettingsSnapshot>) -> Reduction {
         #[cfg(not(test))]
         {
             self.frecency = crate::core::frecency::open_default_store();
         }
+        let settings = &snapshot.settings;
         self.request(PlatformRequest::Theme(Box::new(
-            crate::app::theme::settings_theme(&settings),
+            crate::app::theme::settings_theme(settings),
         )));
         self.request(PlatformRequest::Fonts(settings.fonts.clone()));
-        self.install_keymap(&settings);
-        let snapshot = Rc::new(SettingsSnapshot {
-            revision: self.settings.revision + 1,
-            settings,
-        });
+        self.install_keymap(settings);
         self.settings = snapshot.clone();
-        let mut reduction = Reduction::changed().intent(Intent::SettingsChanged(snapshot));
+        let mut reduction = Reduction::changed();
         reduction.merge(self.scan_repositories());
         reduction
     }
@@ -1160,7 +1155,7 @@ fn layer_focus(kind: LayerKind) -> FocusId {
     }
 }
 
-fn normalize(settings: &mut Settings) {
+pub fn normalize(settings: &mut Settings) {
     settings.ui_scale_pct = settings
         .ui_scale_pct
         .clamp(MIN_UI_SCALE_PCT, MAX_UI_SCALE_PCT);
@@ -1866,9 +1861,9 @@ impl Controller for CommandsController {
         }
     }
 
-    fn apply_intent(&mut self, intent: &Intent, _cx: &SharedContext) -> Reduction {
+    fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
         match intent {
-            Intent::Startup(startup) => self.startup(&startup.settings),
+            Intent::Startup(_) => self.startup(&cx.settings),
             Intent::SettingsChanged(snapshot) => {
                 if Rc::ptr_eq(snapshot, &self.settings) || **snapshot == *self.settings {
                     return Reduction::default();

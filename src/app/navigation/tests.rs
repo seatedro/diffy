@@ -15,6 +15,7 @@ use crate::app::commands::fixtures::{self, REPO};
 use crate::app::commands::harness::{self, effects, no_args, startup};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{self, SIDEBAR, SIDEBAR_FILTER, TextCx, TextHost};
+use crate::contracts::commands::CommandsEffect;
 use crate::contracts::navigation::{
     NavigationAction, NavigationEffect, NavigationEvent, RepositorySyncReason, SelectedFile,
     SelectionOrigin, SidebarTab,
@@ -205,6 +206,42 @@ fn cli_repository_activates_the_workspace_and_syncs_it() {
     );
     ui.find(By::role_name(Role::Tab, "History"));
     ui.find(By::role_name(Role::Tab, "Ops"));
+}
+
+#[test]
+fn startup_refs_persist_the_compare_without_resetting_saved_settings() {
+    let mut args = no_args();
+    args.repo = Some(PathBuf::from(REPO));
+    args.left = Some("main".to_owned());
+    args.right = Some("feature".to_owned());
+    let mut saved = Settings {
+        theme_name: "Dracula".to_owned(),
+        wheel_scroll_lines: 7,
+        ..Settings::default()
+    };
+    saved.viewport.wrap_enabled = true;
+    let ui = harness::harness_with(startup(args, saved));
+
+    let written: Vec<Settings> = effects(&ui)
+        .into_iter()
+        .filter_map(|effect| match effect {
+            Effect::Commands(CommandsEffect::SaveSettings(settings)) => Some(*settings),
+            _ => None,
+        })
+        .collect();
+    let last = written.last().expect("the startup compare is persisted");
+    assert!(
+        written
+            .iter()
+            .all(|settings| settings.theme_name == "Dracula"
+                && settings.wheel_scroll_lines == 7
+                && settings.viewport.wrap_enabled)
+    );
+    let compare = last.last_compare.as_ref().expect("last compare");
+    assert_eq!(
+        (compare.left_ref.as_str(), compare.right_ref.as_str()),
+        ("main", "feature")
+    );
 }
 
 #[test]

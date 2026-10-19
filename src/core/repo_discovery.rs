@@ -68,7 +68,7 @@ pub fn scan(options: &RepoDiscovery, known: &[PathBuf], home: Option<&Path>) -> 
         builder
             .standard_filters(false)
             .follow_links(false)
-            .max_depth(Some(usize::from(options.depth) + 1))
+            .max_depth(Some(usize::from(options.depth)))
             .filter_entry(move |entry| keep(entry, hidden));
         builder.build_parallel().run(|| {
             let found = found.clone();
@@ -76,13 +76,17 @@ pub fn scan(options: &RepoDiscovery, known: &[PathBuf], home: Option<&Path>) -> 
                 let Ok(entry) = entry else {
                     return WalkState::Continue;
                 };
-                if !is_marker(&entry) {
+                if !is_repo(&entry) {
                     return WalkState::Continue;
                 }
-                if let (Some(repo), Ok(mut found)) = (entry.path().parent(), found.lock()) {
-                    found.insert(repo.to_path_buf());
+                if let Ok(mut found) = found.lock() {
+                    found.insert(entry.path().to_path_buf());
                 }
-                WalkState::Skip
+                if entry.depth() == 0 {
+                    WalkState::Continue
+                } else {
+                    WalkState::Skip
+                }
             })
         });
     }
@@ -229,20 +233,17 @@ fn keep(entry: &DirEntry, hidden: bool) -> bool {
         return false;
     }
     let name = entry.file_name().to_string_lossy();
-    if REPO_MARKERS.contains(&name.as_ref()) {
-        return true;
-    }
-    if !hidden && name.starts_with('.') {
+    if REPO_MARKERS.contains(&name.as_ref()) || (!hidden && name.starts_with('.')) {
         return false;
     }
     !SKIPPED_DIRS.contains(&name.as_ref())
 }
 
-fn is_marker(entry: &DirEntry) -> bool {
-    entry.depth() > 0
+fn is_repo(entry: &DirEntry) -> bool {
+    entry.file_type().is_some_and(|kind| kind.is_dir())
         && REPO_MARKERS
             .iter()
-            .any(|marker| entry.file_name() == std::ffi::OsStr::new(marker))
+            .any(|marker| fs::symlink_metadata(entry.path().join(marker)).is_ok())
 }
 
 fn git_dir(repo: &Path) -> Option<PathBuf> {
@@ -302,11 +303,15 @@ mod tests {
     }
 
     #[test]
-    fn finds_repos_skips_hidden_and_heavy_folders_and_reads_branches() {
+    fn finds_top_level_repos_skips_hidden_and_heavy_folders_and_reads_branches() {
         let home = TempDir::new().unwrap();
         let root = home.path();
         repo(root, "code/alpha", "ref: refs/heads/main\n");
-        repo(root, "code/alpha/nested", "ref: refs/heads/dev\n");
+        repo(
+            root,
+            "code/alpha/build/checkouts/dep",
+            "ref: refs/heads/dev\n",
+        );
         repo(root, "work/beta", "0123456789abcdef\n");
         repo(root, ".config/hidden", "ref: refs/heads/main\n");
         repo(root, "node_modules/pkg", "ref: refs/heads/main\n");
@@ -328,7 +333,6 @@ mod tests {
             found,
             vec![
                 ("code/alpha".to_owned(), Some("main".to_owned())),
-                ("code/alpha/nested".to_owned(), Some("dev".to_owned())),
                 ("work/beta".to_owned(), Some("0123456".to_owned())),
             ]
         );

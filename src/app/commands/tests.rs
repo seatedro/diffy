@@ -62,6 +62,14 @@ impl CmdApp {
         let mut queue = VecDeque::from(reduction.intents);
         while let Some(intent) = queue.pop_front() {
             match &intent {
+                Intent::Startup(startup) => {
+                    let mut settings = startup.settings.clone();
+                    super::normalize_settings(&mut settings);
+                    self.shared.settings = Rc::new(SettingsSnapshot {
+                        revision: self.shared.settings.revision + 1,
+                        settings,
+                    });
+                }
                 Intent::SettingsChanged(s) => self.shared.settings = s.clone(),
                 Intent::RepositoryChanged(r) => self.shared.repository = Some(r.clone()),
                 _ => {}

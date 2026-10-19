@@ -31,6 +31,7 @@ pub struct Control {
     pub icon: Option<&'static str>,
     pub disabled: bool,
     pub icon_only: bool,
+    pub title: Option<String>,
 }
 
 impl Control {
@@ -49,7 +50,13 @@ impl Control {
             icon: None,
             disabled: false,
             icon_only: false,
+            title: None,
         }
+    }
+
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
     }
 
     pub fn shortcut(mut self, shortcut: &'static str) -> Self {
@@ -203,7 +210,10 @@ pub fn render(control: Control, chrome: &Chrome) -> AnyElement {
     let focus = control.focus();
     let action = control.action.clone();
     let enabled = !control.disabled;
-    let label = control.label.clone();
+    let label = control
+        .title
+        .clone()
+        .unwrap_or_else(|| control.label.clone());
     let shown = (!control.icon_only).then(|| control.label.clone());
     let shortcut = control.shortcut.map(|keys| kbd(keys, chrome, fg));
     let width = control.icon_only.then_some(chrome.height);

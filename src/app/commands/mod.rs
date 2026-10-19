@@ -21,6 +21,6 @@ pub use platform::{
     PlatformRequest, apply as apply_platform, key_action, menu_action, take_requests,
 };
 pub use settings_view::settings_slot;
-pub use state::{CommandsController, LayerKind, builtin_commands};
+pub use state::{CommandsController, LayerKind, builtin_commands, normalize as normalize_settings};
 pub use toasts::{ToastHost, ToastItem};
 pub use view::{overlays, toasts};

@@ -315,7 +315,7 @@ impl DiffViewState {
         let segment = &self.segments[seg as usize];
         let header = *segment.projection.file_rows.get(file as usize)?;
         let index = segment.list_rows.index(header)?;
-        if index as usize >= top {
+        if index as usize > top {
             return None;
         }
         let r = RowRef::Line { seg, row: header };

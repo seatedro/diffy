@@ -13,4 +13,4 @@ pub use state::{
     ClickModifiers, CompareSelection, NavigationController, RepoStatus, normalize_repository_path,
 };
 pub use title::{compare_bar, repo_chip};
-pub use view::{view, viewing_status};
+pub use view::{merge_base_empty, view, viewing_status};

@@ -25,6 +25,7 @@ pub struct CommitBanner {
     byline: String,
     short: String,
     revision: String,
+    copied: bool,
     files: usize,
     totals: Option<(u32, u32)>,
     image: Option<AvatarImage>,
@@ -36,6 +37,7 @@ impl PartialEq for CommitBanner {
             && self.author == other.author
             && self.byline == other.byline
             && self.revision == other.revision
+            && self.copied == other.copied
             && self.files == other.files
             && self.totals == other.totals
             && self.image.as_ref().map(|i| i.cache_key) == other.image.as_ref().map(|i| i.cache_key)
@@ -82,8 +84,13 @@ impl DiffDecorator for NavigationDecorator {
 pub type BannerCache = Option<(Option<CommitBanner>, u32, Rc<NavigationDecorator>)>;
 
 impl NavigationController {
-    pub fn decorator(&self, review: &ReviewController, theme: &Theme) -> Rc<dyn DiffDecorator> {
-        let model = self.banner_model(review);
+    pub fn decorator(
+        &self,
+        review: &ReviewController,
+        copied: Option<&str>,
+        theme: &Theme,
+    ) -> Rc<dyn DiffDecorator> {
+        let model = self.banner_model(review, copied);
         let height = banner_height(theme).to_bits();
         let mut cache = self.banner_cache().borrow_mut();
         if let Some((cached, cached_height, decorator)) = &*cache
@@ -104,7 +111,11 @@ impl NavigationController {
         decorator
     }
 
-    fn banner_model(&self, review: &ReviewController) -> Option<CommitBanner> {
+    fn banner_model(
+        &self,
+        review: &ReviewController,
+        copied: Option<&str>,
+    ) -> Option<CommitBanner> {
         let selected = self.history().selected.as_deref()?;
         let commit = self.find_commit(selected)?;
         let age = relative_age(now_secs(), commit.timestamp);
@@ -138,6 +149,7 @@ impl NavigationController {
             byline,
             short: commit.short_revision.clone(),
             revision: commit.revision.id.clone(),
+            copied: copied == Some(commit.revision.id.as_str()),
             files,
             totals,
             image: review.author_face(commit.author_email.as_deref().unwrap_or_default()),
@@ -191,7 +203,7 @@ impl RenderOnce for CommitBanner {
                         on:click={ShellAction::CopyText(self.revision.clone())}
                     >
                         <text size={mono} class="font-mono" color={tc.text}>{self.short.clone()}</text>
-                        <icon svg={lucide::COPY} size={Ico::XS} color={tc.icon} />
+                        <icon svg={if self.copied { lucide::CHECK } else { lucide::COPY }} size={Ico::XS} color={if self.copied { tc.line_add_text } else { tc.icon }} />
                     </div>
                     <div
                         class="flex-row items-center shrink-0"

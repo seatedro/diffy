@@ -16,7 +16,10 @@ use super::rows::{self, Row};
 use super::state::{ListMetrics, RepoStatus};
 use crate::app::commands::keymap::WORKSPACE_CONTEXT;
 use crate::app::icons;
-use crate::app::mutations::{RowAction, change_actions, context_menu, operation_log_actions};
+use crate::app::mutations::{
+    Chrome, Control, RowAction, Tone, change_actions, context_menu, operation_log_actions,
+    render_control,
+};
 use crate::app::review::{ReviewController, author_avatar};
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SIDEBAR, SIDEBAR_FILTER};
@@ -28,6 +31,7 @@ use crate::contracts::navigation::{
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{Action, LogicalFocus, ShellAction};
 use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
+use crate::core::compare::CompareMode;
 use crate::core::ref_catalog::relative_age;
 use crate::core::vcs::model::{ChangeBucket, VcsChange};
 use diffy_diff::FileStatus;
@@ -328,6 +332,8 @@ fn files(
     if rows.is_empty() {
         return if filtering {
             empty_state("No matching files", "Try a different filter", theme)
+        } else if let Some((title, detail)) = nav.merge_base_hint() {
+            empty_state(&title, &detail, theme)
         } else if has_manifest {
             empty_state(
                 "No changes",
@@ -1065,6 +1071,48 @@ fn action_bar(actions: &[RowAction], theme: &Theme) -> Option<AnyElement> {
             aria-label="Row actions"
         >
             {...buttons}
+        </div>
+    })
+}
+
+pub fn merge_base_empty(nav: &NavigationController, theme: &Theme) -> Option<AnyElement> {
+    let (title, detail) = nav.merge_base_hint()?;
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let chrome = Chrome::from_theme(theme);
+    let direct = render_control(
+        Control::new(
+            "diff.empty.direct",
+            "Compare directly",
+            NavigationAction::SetCompareMode(CompareMode::TwoDot),
+            Tone::Secondary,
+        ),
+        &chrome,
+    );
+    let swap = render_control(
+        Control::new(
+            "diff.empty.swap",
+            "Swap sides",
+            NavigationAction::SwapRefs,
+            Tone::Ghost,
+        )
+        .icon(lucide::ARROW_LEFT_RIGHT),
+        &chrome,
+    );
+    Some(view! {
+        <div
+            class="w-full h-full flex-col items-center justify-center"
+            gap={tokens::scaled(Sp::XS, scale)}
+            p={tokens::scaled(Sp::LG, scale)}
+            bg={tc.editor_surface}
+            test_id="diff.empty"
+        >
+            <text size={TextStyle::Body.font_size(theme)} class="font-medium" color={tc.text}>{title}</text>
+            <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>{detail}</text>
+            <div class="flex-row items-center" gap={tokens::scaled(Sp::SM, scale)} pt={tokens::scaled(Sp::MD, scale)}>
+                {direct}
+                {swap}
+            </div>
         </div>
     })
 }

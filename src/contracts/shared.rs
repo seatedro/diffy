@@ -48,4 +48,5 @@ pub struct SharedContext {
     pub selected_file: Option<crate::contracts::navigation::SelectedFile>,
     pub selection: Option<SourceTarget>,
     pub review: Option<Rc<ReviewContext>>,
+    pub copied: Option<Rc<str>>,
 }

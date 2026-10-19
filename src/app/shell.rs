@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
@@ -20,7 +21,7 @@ use crate::app::text_targets::{self, TextCx};
 use crate::app::tokens::{self, Layout, Sp, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
-use crate::contracts::commands::{CommandsAction, ToastUpdate};
+use crate::contracts::commands::{CommandsAction, SettingsSnapshot, ToastUpdate};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, AppMessage, AppStartup, Controller, Effect, Intent, Reduction, ShellAction,
@@ -48,6 +49,8 @@ pub struct Slot<'a> {
     pub height: f32,
 }
 
+const COPIED_MS: u64 = 1500;
+
 #[derive(Debug)]
 struct ShellState {
     display_name: String,
@@ -57,6 +60,7 @@ struct ShellState {
     sidebar: SplitState,
     repository_dialog: Option<DialogId>,
     scan_folder_dialog: Option<DialogId>,
+    copied_until: u64,
 }
 
 impl ShellState {
@@ -73,6 +77,7 @@ impl ShellState {
             sidebar: SplitState::new(Axis::Horizontal, vec![sidebar, main]),
             repository_dialog: None,
             scan_folder_dialog: None,
+            copied_until: 0,
         }
     }
 
@@ -142,6 +147,13 @@ impl<D: EffectDispatcher> DiffyApp<D> {
 
     pub fn debug_overlay(&self) -> bool {
         self.shell.debug_overlay
+    }
+
+    fn copy(&mut self, text: String, cx: &mut UiContext) {
+        cx.window.set_clipboard_text(&text);
+        self.tick(cx);
+        self.shell.copied_until = self.clock_ms + COPIED_MS;
+        self.shared.copied = Some(text.into());
     }
 
     fn tick(&mut self, cx: &UiContext) {
@@ -239,8 +251,19 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 shared.settings = settings.clone();
                 true
             }
-            Intent::Startup(_)
-            | Intent::OpenPullRequest { .. }
+            Intent::Startup(startup) => {
+                let mut settings = startup.settings.clone();
+                commands::normalize_settings(&mut settings);
+                if let Some(width) = settings.sidebar_width_px {
+                    self.shell.sidebar.set_size(0, width as f32);
+                }
+                shared.settings = Rc::new(SettingsSnapshot {
+                    revision: shared.settings.revision + 1,
+                    settings,
+                });
+                true
+            }
+            Intent::OpenPullRequest { .. }
             | Intent::RequestAnnotation(_)
             | Intent::OpenTextCompare
             | Intent::RequestCompare(_)
@@ -283,7 +306,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                         ..FileDialog::default()
                     }));
                 }
-                ShellEffect::SetClipboard(text) => cx.window.set_clipboard_text(&text),
+                ShellEffect::SetClipboard(text) => self.copy(text, cx),
                 ShellEffect::Focus(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
                 effect => self
                     .dispatcher
@@ -299,7 +322,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
     fn shell_action(&mut self, action: ShellAction, cx: &mut UiContext) {
         match action {
             ShellAction::FocusLogical(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
-            ShellAction::CopyText(text) => cx.window.set_clipboard_text(&text),
+            ShellAction::CopyText(text) => self.copy(text, cx),
             ShellAction::ToggleDebugOverlay => self.shell.debug_overlay = !self.shell.debug_overlay,
             ShellAction::Minimize => cx.window.minimize(),
             ShellAction::ToggleMaximize => cx.window.toggle_maximized(),
@@ -426,10 +449,11 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             .viewport
             .interaction
             .sync_review(&presentation);
-        let banner = self
-            .controllers
-            .navigation
-            .decorator(&self.controllers.review, theme);
+        let banner = self.controllers.navigation.decorator(
+            &self.controllers.review,
+            self.shared.copied.as_deref(),
+            theme,
+        );
         let decorator = self.slots.decorator(
             presentation,
             self.controllers.mutations.presentation(),
@@ -441,12 +465,15 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             width: main_w,
             height,
         };
-        let main = viewport::interaction::view_shared(
-            &mut self.controllers.viewport.interaction,
-            &slot,
-            decorator,
-            cx,
-        );
+        let main = match navigation::merge_base_empty(&self.controllers.navigation, theme) {
+            Some(empty) => empty,
+            None => viewport::interaction::view_shared(
+                &mut self.controllers.viewport.interaction,
+                &slot,
+                decorator,
+                cx,
+            ),
+        };
         let bar = mutations::selection_bar(&mut self.controllers.mutations, &slot, cx);
         let main = view! { <div w={main_w} h={height} class="relative">{main}{?bar}</div> };
         let content = match files {
@@ -478,7 +505,8 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         let delivery = delivery::view(&mut self.controllers.delivery, &slot, cx);
         let viewing = navigation::viewing_status(&self.controllers.navigation, theme);
         let small = TextStyle::BodySmall.font_size(theme);
-        let branch = branch_status(&self.shared, theme);
+        let sync = mutations::sync_controls(&self.controllers.mutations, &slot, theme);
+        let branch = branch_status(&self.shared, sync, theme);
         let engine = match self
             .shared
             .settings
@@ -554,6 +582,12 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn view(&mut self, cx: &mut ViewContext) -> AnyElement {
         self.clock_ms = cx.frame.elapsed().as_millis() as u64;
+        if self.shared.copied.is_some() {
+            match self.shell.copied_until.checked_sub(self.clock_ms) {
+                Some(left) if left > 0 => cx.frame.request_frame_in(Duration::from_millis(left)),
+                _ => self.shared.copied = None,
+            }
+        }
         let theme = cx.theme;
         let (width, height) = cx.frame.size();
         let title_h = theme.metrics.title_bar_height.min(height);
@@ -723,7 +757,11 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
     }
 }
 
-fn branch_status(shared: &SharedContext, theme: &Theme) -> Option<AnyElement> {
+fn branch_status(
+    shared: &SharedContext,
+    sync: Option<AnyElement>,
+    theme: &Theme,
+) -> Option<AnyElement> {
     let repository = shared.repository.as_ref()?;
     let active = repository.snapshot.refs.iter().find(|reference| {
         reference.active && matches!(reference.kind, RefKind::Branch | RefKind::Bookmark)
@@ -731,9 +769,6 @@ fn branch_status(shared: &SharedContext, theme: &Theme) -> Option<AnyElement> {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);
-    let sync = active.ahead_behind.map(|(ahead, behind)| {
-        view! { <text size={small} class="font-mono" color={tc.text_muted}>{format!("↑{ahead} ↓{behind}")}</text> }
-    });
     Some(view! {
         <div
             class="flex-row items-center shrink-0"

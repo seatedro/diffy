@@ -213,9 +213,10 @@ fn auth_modal(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEleme
             vec![cancel()],
         ),
         AuthStatus::Awaiting(flow) => {
+            let copied = slot.shared.copied.as_deref() == Some(flow.user_code.as_str());
             let copy = controls::icon_button(
-                lucide::COPY,
-                "Copy code",
+                if copied { lucide::CHECK } else { lucide::COPY },
+                if copied { "Copied" } else { "Copy code" },
                 ShellAction::CopyText(flow.user_code.clone()),
                 theme,
             );

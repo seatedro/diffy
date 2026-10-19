@@ -357,6 +357,7 @@ pub struct RowPaint {
     pub quiet: bool,
     pub fold: Option<(u32, bool)>,
     pub hint: Option<Arc<str>>,
+    pub summary: Option<Arc<str>>,
 }
 
 impl RowPaint {

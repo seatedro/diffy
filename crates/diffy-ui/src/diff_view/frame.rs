@@ -5,8 +5,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use diffy_diff::{
-    ChangeIntensity, DiffDocument, FileStatus, InlineDetail, InlineMode, InlineOptions, Mode,
-    RowKind, Side, line_detail, merge_pair, moved_from,
+    ChangeIntensity, DiffDocument, FileStatus, InlineDetail, InlineMode, InlineOptions, ItemChange,
+    Mode, RowKind, Side, line_detail, merge_pair, moved_from,
 };
 use diffy_syntax::HighlightKind;
 use quark_render::FontKind;
@@ -591,6 +591,7 @@ impl DiffViewState {
             quiet: false,
             fold: None,
             hint: None,
+            summary: None,
         };
         match r {
             RowRef::Line { seg, row } => {
@@ -689,6 +690,7 @@ impl DiffViewState {
                 .reflow(row)
                 .map(|count| (count, segment.expansion.reflow_open(file, p.new[r]))),
             hint: None,
+            summary: None,
         };
         match kind {
             RowKind::FileHeader => {
@@ -702,6 +704,7 @@ impl DiffViewState {
                     (Some(old), Some(new)) if old != new => format!("{old} \u{2192} {new}").into(),
                     _ => doc.path(file).into(),
                 };
+                paint.summary = semantic_summary(doc, file);
             }
             RowKind::HunkHeader => paint.title = hunk_title(doc, p.hunk[r]).into(),
             RowKind::Gap => {
@@ -1146,6 +1149,32 @@ fn renamed_ranges(doc: &DiffDocument, file: u32, side: Side, line: u32) -> Vec<R
         .filter(|span| span.intensity == ChangeIntensity::Renamed)
         .map(|span| span.start as usize..span.end as usize)
         .collect()
+}
+
+fn semantic_summary(doc: &DiffDocument, file: u32) -> Option<Arc<str>> {
+    let semantics = doc.semantics(file)?;
+    let (mut added, mut removed, mut edits) = (0, 0, 0);
+    for item in semantics.outline() {
+        match item.change {
+            ItemChange::Added => added += 1,
+            ItemChange::Removed => removed += 1,
+            ItemChange::Edited(n) => edits += n,
+            ItemChange::Renamed | ItemChange::Moved => {}
+        }
+    }
+    let counts = [
+        (semantics.renames().len() as u32, "rename", "renames"),
+        (semantics.moves().len() as u32, "move", "moves"),
+        (added, "added", "added"),
+        (removed, "removed", "removed"),
+        (edits, "edit", "edits"),
+    ];
+    let parts: Vec<String> = counts
+        .into_iter()
+        .filter(|&(n, _, _)| n > 0)
+        .map(|(n, one, many)| format!("{n} {}", if n == 1 { one } else { many }))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" \u{00b7} ").into())
 }
 
 fn move_hint(doc: &DiffDocument, file: u32, line: u32) -> Option<Arc<str>> {

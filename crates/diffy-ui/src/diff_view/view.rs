@@ -1395,6 +1395,9 @@ fn file_header(
             if paint.binary {
                 <text size={small} color={colors.muted}>"binary"</text>
             }
+            if let Some(summary) = &paint.summary {
+                <text size={small} class="truncate" color={colors.muted}>{&**summary}</text>
+            }
             if let Some(metadata) = metadata {
                 {metadata}
             }

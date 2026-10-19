@@ -158,9 +158,35 @@ pub(super) fn line(
             height: r.height,
         })
     };
+    let text = layout.text();
+    let solid = text.len() - text.trim_start().len()..text.trim_end().len();
+    let whole = matches!(words, [only] if !solid.is_empty() && only.start <= solid.start && only.end >= solid.end);
+    let (top, bottom) = (origin.1, origin.1 + row_height.max(layout.size().1));
     for range in words {
-        for rect in rects(range.clone()) {
-            scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.word));
+        let spans: Vec<Rect> = rects(range.clone()).collect();
+        if !whole {
+            for rect in spans {
+                scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.word));
+            }
+            continue;
+        }
+        let first = spans.iter().map(|r| r.y).fold(f32::INFINITY, f32::min);
+        let last = spans.iter().map(|r| r.y).fold(f32::NEG_INFINITY, f32::max);
+        for rect in spans {
+            let y = if rect.y == first { top } else { rect.y };
+            let end = if rect.y == last {
+                bottom
+            } else {
+                rect.y + rect.height
+            };
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    y,
+                    height: end - y,
+                    ..rect
+                },
+                color: colors.word,
+            });
         }
     }
     for mark in search {

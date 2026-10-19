@@ -189,7 +189,7 @@ fn colors(palette: &SemanticPalette) -> ThemeColors {
         modal_surface: rgb!(l.modal_surface),
         overlay_scrim: rgb!(l.overlay_scrim),
         border: rgb!(l.border),
-        control_border: rgb!(l.border_variant).lerp(text_muted, CONTROL_BORDER_TINT),
+        control_border: text_muted,
         border_variant: rgb!(l.border_variant),
         focus_border: rgb!(l.focus_border),
         text: rgb!(l.text),
@@ -240,8 +240,6 @@ fn colors(palette: &SemanticPalette) -> ThemeColors {
         syntax_operator: rgb!(l.syntax_operator),
     }
 }
-
-const CONTROL_BORDER_TINT: f32 = 0.35;
 
 fn flatten(tint: Color, base: Color) -> Color {
     base.lerp(tint.with_alpha(255), f32::from(tint.a) / 255.0)

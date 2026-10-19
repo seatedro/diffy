@@ -1099,3 +1099,17 @@ fn activation_click_on_the_backdrop_keeps_the_palette_open() {
     ));
     assert_eq!(ui.app().commands.top_layer(), None);
 }
+
+#[test]
+fn a_tooltip_shows_after_the_pointer_rests_and_hides_when_it_leaves() {
+    let mut ui = harness::harness();
+    let button = ui.find(By::role_name(Role::Button, "Syntax languages"));
+    ui.pointer_move(button.center());
+    ui.frame();
+    assert!(!ui.painted_text().contains("Syntax languages"));
+    ui.advance(600);
+    assert!(ui.painted_text().contains("Syntax languages"));
+    ui.pointer_move((button.center().0, 10.0));
+    ui.frame();
+    assert!(!ui.painted_text().contains("Syntax languages"));
+}

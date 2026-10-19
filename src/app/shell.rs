@@ -7,6 +7,7 @@ use std::time::Duration;
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
 use quark_app::{AppEvent as WindowEvent, InputEvent, UiApp, UiContext, UiSender, ViewContext};
+use quark_components::tooltip::{TooltipSide, tooltip_layer};
 use quark_components::{Axis, Pane, Split, SplitEvent, SplitState};
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
@@ -50,6 +51,7 @@ pub struct Slot<'a> {
 }
 
 const COPIED_MS: u64 = 1500;
+const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
 
 #[derive(Debug)]
 struct ShellState {
@@ -628,6 +630,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         let overlays = commands::overlays(&mut self.controllers.commands, &slot, external, cx);
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
+        let tooltip = tooltip(cx, width, height);
         view! {
             <div w={width} h={height} class="flex-col relative overflow-hidden" bg={theme.colors.app_bg}>
                 {title}
@@ -638,6 +641,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 {?overlays}
                 {?languages}
                 {?toasts}
+                {?tooltip}
             </div>
         }
     }
@@ -786,4 +790,31 @@ fn branch_status(
             {?sync}
         </div>
     })
+}
+
+fn tooltip(cx: &mut ViewContext, width: f32, height: f32) -> Option<AnyElement> {
+    let hovered = cx.hovered_tooltip()?.clone();
+    let now = cx.frame.elapsed();
+    let due = hovered.since + TOOLTIP_DELAY;
+    if now < due {
+        cx.frame.request_frame_in(due - now);
+        return None;
+    }
+    let theme = cx.theme;
+    let metrics = &theme.metrics;
+    let size = theme
+        .components
+        .tooltip
+        .font_size
+        .map_or(metrics.ui_small_font_size, |s| s * metrics.ui_scale());
+    let box_h = size * 2.4;
+    let box_w = hovered.text.chars().count() as f32 * size * 0.6 + size * 2.0;
+    let x = hovered.pointer.0.min(width - box_w).max(0.0);
+    let below = hovered.bounds.y + hovered.bounds.height;
+    let (y, side) = if below + box_h > height {
+        (hovered.bounds.y - box_h, TooltipSide::Top)
+    } else {
+        (below, TooltipSide::Bottom)
+    };
+    Some(tooltip_layer(&hovered.text, x, y, side, theme))
 }

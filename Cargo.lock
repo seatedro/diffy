@@ -5705,6 +5705,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "tree-sitter",
 ]
 
 [[package]]

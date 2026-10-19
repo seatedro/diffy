@@ -3,6 +3,7 @@ mod check;
 mod corpus;
 mod engine;
 mod fixtures;
+mod mutate;
 mod render;
 mod report;
 
@@ -29,6 +30,10 @@ enum Command {
     Corpus(corpus::Args),
     #[command(about = "Checks each engine against the hand-checked fixtures.")]
     Fixtures(fixtures::Args),
+    #[command(
+        about = "Applies known edits to real files and checks the diff reports exactly them."
+    )]
+    Mutate(mutate::Args),
     #[command(about = "Renders one file's diff, from two files or from a commit.")]
     Show(ShowArgs),
 }
@@ -53,6 +58,7 @@ fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Corpus(args) => corpus::run(args),
         Command::Fixtures(args) => fixtures::run(args),
+        Command::Mutate(args) => mutate::run(args),
         Command::Show(args) => show(args),
     };
     match result {

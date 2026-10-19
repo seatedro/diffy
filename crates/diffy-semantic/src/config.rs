@@ -27,7 +27,7 @@ const GO: Config = Config {
     delimiters: &[BRACE, BRACKET, PAREN],
 };
 const JAVASCRIPT: Config = Config {
-    atoms: &["string", "template_string", "regex"],
+    atoms: &["string", "string_fragment", "regex"],
     delimiters: &[BRACKET, PAREN, BRACE, ANGLE],
 };
 const JSON: Config = Config {
@@ -39,7 +39,7 @@ const NIX: Config = Config {
     delimiters: &[BRACE, BRACKET],
 };
 const PYTHON: Config = Config {
-    atoms: &["string"],
+    atoms: &["string_content"],
     delimiters: &[PAREN, BRACKET, BRACE],
 };
 const RUST: Config = Config {
@@ -51,11 +51,11 @@ const TOML: Config = Config {
     delimiters: &[BRACE, BRACKET],
 };
 const TSX: Config = Config {
-    atoms: &["string", "template_string"],
+    atoms: &["string", "string_fragment"],
     delimiters: &[BRACE, PAREN, BRACKET, ANGLE],
 };
 const TYPESCRIPT: Config = Config {
-    atoms: &["string", "template_string", "regex", "predefined_type"],
+    atoms: &["string", "string_fragment", "regex", "predefined_type"],
     delimiters: &[BRACE, PAREN, BRACKET, ANGLE],
 };
 

@@ -8,6 +8,7 @@ release mode; debug timings are meaningless.
 cargo build --release -p semantic-eval
 target/release/semantic-eval corpus --repo ../some-repo --commits 300 --phases
 target/release/semantic-eval fixtures
+target/release/semantic-eval mutate --repo ../some-repo --ext rs,py
 target/release/semantic-eval show --repo ../some-repo --commit <sha> src/lib.rs
 ```
 
@@ -48,3 +49,19 @@ one.
 `--bless ENGINE` fills empty expectations with that engine's output, and
 `--force` overwrites the existing ones too; review the result before
 committing it.
+
+## mutate
+
+Applies edits with a known reading to the tracked files of `--repo` and
+checks the native engine reports exactly that edit, in both directions:
+
+- `rename`/`rename`: an identifier renamed at every use is a rename, with
+  every changed line paired and nothing else marked.
+- `swap`: two adjacent functions swapped is one move.
+- `reflow`/`join`: a call's arguments split over lines, or joined back,
+  marks nothing and folds.
+- `wrap`/`unwrap`: statements wrapped in an `if` mark only the wrapper
+  lines and pair every inner line with its original.
+
+Edits that add parse errors count as `invalid` and are skipped.
+`--out DIR` writes each failure as a fixture with an empty expectation.

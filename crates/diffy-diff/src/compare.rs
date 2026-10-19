@@ -443,16 +443,15 @@ impl Comparison {
         let mut from = 0;
         while from < run.len() {
             let rest = &run[from..];
-            let starts = matches!(rest[0], Step::Removed(_) | Step::Paired(..));
             let fold = (1..=rest.len().min(MAX_REFLOW_STEPS))
                 .rev()
-                .filter(|_| starts)
+                .filter(|_| solid(doc, file, rest[0]))
                 .find(|&k| {
                     let part = &rest[..k];
                     let uneven = part
                         .iter()
                         .any(|s| matches!(s, Step::Removed(_) | Step::Added(_)));
-                    uneven && reflowed(doc, file, part)
+                    uneven && solid(doc, file, part[k - 1]) && reflowed(doc, file, part)
                 });
             let Some(k) = fold else {
                 self.steps.push(rest[0]);
@@ -621,6 +620,22 @@ fn removes(doc: &DiffDocument, file: u32, line: u32) -> bool {
             crate::semantic::ChangeIntensity::Novel | crate::semantic::ChangeIntensity::NovelWord
         )
     })
+}
+
+fn solid(doc: &DiffDocument, file: u32, step: Step) -> bool {
+    if !matches!(step, Step::Removed(_) | Step::Added(_) | Step::Paired(..)) {
+        return false;
+    }
+    let (o, n) = step.lines();
+    [(Side::Old, o), (Side::New, n)]
+        .iter()
+        .any(|&(side, line)| {
+            line != NONE
+                && doc
+                    .text(file, side)
+                    .display_line(line)
+                    .is_some_and(|text| !text.trim().is_empty())
+        })
 }
 
 fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {

@@ -335,7 +335,7 @@ impl PipelineController {
             .loaded
             .iter()
             .filter(|(_, prepared)| {
-                !prepared.document().prefers_structural(0) && arrived(&prepared.document().path(0))
+                !prepared.document().prefers_structural(0) && arrived(prepared.document().path(0))
             })
             .map(|(&key, _)| key)
             .collect();

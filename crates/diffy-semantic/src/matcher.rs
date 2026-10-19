@@ -143,6 +143,11 @@ impl Matcher<'_, '_> {
             && ta.text(na.close.clone()) == tb.text(nb.close.clone())
     }
 
+    fn delimited(&self, a: u32) -> bool {
+        let node = &self.trees[0].nodes[a as usize];
+        !node.open.is_empty() || !node.close.is_empty()
+    }
+
     fn seq(&mut self, a: &[u32], b: &[u32]) -> Result<(), Fallback> {
         self.spend(a.len() + b.len())?;
         let mut start = 0;
@@ -196,6 +201,9 @@ impl Matcher<'_, '_> {
             return Ok(());
         }
         if a.len() == 1 && b.len() == 1 && self.pairable_lists(a[0], b[0]) {
+            if !self.delimited(a[0]) && self.splice(a, b, false)? {
+                return Ok(());
+            }
             return self.pair_lists(a[0], b[0]);
         }
         if a.len() == 1 && b.len() == 1 && self.identifier(0, a[0]) && self.identifier(1, b[0]) {
@@ -321,10 +329,10 @@ impl Matcher<'_, '_> {
         wanted: &[u32],
         similar: bool,
     ) -> Result<Option<Splice>, Fallback> {
-        let mut exact: HashMap<u64, usize> = HashMap::new();
+        let mut exact: HashMap<u64, Vec<usize>> = HashMap::new();
         for (index, &n) in wanted.iter().enumerate() {
             if self.significant(other, n) {
-                exact.entry(self.hash(other, n)).or_insert(index);
+                exact.entry(self.hash(other, n)).or_default().push(index);
             }
         }
         if exact.is_empty() {
@@ -357,7 +365,15 @@ impl Matcher<'_, '_> {
                 let node = &tree.nodes[at as usize];
                 let parent = parents.last().copied().unwrap_or(item);
                 let hit = match exact.get(&node.hash) {
-                    Some(&index) => Some((node.next - at, index)),
+                    Some(indices) => {
+                        let after = lists.get(&parent).map_or(0, |(_, range)| range.end);
+                        let index = indices
+                            .iter()
+                            .copied()
+                            .find(|&i| i >= after)
+                            .unwrap_or(indices[0]);
+                        Some((node.next - at, index))
+                    }
                     None if node.class == Class::List && parents.len() <= SIMILAR_DEPTH => {
                         self.similar_hit(side, at, &candidates)
                     }
@@ -435,9 +451,14 @@ impl Matcher<'_, '_> {
             }
             true
         });
+        let small = |side: usize, node: u32| {
+            let tree = self.trees[side];
+            tree.nodes[node as usize].next - node < MIN_MOVE_NODES
+        };
+        new.retain(|&n| !small(1, n));
         let old: Vec<(u32, Vec<u64>)> = old
             .into_iter()
-            .filter(|&o| !taken[o as usize])
+            .filter(|&o| !taken[o as usize] && !small(0, o))
             .map(|o| (o, self.signature(0, o)))
             .collect();
         let mut used = vec![false; old.len()];
@@ -656,7 +677,7 @@ impl Matcher<'_, '_> {
         while at < tree.nodes.len() as u32 && out.len() < MAX_MOVE_CANDIDATES {
             let node = &tree.nodes[at as usize];
             let size = node.next - at;
-            if node.class == Class::List && size >= MIN_MOVE_NODES {
+            if node.class == Class::List && (size >= MIN_MOVE_NODES || self.item(side, at)) {
                 self.spend(size as usize)?;
                 if (at..node.next).all(|k| self.partner[side][k as usize] == NONE) {
                     out.push(at);
@@ -667,6 +688,13 @@ impl Matcher<'_, '_> {
             at += 1;
         }
         Ok(out)
+    }
+
+    fn item(&self, side: usize, node: u32) -> bool {
+        self.trees[side]
+            .items
+            .binary_search_by_key(&node, |item| item.node)
+            .is_ok()
     }
 
     fn identifier(&self, side: usize, node: u32) -> bool {
@@ -824,7 +852,37 @@ fn slide(mut changes: Vec<myers::Change>, a: &[u32], b: &[u32]) -> Vec<myers::Ch
             }
         }
     }
-    changes
+    let mut out: Vec<myers::Change> = Vec::with_capacity(changes.len());
+    for c in changes {
+        if let Some(p) = out.last_mut()
+            && let Some(merged) = join(p, &c, a, b)
+        {
+            *p = merged;
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn join(p: &myers::Change, c: &myers::Change, a: &[u32], b: &[u32]) -> Option<myers::Change> {
+    let run = c.old.start - p.old.end;
+    let back = |items: &[u32], r: &Range<u32>| {
+        (1..=run).all(|t| items[(r.start - t) as usize] == items[(r.end - t) as usize])
+    };
+    if c.new.is_empty() && !p.new.is_empty() && back(a, &c.old) {
+        return Some(myers::Change {
+            old: p.old.start..c.old.end - run,
+            new: p.new.clone(),
+        });
+    }
+    if c.old.is_empty() && !p.old.is_empty() && back(b, &c.new) {
+        return Some(myers::Change {
+            old: p.old.clone(),
+            new: p.new.start..c.new.end - run,
+        });
+    }
+    None
 }
 
 fn whole_lines(tree: &Tree<'_>, node: u32) -> bool {

@@ -86,7 +86,7 @@ pub fn run(engine: Engine, path: &str, old: &[u8], new: &[u8]) -> Result<Run, St
     }
 }
 
-fn language(name: &str) -> Option<diffy_semantic::Language> {
+pub fn language(name: &str) -> Option<diffy_semantic::Language> {
     grammars().tree_sitter_language(&LanguageId::from_fence(name)?)
 }
 

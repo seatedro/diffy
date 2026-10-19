@@ -176,6 +176,18 @@ impl DiffViewState {
         }
     }
 
+    pub fn toggle_reflow(&mut self, file: u32, line: u32) -> bool {
+        let Some((seg, file)) = self.locate(file) else {
+            return false;
+        };
+        self.segments[seg].expansion.toggle_reflow(file, line);
+        let anchor = self.anchor();
+        let mode = self.mode;
+        self.segments[seg].rebuild(mode);
+        self.rebuild_rows(anchor);
+        true
+    }
+
     /// Reveals lines of a collapsed gap; see [`diffy_diff::Expansion::reveal`].
     /// The gap's `file` is the view's file index (the document's, for the
     /// static view).

@@ -141,6 +141,10 @@ pub enum DiffEvent {
     ScrollTo(f32),
     Key(DiffKey),
     Expand(GapId, Reveal),
+    ToggleReflow {
+        file: u32,
+        line: u32,
+    },
     /// The open control of a bounded preview's last row.
     OpenFull,
     /// The add-annotation control of a line (gutter utility or focused

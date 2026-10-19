@@ -1031,7 +1031,7 @@ fn a_reflowed_call_shows_only_its_new_lines() {
     use RowKind::{Context, Reflowed};
     assert_eq!(
         unified_kinds(&reflow_doc(&[])),
-        [Context, Reflowed, Reflowed, Reflowed, Reflowed, Context]
+        [Context, Reflowed, Context]
     );
 }
 

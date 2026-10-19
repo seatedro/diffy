@@ -498,6 +498,10 @@ impl DiffViewState {
                 ) {
                     self.long_lines.generation().hash(&mut h);
                 }
+                if let Some(count) = p.reflow(row) {
+                    let open = segment.expansion.reflow_open(file, p.new[row as usize]);
+                    (count, open).hash(&mut h);
+                }
                 if p.kind[row as usize] == RowKind::FileHeader {
                     let unit = segment.unit(file);
                     (self.collapsed.contains(&unit), self.file_annotations(unit)).hash(&mut h);
@@ -584,6 +588,8 @@ impl DiffViewState {
             syntax: None,
             collapsed: false,
             annotations: 0,
+            quiet: false,
+            fold: None,
         };
         match r {
             RowRef::Line { seg, row } => {
@@ -658,6 +664,7 @@ impl DiffViewState {
         let r = row as usize;
         let (kind, file) = (p.kind[r], p.file[r]);
         let meta = &doc.files().meta[file as usize];
+        let quiet = p.mode == Mode::Unified && doc.prefers_structural(file);
         let mut paint = RowPaint {
             stamp,
             kind: PreparedKind::Diff(kind),
@@ -676,6 +683,10 @@ impl DiffViewState {
             syntax: None,
             collapsed: false,
             annotations: 0,
+            quiet,
+            fold: p
+                .reflow(row)
+                .map(|count| (count, segment.expansion.reflow_open(file, p.new[r]))),
         };
         match kind {
             RowKind::FileHeader => {
@@ -710,6 +721,15 @@ impl DiffViewState {
                     title.push_str(&hunk_title(doc, h));
                 }
                 paint.title = title.into();
+            }
+            RowKind::Reflowed
+                if let Some((count, false)) = paint.fold
+                    && let Some(line) = self.folded_line(seg, row, count, text, layouts, scale) =>
+            {
+                paint.source_lines[Side::New as usize] = p
+                    .line(row, Side::New)
+                    .map(|i| source_line(doc, file, Side::New, i));
+                paint.sides[Side::New as usize] = Some(line);
             }
             RowKind::Merged
                 if let Some(line) = self.merged_line(seg, row, text, layouts, scale, columns) =>
@@ -770,10 +790,15 @@ impl DiffViewState {
                         },
                         line,
                     );
-                    let whole = super::paint::covers_text(&words, line);
+                    let whole = !quiet && super::paint::covers_text(&words, line);
                     if whole {
                         words.clear();
                     }
+                    let (words, struck) = if quiet && kind == RowKind::Removed {
+                        (Vec::new(), words)
+                    } else {
+                        (words, Vec::new())
+                    };
                     paint.sides[side as usize] = Some(LinePaint {
                         layout,
                         tones,
@@ -782,7 +807,8 @@ impl DiffViewState {
                         detail,
                         word_detail,
                         window,
-                        struck: Vec::new(),
+                        unspoken: Vec::new(),
+                        struck,
                         removed_spans: Arc::from([]),
                         merge: None,
                     });
@@ -790,6 +816,50 @@ impl DiffViewState {
             }
         }
         paint
+    }
+
+    fn folded_line(
+        &self,
+        seg: usize,
+        row: u32,
+        count: u32,
+        text: &mut TextSystem,
+        layouts: &mut LayoutCache,
+        scale: f32,
+    ) -> Option<LinePaint> {
+        let segment = &self.segments[seg];
+        let (doc, p) = (&segment.doc, &segment.projection);
+        let file = p.file[row as usize];
+        let first = p.line(row, Side::New)?;
+        let store = doc.text(file, Side::New);
+        let indent = store.display_line(first)?;
+        let indent = &indent[..indent.len() - indent.trim_start().len()];
+        let mut joined = String::from(indent);
+        for line in first..first + count {
+            let part = store.display_line(line).unwrap_or("").trim();
+            let tight = joined.ends_with(['(', '[', '{'])
+                || part.starts_with([')', ']', '}', ',', ';', '.'])
+                || joined.len() == indent.len();
+            if !tight {
+                joined.push(' ');
+            }
+            joined.push_str(part);
+        }
+        let params = TextParams::new(joined, self.text_style()).scale_factor(scale);
+        let layout = layouts.layout(text, &params).ok()?;
+        Some(LinePaint {
+            layout,
+            tones: Arc::from([]),
+            words: Vec::new(),
+            detail: LineDetail::Complete,
+            word_detail: WordDetail::Done(InlineDetail::Exact),
+            window: None,
+            struck: Vec::new(),
+            unspoken: Vec::new(),
+            removed_spans: Arc::from([]),
+            merge: None,
+            whole: false,
+        })
     }
 
     fn merged_line(
@@ -822,6 +892,7 @@ impl DiffViewState {
         let mut removed = Vec::new();
         let mut words = Vec::new();
         let mut struck = Vec::new();
+        let mut unspoken = Vec::new();
         let mut merge = LineMerge::default();
         let mut previous_old: Option<usize> = None;
         for piece in pieces {
@@ -831,6 +902,7 @@ impl DiffViewState {
             {
                 let at = composed.len();
                 composed.push(' ');
+                unspoken.push(at..composed.len());
                 merge.push(at..composed.len(), Side::Old, end..end);
             }
             let side = piece.side as usize;
@@ -862,7 +934,10 @@ impl DiffViewState {
                 previous_old = Some(range.end);
             }
             match (piece.side, piece.changed) {
-                (Side::Old, _) => struck.push(shown.clone()),
+                (Side::Old, _) => {
+                    unspoken.push(shown.clone());
+                    struck.push(shown.clone());
+                }
                 (Side::New, true) => words.push(shown.clone()),
                 (Side::New, false) => {}
             }
@@ -884,6 +959,7 @@ impl DiffViewState {
             word_detail: WordDetail::Done(InlineDetail::Exact),
             window: None,
             struck,
+            unspoken,
             removed_spans: removed.into(),
             merge: Some(Arc::new(merge)),
             whole: false,

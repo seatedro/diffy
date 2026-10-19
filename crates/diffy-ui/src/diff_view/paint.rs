@@ -120,7 +120,6 @@ pub(super) fn vertical_hairline(
 pub(super) struct LineColors {
     pub text: Color,
     pub word: Color,
-    pub struck: Color,
     pub strike: Color,
     pub search: Color,
     pub search_active: Color,
@@ -159,11 +158,6 @@ pub(super) fn line(
     for range in words {
         for rect in rects(range.clone()) {
             scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.word));
-        }
-    }
-    for range in struck {
-        for rect in rects(range.clone()) {
-            scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.struck));
         }
     }
     for mark in search {
@@ -290,7 +284,6 @@ mod tests {
         let colors = LineColors {
             text: color(1),
             word: color(2),
-            struck: color(7),
             strike: color(8),
             search: color(3),
             search_active: color(4),

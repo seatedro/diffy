@@ -113,6 +113,7 @@ pub struct Expansion {
     /// Per file: lines shown from the top of the gap after its last hunk.
     after: Vec<u32>,
     policy: ContextPolicy,
+    reflows: Vec<(u32, u32)>,
 }
 
 impl Expansion {
@@ -125,7 +126,21 @@ impl Expansion {
             above: vec![(0, 0); doc.hunk_count() as usize],
             after: vec![0; doc.file_count() as usize],
             policy,
+            reflows: Vec::new(),
         }
+    }
+
+    pub fn toggle_reflow(&mut self, file: u32, line: u32) {
+        match self.reflows.binary_search(&(file, line)) {
+            Ok(at) => {
+                self.reflows.remove(at);
+            }
+            Err(at) => self.reflows.insert(at, (file, line)),
+        }
+    }
+
+    pub fn reflow_open(&self, file: u32, line: u32) -> bool {
+        self.reflows.binary_search(&(file, line)).is_ok()
     }
 
     pub fn policy(&self) -> ContextPolicy {
@@ -444,7 +459,7 @@ impl Projection {
                     let (os, ns) = (b.old_store[bi], b.new_store[bi]);
                     let (ol, nl) = (b.old_len[bi], b.new_len[bi]);
                     if let (BlockKind::Change, Some(c)) = (b.kind[bi], comparison) {
-                        self.push_steps(c.block(block), file, hunk, mode);
+                        self.push_steps(c.block(block), file, hunk, mode, expansion);
                         continue;
                     }
                     match (b.kind[bi], mode) {
@@ -494,7 +509,20 @@ impl Projection {
     /// Rows of one aligned change block. Unified rows list each run's
     /// removed lines, then its added lines; lines equal under the
     /// whitespace policy split runs and show as context.
-    fn push_steps(&mut self, steps: &[Step], file: u32, hunk: u32, mode: Mode) {
+    pub fn reflow(&self, row: u32) -> Option<u32> {
+        let r = row as usize;
+        (self.kind.get(r) == Some(&RowKind::Reflowed) && self.pair[r] != NONE)
+            .then_some(self.pair[r])
+    }
+
+    fn push_steps(
+        &mut self,
+        steps: &[Step],
+        file: u32,
+        hunk: u32,
+        mode: Mode,
+        expansion: &Expansion,
+    ) {
         if mode == Mode::Split {
             for &step in steps {
                 let (old, new) = step.lines();
@@ -542,8 +570,31 @@ impl Projection {
                 Some(&Step::Merged(old, new)) => {
                     self.push(RowKind::Merged, file, hunk, old, new, NONE);
                 }
-                Some(&Step::Reflowed(new)) => {
-                    self.push(RowKind::Reflowed, file, hunk, NONE, new, NONE);
+                Some(Step::Hidden(_) | Step::Reflowed(_)) => {
+                    let run = steps[end..]
+                        .iter()
+                        .take_while(|s| matches!(s, Step::Hidden(_) | Step::Reflowed(_)))
+                        .count();
+                    let lines: Vec<u32> = steps[end..end + run]
+                        .iter()
+                        .filter_map(|s| match s {
+                            Step::Reflowed(n) => Some(*n),
+                            _ => None,
+                        })
+                        .collect();
+                    if let Some(&first) = lines.first() {
+                        let count = lines.len() as u32;
+                        if count > 1 && !expansion.reflow_open(file, first) {
+                            self.push(RowKind::Reflowed, file, hunk, NONE, first, count);
+                        } else {
+                            for (k, &line) in lines.iter().enumerate() {
+                                let pair = if k == 0 && count > 1 { count } else { NONE };
+                                self.push(RowKind::Reflowed, file, hunk, NONE, line, pair);
+                            }
+                        }
+                    }
+                    start = end + run;
+                    continue;
                 }
                 _ => {}
             }

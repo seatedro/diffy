@@ -162,6 +162,7 @@ pub struct LinePaint {
     /// around where its column is scrolled, which is all the layout holds.
     pub window: Option<LineWindow>,
     pub struck: Vec<Range<usize>>,
+    pub unspoken: Vec<Range<usize>>,
     pub removed_spans: Arc<[bool]>,
     pub merge: Option<Arc<LineMerge>>,
 }
@@ -169,14 +170,14 @@ pub struct LinePaint {
 impl LinePaint {
     pub(crate) fn label(&self) -> String {
         let text = self.layout.text();
-        if self.struck.is_empty() {
+        if self.unspoken.is_empty() {
             return text.to_string();
         }
         let mut out = String::with_capacity(text.len());
         let mut at = 0;
-        for range in &self.struck {
-            out.push_str(&text[at..range.start]);
-            at = range.end;
+        for range in &self.unspoken {
+            out.push_str(&text[at.min(range.start)..range.start]);
+            at = at.max(range.end);
         }
         out.push_str(&text[at..]);
         out
@@ -352,6 +353,8 @@ pub struct RowPaint {
     pub collapsed: bool,
     /// File headers: annotations anchored in the file, shown or not.
     pub annotations: u32,
+    pub quiet: bool,
+    pub fold: Option<(u32, bool)>,
 }
 
 impl RowPaint {

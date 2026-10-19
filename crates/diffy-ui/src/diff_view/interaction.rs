@@ -180,6 +180,7 @@ impl DiffViewState {
             DiffEvent::Expand(gap, reveal) => {
                 self.reveal(gap, reveal, self.context_policy.reveal_step)
             }
+            DiffEvent::ToggleReflow { file, line } => self.toggle_reflow(file, line),
             DiffEvent::Key(key) => return self.key(key),
             DiffEvent::OpenFull => {
                 return match self.preview_target() {

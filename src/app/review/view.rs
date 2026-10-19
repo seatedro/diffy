@@ -1,4 +1,4 @@
-use quark::view;
+use quark::{Px, view};
 use quark_app::ViewContext;
 use quark_components::{Avatar, Modal, avatar};
 use quark_ui::accessibility::AccessibilityRole;
@@ -92,10 +92,10 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
         );
         view! { scale,
             <div class="flex-row items-center" gap={Sp::SM} min_w={0.0} test_id="review.pull_request">
-                <icon svg={lucide::GIT_PULL_REQUEST} size={small} color={tc.text_muted} />
-                <text size={small} class="truncate font-medium" color={color}>{label}</text>
+                <icon svg={lucide::GIT_PULL_REQUEST} size={Px(small)} color={tc.text_muted} />
+                <text size={Px(small)} class="truncate font-medium" color={color}>{label}</text>
                 if let Some(detail) = detail {
-                    <text size={small} class="truncate" color={tc.text_muted}>{detail}</text>
+                    <text size={Px(small)} class="truncate" color={tc.text_muted}>{detail}</text>
                 }
                 {open}
                 {?submit}
@@ -113,7 +113,7 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
     });
     let account = account_view(review, theme);
     view! { scale,
-        <div h={slot.height} class="flex-row items-center shrink-0" gap={Sp::SM} test_id="title.review"
+        <div h={Px(slot.height)} class="flex-row items-center shrink-0" gap={Sp::SM} test_id="title.review"
              on:key:escape={action(ReviewAction::CloseOverlay)}>
             {?pull_request}
             {?review_pr}
@@ -225,7 +225,7 @@ fn auth_modal(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEleme
                     {note(&format!("Enter this code at {}", flow.verification_uri))}
                     <div class="flex-row items-center w-full" gap={Sp::SM} px={Sp::MD} py={Sp::SM}
                          rounded={Rad::LG} bg={tc.element_background} test_id="review.auth.code">
-                        <text size={TextStyle::HeadingLg.font_size(theme)} class="font-mono font-semibold"
+                        <text size={Px(TextStyle::HeadingLg.font_size(theme))} class="font-mono font-semibold"
                               color={tc.text_strong}>
                             {flow.user_code.clone()}
                         </text>
@@ -251,8 +251,8 @@ fn auth_modal(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEleme
         AuthStatus::Failed(message) => (
             view! { scale,
                 <div class="flex-row items-center w-full" gap={Sp::SM} test_id="review.auth.error">
-                    <icon svg={lucide::ALERT_CIRCLE} size={small} color={tc.status_error} />
-                    <text size={small} color={tc.status_error}>{message.clone()}</text>
+                    <icon svg={lucide::ALERT_CIRCLE} size={Px(small)} color={tc.status_error} />
+                    <text size={Px(small)} color={tc.status_error}>{message.clone()}</text>
                 </div>
             },
             vec![
@@ -315,11 +315,11 @@ fn account_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEle
         .image(account.avatar.clone());
     let sign_out = controls::button("Sign out", action(ReviewAction::SignOut), Tone::Ghost);
     view! { scale,
-        <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
+        <div class="absolute" left={0.0} top={0.0} w={Px(slot.width)} h={Px(slot.height)}
              bg={Color::TRANSPARENT}
              on:click={action(ReviewAction::CloseOverlay)}
              on:key:escape={action(ReviewAction::CloseOverlay)}>
-            <div class="absolute flex-col" left={left} top={top} w={width} p={Sp::XS} gap={Sp::XS}
+            <div class="absolute flex-col" left={Px(left)} top={Px(top)} w={Px(width)} p={Sp::XS} gap={Sp::XS}
                  bg={tc.elevated_surface} border={tc.border} rounded={Rad::XL}
                  shadow_preset={Shadow::DROPDOWN}
                  accessibility_role={AccessibilityRole::Menu}
@@ -330,13 +330,13 @@ fn account_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyEle
                 <div class="flex-row items-center" gap={Sp::SM} p={Sp::SM}>
                     {picture}
                     <div class="flex-col flex-1" min_w={0.0}>
-                        <text size={small} class="font-medium truncate" color={tc.text_strong}>{title}</text>
+                        <text size={Px(small)} class="font-medium truncate" color={tc.text_strong}>{title}</text>
                         if !login.is_empty() {
-                            <text size={small} class="truncate" color={tc.text_muted}>{login}</text>
+                            <text size={Px(small)} class="truncate" color={tc.text_muted}>{login}</text>
                         }
                     </div>
                 </div>
-                <div class="w-full" h={Sz::SEPARATOR_W} bg={tc.border_variant} />
+                <div class="w-full" h={Px(Sz::SEPARATOR_W)} bg={tc.border_variant} />
                 {sign_out}
             </div>
         </div>
@@ -373,11 +373,11 @@ fn submit_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElem
         controls::button(label, action(ReviewAction::SubmitReview { decision }), tone)
     };
     view! { scale,
-        <div class="absolute" left={0.0} top={0.0} w={slot.width} h={slot.height}
+        <div class="absolute" left={0.0} top={0.0} w={Px(slot.width)} h={Px(slot.height)}
              bg={Color::TRANSPARENT}
              on:click={action(ReviewAction::CloseOverlay)}
              on:key:escape={action(ReviewAction::CloseOverlay)}>
-            <div class="absolute flex-col" left={left} top={top} w={width} p={Sp::SM} gap={Sp::SM}
+            <div class="absolute flex-col" left={Px(left)} top={Px(top)} w={Px(width)} p={Sp::SM} gap={Sp::SM}
                  bg={tc.elevated_surface} border={tc.border} rounded={Rad::XL}
                  shadow_preset={Shadow::DROPDOWN}
                  accessibility_role={AccessibilityRole::Dialog}
@@ -385,8 +385,8 @@ fn submit_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElem
                  focus_ring={REVIEW_DIALOG}
                  test_id="review.submit_menu"
                  on:click={quark_ui::element::NoopAction}>
-                <text size={small} class="font-medium" color={tc.text_strong}>"Submit review"</text>
-                <text size={small} color={tc.text_muted}>{summary}</text>
+                <text size={Px(small)} class="font-medium" color={tc.text_strong}>"Submit review"</text>
+                <text size={Px(small)} color={tc.text_muted}>{summary}</text>
                 {?summary_card}
                 {?add_summary}
                 <div class="flex-row items-center" gap={Sp::XS}>
@@ -441,8 +441,8 @@ pub fn accounts_settings(review: &ReviewController, theme: &Theme) -> AnyElement
     view! { scale,
         <div class="flex-col w-full" gap={Sp::LG} test_id="settings.accounts">
             <div class="flex-col" gap={Sp::XXS}>
-                <text size={body} class="font-semibold" color={tc.text_strong}>"Accounts"</text>
-                <text size={small} color={tc.text_muted}>"Services Diffy signs in to."</text>
+                <text size={Px(body)} class="font-semibold" color={tc.text_strong}>"Accounts"</text>
+                <text size={Px(small)} color={tc.text_muted}>"Services Diffy signs in to."</text>
             </div>
             <div class="flex-row items-center w-full" gap={Sp::MD} p={Sp::LG}
                  bg={tc.elevated_surface} border={tc.border_variant} rounded={Rad::XL}
@@ -451,8 +451,8 @@ pub fn accounts_settings(review: &ReviewController, theme: &Theme) -> AnyElement
                  test_id="settings.accounts.github">
                 {picture}
                 <div class="flex-col flex-1" min_w={0.0} gap={Sp::XXS}>
-                    <text size={body} class="font-medium truncate" color={tc.text}>{title}</text>
-                    <text size={small} class="truncate" color={tc.text_muted}>{detail}</text>
+                    <text size={Px(body)} class="font-medium truncate" color={tc.text}>{title}</text>
+                    <text size={Px(small)} class="truncate" color={tc.text_muted}>{detail}</text>
                 </div>
                 {control}
             </div>

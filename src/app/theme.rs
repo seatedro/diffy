@@ -1,5 +1,6 @@
 use quark_ui::theme::{
-    Color, ComponentMetrics, ControlMetrics, SurfaceMetrics, Theme, ThemeColors, ThemeMode,
+    Color, ComponentMetrics, ControlMetrics, ScrollbarMetrics, SurfaceMetrics, Theme, ThemeColors,
+    ThemeMode,
 };
 
 use std::sync::OnceLock;
@@ -169,6 +170,10 @@ fn components() -> ComponentMetrics {
             font_size: Some(11.0),
             ..ControlMetrics::default()
         },
+        scrollbar: ScrollbarMetrics {
+            inset: Some(0.0),
+            ..compact.scrollbar
+        },
         ..compact
     }
 }
@@ -229,6 +234,7 @@ fn colors(palette: &SemanticPalette) -> ThemeColors {
         empty_state_background: rgb!(l.empty_state_background),
         empty_state_border: rgb!(l.empty_state_border),
         scrollbar_thumb: flatten(rgb!(l.scrollbar_thumb), editor),
+        scrollbar_track: Color::TRANSPARENT,
         slider_track: rgb!(l.border),
         status_info: rgb!(l.status_info),
         status_warning: rgb!(l.status_warning),
@@ -298,7 +304,7 @@ mod tests {
         ThemeColors::TOKENS
             .iter()
             .copied()
-            .filter(|name| *name != "overlay_scrim")
+            .filter(|name| !["overlay_scrim", "scrollbar_track"].contains(name))
             .filter(|name| colors.get(name).is_some_and(|c| c.a != 255))
             .collect()
     }

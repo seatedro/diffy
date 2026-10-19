@@ -87,8 +87,7 @@ pub fn ghost_chip(
     let tc = &theme.colors;
     let scale = theme.metrics.ui_scale();
     let m = theme.components.button_compact;
-    let height = m.height.map(|h| (h * scale).round());
-    let icon = m.icon_size.map_or(Ico::BUTTON_COMPACT, |s| s * scale);
+    let icon = m.icon_size.unwrap_or(Ico::BUTTON_COMPACT);
     let on_click: quark_ui::Action = on_click.into();
     view! { scale,
         <div
@@ -104,14 +103,14 @@ pub fn ghost_chip(
             aria-label={chip.accessible}
             test_id={chip.test_id}
             on:click={on_click}
-            @when {height.is_some()} {
-                h={height.unwrap_or_default()}
+            h={?m.height}
+            @when {m.height.is_some()} {
                 pt={0.0}
                 pb={0.0}
             }
         >
             <icon svg={chip.icon} size={icon} color={tc.text_muted} />
-            <text class="text-xs font-medium whitespace-nowrap" color={tc.text_muted}>{chip.label}</text>
+            <text class="text-xs font-medium" color={tc.text_muted}>{chip.label}</text>
         </div>
     }
 }

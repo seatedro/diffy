@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use diffy_ui::diff_view::AnnotationId;
 use diffy_ui::diff_view::decorator::{AnnotationContext, DiffDecorator, HeaderContext, HeaderSlot};
-use quark::view;
+use quark::{Px, view};
 use quark_app::ViewContext;
 use quark_components::{AvatarImage, PopoverSide, anchored, avatar, popover_panel};
 use quark_ui::accessibility::AccessibilityRole;
@@ -138,7 +138,7 @@ impl RowDecorator for CommentChrome {
         Some(view! { scale,
             <div class="flex-row items-center" gap={Sp::XS}>
                 <div test_id={test_id}>{avatar(login).size(Ico::LG).image(face)}</div>
-                <text size={size} class="font-medium truncate" color={theme.colors.text_strong}>
+                <text size={Px(size)} class="font-medium truncate" color={theme.colors.text_strong}>
                     {label}
                 </text>
             </div>
@@ -1168,7 +1168,7 @@ fn card_view(
     let body = if !card.expanded {
         Some(view! { scale,
             <div class="flex-row" pl={Sp::MD} min_w={0.0}>
-                <text size={small} class="truncate" color={tc.text_muted}>{card.summary.clone()}</text>
+                <text size={Px(small)} class="truncate" color={tc.text_muted}>{card.summary.clone()}</text>
             </div>
         })
     } else {
@@ -1198,9 +1198,9 @@ fn card_view(
         });
         view! { scale,
             <div class="flex-row items-center" gap={Sp::XS}>
-                <icon svg={lucide::ALERT_CIRCLE} size={small} color={tc.status_error} />
+                <icon svg={lucide::ALERT_CIRCLE} size={Px(small)} color={tc.status_error} />
                 <div class="flex-1" min_w={0.0}>
-                    <text size={small} class="truncate" color={tc.status_error}>{message}</text>
+                    <text size={Px(small)} class="truncate" color={tc.status_error}>{message}</text>
                 </div>
                 {?retry}
             </div>
@@ -1217,7 +1217,7 @@ fn card_view(
     view! { scale,
         <div
             class="flex-col"
-            w={width}
+            w={Px(width)}
             bg={tc.elevated_surface}
             border={tc.border}
             rounded={Rad::LG}
@@ -1271,12 +1271,12 @@ fn header_view(
         <div class="flex-row items-center" gap={Sp::XS}>
             {?toggle}
             <div class="flex-1" min_w={0.0}>
-                <text size={small} class="font-medium truncate" color={tc.text_strong}>
+                <text size={Px(small)} class="font-medium truncate" color={tc.text_strong}>
                     {card.title.clone()}
                 </text>
             </div>
             <div class="flex-row items-center" px={Sp::SM} py={Sp::XXS} rounded={Rad::SM} bg={tc.element_background}>
-                <text size={TextStyle::Caption.font_size(theme)} class="font-medium" color={status_color}>{card.status.clone()}</text>
+                <text size={Px(TextStyle::Caption.font_size(theme))} class="font-medium" color={status_color}>{card.status.clone()}</text>
             </div>
         </div>
     }
@@ -1403,7 +1403,7 @@ fn composer_view(composer: &ComposerView, inner: &mut HostInner, theme: &Theme) 
             view! { scale,
                 <div
                     class="w-full"
-                    h={editor.height}
+                    h={Px(editor.height)}
                     p={Sp::XS}
                     rounded={Rad::MD}
                     bg={tc.editor_surface}

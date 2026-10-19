@@ -2076,9 +2076,8 @@ fn sign_in_dialog_fits_its_content_with_actions_on_the_right() {
     assert!((cancel.y - primary.y).abs() < 0.5);
     assert!(cancel.x + cancel.width <= primary.x);
     assert!((dialog.x + dialog.width - (primary.x + primary.width) - padding).abs() < 1.0);
-    let border = 1.0;
     assert!(
-        (bottom(dialog) - bottom(primary) - padding - border).abs() < 1.0,
+        (bottom(dialog) - bottom(primary) - padding).abs() < 1.0,
         "{dialog:?} {primary:?}"
     );
     same_height(&ui, &["Cancel", "Continue with GitHub"]);

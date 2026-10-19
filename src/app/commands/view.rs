@@ -1,6 +1,6 @@
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::{Modal, PALETTE_INPUT, PaletteEvent, progress_bar};
+use quark_components::{Modal, PALETTE_INPUT, PaletteEvent, kbd_icon, progress_bar};
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
@@ -348,7 +348,6 @@ fn repository_footer(browsing: bool, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);
-    let inner = (tokens::scaled(Rad::XL, scale) - 1.0).max(0.0);
     view! {
         <div
             class="flex-row items-center w-full"
@@ -357,7 +356,6 @@ fn repository_footer(browsing: bool, theme: &Theme) -> AnyElement {
             py={tokens::scaled(Sp::XS, scale)}
             border_t={tc.border_variant}
             bg={tc.panel}
-            rounded_corners={[0.0, 0.0, inner, inner]}
         >
             <div
                 class="flex-row items-center"
@@ -378,42 +376,18 @@ fn repository_footer(browsing: bool, theme: &Theme) -> AnyElement {
             <div class="flex-1" />
             <div class="flex-row items-center" gap={tokens::scaled(Sp::XS, scale)} pr={tokens::scaled(Sp::SM, scale)}>
                 if browsing {
-                    {key_icons(&[lucide::ARROW_UP, lucide::ARROW_DOWN], theme)}
+                    {kbd_icon(lucide::ARROW_UP, theme)}
+                    {kbd_icon(lucide::ARROW_DOWN, theme)}
                     <text size={small} color={tc.text_muted}>"move"</text>
-                    {key_icons(&[lucide::ARROW_RIGHT], theme)}
+                    {kbd_icon(lucide::ARROW_RIGHT, theme)}
                     <text size={small} color={tc.text_muted}>"expand"</text>
                 } else {
-                    {key_icons(&[icons::ARROW_RIGHT_TO_LINE], theme)}
+                    {kbd_icon(icons::ARROW_RIGHT_TO_LINE, theme)}
                     <text size={small} color={tc.text_muted}>"complete"</text>
                 }
-                {key_icons(&[icons::CORNER_DOWN_LEFT], theme)}
+                {kbd_icon(icons::CORNER_DOWN_LEFT, theme)}
                 <text size={small} color={tc.text_muted}>"open"</text>
             </div>
-        </div>
-    }
-}
-
-fn key_icons(svgs: &[&'static str], theme: &Theme) -> AnyElement {
-    let tc = &theme.colors;
-    let scale = tokens::ui_scale(theme);
-    let recipe = theme.components.kbd;
-    let height = (recipe.height.unwrap_or(Ico::MD) * scale).round();
-    let icons: Vec<AnyElement> = svgs
-        .iter()
-        .map(
-            |svg| view! { <icon svg={*svg} size={(height * 0.6).round()} color={tc.text_muted} /> },
-        )
-        .collect();
-    view! {
-        <div
-            class="shrink-0 flex-row items-center justify-center"
-            h={height}
-            min_w={height}
-            px={tokens::scaled(Sp::XXS, scale)}
-            rounded={recipe.radius.unwrap_or(Rad::SM) * scale}
-            border={tc.border_variant}
-        >
-            {...icons}
         </div>
     }
 }

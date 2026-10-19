@@ -1,8 +1,6 @@
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::{
-    Button, ButtonSize, ButtonStyle, SegmentedControl, SegmentedItem, slider, switch,
-};
+use quark_components::{Button, ButtonSize, ButtonStyle, slider, switch};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -13,7 +11,8 @@ use super::CommandsController;
 use super::keymap::{self, KEYMAP};
 use super::state::SettingsPage;
 use crate::app::icons;
-use crate::app::shell::{self, Slot, kbd};
+use crate::app::segmented::{Segment, SegmentStyle, segmented};
+use crate::app::shell::{Slot, kbd};
 use crate::app::text_targets::{SETTINGS, SETTINGS_SEARCH};
 use crate::app::tokens::{self, Ico, Layout, Rad, Sp, Sz, TextStyle};
 use crate::contracts::commands::{CommandsAction, SettingsSection};
@@ -640,20 +639,11 @@ fn control(control: Control, settings: &Settings, theme: &Theme) -> AnyElement {
 }
 
 fn choice(id: &str, items: &[(&str, CommandsAction, bool)], theme: &Theme) -> AnyElement {
-    let control = SegmentedControl::new(
-        items
-            .iter()
-            .map(|(label, action, on)| {
-                SegmentedItem::new(*label, Action::from(action.clone()), *on)
-            })
-            .collect(),
-    )
-    .id(id);
-    shell::segmented(
-        control,
-        theme.metrics.control_radius,
-        theme.colors.border_variant,
-    )
+    let segments = items
+        .iter()
+        .map(|(label, action, on)| Segment::new(*label, Action::from(action.clone()), *on))
+        .collect();
+    segmented(id, segments, SegmentStyle::from_theme(theme))
 }
 
 fn toggle(label: &str, on: bool, action: CommandsAction) -> AnyElement {

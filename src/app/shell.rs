@@ -6,13 +6,13 @@ use std::sync::Arc;
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
 use quark_app::{AppEvent as WindowEvent, InputEvent, UiApp, UiContext, UiSender, ViewContext};
-use quark_components::{Axis, Pane, SegmentedControl, Split, SplitEvent, SplitState};
+use quark_components::{Axis, Pane, Split, SplitEvent, SplitState};
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::style::Styled;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
-use quark_ui::theme::{Color, Theme};
+use quark_ui::theme::Theme;
 
 use crate::app::diff_slots::DiffSlots;
 use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
@@ -494,14 +494,6 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 {delivery}
             </div>
         }
-    }
-}
-
-pub fn segmented(control: SegmentedControl, radius: f32, border: Color) -> AnyElement {
-    view! {
-        <div class="shrink-0 flex-row" rounded={radius} border={border}>
-            {control}
-        </div>
     }
 }
 

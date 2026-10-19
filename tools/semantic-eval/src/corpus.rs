@@ -59,6 +59,12 @@ pub struct Record {
     pub violations: Vec<String>,
     #[serde(default)]
     pub phases: Vec<(String, f64)>,
+    #[serde(default)]
+    pub renames: u32,
+    #[serde(default)]
+    pub moves: u32,
+    #[serde(default)]
+    pub reflows: u32,
 }
 
 pub fn run(args: Args) -> Result<(), String> {
@@ -148,6 +154,9 @@ fn measure(
         metrics: Metrics::default(),
         violations: Vec::new(),
         phases: Vec::new(),
+        renames: 0,
+        moves: 0,
+        reflows: 0,
     };
     match engine::run(engine, path, old, new) {
         Ok(run) => {
@@ -157,10 +166,27 @@ fn measure(
             record.fallback = run.fallback;
             record.metrics = metrics;
             record.violations = violations;
+            if let Some(semantics) = run.doc.semantics(0) {
+                record.renames = semantics.renames().len() as u32;
+                record.moves = semantics.moves().len() as u32;
+            }
+            record.reflows = reflows(&run.doc);
         }
         Err(error) => record.error = Some(error),
     }
     record
+}
+
+fn reflows(doc: &diffy_diff::DiffDocument) -> u32 {
+    use diffy_diff::{Comparison, ComparisonOptions, Expansion, Mode, Projection, RowKind};
+    if doc.file_count() == 0 || !doc.prefers_structural(0) {
+        return 0;
+    }
+    let comparison = Comparison::new(doc, ComparisonOptions::default());
+    let p = Projection::with_comparison(doc, Mode::Unified, &Expansion::new(doc), &comparison);
+    (0..p.len())
+        .filter(|&r| p.reflow(r).is_some() && p.kind[r as usize] == RowKind::Reflowed)
+        .count() as u32
 }
 
 fn collect_with_phases() -> Result<Vec<Record>, String> {

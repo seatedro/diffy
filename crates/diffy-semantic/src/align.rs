@@ -179,8 +179,17 @@ fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching, chain: &[(u32, u32, u64
             (k.new_line..k.new_line + k.lines).contains(&m.new_line)
                 && (k.old_line..k.old_line + k.old_lines).contains(&m.old_line)
         });
-        if !inside {
-            kept.push(m);
+        if inside {
+            continue;
+        }
+        match kept.last_mut() {
+            Some(k)
+                if k.old_line + k.old_lines == m.old_line && k.new_line + k.lines == m.new_line =>
+            {
+                k.old_lines += m.old_lines;
+                k.lines += m.lines;
+            }
+            _ => kept.push(m),
         }
     }
     kept

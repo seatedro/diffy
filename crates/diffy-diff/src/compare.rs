@@ -585,43 +585,37 @@ fn removes(doc: &DiffDocument, file: u32, line: u32) -> bool {
 }
 
 fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
-    let (old, new) = (doc.text(file, Side::Old), doc.text(file, Side::New));
-    let mut old_text = String::new();
-    let mut new_text = String::new();
+    use crate::semantic::ChangeIntensity::{Renamed, UnchangedContext};
+    let mut texts = [String::new(), String::new()];
     let mut added = 0usize;
     for &step in run {
         let (o, n) = step.lines();
-        if o != NONE {
-            let marked = doc
-                .semantic_spans(file, Side::Old, o)
-                .iter()
-                .any(|s| s.intensity != crate::semantic::ChangeIntensity::UnchangedContext);
-            if marked {
-                return false;
+        for (side, line) in [(Side::Old, o), (Side::New, n)] {
+            if line == NONE {
+                continue;
             }
-            old_text.extend(
-                old.display_line(o)
-                    .unwrap_or("")
-                    .chars()
-                    .filter(|c| !c.is_whitespace()),
-            );
-        }
-        if n != NONE {
-            let line = new.display_line(n).unwrap_or("");
-            let spans = doc.semantic_spans(file, Side::New, n);
-            for (at, c) in line.char_indices().filter(|(_, c)| !c.is_whitespace()) {
-                let novel = spans.iter().any(|s| {
-                    s.intensity != crate::semantic::ChangeIntensity::UnchangedContext
+            let text = doc.text(file, side).display_line(line).unwrap_or("");
+            let spans = doc.semantic_spans(file, side, line);
+            let out = &mut texts[side as usize];
+            for (at, c) in text.char_indices().filter(|(_, c)| !c.is_whitespace()) {
+                let span = spans.iter().find(|s| {
+                    s.intensity != UnchangedContext
                         && (s.start as usize..s.end as usize).contains(&at)
                 });
-                if novel {
-                    added += 1;
-                } else {
-                    new_text.push(c);
+                match span {
+                    None => out.push(c),
+                    Some(s) if s.intensity == Renamed => {
+                        if s.start as usize == at {
+                            out.push('\u{0}');
+                        }
+                    }
+                    Some(_) if side == Side::Old => return false,
+                    Some(_) => added += 1,
                 }
             }
         }
     }
+    let [old_text, new_text] = texts;
     !old_text.is_empty() && added <= MAX_REFLOW_ADDED && old_text == new_text
 }
 

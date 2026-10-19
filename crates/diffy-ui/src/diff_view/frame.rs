@@ -57,6 +57,45 @@ pub(crate) fn floor_boundary(text: &str, byte: usize) -> usize {
     at
 }
 
+fn split_at_marks(
+    spans: Vec<TextSpan>,
+    tones: &[HighlightKind],
+    marks: &[Range<usize>],
+) -> (Vec<TextSpan>, Arc<[HighlightKind]>, Arc<[bool]>) {
+    let mut cuts: Vec<usize> = spans
+        .iter()
+        .flat_map(|s| [s.range.start, s.range.end])
+        .chain(marks.iter().flat_map(|m| [m.start, m.end]))
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let (mut out, mut kinds, mut removed) = (Vec::new(), Vec::new(), Vec::new());
+    for pair in cuts.windows(2) {
+        let piece = pair[0]..pair[1];
+        let marked = marks
+            .iter()
+            .any(|m| m.start <= piece.start && piece.end <= m.end);
+        let covering = spans
+            .iter()
+            .position(|s| s.range.start <= piece.start && piece.end <= s.range.end);
+        let (span, kind) = match covering {
+            Some(i) => (
+                TextSpan {
+                    range: piece,
+                    ..spans[i].clone()
+                },
+                tones.get(i).copied().unwrap_or(HighlightKind::Normal),
+            ),
+            None if marked => (plain_span(piece), HighlightKind::Normal),
+            None => continue,
+        };
+        out.push(span);
+        kinds.push(kind);
+        removed.push(marked);
+    }
+    (out, kinds.into(), removed.into())
+}
+
 fn plain_span(range: Range<usize>) -> TextSpan {
     TextSpan {
         range,
@@ -792,15 +831,6 @@ impl DiffViewState {
                         Some((syntax, file)) => syntax.spans(file, side, range),
                         None => (Vec::new(), Arc::from([])),
                     };
-                    let params = TextParams::new(line, self.text_style())
-                        .spans(spans)
-                        .scale_factor(scale)
-                        .wrap_width(self.style.wrap.then(|| {
-                            super::presentation::wrap_width(columns, side, &m, &self.presentation)
-                        }));
-                    let Ok(layout) = layouts.layout(text, &params) else {
-                        continue;
-                    };
                     let mut words = super::paint::join_whitespace_gaps(
                         match &window {
                             Some(w) => super::long_lines::clip_to_window(&words[side as usize], w),
@@ -816,6 +846,20 @@ impl DiffViewState {
                         (Vec::new(), words)
                     } else {
                         (words, Vec::new())
+                    };
+                    let (spans, tones, removed_spans) = if struck.is_empty() {
+                        (spans, tones, Arc::from([]))
+                    } else {
+                        split_at_marks(spans, &tones, &struck)
+                    };
+                    let params = TextParams::new(line, self.text_style())
+                        .spans(spans)
+                        .scale_factor(scale)
+                        .wrap_width(self.style.wrap.then(|| {
+                            super::presentation::wrap_width(columns, side, &m, &self.presentation)
+                        }));
+                    let Ok(layout) = layouts.layout(text, &params) else {
+                        continue;
                     };
                     let renamed = if quiet && window.is_none() {
                         let source = source_line(doc, file, side, index);
@@ -834,7 +878,7 @@ impl DiffViewState {
                         unspoken: Vec::new(),
                         renamed,
                         struck,
-                        removed_spans: Arc::from([]),
+                        removed_spans,
                         merge: None,
                     });
                 }

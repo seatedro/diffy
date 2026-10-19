@@ -861,9 +861,8 @@ fn paint_text(
                 .iter()
                 .enumerate()
                 .map(|(i, &k)| match tone {
-                    TextTone::Removed => colors.del_text,
                     _ if removed(i) => colors.del_text,
-                    TextTone::Dim => colors.muted,
+                    TextTone::Removed | TextTone::Dim => colors.muted,
                     TextTone::Normal => tones[k as usize],
                 })
                 .collect()
@@ -876,8 +875,7 @@ fn paint_text(
         LineColors {
             text: match tone {
                 TextTone::Normal => colors.text,
-                TextTone::Dim => colors.muted,
-                TextTone::Removed => colors.del_text,
+                TextTone::Dim | TextTone::Removed => colors.muted,
             },
             word,
             strike: colors.del_marker,

@@ -12,6 +12,7 @@ pub struct MergePiece {
     pub side: Side,
     pub range: Range<u32>,
     pub changed: bool,
+    pub renamed: bool,
 }
 
 pub fn merge_pair(
@@ -37,8 +38,12 @@ pub fn merge_pair(
     if longest > 0 && (new_kept.len() as f32) < MIN_MERGE_KEPT * longest as f32 {
         return None;
     }
+    let renamed = renamed(new_spans);
     let mut removed: Vec<(usize, Range<usize>)> = Vec::new();
-    for range in old_marks {
+    for range in old_marks
+        .into_iter()
+        .filter(|r| !renamed_at(old_spans, r.start))
+    {
         let index = old_kept.partition_point(|&(at, _)| at < range.start);
         match removed.last_mut() {
             Some((last, prev))
@@ -57,16 +62,31 @@ pub fn merge_pair(
             None => 0,
         };
         let insert = skip_space(new, after).max(at);
-        push_new(&mut pieces, at..insert, &new_marks);
+        push_new(&mut pieces, at..insert, &new_marks, &renamed);
         pieces.push(MergePiece {
             side: Side::Old,
             range: range.start as u32..range.end as u32,
             changed: true,
+            renamed: false,
         });
         at = insert;
     }
-    push_new(&mut pieces, at..new.len(), &new_marks);
+    push_new(&mut pieces, at..new.len(), &new_marks, &renamed);
     Some(pieces)
+}
+
+fn renamed(spans: &[SemanticSpan]) -> Vec<Range<usize>> {
+    spans
+        .iter()
+        .filter(|span| span.intensity == ChangeIntensity::Renamed)
+        .map(|span| span.start as usize..span.end as usize)
+        .collect()
+}
+
+fn renamed_at(spans: &[SemanticSpan], at: usize) -> bool {
+    spans
+        .iter()
+        .any(|s| s.intensity == ChangeIntensity::Renamed && s.start as usize == at)
 }
 
 fn marked(spans: &[SemanticSpan]) -> Vec<Range<usize>> {
@@ -97,7 +117,12 @@ fn skip_space(text: &str, from: usize) -> usize {
     from + text[from..].len() - text[from..].trim_start().len()
 }
 
-fn push_new(pieces: &mut Vec<MergePiece>, range: Range<usize>, marks: &[Range<usize>]) {
+fn push_new(
+    pieces: &mut Vec<MergePiece>,
+    range: Range<usize>,
+    marks: &[Range<usize>],
+    renamed: &[Range<usize>],
+) {
     let mut at = range.start;
     for mark in marks {
         let (start, end) = (mark.start.max(range.start), mark.end.min(range.end));
@@ -105,21 +130,23 @@ fn push_new(pieces: &mut Vec<MergePiece>, range: Range<usize>, marks: &[Range<us
             continue;
         }
         if at < start {
-            pieces.push(new_piece(at..start, false));
+            pieces.push(new_piece(at..start, false, false));
         }
-        pieces.push(new_piece(start..end, true));
+        let rename = renamed.iter().any(|r| r.start == mark.start);
+        pieces.push(new_piece(start..end, true, rename));
         at = end;
     }
     if at < range.end {
-        pieces.push(new_piece(at..range.end, false));
+        pieces.push(new_piece(at..range.end, false, false));
     }
 }
 
-fn new_piece(range: Range<usize>, changed: bool) -> MergePiece {
+fn new_piece(range: Range<usize>, changed: bool, renamed: bool) -> MergePiece {
     MergePiece {
         side: Side::New,
         range: range.start as u32..range.end as u32,
         changed,
+        renamed,
     }
 }
 

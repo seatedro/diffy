@@ -9,6 +9,7 @@ pub enum ChangeIntensity {
     Novel,
     NovelWord,
     UnchangedContext,
+    Renamed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,7 +84,15 @@ impl LineSpans {
 pub enum ItemChange {
     Added,
     Removed,
+    Renamed,
     Edited(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Rename {
+    pub old: Arc<str>,
+    pub new: Arc<str>,
+    pub uses: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -99,6 +108,7 @@ pub struct OutlineItem {
 pub struct FileSemantics {
     pub(crate) structural: bool,
     pub(crate) outline: Vec<OutlineItem>,
+    pub(crate) renames: Vec<Rename>,
     pub(crate) rows: Vec<AlignedRow>,
     pub(crate) hunk_rows: Vec<Range<u32>>,
     pub(crate) spans: [LineSpans; 2],
@@ -111,6 +121,10 @@ impl FileSemantics {
 
     pub fn outline(&self) -> &[OutlineItem] {
         &self.outline
+    }
+
+    pub fn renames(&self) -> &[Rename] {
+        &self.renames
     }
 
     pub fn rows(&self, local_hunk: u32) -> &[AlignedRow] {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use diffy_diff::{
-    ChangeIntensity, InlineDetail, InlineOptions, ItemChange, OutlineItem, SemanticSpan,
+    ChangeIntensity, InlineDetail, InlineOptions, ItemChange, OutlineItem, Rename, SemanticSpan,
     Side as DiffSide, myers, paired_inline_diff,
 };
 
@@ -11,6 +11,7 @@ use crate::matcher::Matching;
 use crate::syntax::{Class, NONE, Tree};
 
 const CONTEXT: usize = 3;
+const MIN_RENAME_USES: u32 = 2;
 const LEADING_WEIGHT: u64 = 4;
 
 struct Lines {
@@ -106,7 +107,7 @@ pub(crate) fn rows(
     old: &Tree<'_>,
     new: &Tree<'_>,
     matching: &Matching,
-) -> (Vec<Vec<Row>>, Vec<OutlineItem>) {
+) -> (Vec<Vec<Row>>, Vec<OutlineItem>, Vec<Rename>) {
     let mut sides = [old, new].map(|tree| {
         let lines = Lines::new(tree.src);
         let spans = vec![Vec::new(); lines.count() as usize];
@@ -118,6 +119,7 @@ pub(crate) fn rows(
     for &(x, y) in &matching.replaced {
         replaced(&mut sides, x, y);
     }
+    let renames = renames(&mut sides, matching);
     for side in &mut sides {
         for spans in &mut side.spans {
             spans.sort_by_key(|span| span.start);
@@ -126,7 +128,63 @@ pub(crate) fn rows(
     let outline = outline(&sides, matching);
     let anchors = anchors(&sides, matching);
     let aligned = align(&sides, &anchors);
-    (chunks(&mut sides, aligned), outline)
+    (chunks(&mut sides, aligned), outline, renames)
+}
+
+fn plain_counts<'a>(tree: &Tree<'a>) -> HashMap<&'a str, u32> {
+    let mut out: HashMap<&'a str, u32> = HashMap::new();
+    for node in &tree.nodes {
+        if node.class == Class::Plain {
+            *out.entry(tree.text(node.span.clone())).or_default() += 1;
+        }
+    }
+    out
+}
+
+fn renames(sides: &mut [Side<'_, '_>; 2], matching: &Matching) -> Vec<Rename> {
+    let (old_count, new_count) = (plain_counts(sides[0].tree), plain_counts(sides[1].tree));
+    let mut pairs: HashMap<(&str, &str), Vec<(u32, u32)>> = HashMap::new();
+    for &(x, y) in &matching.renamed {
+        let old = sides[0]
+            .tree
+            .text(sides[0].tree.nodes[x as usize].span.clone());
+        let new = sides[1]
+            .tree
+            .text(sides[1].tree.nodes[y as usize].span.clone());
+        pairs.entry((old, new)).or_default().push((x, y));
+    }
+    let mut out = Vec::new();
+    let mut marks = Vec::new();
+    for ((old, new), uses) in pairs {
+        let uses_n = uses.len() as u32;
+        let consistent = uses_n >= MIN_RENAME_USES
+            && old_count.get(old) == Some(&uses_n)
+            && !old_count.contains_key(new)
+            && !new_count.contains_key(old);
+        if consistent {
+            out.push(Rename {
+                old: old.into(),
+                new: new.into(),
+                uses: uses_n,
+            });
+        }
+        let intensity = if consistent {
+            ChangeIntensity::Renamed
+        } else {
+            ChangeIntensity::Novel
+        };
+        marks.extend(uses.into_iter().map(|pair| (pair, intensity)));
+    }
+    for ((x, y), intensity) in marks {
+        let (a, b) = (
+            sides[0].tree.nodes[x as usize].span.clone(),
+            sides[1].tree.nodes[y as usize].span.clone(),
+        );
+        sides[0].mark(a, intensity);
+        sides[1].mark(b, intensity);
+    }
+    out.sort_by(|a, b| b.uses.cmp(&a.uses).then(a.old.cmp(&b.old)));
+    out
 }
 
 struct Owned {
@@ -136,6 +194,7 @@ struct Owned {
     name: Range<u32>,
     edits: u32,
     old_edits: u32,
+    edited: bool,
     unmatched: bool,
     inside_unmatched: bool,
 }
@@ -155,6 +214,7 @@ fn owned(side: &Side<'_, '_>, partner: &[u32]) -> (Vec<Owned>, Vec<Option<usize>
                 name: item.name.clone(),
                 edits: 0,
                 old_edits: 0,
+                edited: false,
                 unmatched: partner[item.node as usize] == NONE,
                 inside_unmatched: false,
             }
@@ -189,11 +249,20 @@ fn outline(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<OutlineItem> {
             .iter()
             .any(|s| s.intensity != ChangeIntensity::UnchangedContext)
     };
+    let edited = |side: &Side<'_, '_>, line: usize| {
+        side.spans[line].iter().any(|s| {
+            !matches!(
+                s.intensity,
+                ChangeIntensity::UnchangedContext | ChangeIntensity::Renamed
+            )
+        })
+    };
     for (line, owner) in new_owner.iter().enumerate() {
         if let Some(i) = owner
             && marked(&sides[1], line)
         {
             new_items[*i].edits += 1;
+            new_items[*i].edited |= edited(&sides[1], line);
         }
     }
     let by_node: HashMap<u32, usize> = new_items
@@ -209,8 +278,12 @@ fn outline(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<OutlineItem> {
             continue;
         }
         let partner = matching.partner[0][old_items[i].node as usize];
+        let other = edited(&sides[0], line);
         match by_node.get(&partner) {
-            Some(&j) => new_items[j].old_edits += 1,
+            Some(&j) => {
+                new_items[j].old_edits += 1;
+                new_items[j].edited |= other;
+            }
             None => old_items[i].edits += 1,
         }
     }
@@ -224,7 +297,11 @@ fn outline(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<OutlineItem> {
                 (true, DiffSide::New) => ItemChange::Added,
                 (true, DiffSide::Old) => ItemChange::Removed,
                 (false, DiffSide::New) if item.edits.max(item.old_edits) > 0 => {
-                    ItemChange::Edited(item.edits.max(item.old_edits))
+                    if item.edited {
+                        ItemChange::Edited(item.edits.max(item.old_edits))
+                    } else {
+                        ItemChange::Renamed
+                    }
                 }
                 _ => continue,
             };

@@ -121,6 +121,7 @@ pub(super) struct LineColors {
     pub text: Color,
     pub word: Color,
     pub strike: Color,
+    pub rename: Color,
     pub search: Color,
     pub search_active: Color,
     pub search_outline: Color,
@@ -140,6 +141,7 @@ pub(super) fn line(
     span_colors: Arc<[Color]>,
     words: &[Range<usize>],
     struck: &[Range<usize>],
+    renamed: &[Range<usize>],
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
     colors: LineColors,
@@ -230,6 +232,24 @@ pub(super) fn line(
         span_colors,
     });
     let thickness = whole_pixels(1.0, scale);
+    let dot = whole_pixels(1.5, scale);
+    for range in renamed {
+        for rect in rects(range.clone()) {
+            let mut x = rect.x;
+            while x < rect.x + rect.width {
+                scene.rect(RectPrimitive {
+                    rect: Rect {
+                        x,
+                        y: rect.y + rect.height - dot * 2.0,
+                        width: dot,
+                        height: dot,
+                    },
+                    color: colors.rename,
+                });
+                x += dot * 2.0;
+            }
+        }
+    }
     for range in struck {
         for rect in rects(range.clone()) {
             scene.rect(RectPrimitive {
@@ -285,6 +305,7 @@ mod tests {
             text: color(1),
             word: color(2),
             strike: color(8),
+            rename: color(9),
             search: color(3),
             search_active: color(4),
             search_outline: color(5),
@@ -298,6 +319,7 @@ mod tests {
             &layout,
             Arc::from([]),
             &words,
+            &[],
             &[],
             &[SearchMark {
                 range: 4..9,

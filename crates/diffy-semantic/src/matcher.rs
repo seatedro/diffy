@@ -18,6 +18,7 @@ const WIDEN_SIMILARITY: f32 = 0.5;
 pub(crate) struct Matching {
     pub(crate) partner: [Vec<u32>; 2],
     pub(crate) replaced: Vec<(u32, u32)>,
+    pub(crate) renamed: Vec<(u32, u32)>,
 }
 
 pub(crate) fn run(
@@ -30,6 +31,7 @@ pub(crate) fn run(
         trees: [old, new],
         partner: [vec![NONE; old.nodes.len()], vec![NONE; new.nodes.len()]],
         replaced: Vec::new(),
+        renamed: Vec::new(),
         work: 0,
         max_work,
         clock_at: CLOCK_STRIDE,
@@ -39,6 +41,7 @@ pub(crate) fn run(
     Ok(Matching {
         partner: matcher.partner,
         replaced: matcher.replaced,
+        renamed: matcher.renamed,
     })
 }
 
@@ -53,6 +56,7 @@ struct Matcher<'t, 'a> {
     trees: [&'t Tree<'a>; 2],
     partner: [Vec<u32>; 2],
     replaced: Vec<(u32, u32)>,
+    renamed: Vec<(u32, u32)>,
     work: u64,
     max_work: u64,
     clock_at: u64,
@@ -176,6 +180,11 @@ impl Matcher<'_, '_> {
         }
         if a.len() == 1 && b.len() == 1 && self.pairable_lists(a[0], b[0]) {
             return self.pair_lists(a[0], b[0]);
+        }
+        if a.len() == 1 && b.len() == 1 && self.identifier(0, a[0]) && self.identifier(1, b[0]) {
+            self.link(a[0], b[0]);
+            self.renamed.push((a[0], b[0]));
+            return Ok(());
         }
         if self.splice(a, b, false)? || self.pair_similar(a, b)? || self.splice(a, b, true)? {
             return Ok(());
@@ -358,6 +367,18 @@ impl Matcher<'_, '_> {
             }
         }
         best.map(|(similarity, index)| (((similarity * size as f32) as u32).max(1), index))
+    }
+
+    fn identifier(&self, side: usize, node: u32) -> bool {
+        let tree = self.trees[side];
+        let n = &tree.nodes[node as usize];
+        let text = tree.text(n.span.clone());
+        n.class == Class::Plain
+            && text
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+            && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
     }
 
     fn significant(&self, side: usize, node: u32) -> bool {

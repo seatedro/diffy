@@ -10,7 +10,7 @@ use diffy_diff::SemanticSpan;
 use tree_sitter as ts;
 
 pub use config::{Config, config};
-pub use diffy_diff::{ItemChange, OutlineItem};
+pub use diffy_diff::{ItemChange, OutlineItem, Rename};
 pub use tree_sitter::Language;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,7 @@ pub struct Row {
 pub struct SemanticDiff {
     pub chunks: Vec<Vec<Row>>,
     pub outline: Vec<OutlineItem>,
+    pub renames: Vec<Rename>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -93,6 +94,10 @@ pub fn diff(
         return Err(Fallback::ParseErrors(errors));
     }
     let matching = matcher::run(&old, &new, limits.max_work, deadline)?;
-    let (chunks, outline) = align::rows(&old, &new, &matching);
-    Ok(SemanticDiff { chunks, outline })
+    let (chunks, outline, renames) = align::rows(&old, &new, &matching);
+    Ok(SemanticDiff {
+        chunks,
+        outline,
+        renames,
+    })
 }

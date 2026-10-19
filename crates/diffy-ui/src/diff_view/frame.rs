@@ -590,6 +590,7 @@ impl DiffViewState {
             annotations: 0,
             quiet: false,
             fold: None,
+            hint: None,
         };
         match r {
             RowRef::Line { seg, row } => {
@@ -687,6 +688,7 @@ impl DiffViewState {
             fold: p
                 .reflow(row)
                 .map(|count| (count, segment.expansion.reflow_open(file, p.new[r]))),
+            hint: None,
         };
         match kind {
             RowKind::FileHeader => {
@@ -799,6 +801,12 @@ impl DiffViewState {
                     } else {
                         (words, Vec::new())
                     };
+                    let renamed = if quiet && window.is_none() {
+                        let source = source_line(doc, file, side, index);
+                        clip_ranges(&renamed_ranges(doc, file, side, source), shown)
+                    } else {
+                        Vec::new()
+                    };
                     paint.sides[side as usize] = Some(LinePaint {
                         layout,
                         tones,
@@ -808,12 +816,24 @@ impl DiffViewState {
                         word_detail,
                         window,
                         unspoken: Vec::new(),
+                        renamed,
                         struck,
                         removed_spans: Arc::from([]),
                         merge: None,
                     });
                 }
             }
+        }
+        if let Some(line) = &paint.sides[Side::New as usize]
+            && !line.renamed.is_empty()
+        {
+            let text = line.layout.text();
+            let names: Vec<&str> = line
+                .renamed
+                .iter()
+                .filter_map(|r| text.get(r.clone()))
+                .collect();
+            paint.hint = rename_hint(doc, file, &names);
         }
         paint
     }
@@ -856,6 +876,7 @@ impl DiffViewState {
             window: None,
             struck: Vec::new(),
             unspoken: Vec::new(),
+            renamed: Vec::new(),
             removed_spans: Arc::from([]),
             merge: None,
             whole: false,
@@ -893,6 +914,7 @@ impl DiffViewState {
         let mut words = Vec::new();
         let mut struck = Vec::new();
         let mut unspoken = Vec::new();
+        let mut renamed = Vec::new();
         let mut merge = LineMerge::default();
         let mut previous_old: Option<usize> = None;
         for piece in pieces {
@@ -933,13 +955,14 @@ impl DiffViewState {
             if piece.side == Side::Old {
                 previous_old = Some(range.end);
             }
-            match (piece.side, piece.changed) {
-                (Side::Old, _) => {
+            match (piece.side, piece.changed, piece.renamed) {
+                (Side::Old, _, _) => {
                     unspoken.push(shown.clone());
                     struck.push(shown.clone());
                 }
-                (Side::New, true) => words.push(shown.clone()),
-                (Side::New, false) => {}
+                (Side::New, true, true) => renamed.push(shown.clone()),
+                (Side::New, true, false) => words.push(shown.clone()),
+                (Side::New, false, _) => {}
             }
             merge.push(shown, piece.side, range);
         }
@@ -960,6 +983,7 @@ impl DiffViewState {
             window: None,
             struck,
             unspoken,
+            renamed,
             removed_spans: removed.into(),
             merge: Some(Arc::new(merge)),
             whole: false,
@@ -1088,10 +1112,29 @@ fn semantic_words(segment: &Segment, row: u32, file: u32) -> [Vec<Range<usize>>;
         let line = source_line(doc, file, side, index);
         doc.semantic_spans(file, side, line)
             .iter()
-            .filter(|span| span.intensity != ChangeIntensity::UnchangedContext)
+            .filter(|span| {
+                !matches!(
+                    span.intensity,
+                    ChangeIntensity::UnchangedContext | ChangeIntensity::Renamed
+                )
+            })
             .map(|span| span.start as usize..span.end as usize)
             .collect()
     })
+}
+
+fn renamed_ranges(doc: &DiffDocument, file: u32, side: Side, line: u32) -> Vec<Range<usize>> {
+    doc.semantic_spans(file, side, line)
+        .iter()
+        .filter(|span| span.intensity == ChangeIntensity::Renamed)
+        .map(|span| span.start as usize..span.end as usize)
+        .collect()
+}
+
+fn rename_hint(doc: &DiffDocument, file: u32, names: &[&str]) -> Option<Arc<str>> {
+    let renames = doc.semantics(file)?.renames();
+    let rename = renames.iter().find(|r| names.contains(&r.new.as_ref()))?;
+    Some(format!("Renamed from {} \u{00b7} {} uses", rename.old, rename.uses).into())
 }
 
 #[cfg(test)]

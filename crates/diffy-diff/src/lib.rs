@@ -72,7 +72,7 @@ pub use projection::{
 };
 pub use remap::{LineMap, RemapError, SourceRemap};
 pub use semantic::{
-    AlignedRow, ChangeIntensity, FileSemantics, ItemChange, OutlineItem, SemanticError,
+    AlignedRow, ChangeIntensity, FileSemantics, ItemChange, OutlineItem, Rename, SemanticError,
     SemanticSpan,
 };
 pub use session::{

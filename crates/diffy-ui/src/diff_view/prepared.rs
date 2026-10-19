@@ -163,6 +163,7 @@ pub struct LinePaint {
     pub window: Option<LineWindow>,
     pub struck: Vec<Range<usize>>,
     pub unspoken: Vec<Range<usize>>,
+    pub renamed: Vec<Range<usize>>,
     pub removed_spans: Arc<[bool]>,
     pub merge: Option<Arc<LineMerge>>,
 }
@@ -355,6 +356,7 @@ pub struct RowPaint {
     pub annotations: u32,
     pub quiet: bool,
     pub fold: Option<(u32, bool)>,
+    pub hint: Option<Arc<str>>,
 }
 
 impl RowPaint {

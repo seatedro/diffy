@@ -136,7 +136,7 @@ fn line_metrics(doc: &DiffDocument, side: Side, line: u32, structural: bool, m: 
     for span in doc.semantic_spans(0, side, line) {
         let bytes = solid(&text[span.start as usize..span.end as usize]) as u64;
         match span.intensity {
-            ChangeIntensity::Novel => m.novel_bytes += bytes,
+            ChangeIntensity::Novel | ChangeIntensity::Renamed => m.novel_bytes += bytes,
             ChangeIntensity::NovelWord => m.word_bytes += bytes,
             ChangeIntensity::UnchangedContext => continue,
         }

@@ -732,6 +732,7 @@ fn text_cell(
                 h={height}
                 class="shrink-0 relative"
                 @when {let Some(bg) = bg} { bg={bg} }
+                @when {let Some(hint) = paint.hint.clone()} { tooltip={hint.to_string()} }
                 @when {env.accessible} {
                     accessibility_role={Role::ListItem}
                     aria-label={line.label()}
@@ -863,6 +864,7 @@ fn paint_text(
         },
         &line.words,
         &line.struck,
+        &line.renamed,
         search,
         selected,
         LineColors {
@@ -873,6 +875,7 @@ fn paint_text(
             },
             word,
             strike: colors.del_marker,
+            rename: colors.accent,
             search: colors.search_match,
             search_active: colors.search_active,
             search_outline: colors.search_outline,

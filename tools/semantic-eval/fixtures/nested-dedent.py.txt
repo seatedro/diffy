@@ -1,0 +1,23 @@
+<<<< old
+def run(items):
+    for item in items:
+        if item.ready:
+            start(item)
+            step(item)
+    finish()
+<<<< new
+def run(items):
+    for item in items:
+        start(item)
+        step(item)
+    finish()
+<<<< expect
+@@ -1,6 +1,5 @@
+     1    1 |def run(items):
+     2    2 |    for item in items:
+-    3      |        ⟦if⟧ ⟦item.ready:⟧
+<    4      |            start(item)
+>         3 |        start(item)
+<    5      |            step(item)
+>         4 |        step(item)
+     6    5 |    finish()

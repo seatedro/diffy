@@ -1,0 +1,17 @@
+<<<< old
+func run() {
+	value := build(first, second)
+	use(value)
+}
+<<<< new
+func run() {
+	value := build(first, extra, second)
+	use(value)
+}
+<<<< expect
+@@ -1,4 +1,4 @@
+     1    1 |func run() {
+<    2      |	value := build(first, second)
+>         2 |	value := build(first, ⟦extra,⟧ second)
+     3    3 |	use(value)
+     4    4 |}

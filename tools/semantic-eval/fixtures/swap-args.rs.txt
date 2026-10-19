@@ -1,0 +1,18 @@
+<<<< old
+fn run() {
+    first(alpha);
+    second(beta);
+}
+<<<< new
+fn run() {
+    first(beta);
+    second(alpha);
+}
+<<<< expect
+@@ -1,4 +1,4 @@
+     1    1 |fn run() {
+<    2      |    first(⟦alpha⟧);
+>         2 |    first(⟦beta⟧);
+<    3      |    second(⟦beta⟧);
+>         3 |    second(⟦alpha⟧);
+     4    4 |}

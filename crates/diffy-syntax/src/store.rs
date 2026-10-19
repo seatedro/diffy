@@ -150,6 +150,14 @@ impl GrammarStore {
         }
     }
 
+    #[cfg(feature = "engine")]
+    pub fn tree_sitter_language(&self, language: &LanguageId) -> Option<tree_sitter::Language> {
+        match self.grammar(language) {
+            Tag::Ready(grammar) => Some(grammar.language().clone()),
+            Tag::Pending | Tag::Unavailable => None,
+        }
+    }
+
     /// Resolves `language`, loading its pack or starting its download on
     /// first use.
     pub fn status(&self, language: &LanguageId) -> LanguageStatus {

@@ -142,6 +142,10 @@ impl Grammar {
         })
     }
 
+    pub(crate) fn language(&self) -> &ts::Language {
+        &self.language
+    }
+
     pub(crate) fn scope_query(&self, language: &str) -> Option<Arc<crate::scope::ScopeQuery>> {
         self.scopes
             .get_or_init(|| {

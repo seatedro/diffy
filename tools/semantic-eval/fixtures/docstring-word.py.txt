@@ -1,0 +1,23 @@
+<<<< old
+def run():
+    """Start the job.
+
+    Runs every step in order.
+    """
+    start()
+<<<< new
+def run():
+    """Start the job.
+
+    Runs each step in order.
+    """
+    start()
+<<<< expect
+@@ -1,6 +1,6 @@
+     1    1 |def run():
+     2    2 |    """Start the job.
+     3    3 |
+<    4      |    Runs ⟨every⟩ step in order.
+>         4 |    Runs ⟨each⟩ step in order.
+     5    5 |    """
+     6    6 |    start()

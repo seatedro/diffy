@@ -6,6 +6,8 @@ use diffy_diff::{
     AlignedRow, ChangeIntensity, DiffDocument, DocumentBuilder, FileMeta, FileStatus, SemanticSpan,
     Side, SourceCoverage, TextStore,
 };
+use diffy_semantic::{Limits, Row};
+use diffy_syntax::{GrammarStore, LanguageId, legacy_pack};
 use rayon::prelude::*;
 use vendored_difftastic::{
     ChangeIntensity as DftIntensity, ChangeSpan, DiffRequest, DiffStatus, SemanticDiffResult,
@@ -258,12 +260,6 @@ fn build(
     Ok(builder.build())
 }
 
-struct Row {
-    old: Option<u32>,
-    new: Option<u32>,
-    spans: [Vec<SemanticSpan>; 2],
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Context,
@@ -291,6 +287,103 @@ pub(crate) fn document_from_semantic(
     result: &SemanticDiffResult,
 ) -> Result<DiffDocument> {
     let chunks = sanitize(result, &old, &new);
+    let structural =
+        result.line_fallback_reason.is_none() && line_fallback_reason(&result.language).is_none();
+    document_from_rows(meta, old, new, chunks, structural)
+}
+
+pub fn document_from_native(
+    changed: &ChangedPath,
+    grammars: &GrammarStore,
+) -> Result<(DiffDocument, Option<String>)> {
+    document_from_native_with(changed, |name| {
+        LanguageId::from_fence(name).and_then(|id| grammars.tree_sitter_language(&id))
+    })
+}
+
+pub fn document_from_native_with(
+    changed: &ChangedPath,
+    grammar: impl FnOnce(&str) -> Option<diffy_semantic::Language>,
+) -> Result<(DiffDocument, Option<String>)> {
+    let meta = changed.meta();
+    if is_binary_bytes(&changed.old_content) || is_binary_bytes(&changed.new_content) {
+        return Ok((binary_document(meta)?, None));
+    }
+    let old = TextStore::from_bytes(&changed.old_content);
+    let new = TextStore::from_bytes(&changed.new_content);
+    if changed.status == FileStatus::Added || changed.old_path.is_none() {
+        return Ok((whole_file(meta, old, new, Side::New)?, None));
+    }
+    if changed.status == FileStatus::Deleted || changed.new_path.is_none() {
+        return Ok((whole_file(meta, old, new, Side::Old)?, None));
+    }
+    if changed.old_content == changed.new_content {
+        return Ok((build(DocumentBuilder::new(), meta, old, new, |_| {})?, None));
+    }
+    let line_diff = |reason: String| {
+        document_from_bytes(meta.clone(), &changed.old_content, &changed.new_content)
+            .map(|doc| (doc, Some(reason)))
+    };
+    let Some(language) = legacy_pack::language_for_path(changed.display_path()) else {
+        return line_diff("no grammar for this file".to_owned());
+    };
+    let (Some(grammar), Some(config)) = (
+        grammar(language.name),
+        diffy_semantic::config(language.name),
+    ) else {
+        return line_diff(format!("{} grammar unavailable", language.name));
+    };
+    match diffy_semantic::diff(
+        &grammar,
+        config,
+        old.as_str(),
+        new.as_str(),
+        &Limits::default(),
+    ) {
+        Ok(chunks) => {
+            let chunks = clean_rows(chunks, &old, &new);
+            Ok((document_from_rows(meta, old, new, chunks, true)?, None))
+        }
+        Err(fallback) => line_diff(fallback.to_string()),
+    }
+}
+
+fn clean_rows(chunks: Vec<Vec<Row>>, old: &TextStore, new: &TextStore) -> Vec<Vec<Row>> {
+    let side = |store: &TextStore, line: Option<u32>, spans: Vec<SemanticSpan>| {
+        let line = line.filter(|&l| l < store.line_count());
+        let spans = line
+            .and_then(|l| store.display_line(l))
+            .map(|text| clean_spans(spans, text))
+            .unwrap_or_default();
+        (line, spans)
+    };
+    chunks
+        .into_iter()
+        .map(|chunk| {
+            chunk
+                .into_iter()
+                .map(|row| {
+                    let [old_spans, new_spans] = row.spans;
+                    let (old_line, old_spans) = side(old, row.old, old_spans);
+                    let (new_line, new_spans) = side(new, row.new, new_spans);
+                    Row {
+                        old: old_line,
+                        new: new_line,
+                        spans: [old_spans, new_spans],
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn document_from_rows(
+    meta: FileMeta,
+    old: TextStore,
+    new: TextStore,
+    chunks: Vec<Vec<Row>>,
+    structural: bool,
+) -> Result<DiffDocument> {
     let segments = canonical_segments(&chunks, &old, &new);
     let hunks = hunk_ranges(&segments);
     let mut rows: Vec<Vec<AlignedRow>> = hunks.iter().map(|_| Vec::new()).collect();
@@ -325,8 +418,6 @@ pub(crate) fn document_from_semantic(
             }
         }
     }
-    let structural =
-        result.line_fallback_reason.is_none() && line_fallback_reason(&result.language).is_none();
     build(DocumentBuilder::new(), meta, old, new, |file| {
         file.structural(structural);
         for (hunk, hunk_rows) in hunks.iter().zip(rows) {
@@ -380,18 +471,30 @@ fn sanitize(result: &SemanticDiffResult, old: &TextStore, new: &TextStore) -> Ve
 }
 
 fn sanitize_spans(spans: &[ChangeSpan], text: &str) -> Vec<SemanticSpan> {
-    let mut out: Vec<SemanticSpan> = spans
+    let spans = spans
         .iter()
+        .map(|span| SemanticSpan {
+            start: span.start_col,
+            end: span.end_col,
+            intensity: intensity(span.intensity),
+        })
+        .collect();
+    clean_spans(spans, text)
+}
+
+fn clean_spans(spans: Vec<SemanticSpan>, text: &str) -> Vec<SemanticSpan> {
+    let mut out: Vec<SemanticSpan> = spans
+        .into_iter()
         .filter_map(|span| {
-            let start = span.start_col as usize;
-            let end = (span.end_col as usize).min(text.len());
-            (start < end && text.is_char_boundary(start) && text.is_char_boundary(end)).then(|| {
+            let start = span.start as usize;
+            let end = (span.end as usize).min(text.len());
+            (start < end && text.is_char_boundary(start) && text.is_char_boundary(end)).then_some(
                 SemanticSpan {
                     start: start as u32,
                     end: end as u32,
-                    intensity: intensity(span.intensity),
-                }
-            })
+                    intensity: span.intensity,
+                },
+            )
         })
         .collect();
     out.sort_by_key(|span| (span.start, span.end));

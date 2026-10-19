@@ -1,0 +1,11 @@
+[package]
+name = "diffy-semantic"
+description = "Structural diff of two sources parsed with tree-sitter, for Diffy's semantic view."
+version.workspace = true
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[dependencies]
+diffy-diff = { path = "../diffy-diff" }
+tree-sitter = "0.26"

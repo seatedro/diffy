@@ -1,0 +1,11 @@
+<<<< old
+def greet():
+    return "hello brave world"
+<<<< new
+def greet():
+    return "hello new world"
+<<<< expect
+@@ -1,2 +1,2 @@
+     1    1 |def greet():
+<    2      |    return "hello ⟨brave⟩ world"
+>         2 |    return "hello ⟨new⟩ world"

@@ -1,0 +1,14 @@
+<<<< old
+struct Cache {
+    items: HashMap<Key, Value>,
+}
+<<<< new
+struct Cache {
+    items: HashMap<Key, Vec<Value>>,
+}
+<<<< expect
+@@ -1,3 +1,3 @@
+     1    1 |struct Cache {
+<    2      |    items: HashMap<Key, Value>,
+>         2 |    items: HashMap<Key, ⟦Vec<⟧Value⟦>⟧>,
+     3    3 |}

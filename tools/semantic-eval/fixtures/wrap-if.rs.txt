@@ -1,0 +1,25 @@
+<<<< old
+fn run(ready: bool) {
+    start();
+    step();
+    finish();
+}
+<<<< new
+fn run(ready: bool) {
+    if ready {
+        start();
+        step();
+    }
+    finish();
+}
+<<<< expect
+@@ -1,5 +1,7 @@
+     1    1 |fn run(ready: bool) {
++         2 |    ⟦if⟧ ⟦ready⟧ ⟦{⟧
+<    2      |    start();
+>         3 |        start();
+<    3      |    step();
+>         4 |        step();
++         5 |    ⟦}⟧
+     4    6 |    finish();
+     5    7 |}

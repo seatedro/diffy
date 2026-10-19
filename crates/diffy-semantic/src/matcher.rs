@@ -10,6 +10,7 @@ use crate::syntax::{Class, NONE, Tree};
 const MAX_PAIR_CELLS: usize = 1 << 16;
 const SIGNATURE_LEAVES: usize = 64;
 const MIN_SIMILARITY: f32 = 0.3;
+const RENAMED_ITEM_SIMILARITY: f32 = 0.6;
 const TEXT_SIMILARITY: f32 = 0.5;
 const SIMILAR_DEPTH: usize = 2;
 const CLOCK_STRIDE: u64 = 1 << 16;
@@ -136,21 +137,13 @@ impl Matcher<'_, '_> {
         {
             start += 1;
         }
-        let mut end = 0;
-        while end < a.len() - start
-            && end < b.len() - start
-            && self.hash(0, a[a.len() - 1 - end]) == self.hash(1, b[b.len() - 1 - end])
-            && self.same(a[a.len() - 1 - end], b[b.len() - 1 - end])
-        {
-            end += 1;
-        }
-        let (a, b) = (&a[start..a.len() - end], &b[start..b.len() - end]);
+        let (a, b) = (&a[start..], &b[start..]);
         if a.is_empty() || b.is_empty() {
             return Ok(());
         }
         let (ia, ib) = self.intern(a, b);
         let (mut i, mut j) = (0, 0);
-        for change in myers::diff(&ia, &ib) {
+        for change in slide(myers::diff(&ia, &ib), &ia, &ib) {
             let (old, new) = (
                 change.old.start as usize..change.old.end as usize,
                 change.new.start as usize..change.new.end as usize,
@@ -196,6 +189,11 @@ impl Matcher<'_, '_> {
         }
         if self.splice(a, b, false)? || self.pair_similar(a, b)? || self.splice(a, b, true)? {
             return Ok(());
+        }
+        if self.identifier(0, a[0]) && self.identifier(1, b[0]) {
+            self.link(a[0], b[0]);
+            self.renamed.push((a[0], b[0]));
+            return self.gap(&a[1..], &b[1..]);
         }
         if a.len() == 1
             && b.len() == 1
@@ -533,16 +531,25 @@ impl Matcher<'_, '_> {
         match (nx.class, ny.class) {
             (Class::List, Class::List) if self.pairable_lists(x, y) => {
                 let similarity = dice(sx, sy);
-                if similarity >= MIN_SIMILARITY {
-                    similarity
-                } else {
-                    0.0
-                }
+                let floor = match (self.item_name(0, x), self.item_name(1, y)) {
+                    (Some(a), Some(b)) if a != b => RENAMED_ITEM_SIMILARITY,
+                    _ => MIN_SIMILARITY,
+                };
+                if similarity >= floor { similarity } else { 0.0 }
             }
             (Class::Text, Class::Text) if nx.kind == ny.kind => TEXT_SIMILARITY,
             (Class::Comment, Class::Comment) => TEXT_SIMILARITY,
             _ => 0.0,
         }
+    }
+
+    fn item_name(&self, side: usize, node: u32) -> Option<&str> {
+        let tree = self.trees[side];
+        let at = tree
+            .items
+            .binary_search_by_key(&node, |item| item.node)
+            .ok()?;
+        Some(tree.text(tree.items[at].name.clone()))
     }
 
     fn signature(&self, side: usize, node: u32) -> Vec<u64> {
@@ -561,6 +568,29 @@ impl Matcher<'_, '_> {
         out.dedup();
         out
     }
+}
+
+fn slide(mut changes: Vec<myers::Change>, a: &[u32], b: &[u32]) -> Vec<myers::Change> {
+    for k in 0..changes.len() {
+        let limit = changes
+            .get(k + 1)
+            .map_or((a.len() as u32, b.len() as u32), |next| {
+                (next.old.start, next.new.start)
+            });
+        let c = &mut changes[k];
+        if c.old.is_empty() {
+            while c.new.end < limit.1 && b[c.new.start as usize] == b[c.new.end as usize] {
+                c.new = c.new.start + 1..c.new.end + 1;
+                c.old = c.old.start + 1..c.old.end + 1;
+            }
+        } else if c.new.is_empty() {
+            while c.old.end < limit.0 && a[c.old.start as usize] == a[c.old.end as usize] {
+                c.old = c.old.start + 1..c.old.end + 1;
+                c.new = c.new.start + 1..c.new.end + 1;
+            }
+        }
+    }
+    changes
 }
 
 fn dice(a: &[u64], b: &[u64]) -> f32 {

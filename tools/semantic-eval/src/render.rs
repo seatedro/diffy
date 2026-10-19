@@ -96,6 +96,7 @@ fn marked(out: &mut String, text: &str, doc: &DiffDocument, side: Side, line: u3
     for (start, end, intensity) in runs {
         let (open, close) = match intensity {
             ChangeIntensity::NovelWord => ('⟨', '⟩'),
+            ChangeIntensity::Renamed => ('⟪', '⟫'),
             _ => ('⟦', '⟧'),
         };
         out.push_str(&text[at..start]);

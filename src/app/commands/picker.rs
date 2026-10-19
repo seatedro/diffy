@@ -1,13 +1,13 @@
 use crate::core::search::fuzzy::match_ranges;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use quark_components::FuzzyMatcher;
 use quark_ui::text_input::TextField;
 
+use super::repo_picker::RepoView;
 use crate::contracts::navigation::{CompareField, NavigationAction};
 use crate::contracts::shell::Action;
 use crate::core::compare::CompareMode;
-use crate::core::ref_catalog::relative_age;
 use crate::fonts::{FontFamilyEntry, FontRole};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +36,7 @@ impl PickerKind {
 
     pub fn placeholder(self) -> &'static str {
         match self {
-            Self::Repository => "Search recent or type a path",
+            Self::Repository => "Search repositories or type a path",
             Self::Ref(_) => "Search refs or type a revision",
             Self::Theme => "Search themes",
             Self::Font(_) => "Search fonts",
@@ -48,12 +48,28 @@ impl PickerKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PickerChoice {
+    Heading,
+    Group(String),
     Repository(PathBuf),
     Ref(String),
     Theme(String),
     Font(String),
     Action(Action),
     PullRequest(String),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RowKind {
+    #[default]
+    Item,
+    Section {
+        count: Option<usize>,
+        busy: bool,
+    },
+    Group {
+        count: usize,
+        expanded: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +80,15 @@ pub struct PickerRow {
     pub highlights: Vec<(usize, usize)>,
     pub choice: PickerChoice,
     pub current: bool,
+    pub kind: RowKind,
+    pub branch: Option<String>,
+    pub indent: bool,
+}
+
+impl PickerRow {
+    pub fn selectable(&self) -> bool {
+        !matches!(self.kind, RowKind::Section { .. })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -118,10 +143,12 @@ pub struct PickerState {
     pub selected: usize,
     pub scroll_px: f32,
     pub pending_reveal: bool,
+    pub repos: Option<RepoView>,
     matcher: FuzzyMatcher,
 }
 
 pub const PICKER_VISIBLE_ROWS: usize = 9;
+pub const REPO_PICKER_VISIBLE_ROWS: usize = 14;
 pub const TYPED_PATH: &str = "Open this path";
 
 impl PickerState {
@@ -134,10 +161,36 @@ impl PickerState {
             selected: 0,
             scroll_px: 0.0,
             pending_reveal: true,
+            repos: None,
             matcher: FuzzyMatcher::default(),
         };
         state.refilter();
         state
+    }
+
+    pub fn repositories(view: RepoView) -> Self {
+        let mut state = Self::new(PickerKind::Repository, Vec::new());
+        state.repos = Some(view);
+        state.refilter();
+        state
+    }
+
+    pub fn visible_rows(&self) -> usize {
+        if self.repos.is_some() {
+            REPO_PICKER_VISIBLE_ROWS
+        } else {
+            PICKER_VISIBLE_ROWS
+        }
+    }
+
+    pub fn refresh(&mut self) {
+        let keep = self.selected_choice().cloned();
+        let scroll = self.scroll_px;
+        self.refilter();
+        self.scroll_px = scroll;
+        if let Some(index) = keep.and_then(|keep| self.rows.iter().position(|r| r.choice == keep)) {
+            self.selected = index;
+        }
     }
 
     pub fn set_candidates(&mut self, candidates: Vec<PickerCandidate>) {
@@ -148,6 +201,23 @@ impl PickerState {
     pub fn refilter(&mut self) {
         let query = self.query.text().trim();
         self.rows.clear();
+        if let Some(view) = &self.repos {
+            self.rows = view.rows(query, &mut self.matcher);
+            if !query.is_empty()
+                && let Some(typed) = self.typed_choice(query)
+            {
+                self.rows.push(typed);
+            }
+            self.selected = self
+                .rows
+                .iter()
+                .position(|r| r.current)
+                .or_else(|| self.rows.iter().position(PickerRow::selectable))
+                .unwrap_or(0);
+            self.scroll_px = 0.0;
+            self.pending_reveal = true;
+            return;
+        }
         if query.is_empty() {
             self.rows
                 .extend(self.candidates.iter().map(|c| row(c, Vec::new())));
@@ -203,6 +273,9 @@ impl PickerState {
             highlights: Vec::new(),
             choice,
             current: false,
+            kind: RowKind::Item,
+            branch: None,
+            indent: false,
         })
     }
 
@@ -218,13 +291,27 @@ impl PickerState {
             return;
         }
         let last = self.rows.len() as i32 - 1;
-        self.selected = (self.selected as i32 + delta).clamp(0, last) as usize;
+        let step = delta.signum();
+        let mut target = self.selected as i32;
+        let mut remaining = delta.abs();
+        while remaining > 0 {
+            let mut next = target + step;
+            while (0..=last).contains(&next) && !self.rows[next as usize].selectable() {
+                next += step;
+            }
+            if !(0..=last).contains(&next) {
+                break;
+            }
+            target = next;
+            remaining -= 1;
+        }
+        self.selected = target as usize;
         self.reveal(row_stride);
     }
 
     pub fn reveal(&mut self, row_stride: f32) {
         let top = self.selected as f32 * row_stride;
-        let viewport = PICKER_VISIBLE_ROWS as f32 * row_stride;
+        let viewport = self.visible_rows() as f32 * row_stride;
         if top < self.scroll_px {
             self.scroll_px = top;
         } else if top + row_stride > self.scroll_px + viewport {
@@ -233,7 +320,7 @@ impl PickerState {
     }
 
     pub fn scroll(&mut self, lines: i32, row_stride: f32) {
-        let max = (self.rows.len().saturating_sub(PICKER_VISIBLE_ROWS)) as f32 * row_stride;
+        let max = (self.rows.len().saturating_sub(self.visible_rows())) as f32 * row_stride;
         self.scroll_px = (self.scroll_px + lines as f32 * row_stride).clamp(0.0, max.max(0.0));
     }
 
@@ -269,6 +356,9 @@ fn row(candidate: &PickerCandidate, highlights: Vec<(usize, usize)>) -> PickerRo
         highlights,
         choice: candidate.choice.clone(),
         current: candidate.current,
+        kind: RowKind::Item,
+        branch: None,
+        indent: false,
     }
 }
 
@@ -279,79 +369,6 @@ pub fn expand_path(query: &str) -> PathBuf {
             None => PathBuf::from(query),
         },
         None => PathBuf::from(query),
-    }
-}
-
-pub struct RecentRepository {
-    pub path: PathBuf,
-    pub opened: Option<i64>,
-}
-
-pub fn repository_candidates(
-    recent: &[RecentRepository],
-    current: Option<&Path>,
-    now: i64,
-) -> Vec<PickerCandidate> {
-    let home = dirs::home_dir();
-    recent
-        .iter()
-        .map(|repo| {
-            let path = &repo.path;
-            let label = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
-            let age = repo
-                .opened
-                .map(|opened| relative_age(now, opened))
-                .unwrap_or_default();
-            let alias = match home
-                .as_deref()
-                .and_then(|home| path.strip_prefix(home).ok())
-            {
-                Some(rest) => format!("~/{}", rest.display()),
-                None => path.display().to_string(),
-            };
-            PickerCandidate::new(label, PickerChoice::Repository(path.clone()))
-                .detail(parent_label(path, home.as_deref()))
-                .alias(alias)
-                .meta(age)
-                .current(current == Some(path.as_path()))
-        })
-        .collect()
-}
-
-const PARENT_COMPONENTS: usize = 2;
-
-fn parent_label(path: &Path, home: Option<&Path>) -> String {
-    let Some(parent) = path.parent() else {
-        return String::new();
-    };
-    let (prefix, rest) = match home.and_then(|home| parent.strip_prefix(home).ok()) {
-        Some(rest) => ("~", rest),
-        None => ("", parent),
-    };
-    let parts: Vec<String> = rest
-        .components()
-        .filter_map(|c| match c {
-            std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect();
-    let rooted = if prefix.is_empty() { "/" } else { "~/" };
-    if parts.len() > PARENT_COMPONENTS {
-        format!(
-            "\u{2026}/{}",
-            parts[parts.len() - PARENT_COMPONENTS..].join("/")
-        )
-    } else if parts.is_empty() {
-        if prefix.is_empty() {
-            "/".to_owned()
-        } else {
-            "~".to_owned()
-        }
-    } else {
-        format!("{rooted}{}", parts.join("/"))
     }
 }
 

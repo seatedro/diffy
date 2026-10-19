@@ -9,6 +9,7 @@ pub mod picker;
 pub mod platform;
 mod ref_picker;
 mod ref_picker_view;
+pub mod repo_picker;
 mod settings_view;
 mod state;
 #[cfg(test)]

@@ -283,6 +283,12 @@ impl CommandsController {
                 "tab" if self.picker_completes_paths() => {
                     Some(CommandsAction::TabCompletePickerDir)
                 }
+                "arrowright" if self.picker_browses_repos() => {
+                    Some(CommandsAction::RepoGroupKey(true))
+                }
+                "arrowleft" if self.picker_browses_repos() => {
+                    Some(CommandsAction::RepoGroupKey(false))
+                }
                 _ => None,
             },
             Some(LayerKind::RefPicker) => match binding {

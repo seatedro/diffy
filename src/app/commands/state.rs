@@ -16,6 +16,7 @@ use super::palette::{self, PaletteCommand, PaletteSource};
 use super::picker::{self, PickerCandidate, PickerChoice, PickerKind, PickerState};
 use super::platform::{self, PlatformRequest, ids};
 use super::ref_picker::{RefPicker, is_working_tree};
+use super::repo_picker::{RepoEntry, RepoView};
 use super::toasts::ToastHost;
 use crate::app::text_targets::{PICKER, SETTINGS, SETTINGS_SEARCH, TextCx, TextHost};
 use crate::contracts::commands::{
@@ -35,6 +36,7 @@ use crate::core::compare::LayoutMode;
 use crate::core::frecency::{FrecencyStore, recent_repo_paths, repo_last_opened};
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
 use crate::core::ref_catalog::{RefCatalog, RefEntryKind, WORKING_TREE_LABEL};
+use crate::core::repo_discovery::RepoScan;
 use crate::core::theme_types::ThemeMode;
 use crate::core::vcs::git::WORKDIR_REF;
 use crate::core::vcs::model::VcsKind;
@@ -104,6 +106,9 @@ pub struct CommandsController {
     fonts: Option<FontCatalog>,
     font_catalog_requested: bool,
     frecency: Option<FrecencyStore>,
+    repo_scan: Option<Arc<RepoScan>>,
+    repo_scanning: bool,
+    repo_picker_current: Option<PathBuf>,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
     activation_click: Cell<bool>,
@@ -145,6 +150,9 @@ impl Default for CommandsController {
             fonts: None,
             font_catalog_requested: false,
             frecency: None,
+            repo_scan: None,
+            repo_scanning: false,
+            repo_picker_current: None,
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
             activation_click: Cell::new(false),
@@ -228,6 +236,16 @@ impl CommandsController {
 
     pub(super) fn capturing(&self) -> Option<ShortcutCommand> {
         self.settings_page.as_ref().and_then(|page| page.capture)
+    }
+
+    pub(super) fn repo_scan_status(&self) -> (Option<&RepoScan>, bool) {
+        (self.repo_scan.as_deref(), self.repo_scanning)
+    }
+
+    pub(super) fn picker_browses_repos(&self) -> bool {
+        self.picker
+            .as_ref()
+            .is_some_and(|picker| picker.repos.is_some() && picker.query.text().trim().is_empty())
     }
 
     pub(super) fn picker_completes_paths(&self) -> bool {
@@ -462,16 +480,123 @@ impl CommandsController {
     }
 
     fn open_picker(&mut self, kind: PickerKind, candidates: Vec<PickerCandidate>) -> Reduction {
+        self.show_picker(PickerState::new(kind, candidates))
+    }
+
+    fn show_picker(&mut self, picker: PickerState) -> Reduction {
         if self.has_layer(LayerKind::Picker) {
-            self.picker = Some(PickerState::new(kind, candidates));
+            self.picker = Some(picker);
             self.focus(Some(PICKER));
             return Reduction::changed();
         }
         let Some(return_focus) = self.admit(LayerKind::Picker) else {
             return Reduction::default();
         };
-        self.picker = Some(PickerState::new(kind, candidates));
+        self.picker = Some(picker);
         self.push_layer(LayerKind::Picker, return_focus);
+        Reduction::changed()
+    }
+
+    fn scan_repositories(&mut self) -> Reduction {
+        self.repo_scanning = true;
+        Reduction::changed().effect(CommandsEffect::ScanRepositories {
+            options: Box::new(self.settings.settings.repo_discovery.clone()),
+            known: recent_repo_paths(self.frecency.as_ref(), RECENT_REPOSITORIES),
+        })
+    }
+
+    fn open_repo_picker(&mut self, cx: &SharedContext) -> Reduction {
+        let current = cx.repository.as_ref().map(|r| r.snapshot.path.clone());
+        let mut recent: Vec<PathBuf> =
+            recent_repo_paths(self.frecency.as_ref(), RECENT_REPOSITORIES);
+        if let Some(current) = &current
+            && !recent.contains(current)
+        {
+            recent.insert(0, current.clone());
+        }
+        let store = self.frecency.as_ref();
+        let home = dirs::home_dir();
+        let now = crate::core::ref_catalog::now_secs();
+        let mut recent: Vec<(PathBuf, Option<i64>)> = recent
+            .into_iter()
+            .map(|path| {
+                let opened = repo_last_opened(store, &path);
+                (path, opened)
+            })
+            .collect();
+        recent.sort_by_key(|(_, opened)| std::cmp::Reverse(*opened));
+        let mut view = RepoView {
+            recent: recent
+                .into_iter()
+                .map(|(path, opened)| {
+                    RepoEntry::new(path, home.as_deref(), None, opened, now, current.as_deref())
+                })
+                .collect(),
+            ..RepoView::default()
+        };
+        if let Some(scan) = &self.repo_scan {
+            view.set_discovered(scan, home.as_deref(), now, current.as_deref());
+        }
+        let mut reduction = self.scan_repositories();
+        view.scanning = self.repo_scanning;
+        self.repo_picker_current = current;
+        reduction.merge(self.show_picker(PickerState::repositories(view)));
+        reduction
+    }
+
+    fn apply_repo_scan(&mut self) {
+        let Some(scan) = self.repo_scan.clone() else {
+            return;
+        };
+        let scanning = self.repo_scanning;
+        let current = self.repo_picker_current.clone();
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        let Some(view) = picker.repos.as_mut() else {
+            return;
+        };
+        let home = dirs::home_dir();
+        let now = crate::core::ref_catalog::now_secs();
+        view.set_discovered(&scan, home.as_deref(), now, current.as_deref());
+        view.scanning = scanning;
+        picker.refresh();
+    }
+
+    fn repo_group_key(&mut self, open: bool) -> Reduction {
+        let Some(picker) = self.picker.as_mut() else {
+            return Reduction::default();
+        };
+        let Some(row) = picker.rows.get(picker.selected) else {
+            return Reduction::default();
+        };
+        let group = match (&row.choice, row.indent) {
+            (PickerChoice::Group(group), _) => group.clone(),
+            (PickerChoice::Repository(path), true) if !open => match &picker.repos {
+                Some(view) => view
+                    .discovered
+                    .iter()
+                    .find(|entry| &entry.path == path)
+                    .map(|entry| entry.group.clone())
+                    .unwrap_or_default(),
+                None => return Reduction::default(),
+            },
+            _ => return Reduction::default(),
+        };
+        let Some(view) = picker.repos.as_mut() else {
+            return Reduction::default();
+        };
+        view.set_open(&group, open);
+        picker.refilter();
+        if let Some(index) = picker
+            .rows
+            .iter()
+            .position(|row| row.choice == PickerChoice::Group(group.clone()))
+        {
+            picker.selected = index;
+        }
+        let stride = self.row_stride;
+        picker.reveal(stride);
         Reduction::changed()
     }
 
@@ -719,6 +844,13 @@ impl CommandsController {
         let Some(choice) = picker.selected_choice().cloned() else {
             return Reduction::default();
         };
+        match choice {
+            PickerChoice::Heading => return Reduction::default(),
+            PickerChoice::Group(group) => {
+                return self.reduce_action(CommandsAction::ToggleRepoGroup(group), cx);
+            }
+            _ => {}
+        }
         self.pop_layer(LayerKind::Picker);
         let mut reduction = Reduction::changed();
         match (kind, choice) {
@@ -748,7 +880,13 @@ impl CommandsController {
             (_, PickerChoice::PullRequest(url)) => {
                 reduction = reduction.intent(Intent::OpenPullRequest { url });
             }
-            (_, PickerChoice::Ref(_) | PickerChoice::Font(_)) => {}
+            (
+                _,
+                PickerChoice::Ref(_)
+                | PickerChoice::Font(_)
+                | PickerChoice::Heading
+                | PickerChoice::Group(_),
+            ) => {}
         }
         reduction
     }
@@ -1002,7 +1140,9 @@ impl CommandsController {
             settings,
         });
         self.settings = snapshot.clone();
-        Reduction::changed().intent(Intent::SettingsChanged(snapshot))
+        let mut reduction = Reduction::changed().intent(Intent::SettingsChanged(snapshot));
+        reduction.merge(self.scan_repositories());
+        reduction
     }
 
     #[cfg(test)]
@@ -1312,27 +1452,57 @@ impl Controller for CommandsController {
         use CommandsAction as A;
         match action {
             A::OpenCommandPalette => self.open_palette(cx),
-            A::OpenRepoPicker => {
-                let current = cx.repository.as_ref().map(|r| r.snapshot.path.clone());
-                let mut recent: Vec<PathBuf> =
-                    recent_repo_paths(self.frecency.as_ref(), RECENT_REPOSITORIES);
-                if let Some(current) = &current
-                    && !recent.contains(current)
+            A::OpenRepoPicker => self.open_repo_picker(cx),
+            A::ToggleRepoGroup(group) => {
+                let Some(picker) = self.picker.as_mut() else {
+                    return Reduction::default();
+                };
+                let Some(view) = picker.repos.as_mut() else {
+                    return Reduction::default();
+                };
+                view.toggle(&group);
+                picker.refresh();
+                Reduction::changed()
+            }
+            A::RepoGroupKey(open) => self.repo_group_key(open),
+            A::RescanRepositories => self.scan_repositories(),
+            A::ChooseRepoScanFolder => {
+                Reduction::changed().effect(ShellEffect::OpenScanFolderDialog)
+            }
+            A::AddRepoScanRoot(path) => {
+                let home = dirs::home_dir();
+                let root = match home
+                    .as_deref()
+                    .and_then(|home| path.strip_prefix(home).ok())
                 {
-                    recent.insert(0, current.clone());
-                }
-                let store = self.frecency.as_ref();
-                let mut recent: Vec<picker::RecentRepository> = recent
-                    .into_iter()
-                    .map(|path| picker::RecentRepository {
-                        opened: repo_last_opened(store, &path),
-                        path,
-                    })
-                    .collect();
-                recent.sort_by_key(|repo| std::cmp::Reverse(repo.opened));
-                let now = crate::core::ref_catalog::now_secs();
-                let candidates = picker::repository_candidates(&recent, current.as_deref(), now);
-                self.open_picker(PickerKind::Repository, candidates)
+                    Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+                    Some(rest) => format!("~/{}", rest.display()),
+                    None => path.display().to_string(),
+                };
+                let mut reduction = self.update_settings(|s| {
+                    if !s.repo_discovery.roots.contains(&root) {
+                        s.repo_discovery.roots.push(root);
+                    }
+                });
+                reduction.merge(self.scan_repositories());
+                reduction
+            }
+            A::RemoveRepoScanRoot(root) => {
+                let mut reduction =
+                    self.update_settings(|s| s.repo_discovery.roots.retain(|r| *r != root));
+                reduction.merge(self.scan_repositories());
+                reduction
+            }
+            A::SetRepoScanDepth(depth) => {
+                let mut reduction = self.update_settings(|s| s.repo_discovery.depth = depth);
+                reduction.merge(self.scan_repositories());
+                reduction
+            }
+            A::ToggleRepoScanHidden => {
+                let mut reduction =
+                    self.update_settings(|s| s.repo_discovery.hidden = !s.repo_discovery.hidden);
+                reduction.merge(self.scan_repositories());
+                reduction
             }
             A::OpenRepositoryFolder => {
                 self.pop_layer(LayerKind::Picker);
@@ -1671,6 +1841,17 @@ impl Controller for CommandsController {
                 }
                 _ => Reduction::default(),
             },
+            CommandsEvent::RepositoriesScanned { scan, cached } => {
+                if !cached {
+                    self.repo_scanning = false;
+                }
+                if cached && self.repo_scan.is_some() {
+                    return Reduction::default();
+                }
+                self.repo_scan = Some(scan);
+                self.apply_repo_scan();
+                Reduction::changed()
+            }
             CommandsEvent::FontCatalogReady { ui, mono } => {
                 self.fonts = Some(FontCatalog { ui, mono });
                 if let Some(PickerKind::Font(role)) = self.picker.as_ref().map(|p| p.kind) {

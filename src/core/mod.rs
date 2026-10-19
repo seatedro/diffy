@@ -5,6 +5,7 @@ pub mod frecency;
 pub mod http;
 pub mod keymap;
 pub mod ref_catalog;
+pub mod repo_discovery;
 pub mod review;
 pub mod search;
 pub mod syntax;

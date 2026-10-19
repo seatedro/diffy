@@ -54,6 +54,24 @@ impl Default for PersistedViewport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct RepoDiscovery {
+    pub roots: Vec<String>,
+    pub depth: u8,
+    pub hidden: bool,
+}
+
+impl Default for RepoDiscovery {
+    fn default() -> Self {
+        Self {
+            roots: vec!["~".to_owned()],
+            depth: 5,
+            hidden: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub theme_mode: ThemeMode,
     pub theme_name: String,
@@ -69,6 +87,7 @@ pub struct Settings {
     pub ai_steering_prompt: String,
     pub ai_provider: Option<crate::ai::Provider>,
     pub keymap_overrides: Vec<KeymapOverride>,
+    pub repo_discovery: RepoDiscovery,
 }
 
 impl Default for Settings {
@@ -88,6 +107,7 @@ impl Default for Settings {
             ai_steering_prompt: String::new(),
             ai_provider: None,
             keymap_overrides: Vec::new(),
+            repo_discovery: RepoDiscovery::default(),
         }
     }
 }

@@ -54,6 +54,7 @@ pub enum LogicalFocus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellEffect {
     OpenRepositoryDialog,
+    OpenScanFolderDialog,
     OpenBrowser { url: String },
     SetClipboard(String),
     Focus(Option<LogicalFocus>),
@@ -62,6 +63,7 @@ pub enum ShellEffect {
 #[derive(Debug, Clone)]
 pub enum ShellEvent {
     RepositoryDialogClosed { path: Option<PathBuf> },
+    ScanFolderDialogClosed { path: Option<PathBuf> },
     BrowserOpenFailed { message: String },
 }
 

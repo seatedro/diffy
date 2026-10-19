@@ -6,11 +6,11 @@ use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
-use quark_ui::theme::Theme;
+use quark_ui::theme::{Color, Theme};
 
 use super::CommandsController;
 use super::list::{self, OptionRow};
-use super::picker::{PICKER_VISIBLE_ROWS, PickerChoice, PickerKind, TYPED_PATH};
+use super::picker::{PickerChoice, PickerKind, PickerRow, RowKind, TYPED_PATH};
 use super::state::{CONFIRM_ACCEPT, CONFIRM_CANCEL, LayerKind};
 use crate::app::shell::{Slot, kbd};
 use crate::app::text_targets::PICKER;
@@ -111,11 +111,15 @@ fn picker_panel(
         list::virtual_list(
             picker.rows.len(),
             picker.scroll_px,
-            PICKER_VISIBLE_ROWS,
+            picker.visible_rows(),
             theme,
             title,
             |i| {
                 let row = &picker.rows[i];
+                let selected = i == picker.selected;
+                if picker.repos.is_some() && row.detail.as_deref() != Some(TYPED_PATH) {
+                    return repo_row(row, i, selected, theme);
+                }
                 list::option_row(
                     OptionRow {
                         id: format!("picker-row:{i}:{}", row.label),
@@ -143,15 +147,17 @@ fn picker_panel(
             }),
         )
     };
-    let section = (repository && picker.query.text().trim().is_empty() && !picker.rows.is_empty())
-        .then(|| {
-            view! {
-                <div class="flex-row items-center" px={tokens::scaled(Sp::MD, scale)} pt={tokens::scaled(Sp::SM, scale)} pb={tokens::scaled(Sp::XS, scale)}>
-                    <text size={TextStyle::Caption.font_size(theme)} class="font-semibold" color={tc.text_muted}>"RECENT"</text>
-                </div>
-            }
-        });
-    let footer = repository.then(|| repository_footer(theme));
+    let browsing = picker.repos.is_some() && picker.query.text().trim().is_empty();
+    let count = picker.repos.as_ref().filter(|_| !browsing).map(|view| {
+        let shown = picker
+            .rows
+            .iter()
+            .filter(|row| matches!(row.choice, PickerChoice::Repository(_)))
+            .filter(|row| row.detail.as_deref() != Some(TYPED_PATH))
+            .count();
+        format!("{shown} of {}", view.total())
+    });
+    let footer = repository.then(|| repository_footer(browsing, theme));
     let left = if repository {
         tokens::title_leading_inset(theme).min((size.0 - panel_w).max(0.0))
     } else {
@@ -197,8 +203,10 @@ fn picker_panel(
                 >
                     <icon svg={lucide::SEARCH} size={Ico::SM} color={tc.icon} />
                     <div class="flex-1 min-w-0">{input}</div>
+                    {?count.map(|count| view! {
+                        <text size={TextStyle::Caption.font_size(theme)} color={tc.text_muted}>{count}</text>
+                    })}
                 </div>
-                {?section}
                 <div p={tokens::scaled(Sp::XS, scale)}>{list}</div>
                 {?footer}
             </div>
@@ -206,7 +214,133 @@ fn picker_panel(
     })
 }
 
-fn repository_footer(theme: &Theme) -> AnyElement {
+fn repo_row(row: &PickerRow, index: usize, selected: bool, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let caption = TextStyle::Caption.font_size(theme);
+    let height = theme.metrics.ui_row_height.round();
+    let pad = tokens::scaled(Sp::SM, scale);
+    let fill = if selected {
+        tokens::selected_fill(tc.elevated_surface, true, theme)
+    } else {
+        Color::TRANSPARENT
+    };
+    let id = format!("picker-row:{index}:{}", row.label);
+    let click: quark_ui::Action = Action::from(CommandsAction::SelectOverlayEntry(index)).into();
+    match row.kind {
+        RowKind::Section { count, busy } => {
+            let status = if count == Some(0) {
+                "scanning"
+            } else {
+                "updating"
+            };
+            view! {
+                <div
+                    class="w-full flex-row items-center"
+                    h={height}
+                    px={pad}
+                    gap={tokens::scaled(Sp::SM - Sp::XXS, scale)}
+                    key={id}
+                    accessibility_role={AccessibilityRole::Heading}
+                    aria-label={row.label.clone()}
+                >
+                    <text size={caption} class="font-semibold" color={tc.text_muted}>{row.label.to_uppercase()}</text>
+                    {?count.map(|count| view! { <text size={caption} color={tc.text_muted}>{count.to_string()}</text> })}
+                    <div class="flex-1" />
+                    if busy {
+                        <icon svg={lucide::LOADER} size={Ico::XS} color={tc.text_muted} />
+                        <text size={caption} color={tc.text_muted}>{status}</text>
+                    }
+                </div>
+            }
+        }
+        RowKind::Group { count, expanded } => view! {
+            <div
+                class="w-full flex-row items-center"
+                h={height}
+                px={pad}
+                gap={tokens::scaled(Sp::SM - Sp::XXS, scale)}
+                rounded={theme.metrics.control_radius}
+                bg={fill}
+                @when {!selected} { hover_bg={tc.ghost_element_hover} }
+                cursor={CursorHint::Pointer}
+                id={id.clone()}
+                key={id}
+                accessibility_role={AccessibilityRole::ListBoxOption}
+                aria-label={format!("{}, {count} repositories", row.label)}
+                aria-selected={selected}
+                aria-expanded={expanded}
+                on:click={click}
+            >
+                <icon svg={if expanded { lucide::CHEVRON_DOWN } else { lucide::CHEVRON_RIGHT }} size={Ico::XS} color={tc.text_muted} />
+                <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.icon} />
+                <text size={TextStyle::Body.font_size(theme)} class="font-medium" color={tc.text}>{row.label.clone()}</text>
+                <div
+                    class="flex-row items-center"
+                    px={tokens::scaled(Sp::XS + Sp::XXS, scale)}
+                    rounded={tokens::scaled(Sp::SM, scale)}
+                    bg={tc.element_background}
+                >
+                    <text size={caption} class="font-mono" color={tc.text_muted}>{count.to_string()}</text>
+                </div>
+            </div>
+        },
+        RowKind::Item => {
+            let indent = if row.indent {
+                tokens::scaled(Sp::XL + Sp::SM, scale)
+            } else {
+                pad
+            };
+            let name_color = if selected { tc.text_strong } else { tc.text };
+            view! {
+                <div
+                    class="w-full flex-row items-center"
+                    h={height}
+                    pl={indent}
+                    pr={pad}
+                    gap={tokens::scaled(Sp::SM, scale)}
+                    rounded={theme.metrics.control_radius}
+                    bg={fill}
+                    @when {!selected} { hover_bg={tc.ghost_element_hover} }
+                    cursor={CursorHint::Pointer}
+                    id={id.clone()}
+                    key={id}
+                    accessibility_role={AccessibilityRole::ListBoxOption}
+                    aria-label={row.label.clone()}
+                    aria-selected={selected}
+                    on:click={click}
+                >
+                    <icon svg={lucide::FOLDER_GIT} size={Ico::SM} color={if row.current { tc.accent } else { tc.icon }} />
+                    {list::highlighted(&row.label, &row.highlights, name_color, theme)}
+                    <div class="flex-1 flex-row overflow-hidden" min_w={0.0}>
+                        {?row.detail.as_ref().map(|detail| view! {
+                            <text size={small} class="truncate" color={tc.text_muted}>{detail.clone()}</text>
+                        })}
+                    </div>
+                    {?row.branch.as_ref().map(|branch| view! {
+                        <div
+                            class="flex-row items-center overflow-hidden"
+                            max_w={tokens::scaled(Layout::BRANCH_MAX_W, scale)}
+                            gap={tokens::scaled(Sp::XS, scale)}
+                        >
+                            <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={tc.text_muted} />
+                            <text size={TextStyle::MonoSmall.font_size(theme)} class="font-mono truncate" color={tc.text_muted}>{branch.clone()}</text>
+                        </div>
+                    })}
+                    <div class="flex-row justify-end shrink-0" w={tokens::scaled(Layout::AGE_W, scale)}>
+                        {?row.meta.as_ref().map(|age| view! { <text size={caption} color={tc.text_muted}>{age.clone()}</text> })}
+                    </div>
+                    if row.current {
+                        <icon svg={lucide::CHECK} size={Ico::SM} color={tc.accent} />
+                    }
+                </div>
+            }
+        }
+    }
+}
+
+fn repository_footer(browsing: bool, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);
@@ -237,10 +371,17 @@ fn repository_footer(theme: &Theme) -> AnyElement {
             </div>
             <div class="flex-1" />
             <div class="flex-row items-center" gap={tokens::scaled(Sp::XS, scale)} pr={tokens::scaled(Sp::SM, scale)}>
+                if browsing {
+                    {kbd("\u{2191}\u{2193}", theme)}
+                    <text size={small} color={tc.text_muted}>"move"</text>
+                    {kbd("\u{2192}", theme)}
+                    <text size={small} color={tc.text_muted}>"expand"</text>
+                } else {
+                    {kbd("\u{21E5}", theme)}
+                    <text size={small} color={tc.text_muted}>"complete"</text>
+                }
                 {kbd("\u{21B5}", theme)}
                 <text size={small} color={tc.text_muted}>"open"</text>
-                {kbd("\u{21E5}", theme)}
-                <text size={small} color={tc.text_muted}>"complete"</text>
             </div>
         </div>
     }

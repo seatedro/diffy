@@ -11,9 +11,10 @@ use crate::contracts::viewport::pipeline::{DiffSize, DiffSizeRequest};
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::keymap::ShortcutCommand;
 use crate::core::ref_catalog::{RefCatalog, RefResults};
+use crate::core::repo_discovery::RepoScan;
 use crate::core::theme_types::ThemeMode;
 use crate::fonts::FontFamilyEntry;
-use crate::platform::persistence::Settings;
+use crate::platform::persistence::{RepoDiscovery, Settings};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -134,6 +135,14 @@ pub enum CommandsAction {
     OpenCommandPalette,
     OpenRepoPicker,
     OpenRepositoryFolder,
+    ToggleRepoGroup(String),
+    RepoGroupKey(bool),
+    RescanRepositories,
+    ChooseRepoScanFolder,
+    AddRepoScanRoot(PathBuf),
+    RemoveRepoScanRoot(String),
+    SetRepoScanDepth(u8),
+    ToggleRepoScanHidden,
     OpenRefPicker(CompareField),
     ShowRefPicker(Box<RefPickerRequest>),
     RefPicker(RefPickerAction),
@@ -231,6 +240,10 @@ impl CommandsAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandsEffect {
     SaveSettings(Box<Settings>),
+    ScanRepositories {
+        options: Box<RepoDiscovery>,
+        known: Vec<PathBuf>,
+    },
     LoadFontCatalog,
     LoadRefCatalog(Box<RefCatalogRequest>),
     FilterRefs {
@@ -308,6 +321,10 @@ pub enum CommandsEvent {
         size: Option<DiffSize>,
     },
     ToastExpired(JobId),
+    RepositoriesScanned {
+        scan: Arc<RepoScan>,
+        cached: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

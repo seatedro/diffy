@@ -23,7 +23,8 @@ use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, ToastUpdate};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
-    Action, AppMessage, AppStartup, Effect, Intent, Reduction, ShellAction, ShellEffect, ShellEvent,
+    Action, AppMessage, AppStartup, Controller, Effect, Intent, Reduction, ShellAction,
+    ShellEffect, ShellEvent,
 };
 use crate::contracts::viewport::ViewportAction;
 use crate::core::compare::RendererKind;
@@ -55,6 +56,7 @@ struct ShellState {
     debug_overlay: bool,
     sidebar: SplitState,
     repository_dialog: Option<DialogId>,
+    scan_folder_dialog: Option<DialogId>,
 }
 
 impl ShellState {
@@ -70,6 +72,7 @@ impl ShellState {
             debug_overlay: false,
             sidebar: SplitState::new(Axis::Horizontal, vec![sidebar, main]),
             repository_dialog: None,
+            scan_folder_dialog: None,
         }
     }
 
@@ -181,6 +184,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             match effect {
                 Effect::Shell(
                     effect @ (ShellEffect::OpenRepositoryDialog
+                    | ShellEffect::OpenScanFolderDialog
                     | ShellEffect::SetClipboard(_)
                     | ShellEffect::Focus(_)),
                 ) => self.deferred.push(effect),
@@ -272,6 +276,13 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                         ..FileDialog::default()
                     }));
                 }
+                ShellEffect::OpenScanFolderDialog => {
+                    self.shell.scan_folder_dialog = Some(cx.window.file_dialog(FileDialog {
+                        kind: FileDialogKind::OpenFolder,
+                        title: Some("Add Folder".to_owned()),
+                        ..FileDialog::default()
+                    }));
+                }
                 ShellEffect::SetClipboard(text) => cx.window.set_clipboard_text(&text),
                 ShellEffect::Focus(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
                 effect => self
@@ -321,6 +332,12 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 Reduction::default().intent(Intent::ActivateWorkspace { path })
             }
             ShellEvent::RepositoryDialogClosed { path: None } => Reduction::default(),
+            ShellEvent::ScanFolderDialogClosed { path: Some(path) } => Controller::reduce_action(
+                &mut self.controllers.commands,
+                CommandsAction::AddRepoScanRoot(path),
+                &self.shared,
+            ),
+            ShellEvent::ScanFolderDialogClosed { path: None } => Reduction::default(),
             ShellEvent::BrowserOpenFailed { message } => {
                 Reduction::default().intent(Intent::Toast(ToastUpdate::error(message)))
             }
@@ -663,12 +680,18 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             cx.window.request_redraw();
             return;
         }
-        if let WindowEvent::FileDialogClosed { id, paths } = event
-            && self.shell.repository_dialog == Some(id)
-        {
-            self.shell.repository_dialog = None;
+        if let WindowEvent::FileDialogClosed { id, paths } = event {
             let path = paths.into_iter().next();
-            let changed = self.deliver(ShellEvent::RepositoryDialogClosed { path }.into());
+            let event = if self.shell.repository_dialog == Some(id) {
+                self.shell.repository_dialog = None;
+                ShellEvent::RepositoryDialogClosed { path }
+            } else if self.shell.scan_folder_dialog == Some(id) {
+                self.shell.scan_folder_dialog = None;
+                ShellEvent::ScanFolderDialogClosed { path }
+            } else {
+                return;
+            };
+            let changed = self.deliver(event.into());
             self.flush(cx);
             if changed {
                 cx.window.request_redraw();

@@ -104,7 +104,9 @@ pub struct Layout;
 
 impl Layout {
     pub const REF_PICKER_W: f32 = 540.0;
-    pub const REPO_PICKER_W: f32 = 460.0;
+    pub const REPO_PICKER_W: f32 = 480.0;
+    pub const AGE_W: f32 = 40.0;
+    pub const BRANCH_MAX_W: f32 = 150.0;
     pub const HOVER_CARD_W: f32 = 330.0;
     pub const POPOVER_GAP: f32 = 4.0;
     pub const CONTROL_H: f32 = 26.0;

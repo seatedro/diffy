@@ -93,6 +93,13 @@ impl AppRuntime {
                     });
                 });
             }
+            ShellEffect::OpenScanFolderDialog => {
+                thread::spawn(move || {
+                    events.send(ShellEvent::ScanFolderDialogClosed {
+                        path: shell.open_repository_dialog(),
+                    });
+                });
+            }
             ShellEffect::OpenBrowser { url } => {
                 thread::spawn(move || {
                     if let Err(error) = shell.open_browser(&url) {

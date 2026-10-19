@@ -238,7 +238,9 @@ impl DiffViewState {
         Some(if a <= b { (a, b) } else { (b, a) })
     }
 
-    /// Selected byte range of `pos`'s line on `side`, as painted.
+    /// Selected byte range of `pos`'s line on `side`, as painted. A
+    /// selection that runs on past the line ends at `len + 1`: its newline
+    /// is selected too.
     pub(crate) fn row_selection(
         &self,
         ordered: Option<Ordered>,
@@ -257,7 +259,11 @@ impl DiffViewState {
             return None;
         }
         let lo = if pos == start { start_byte.min(len) } else { 0 };
-        let hi = if pos == end { end_byte.min(len) } else { len };
+        let hi = if pos == end {
+            end_byte.min(len)
+        } else {
+            len + 1
+        };
         (lo < hi).then_some((lo, hi))
     }
 

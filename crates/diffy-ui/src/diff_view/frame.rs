@@ -232,8 +232,11 @@ impl DiffViewState {
                         // In line bytes, then in the bytes of a window's text.
                         let start = line.window.map_or(0, |w| w.start);
                         let len = line.layout.text().len();
-                        let (lo, hi) =
+                        let (lo, mut hi) =
                             self.row_selection(ordered, (seg, row), side, start + len)?;
+                        if line.window.is_some() {
+                            hi = hi.min(start + len);
+                        }
                         let (lo, hi) = (lo.max(start) - start, hi.saturating_sub(start));
                         (lo < hi).then_some((lo, hi))
                     });
@@ -731,10 +734,13 @@ impl DiffViewState {
                     let Ok(layout) = layouts.layout(text, &params) else {
                         continue;
                     };
-                    let words = match &window {
-                        Some(w) => super::long_lines::clip_to_window(&words[side as usize], w),
-                        None => clip_ranges(&words[side as usize], shown),
-                    };
+                    let words = super::paint::join_whitespace_gaps(
+                        match &window {
+                            Some(w) => super::long_lines::clip_to_window(&words[side as usize], w),
+                            None => clip_ranges(&words[side as usize], shown),
+                        },
+                        line,
+                    );
                     paint.sides[side as usize] = Some(LinePaint {
                         layout,
                         tones,

@@ -784,6 +784,7 @@ fn paint_text(
             search_outline: colors.search_outline,
             selection: colors.selection,
         },
+        bounds.height,
         font_size,
         scale,
     );

@@ -20,6 +20,9 @@ use quark_ui::theme::Color;
 
 use super::prepared::SearchMark;
 
+/// Width of a selected newline, in ems.
+const NEWLINE_EM: f32 = 0.5;
+
 /// Distance between hatch lines, in points.
 pub(super) const HATCH_SPACING: f32 = 6.0;
 
@@ -60,6 +63,25 @@ pub(super) fn hatch(scene: &mut Scene, rect: Rect, phase: f32, color: Color, sca
             .stroke(color, StrokeStyle::new(1.0 / scale)),
     );
     scene.pop_clip();
+}
+
+/// `ranges` with runs separated only by whitespace in `text` joined, so a
+/// changed phrase paints as one block instead of one per token.
+pub(super) fn join_whitespace_gaps(ranges: Vec<Range<usize>>, text: &str) -> Vec<Range<usize>> {
+    let mut joined: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(last) = joined.last_mut()
+            && range.start >= last.end
+            && text
+                .get(last.end..range.start)
+                .is_some_and(|gap| gap.chars().all(char::is_whitespace))
+        {
+            last.end = last.end.max(range.end);
+            continue;
+        }
+        joined.push(range);
+    }
+    joined
 }
 
 /// A vertical hairline one physical pixel wide at `x`.
@@ -108,6 +130,7 @@ pub(super) fn line(
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
     colors: LineColors,
+    row_height: f32,
     font_size: f32,
     scale: f32,
 ) {
@@ -142,8 +165,42 @@ pub(super) fn line(
         }
     }
     if let Some((lo, hi)) = selected {
-        for rect in rects(lo..hi) {
-            scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.selection));
+        // Square and stretched to the row's edges, so the rects of stacked
+        // rows and wrapped lines meet as one block. A selected newline
+        // (`hi` past the text) shows as a sliver after the last character.
+        let len = layout.text().len();
+        let (top, bottom) = (origin.1, origin.1 + row_height.max(layout.size().1));
+        let mut spans: Vec<Rect> = if lo < hi.min(len) {
+            rects(lo..hi.min(len)).collect()
+        } else {
+            Vec::new()
+        };
+        if hi > len {
+            let caret = layout.caret(len);
+            spans.push(Rect {
+                x: origin.0 + caret.x,
+                y: origin.1 + caret.y,
+                width: font_size * NEWLINE_EM,
+                height: caret.height,
+            });
+        }
+        let first = spans.iter().map(|r| r.y).fold(f32::INFINITY, f32::min);
+        let last = spans.iter().map(|r| r.y).fold(f32::NEG_INFINITY, f32::max);
+        for rect in spans {
+            let y = if rect.y == first { top } else { rect.y };
+            let end = if rect.y == last {
+                bottom
+            } else {
+                rect.y + rect.height
+            };
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    y,
+                    height: end - y,
+                    ..rect
+                },
+                color: colors.selection,
+            });
         }
     }
     let (w, h) = layout.size();
@@ -220,6 +277,7 @@ mod tests {
             }],
             Some((0, 9)),
             colors,
+            22.0,
             13.0,
             1.0,
         );
@@ -229,6 +287,7 @@ mod tests {
             .iter()
             .map(|p| match p {
                 Primitive::RoundedRect(r) => format!("fill {}", r.color.r),
+                Primitive::Rect(r) => format!("fill {}", r.color.r),
                 Primitive::Border(b) => format!("outline {} {}", b.color.r, b.widths[0]),
                 Primitive::RichTextRun(_) => "text".to_owned(),
                 other => format!("{other:?}"),
@@ -244,6 +303,15 @@ mod tests {
                 "fill 6",
                 "text"
             ]
+        );
+    }
+
+    #[test]
+    fn changed_words_split_only_by_whitespace_join() {
+        let text = "f, ready: bool) x";
+        assert_eq!(
+            join_whitespace_gaps(vec![0..2, 3..9, 10..14, 16..17], text),
+            vec![0..14, 16..17]
         );
     }
 }

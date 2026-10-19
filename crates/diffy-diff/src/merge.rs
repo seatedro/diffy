@@ -25,16 +25,17 @@ pub fn merge_pair(
         return None;
     }
     let (old_marks, new_marks) = (marked(old_spans), marked(new_spans));
-    let (old_kept, new_kept) = (kept(old, &old_marks), kept(new, &new_marks));
+    let renamed = renamed(new_spans);
+    let old_kept = kept(old, &old_marks, &self::renamed(old_spans));
+    let new_kept = kept(new, &new_marks, &renamed);
     if old_kept.len() != new_kept.len()
         || old_kept
             .iter()
             .zip(&new_kept)
-            .any(|((_, a), (_, b))| a != b)
+            .any(|((_, _, a), (_, _, b))| a != b)
     {
         return None;
     }
-    let renamed = renamed(new_spans);
     let renamed_len: usize = renamed.iter().map(|r| solid(&new[r.clone()])).sum();
     let longest = solid(old).max(solid(new));
     if longest > 0 && ((new_kept.len() + renamed_len) as f32) < MIN_MERGE_KEPT * longest as f32 {
@@ -45,7 +46,7 @@ pub fn merge_pair(
         .into_iter()
         .filter(|r| !renamed_at(old_spans, r.start))
     {
-        let index = old_kept.partition_point(|&(at, _)| at < range.start);
+        let index = old_kept.partition_point(|&(at, _, _)| at < range.start);
         match removed.last_mut() {
             Some((last, prev))
                 if *last == index && old[prev.end..range.start].trim().is_empty() =>
@@ -58,10 +59,10 @@ pub fn merge_pair(
     let mut pieces = Vec::new();
     let mut at = 0;
     for (index, range) in removed {
-        let after = match index.checked_sub(1).and_then(|i| new_kept.get(i)) {
-            Some(&(byte, c)) => byte + c.len_utf8(),
-            None => 0,
-        };
+        let after = index
+            .checked_sub(1)
+            .and_then(|i| new_kept.get(i))
+            .map_or(0, |&(_, end, _)| end);
         let insert = skip_space(new, after).max(at);
         push_new(&mut pieces, at..insert, &new_marks, &renamed);
         pieces.push(MergePiece {
@@ -98,16 +99,22 @@ fn marked(spans: &[SemanticSpan]) -> Vec<Range<usize>> {
         .collect()
 }
 
-fn kept(text: &str, marks: &[Range<usize>]) -> Vec<(usize, char)> {
+const RENAMED: char = '\u{0}';
+
+fn kept(text: &str, marks: &[Range<usize>], renamed: &[Range<usize>]) -> Vec<(usize, usize, char)> {
     let mut mark = 0;
-    text.char_indices()
-        .filter(|&(at, c)| {
-            while marks.get(mark).is_some_and(|m| m.end <= at) {
-                mark += 1;
-            }
-            !c.is_whitespace() && !marks.get(mark).is_some_and(|m| m.contains(&at))
-        })
-        .collect()
+    let mut out = Vec::new();
+    for (at, c) in text.char_indices() {
+        while marks.get(mark).is_some_and(|m| m.end <= at) {
+            mark += 1;
+        }
+        if let Some(r) = renamed.iter().find(|r| r.start == at) {
+            out.push((r.start, r.end, RENAMED));
+        } else if !c.is_whitespace() && !marks.get(mark).is_some_and(|m| m.contains(&at)) {
+            out.push((at, at + c.len_utf8(), c));
+        }
+    }
+    out
 }
 
 fn solid(text: &str) -> usize {
@@ -193,6 +200,27 @@ mod tests {
         let (old, new) = ("call(a, b)", "call(a)");
         let pieces = merge_pair(old, new, &[novel(6, 7), novel(8, 9)], &[]).unwrap();
         assert_eq!(render(old, new, &pieces), "call(a[-, b-])");
+    }
+
+    #[test]
+    fn removed_pieces_follow_a_renamed_token() {
+        let renamed = |start, end| SemanticSpan {
+            start,
+            end,
+            intensity: ChangeIntensity::Renamed,
+        };
+        let (old, new) = ("this.before()", "this.onUpdate(delta)");
+        let pieces = merge_pair(
+            old,
+            new,
+            &[renamed(5, 11), novel(11, 13)],
+            &[renamed(5, 13), novel(13, 20)],
+        )
+        .unwrap();
+        assert_eq!(
+            render(old, new, &pieces),
+            "this.{+onUpdate+}[-()-]{+(delta)+}"
+        );
     }
 
     #[test]

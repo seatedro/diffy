@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use quark_ui::element::ScrollbarVisibility;
 use quark_ui::text_input::TextField;
 
 use crate::contracts::commands::RefPickerRequest;
@@ -19,6 +20,7 @@ pub struct RefPicker {
     pub filter_generation: u64,
     pub selected: Option<usize>,
     pub scroll_px: f32,
+    pub scrollbar: ScrollbarVisibility,
     pub pending_reveal: bool,
     pub size_token: u64,
     pub size: Option<DiffSize>,
@@ -37,6 +39,7 @@ impl RefPicker {
             filter_generation: 0,
             selected: None,
             scroll_px: 0.0,
+            scrollbar: ScrollbarVisibility::new(),
             pending_reveal: true,
             size_token: 0,
             size: None,

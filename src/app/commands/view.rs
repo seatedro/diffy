@@ -112,6 +112,7 @@ fn picker_panel(
         list::virtual_list(
             picker.rows.len(),
             picker.scroll_px,
+            &picker.scrollbar,
             picker.visible_rows(),
             theme,
             title,

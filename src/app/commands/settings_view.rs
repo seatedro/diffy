@@ -362,7 +362,7 @@ pub fn sheet(
                         </div>
                     </div>
                     <div
-                        class="flex-col w-full flex-1 overflow-y-scroll"
+                        class="flex-col w-full flex-1 overflow-y-scroll scrollbar-auto-hide"
                         min_h={0.0}
                         track_scroll={&page.scroll}
                         accessibility_role={AccessibilityRole::Group}

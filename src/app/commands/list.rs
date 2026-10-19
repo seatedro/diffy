@@ -17,6 +17,7 @@ pub fn row_stride(theme: &Theme) -> f32 {
 pub fn virtual_list(
     count: usize,
     scroll_px: f32,
+    scrollbar: &ScrollbarVisibility,
     visible_rows: usize,
     theme: &Theme,
     label: &str,
@@ -39,11 +40,12 @@ pub fn virtual_list(
         .collect();
     view! {
         <div
-            class="w-full flex-col overflow-hidden"
+            class="w-full flex-col overflow-hidden scrollbar-auto-hide"
             h={viewport}
             scroll_y={scroll}
             scroll_total={total}
             on:scroll={on_scroll}
+            scrollbar_visibility={scrollbar}
             accessibility_role={AccessibilityRole::ListBox}
             aria-label={label}
             test_id="picker-list"

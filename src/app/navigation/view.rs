@@ -381,11 +381,12 @@ fn files(
         .collect();
     view! {
         <div
-            class="w-full flex-col overflow-hidden"
+            class="w-full flex-col overflow-hidden scrollbar-auto-hide"
             h={height}
             px={theme.metrics.spacing_sm}
             scroll_y={scroll}
             scroll_total={window.total_extent}
+            scrollbar_visibility={nav.files_scrollbar()}
             on:scroll={ScrollActionBuilder::new(|lines| Action::from(NavigationAction::ScrollFiles(lines)).into())
                 .with_to_px(|px| Action::from(NavigationAction::ScrollFilesTo(px)).into())}
             focus_ring={SIDEBAR}
@@ -897,11 +898,12 @@ fn history(
         .collect();
     view! {
         <div
-            class="w-full flex-col overflow-hidden"
+            class="w-full flex-col overflow-hidden scrollbar-auto-hide"
             h={height}
             scroll_y={scroll}
             scroll_total={window.total_extent}
             px={theme.metrics.spacing_sm}
+            scrollbar_visibility={nav.history_scrollbar()}
             on:scroll={ScrollActionBuilder::new(|lines| Action::from(NavigationAction::ScrollHistory(lines)).into())}
             key_context={WORKSPACE_CONTEXT}
             accessibility_role={AccessibilityRole::ListBox}

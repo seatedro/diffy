@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use quark_ui::FocusId;
+use quark_ui::element::ScrollbarVisibility;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
 use super::rows::{self, Row, RowCache};
@@ -183,6 +184,7 @@ pub struct NavigationController {
     banner: RefCell<super::banner::BannerCache>,
     tags: RefCell<(usize, Rc<HashMap<String, Vec<String>>>)>,
     avatars_requested: HashSet<String>,
+    scrollbars: [ScrollbarVisibility; 2],
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -228,6 +230,7 @@ impl Default for NavigationController {
             banner: RefCell::new(None),
             tags: RefCell::new((0, Rc::default())),
             avatars_requested: HashSet::new(),
+            scrollbars: Default::default(),
         }
     }
 }
@@ -289,6 +292,14 @@ impl NavigationController {
             format!("{head} has no changes since it branched from {base}")
         };
         Some(("No changes since the merge base".to_owned(), detail))
+    }
+
+    pub fn files_scrollbar(&self) -> &ScrollbarVisibility {
+        &self.scrollbars[0]
+    }
+
+    pub fn history_scrollbar(&self) -> &ScrollbarVisibility {
+        &self.scrollbars[1]
     }
 
     pub fn selected_key(&self) -> Option<FileKey> {

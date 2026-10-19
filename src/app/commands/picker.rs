@@ -2,6 +2,7 @@ use crate::core::search::fuzzy::match_ranges;
 use std::path::PathBuf;
 
 use quark_components::FuzzyMatcher;
+use quark_ui::element::ScrollbarVisibility;
 use quark_ui::text_input::TextField;
 
 use super::repo_picker::RepoView;
@@ -142,6 +143,7 @@ pub struct PickerState {
     pub rows: Vec<PickerRow>,
     pub selected: usize,
     pub scroll_px: f32,
+    pub scrollbar: ScrollbarVisibility,
     pub pending_reveal: bool,
     pub repos: Option<RepoView>,
     matcher: FuzzyMatcher,
@@ -160,6 +162,7 @@ impl PickerState {
             rows: Vec::new(),
             selected: 0,
             scroll_px: 0.0,
+            scrollbar: ScrollbarVisibility::new(),
             pending_reveal: true,
             repos: None,
             matcher: FuzzyMatcher::default(),

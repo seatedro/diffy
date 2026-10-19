@@ -168,6 +168,7 @@ fn rows(picker: &RefPicker, theme: &Theme) -> AnyElement {
     list::virtual_list(
         results.rows.len(),
         picker.scroll_px,
+        &picker.scrollbar,
         REF_PICKER_VISIBLE_ROWS,
         theme,
         "Refs",

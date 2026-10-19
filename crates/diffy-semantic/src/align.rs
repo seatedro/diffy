@@ -123,7 +123,6 @@ pub(crate) fn rows(
         .collect();
     let renames = renames(&mut sides, matching);
     mark_words(&mut sides, words, &renames);
-    let moves = moves(&sides, matching);
     for side in &mut sides {
         for spans in &mut side.spans {
             spans.sort_by_key(|span| span.start);
@@ -131,13 +130,33 @@ pub(crate) fn rows(
     }
     let outline = outline(&sides, matching);
     let anchors = anchors(&sides, matching);
+    let moves = moves(&sides, matching, &anchors);
     let aligned = align(&sides, &anchors);
     (chunks(&mut sides, aligned), outline, renames, moves)
 }
 
-fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<Move> {
+fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching, chain: &[(u32, u32, u64)]) -> Vec<Move> {
     let mut out = Vec::new();
-    for &(o, n) in &matching.moved {
+    let lines = |side: usize, node: u32| {
+        let span = sides[side].tree.nodes[node as usize].span.clone();
+        let of = |at: u32| sides[side].lines.of(at);
+        of(span.start)..of(span.end.saturating_sub(1).max(span.start)) + 1
+    };
+    let stranded = matching.relocated.iter().filter(|&&(o, n)| {
+        let (old, new) = (lines(0, o), lines(1, n));
+        let from = chain.partition_point(|&(a, _, _)| a < old.start);
+        let before = from.checked_sub(1).map_or(0, |i| chain[i].1 + 1);
+        let after = chain[from..]
+            .iter()
+            .find(|&&(a, _, _)| a >= old.end)
+            .map_or(u32::MAX, |&(_, b, _)| b);
+        let kept = chain[from..]
+            .iter()
+            .take_while(|&&(a, _, _)| a < old.end)
+            .any(|&(_, b, _)| new.contains(&b));
+        !kept && (new.start < before || new.end > after) && !in_place(sides, matching, o, n)
+    });
+    for &(o, n) in matching.moved.iter().chain(stranded) {
         let (a, b) = (
             sides[0].tree.nodes[o as usize].span.clone(),
             sides[1].tree.nodes[n as usize].span.clone(),
@@ -153,8 +172,57 @@ fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<Move> {
             lines,
         });
     }
-    out.sort_by_key(|m| m.new_line);
-    out
+    out.sort_by_key(|m| (m.new_line, std::cmp::Reverse(m.lines)));
+    let mut kept: Vec<Move> = Vec::with_capacity(out.len());
+    for m in out {
+        let inside = kept.iter().any(|k| {
+            (k.new_line..k.new_line + k.lines).contains(&m.new_line)
+                && (k.old_line..k.old_line + k.old_lines).contains(&m.old_line)
+        });
+        if !inside {
+            kept.push(m);
+        }
+    }
+    kept
+}
+
+fn parent(tree: &Tree<'_>, node: u32) -> Option<u32> {
+    (0..node)
+        .rev()
+        .find(|&p| tree.nodes[p as usize].next > node && tree.is_list(p))
+}
+
+fn in_place(sides: &[Side<'_, '_>; 2], matching: &Matching, o: u32, n: u32) -> bool {
+    let (old, new) = (sides[0].tree, sides[1].tree);
+    let (Some(p), Some(q)) = (parent(old, o), parent(new, n)) else {
+        return false;
+    };
+    if matching.partner[0][p as usize] != q {
+        return false;
+    }
+    let (olds, news) = (old.children(p), new.children(q));
+    let (Some(i), Some(j)) = (
+        olds.iter().position(|&c| c == o),
+        news.iter().position(|&c| c == n),
+    ) else {
+        return false;
+    };
+    let index = |c: u32| {
+        news.iter()
+            .position(|&x| x == matching.partner[0][c as usize])
+            .map(|at| (c, at))
+    };
+    let size = |c: u32| {
+        let span = &old.nodes[c as usize].span;
+        let last = span.end.saturating_sub(1).max(span.start);
+        sides[0].lines.of(last) + 1 - sides[0].lines.of(span.start)
+    };
+    let fits = |found: Option<(u32, usize)>, ok: &dyn Fn(usize) -> bool| {
+        found.is_none_or(|(c, at)| ok(at) || size(c) < size(o))
+    };
+    let before = olds[..i].iter().rev().find_map(|&c| index(c));
+    let after = olds[i + 1..].iter().find_map(|&c| index(c));
+    fits(before, &|at| at < j) && fits(after, &|at| at > j)
 }
 
 fn plain_counts<'a>(tree: &Tree<'a>) -> HashMap<&'a str, u32> {
@@ -179,12 +247,16 @@ fn renames(sides: &mut [Side<'_, '_>; 2], matching: &Matching) -> Vec<Rename> {
             .text(sides[1].tree.nodes[y as usize].span.clone());
         pairs.entry((old, new)).or_default().push((x, y));
     }
+    let mut targets: HashMap<&str, u32> = HashMap::new();
+    for (old, _) in pairs.keys() {
+        *targets.entry(old).or_default() += 1;
+    }
     let mut out = Vec::new();
     let mut marks = Vec::new();
     for ((old, new), uses) in pairs {
         let uses_n = uses.len() as u32;
         let consistent = uses_n >= MIN_RENAME_USES
-            && old_count.get(old) == Some(&uses_n)
+            && targets.get(old) == Some(&1)
             && !old_count.contains_key(new)
             && !new_count.contains_key(old);
         if consistent {
@@ -443,12 +515,23 @@ fn anchors(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<(u32, u32, u64
         let end = old.tree.nodes[o as usize].next;
         moved[o as usize..end as usize].fill(true);
     }
+    let mut relocated = vec![false; old.tree.nodes.len()];
+    for &(o, _) in &matching.relocated {
+        let end = old.tree.nodes[o as usize].next;
+        relocated[o as usize..end as usize].fill(true);
+    }
     for (index, node) in old.tree.nodes.iter().enumerate() {
         let partner = matching.partner[0][index];
         if partner == NONE || moved[index] {
             continue;
         }
         let other = &new.tree.nodes[partner as usize];
+        if relocated[index] {
+            if node.class != Class::List {
+                push(&node.span, &other.span, 1);
+            }
+            continue;
+        }
         if node.class == Class::List {
             push(&node.open, &other.open, 1);
             push(&node.close, &other.close, 1);

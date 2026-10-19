@@ -18,12 +18,16 @@ const WIDEN_SIMILARITY: f32 = 0.5;
 const MIN_MOVE_NODES: u32 = 12;
 const MOVE_SIMILARITY: f32 = 0.8;
 const MAX_MOVE_CANDIDATES: usize = 512;
+const RUN_PAIR: f32 = 0.5;
+const RUN_SIMILARITY: f32 = 0.75;
+const RUN_MARGIN: f32 = 0.2;
 
 pub(crate) struct Matching {
     pub(crate) partner: [Vec<u32>; 2],
     pub(crate) replaced: Vec<(u32, u32)>,
     pub(crate) renamed: Vec<(u32, u32)>,
     pub(crate) moved: Vec<(u32, u32)>,
+    pub(crate) relocated: Vec<(u32, u32)>,
 }
 
 pub(crate) fn run(
@@ -38,6 +42,8 @@ pub(crate) fn run(
         replaced: Vec::new(),
         renamed: Vec::new(),
         moved: Vec::new(),
+        relocated: Vec::new(),
+        weak: HashMap::new(),
         work: 0,
         max_work,
         clock_at: CLOCK_STRIDE,
@@ -45,11 +51,13 @@ pub(crate) fn run(
     };
     matcher.pair_lists(0, 0)?;
     matcher.detect_moves()?;
+    matcher.detect_run_moves()?;
     Ok(Matching {
         partner: matcher.partner,
         replaced: matcher.replaced,
         renamed: matcher.renamed,
         moved: matcher.moved,
+        relocated: matcher.relocated,
     })
 }
 
@@ -60,12 +68,20 @@ struct Splice {
     wanted: Range<usize>,
 }
 
+struct RunMatch {
+    similarity: f32,
+    run: usize,
+    pairs: Vec<(usize, usize)>,
+}
+
 struct Matcher<'t, 'a> {
     trees: [&'t Tree<'a>; 2],
     partner: [Vec<u32>; 2],
     replaced: Vec<(u32, u32)>,
     renamed: Vec<(u32, u32)>,
     moved: Vec<(u32, u32)>,
+    relocated: Vec<(u32, u32)>,
+    weak: HashMap<u32, f32>,
     work: u64,
     max_work: u64,
     clock_at: u64,
@@ -444,6 +460,195 @@ impl Matcher<'_, '_> {
         Ok(())
     }
 
+    fn detect_run_moves(&mut self) -> Result<(), Fallback> {
+        let new_runs = self.runs(1)?;
+        if new_runs.is_empty() {
+            return Ok(());
+        }
+        let old_runs = self.runs(0)?;
+        let old_sigs: Vec<Vec<Vec<u64>>> = old_runs.iter().map(|r| self.signatures(0, r)).collect();
+        let mut taken = vec![false; self.trees[0].nodes.len()];
+        for run in new_runs {
+            let run: Vec<u32> = run
+                .into_iter()
+                .filter(|&n| self.subtree_free(1, n))
+                .collect();
+            if run.is_empty() {
+                continue;
+            }
+            let sigs = self.signatures(1, &run);
+            let mut best: Option<RunMatch> = None;
+            for (r, old) in old_runs.iter().enumerate() {
+                self.spend(old.len() * run.len())?;
+                let pairs = self.align_run(old, &old_sigs[r], &sigs, &taken);
+                if pairs.is_empty() {
+                    continue;
+                }
+                let size: u32 = pairs
+                    .iter()
+                    .map(|&(_, j)| self.trees[1].nodes[run[j] as usize].next - run[j])
+                    .sum();
+                let union = |side_sigs: &[Vec<u64>], pick: &dyn Fn(&(usize, usize)) -> usize| {
+                    let mut all: Vec<u64> = pairs
+                        .iter()
+                        .flat_map(|p| side_sigs[pick(p)].iter().copied())
+                        .collect();
+                    all.sort_unstable();
+                    all.dedup();
+                    all
+                };
+                let similarity = dice(&union(&old_sigs[r], &|p| p.0), &union(&sigs, &|p| p.1));
+                if size < MIN_MOVE_NODES || similarity < RUN_SIMILARITY {
+                    continue;
+                }
+                if best.as_ref().is_none_or(|b| similarity > b.similarity) {
+                    best = Some(RunMatch {
+                        similarity,
+                        run: r,
+                        pairs,
+                    });
+                }
+            }
+            let Some(RunMatch { run: r, pairs, .. }) = best else {
+                continue;
+            };
+            for (i, j) in pairs {
+                let (o, n) = (old_runs[r][i], run[j]);
+                let end = self.trees[0].nodes[o as usize].next;
+                taken[o as usize..end as usize].fill(true);
+                self.unlink(o);
+                let inner = |side: usize, list: u32, fits: &dyn Fn(u32) -> bool| {
+                    self.trees[side]
+                        .is_list(list)
+                        .then(|| self.trees[side].children(list))
+                        .and_then(|children| children.into_iter().find(|&c| fits(c)))
+                };
+                if self.pairable_lists(o, n) {
+                    self.pair_lists(o, n)?;
+                } else if let Some(c) = inner(1, n, &|c| self.pairable_lists(o, c)) {
+                    self.pair_lists(o, c)?;
+                } else if let Some(c) = inner(0, o, &|c| self.pairable_lists(c, n)) {
+                    self.pair_lists(c, n)?;
+                } else if !self.same(o, n) {
+                    self.link(o, n);
+                    self.replaced.push((o, n));
+                }
+                self.relocated.push((o, n));
+            }
+        }
+        Ok(())
+    }
+
+    fn signatures(&self, side: usize, run: &[u32]) -> Vec<Vec<u64>> {
+        run.iter().map(|&n| self.signature(side, n)).collect()
+    }
+
+    fn align_run(
+        &self,
+        old: &[u32],
+        old_sigs: &[Vec<u64>],
+        new_sigs: &[Vec<u64>],
+        taken: &[bool],
+    ) -> Vec<(usize, usize)> {
+        let (n, m) = (old.len(), new_sigs.len());
+        let width = m + 1;
+        let mut best = vec![0f32; (n + 1) * width];
+        let score = |i: usize, j: usize| -> f32 {
+            let end = self.trees[0].nodes[old[i] as usize].next;
+            if taken[old[i] as usize..end as usize].iter().any(|&t| t) {
+                return 0.0;
+            }
+            let similarity = dice(&old_sigs[i], &new_sigs[j]);
+            let floor = self
+                .weak
+                .get(&old[i])
+                .map_or(RUN_PAIR, |&weak| (weak + RUN_MARGIN).max(RUN_PAIR));
+            if similarity >= floor { similarity } else { 0.0 }
+        };
+        for i in 1..=n {
+            for j in 1..=m {
+                let s = score(i - 1, j - 1);
+                let diagonal = if s > 0.0 {
+                    best[(i - 1) * width + j - 1] + s
+                } else {
+                    0.0
+                };
+                best[i * width + j] = best[(i - 1) * width + j]
+                    .max(best[i * width + j - 1])
+                    .max(diagonal);
+            }
+        }
+        let mut pairs = Vec::new();
+        let (mut i, mut j) = (n, m);
+        while i > 0 && j > 0 {
+            let s = score(i - 1, j - 1);
+            if s > 0.0 && best[i * width + j] == best[(i - 1) * width + j - 1] + s {
+                pairs.push((i - 1, j - 1));
+                i -= 1;
+                j -= 1;
+            } else if best[i * width + j] == best[(i - 1) * width + j] {
+                i -= 1;
+            } else {
+                j -= 1;
+            }
+        }
+        pairs.reverse();
+        pairs
+    }
+
+    fn runs(&mut self, side: usize) -> Result<Vec<Vec<u32>>, Fallback> {
+        let tree = self.trees[side];
+        let free = |node: u32| -> bool {
+            let end = tree.nodes[node as usize].next;
+            let unmatched = (node..end).all(|k| self.partner[side][k as usize] == NONE);
+            unmatched || (side == 0 && self.weak.contains_key(&node))
+        };
+        let mut out = Vec::new();
+        let mut work = 0;
+        for list in 0..tree.nodes.len() as u32 {
+            if !tree.is_list(list) || out.len() >= MAX_MOVE_CANDIDATES {
+                continue;
+            }
+            let children = tree.children(list);
+            work += children.len();
+            let mut run = Vec::new();
+            for child in children {
+                if self.significant(side, child) && whole_lines(tree, child) && free(child) {
+                    run.push(child);
+                    continue;
+                }
+                if !run.is_empty() {
+                    out.push(std::mem::take(&mut run));
+                }
+            }
+            if !run.is_empty() {
+                out.push(run);
+            }
+        }
+        self.spend(work)?;
+        Ok(out)
+    }
+
+    fn subtree_free(&self, side: usize, node: u32) -> bool {
+        let end = self.trees[side].nodes[node as usize].next;
+        (node..end).all(|k| self.partner[side][k as usize] == NONE)
+    }
+
+    fn unlink(&mut self, old: u32) {
+        let end = self.trees[0].nodes[old as usize].next;
+        for k in old..end {
+            let partner = self.partner[0][k as usize];
+            if partner != NONE {
+                self.partner[1][partner as usize] = NONE;
+                self.partner[0][k as usize] = NONE;
+            }
+        }
+        let inside = |&(o, _): &(u32, u32)| (old..end).contains(&o);
+        self.replaced.retain(|p| !inside(p));
+        self.renamed.retain(|p| !inside(p));
+        self.weak.remove(&old);
+    }
+
     fn unmatched_blocks(&mut self, side: usize) -> Result<Vec<u32>, Fallback> {
         let tree = self.trees[side];
         let mut out = Vec::new();
@@ -536,6 +741,7 @@ impl Matcher<'_, '_> {
             }
             if pi < n && pj < m {
                 let (x, y) = (a[pi], b[pj]);
+                self.weak.insert(x, score[pi * m + pj]);
                 if self.trees[0].is_list(x) {
                     self.pair_lists(x, y)?;
                 } else {
@@ -619,6 +825,21 @@ fn slide(mut changes: Vec<myers::Change>, a: &[u32], b: &[u32]) -> Vec<myers::Ch
         }
     }
     changes
+}
+
+fn whole_lines(tree: &Tree<'_>, node: u32) -> bool {
+    let span = &tree.nodes[node as usize].span;
+    let src = tree.src.as_bytes();
+    let before = src[..span.start as usize]
+        .iter()
+        .rev()
+        .take_while(|&&b| b != b'\n')
+        .all(u8::is_ascii_whitespace);
+    let after = src[span.end as usize..]
+        .iter()
+        .take_while(|&&b| b != b'\n')
+        .all(|&b| b.is_ascii_whitespace() || b == b',' || b == b';');
+    before && after
 }
 
 fn dice(a: &[u64], b: &[u64]) -> f32 {

@@ -99,6 +99,15 @@ fn show(args: ShowArgs) -> Result<(), String> {
                 item.change
             );
         }
+        for m in semantics.moves() {
+            println!(
+                "move old {}..{} -> new {}..{}",
+                m.old_line + 1,
+                m.old_line + m.old_lines,
+                m.new_line + 1,
+                m.new_line + m.lines
+            );
+        }
     }
     let (_, violations) = check::check(&run.doc);
     println!("\n{:.2} ms", run.micros as f64 / 1000.0);

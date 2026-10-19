@@ -1,0 +1,59 @@
+<<<< old
+struct Bucket {
+    tokens: f64,
+    updated: u64,
+}
+
+impl Limiter {
+    fn allow(&mut self, key: &str, now: u64) -> bool {
+        let bucket = self.bucket(key, now);
+        let elapsed = (now - bucket.updated) as f64;
+        bucket.tokens = (bucket.tokens + elapsed * self.rate).min(self.capacity);
+        bucket.updated = now;
+        bucket.tokens >= 1.0
+    }
+}
+<<<< new
+struct Bucket {
+    tokens: f64,
+    updated: u64,
+}
+
+impl Bucket {
+    fn refill(&mut self, rate: f64, capacity: f64, now: u64) {
+        let elapsed = (now - self.updated) as f64;
+        self.tokens = (self.tokens + elapsed * rate).min(capacity);
+        self.updated = now;
+    }
+}
+
+impl Limiter {
+    fn allow(&mut self, key: &str, now: u64) -> bool {
+        let bucket = self.bucket(key, now);
+        bucket.refill(self.rate, self.capacity, now);
+        bucket.tokens >= 1.0
+    }
+}
+<<<< expect
+@@ -3,12 +3,18 @@
+     3    3 |    updated: u64,
+     4    4 |}
+     5    5 |
++         6 |⟦impl⟧ ⟦Bucket⟧ ⟦{⟧
++         7 |    ⟦fn⟧ ⟦refill(&mut⟧ ⟦self,⟧ ⟦rate:⟧ ⟦f64,⟧ ⟦capacity:⟧ ⟦f64,⟧ ⟦now:⟧ ⟦u64)⟧ ⟦{⟧
++         8 |        let elapsed = (now - ⟦self⟧.updated) as f64;
++         9 |        ⟦self⟧.tokens = (⟦self⟧.tokens + elapsed * rate).min(capacity);
++        10 |        ⟦self⟧.updated = now;
++        11 |    ⟦}⟧
++        12 |⟦}⟧
++        13 |
+     6   14 |impl Limiter {
+     7   15 |    fn allow(&mut self, key: &str, now: u64) -> bool {
+     8   16 |        let bucket = self.bucket(key, now);
+<    9      |        let elapsed = (now - ⟦bucket⟧.updated) as f64;
+>        17 |        ⟦bucket.refill(self.rate,⟧ ⟦self.capacity,⟧ ⟦now);⟧
+-   10      |        ⟦bucket⟧.tokens = (⟦bucket⟧.tokens + elapsed * ⟦self.⟧rate).min(⟦self.⟧capacity);
+-   11      |        ⟦bucket⟧.updated = now;
+    12   18 |        bucket.tokens >= 1.0
+    13   19 |    }
+    14   20 |}

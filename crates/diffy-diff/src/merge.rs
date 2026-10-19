@@ -38,7 +38,22 @@ pub fn merge_pair(
     }
     let renamed_len: usize = renamed.iter().map(|r| solid(&new[r.clone()])).sum();
     let longest = solid(old).max(solid(new));
-    if longest > 0 && ((new_kept.len() + renamed_len) as f32) < MIN_MERGE_KEPT * longest as f32 {
+    let gaps = |marks: &[Range<usize>], kept: &[(usize, usize, char)]| -> Vec<usize> {
+        let mut at: Vec<usize> = marks
+            .iter()
+            .map(|r| kept.partition_point(|&(k, _, _)| k < r.start))
+            .collect();
+        at.dedup();
+        at
+    };
+    let swap = !new_kept.is_empty() && {
+        let (a, b) = (gaps(&old_marks, &old_kept), gaps(&new_marks, &new_kept));
+        a.len() == 1 && a == b
+    };
+    if !swap
+        && longest > 0
+        && ((new_kept.len() + renamed_len) as f32) < MIN_MERGE_KEPT * longest as f32
+    {
         return None;
     }
     let mut removed: Vec<(usize, Range<usize>)> = Vec::new();
@@ -221,6 +236,13 @@ mod tests {
             render(old, new, &pieces),
             "this.{+onUpdate+}[-()-]{+(delta)+}"
         );
+    }
+
+    #[test]
+    fn a_short_line_with_one_swapped_word_merges() {
+        let (old, new) = ("goto fail;", "goto out_free;");
+        let pieces = merge_pair(old, new, &[novel(5, 9)], &[novel(5, 13)]).unwrap();
+        assert_eq!(render(old, new, &pieces), "goto [-fail-]{+out_free+};");
     }
 
     #[test]

@@ -111,7 +111,7 @@ pub fn ghost_chip(
             }
         >
             <icon svg={chip.icon} size={icon} color={tc.text_muted} />
-            <text class="text-xs font-medium" color={tc.text_muted}>{chip.label}</text>
+            <text class="text-xs font-medium whitespace-nowrap" color={tc.text_muted}>{chip.label}</text>
         </div>
     }
 }

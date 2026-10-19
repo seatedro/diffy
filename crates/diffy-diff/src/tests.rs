@@ -1056,3 +1056,17 @@ fn new_code_inside_a_reflow_is_not_folded() {
     let marks = [(2, novel(4, 6)), (3, novel(4, 6))];
     assert!(!unified_kinds(&reflow_doc(&[], &marks)).contains(&RowKind::Reflowed));
 }
+
+#[test]
+fn a_folded_reflow_stages_as_one_group() {
+    use crate::LineGroup;
+    let doc = reflow_doc(&[], &[(3, novel(5, 6))]);
+    let comparison = Comparison::new(&doc, ComparisonOptions::default());
+    assert_eq!(
+        comparison.line_groups(&doc, 0),
+        [LineGroup {
+            new: 1..5,
+            old: 1..2
+        }]
+    );
+}

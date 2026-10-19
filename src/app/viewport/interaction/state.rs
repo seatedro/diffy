@@ -645,7 +645,12 @@ impl InteractionController {
             .filter(|hit| {
                 matches!(
                     hit.kind,
-                    RowKind::Added | RowKind::Removed | RowKind::Modified
+                    RowKind::Added
+                        | RowKind::Removed
+                        | RowKind::Modified
+                        | RowKind::Merged
+                        | RowKind::Moved
+                        | RowKind::Reflowed
                 )
             })
         else {

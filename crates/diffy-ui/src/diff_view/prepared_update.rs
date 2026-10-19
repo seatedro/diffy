@@ -51,6 +51,10 @@ impl PreparedSegment {
     pub fn preparation(&self) -> Preparation {
         self.preparation
     }
+
+    pub fn comparison(&self) -> &Comparison {
+        &self.comparison
+    }
 }
 
 fn other(mode: Mode) -> Mode {

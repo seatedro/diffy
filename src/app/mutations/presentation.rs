@@ -289,7 +289,15 @@ pub fn state_label(status: FileStatus, buckets: &[ChangeBucket]) -> String {
 }
 
 fn changed(kind: RowKind) -> bool {
-    matches!(kind, RowKind::Added | RowKind::Removed | RowKind::Modified)
+    matches!(
+        kind,
+        RowKind::Added
+            | RowKind::Removed
+            | RowKind::Modified
+            | RowKind::Merged
+            | RowKind::Moved
+            | RowKind::Reflowed
+    )
 }
 
 impl DiffDecorator for MutationPresentation {

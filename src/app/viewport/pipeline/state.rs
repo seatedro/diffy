@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use diffy_diff::{Placeholder, SlotState, SourceCoverage, SourcePurpose};
+use diffy_diff::{OutlineItem, Placeholder, SlotState, SourceCoverage, SourcePurpose};
 
 use crate::contracts::commands::{SettingsSnapshot, ToastKind, ToastUpdate};
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, SharedContext};
@@ -469,6 +469,7 @@ impl PipelineController {
         active.sources_loading.remove(&key);
         active.placeholders.remove(&key);
         let stats = prepared.stats();
+        let semantics = Self::semantics_changed(active, &prepared);
         active.loaded.insert(key, prepared.clone());
         self.touch(key);
         self.push(ViewportInstall::File {
@@ -477,8 +478,36 @@ impl PipelineController {
         });
         self.evict(key);
         let mut reduction = Reduction::changed();
+        if let Some(manifest) = semantics {
+            reduction = reduction.intent(Intent::PublishManifest(manifest));
+        }
         reduction.merge(self.update_stats(generation, &[(key, stats)]));
         reduction
+    }
+
+    fn semantics_changed(
+        active: &mut ActiveCompare,
+        prepared: &PreparedDiff,
+    ) -> Option<Rc<CompareManifestSnapshot>> {
+        let manifest = active.manifest.as_ref()?;
+        let index = *active.positions.get(&prepared.key())?;
+        let file = manifest.files.get(index)?;
+        let outline: Arc<[OutlineItem]> = prepared
+            .document()
+            .semantics(0)
+            .map_or_else(|| Arc::from([]), |s| s.outline().into());
+        if *file.outline == *outline && *file.line_groups == **prepared.line_groups() {
+            return None;
+        }
+        let mut files = manifest.files.to_vec();
+        files[index].outline = outline;
+        files[index].line_groups = prepared.line_groups().clone();
+        let updated = Rc::new(CompareManifestSnapshot {
+            files: files.into(),
+            ..(**manifest).clone()
+        });
+        active.manifest = Some(updated.clone());
+        Some(updated)
     }
 
     fn evict(&mut self, keep: FileKey) {

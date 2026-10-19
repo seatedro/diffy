@@ -98,7 +98,7 @@ pub fn compare_result(
     let revision = file_revision(generation);
     let keys = manifest_keys(&output.entries);
     let key_at = |index: usize| keys[index];
-    let files: Arc<[ManifestFile]> = output
+    let mut files: Vec<ManifestFile> = output
         .entries
         .iter()
         .enumerate()
@@ -128,6 +128,7 @@ pub fn compare_result(
             if budget.0 + lines <= WORKING_SET_LINES && budget.1 < WORKING_SET_FILES {
                 budget = (budget.0 + lines, budget.1 + 1);
                 let file = file.with_segment(preparation);
+                files[index].line_groups = file.line_groups().clone();
                 loaded.push(file.clone());
                 installs.push(PipelineInstall::View(ViewportInstall::File {
                     prepared: file,
@@ -168,7 +169,7 @@ pub fn compare_result(
             generation,
             resolved_left: resolved.0,
             resolved_right: resolved.1,
-            files,
+            files: files.into(),
             totals: output.totals(),
             working_tree: false,
         }),

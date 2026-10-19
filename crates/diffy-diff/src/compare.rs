@@ -77,6 +77,12 @@ pub struct LinePair {
 }
 
 /// One line of a change block, as shown.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LineGroup {
+    pub new: Range<u32>,
+    pub old: Range<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Step {
     Removed(u32),
@@ -171,6 +177,75 @@ impl Comparison {
     /// would have exceeded its budget.
     pub fn limited_pairings(&self, file: u32) -> u32 {
         self.limited.get(file as usize).copied().unwrap_or(0)
+    }
+
+    pub fn line_groups(&self, doc: &DiffDocument, file: u32) -> Vec<LineGroup> {
+        if !self.fits(doc) || file >= doc.file_count() {
+            return Vec::new();
+        }
+        let moves = doc.semantics(file).map_or(&[][..], |s| s.moves());
+        let moved_old = |line: u32| {
+            moves.iter().position(|m| {
+                (m.old_line.saturating_sub(1)..m.old_line + m.old_lines + 1).contains(&line)
+            })
+        };
+        let mut groups = Vec::new();
+        let mut move_old: Vec<Option<Range<u32>>> = vec![None; moves.len()];
+        let mut run: Option<LineGroup> = None;
+        let h = doc.hunks();
+        for hunk in doc.files().hunks[file as usize].clone() {
+            for block in h.blocks[hunk as usize].clone() {
+                for &step in self.block(block) {
+                    match step {
+                        Step::Hidden(o) if let Some(m) = moved_old(o) => {
+                            let range = move_old[m].get_or_insert(o..o + 1);
+                            *range = range.start.min(o)..range.end.max(o + 1);
+                            continue;
+                        }
+                        Step::Hidden(o) => {
+                            let group = run.get_or_insert(LineGroup {
+                                new: 0..0,
+                                old: o..o,
+                            });
+                            if group.old.is_empty() {
+                                group.old = o..o;
+                            }
+                            group.old.end = o + 1;
+                            continue;
+                        }
+                        Step::Reflowed(n) => {
+                            let group = run.get_or_insert(LineGroup {
+                                new: n..n,
+                                old: 0..0,
+                            });
+                            if group.new.is_empty() {
+                                group.new = n..n;
+                            }
+                            group.new.end = n + 1;
+                            continue;
+                        }
+                        Step::Merged(o, n) => groups.push(LineGroup {
+                            new: n..n + 1,
+                            old: o..o + 1,
+                        }),
+                        _ => {}
+                    }
+                    groups.extend(run.take().filter(|g| !g.new.is_empty()));
+                }
+                groups.extend(run.take().filter(|g| !g.new.is_empty()));
+            }
+        }
+        for (m, old) in moves.iter().zip(move_old) {
+            let old = old.map_or(m.old_line..m.old_line + m.old_lines, |hidden| {
+                hidden.start.min(m.old_line)..hidden.end.max(m.old_line + m.old_lines)
+            });
+            groups.push(LineGroup {
+                new: m.new_line..m.new_line + m.lines,
+                old,
+            });
+        }
+        groups.sort_by_key(|g| g.new.start);
+        groups
     }
 
     /// Whether this comparison was computed for `doc`'s shape.

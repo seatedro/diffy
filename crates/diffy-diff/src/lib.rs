@@ -48,7 +48,7 @@ mod tests;
 
 pub use build::{BuildError, DocumentBuilder, FileBuilder, diff_from_changes};
 pub use compare::{
-    Comparison, ComparisonError, ComparisonOptions, LinePair, MAX_PAIRING_COMPARISONS,
+    Comparison, ComparisonError, ComparisonOptions, LineGroup, LinePair, MAX_PAIRING_COMPARISONS,
     PAIRING_COMPARISONS_PER_LINE, PairingMode, SIMILARITY_SCAN_BYTES, WhitespaceMode, moved_from,
 };
 pub use compute::{DEFAULT_CONTEXT, diff_texts};

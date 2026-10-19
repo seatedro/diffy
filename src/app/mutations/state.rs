@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use diffy_diff::LineGroup;
 use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark_ui::FocusId;
 use quark_ui::text_input::{
@@ -27,6 +28,7 @@ use crate::contracts::navigation::RepositoryContext;
 use crate::contracts::review::Secret;
 use crate::contracts::shared::{FileKey, FileRevision, JobId, SharedContext, Side, SourceTarget};
 use crate::contracts::shell::{Action, Controller, Intent, LogicalFocus, Reduction};
+use crate::core::compare::{LayoutMode, RendererKind};
 use crate::core::keymap::ShortcutCommand;
 use crate::core::vcs::model::JjOperation;
 use crate::core::vcs::model::{
@@ -348,6 +350,45 @@ fn keys(target: &SourceTarget) -> impl Iterator<Item = LineKey> + '_ {
         side: target.side,
         line,
     })
+}
+
+fn grouped(keys: impl Iterator<Item = LineKey>, groups: &[LineGroup]) -> Vec<LineKey> {
+    let mut out = BTreeSet::new();
+    for key in keys {
+        out.insert(key);
+        let within = |g: &&LineGroup| match key.side {
+            Side::New => g.new.contains(&key.line),
+            Side::Old => g.old.contains(&key.line),
+        };
+        for group in groups.iter().filter(within) {
+            out.extend(group.new.clone().map(|line| LineKey {
+                side: Side::New,
+                line,
+                ..key
+            }));
+            out.extend(group.old.clone().map(|line| LineKey {
+                side: Side::Old,
+                line,
+                ..key
+            }));
+        }
+    }
+    out.into_iter().collect()
+}
+
+fn line_groups(cx: &SharedContext, target: &SourceTarget) -> Arc<[LineGroup]> {
+    let settings = &cx.settings.settings;
+    let semantic = settings.viewport.layout == LayoutMode::Unified
+        && settings
+            .last_compare
+            .as_ref()
+            .is_some_and(|compare| compare.renderer == RendererKind::Semantic);
+    cx.manifest
+        .as_ref()
+        .filter(|_| semantic)
+        .and_then(|manifest| manifest.file(target.file))
+        .filter(|file| file.revision == target.revision)
+        .map_or_else(|| Arc::from([]), |file| file.line_groups.clone())
 }
 
 impl MutationsController {
@@ -762,8 +803,8 @@ impl MutationsController {
         reduction
     }
 
-    fn toggle_lines(&mut self, target: &SourceTarget) {
-        let lines: Vec<_> = keys(target).collect();
+    fn toggle_lines(&mut self, target: &SourceTarget, groups: &[LineGroup]) {
+        let lines = grouped(keys(target), groups);
         let all = lines.iter().all(|key| self.selection.contains(key));
         for key in &lines {
             if all {
@@ -774,14 +815,14 @@ impl MutationsController {
         }
         self.selection
             .retain(|key| key.file == target.file && key.revision == target.revision);
-        self.anchor = lines.last().copied();
+        self.anchor = keys(target).last();
     }
 
-    fn extend_lines(&mut self, target: &SourceTarget) {
+    fn extend_lines(&mut self, target: &SourceTarget, groups: &[LineGroup]) {
         let Some(anchor) = self.anchor.filter(|a| {
             a.file == target.file && a.revision == target.revision && a.side == target.side
         }) else {
-            self.toggle_lines(target);
+            self.toggle_lines(target, groups);
             return;
         };
         let start = anchor.line.min(target.lines.start);
@@ -792,12 +833,12 @@ impl MutationsController {
         };
         self.selection
             .retain(|key| key.file == target.file && key.revision == target.revision);
-        self.selection.extend(keys(&range));
+        self.selection.extend(grouped(keys(&range), groups));
     }
 
-    fn select_lines(&mut self, target: &SourceTarget) {
+    fn select_lines(&mut self, target: &SourceTarget, groups: &[LineGroup]) {
         self.selection.clear();
-        self.selection.extend(keys(target));
+        self.selection.extend(grouped(keys(target), groups));
         self.anchor = keys(target).last();
     }
 
@@ -1403,17 +1444,17 @@ impl Controller for MutationsController {
                 Reduction::default()
             }
             A::SelectLines(target) => {
-                self.select_lines(&target);
+                self.select_lines(&target, &line_groups(cx, &target));
                 self.refresh_presentation(cx);
                 Reduction::changed()
             }
             A::ToggleLineSelection(target) => {
-                self.toggle_lines(&target);
+                self.toggle_lines(&target, &line_groups(cx, &target));
                 self.refresh_presentation(cx);
                 Reduction::changed()
             }
             A::ExtendLineSelection(target) => {
-                self.extend_lines(&target);
+                self.extend_lines(&target, &line_groups(cx, &target));
                 self.refresh_presentation(cx);
                 Reduction::changed()
             }
@@ -1424,10 +1465,11 @@ impl Controller for MutationsController {
                 if !mutable_file(cx, target.file, target.revision) {
                     return Reduction::default();
                 }
+                let groups = line_groups(cx, &target);
                 if action == A::ToggleCurrentLineSelection {
-                    self.toggle_lines(&target);
+                    self.toggle_lines(&target, &groups);
                 } else {
-                    self.extend_lines(&target);
+                    self.extend_lines(&target, &groups);
                 }
                 self.refresh_presentation(cx);
                 Reduction::changed()

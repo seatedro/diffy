@@ -507,7 +507,7 @@ impl Matcher<'_, '_> {
         let (mut i, mut j) = (0, 0);
         for (pi, pj) in pairs.iter().copied().chain([(n, m)]) {
             if pi > i && pj > j {
-                self.splice(&a[i..pi], &b[j..pj], true)?;
+                self.gap(&a[i..pi], &b[j..pj])?;
             }
             if pi < n && pj < m {
                 let (x, y) = (a[pi], b[pj]);
@@ -530,6 +530,9 @@ impl Matcher<'_, '_> {
         );
         match (nx.class, ny.class) {
             (Class::List, Class::List) if self.pairable_lists(x, y) => {
+                if sx.is_empty() || sy.is_empty() {
+                    return MIN_SIMILARITY;
+                }
                 let similarity = dice(sx, sy);
                 let floor = match (self.item_name(0, x), self.item_name(1, y)) {
                     (Some(a), Some(b)) if a != b => RENAMED_ITEM_SIMILARITY,

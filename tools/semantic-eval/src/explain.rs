@@ -120,6 +120,24 @@ pub fn run(
     eval::explain(language, config, old, new, limits, &eval::get())
 }
 
+pub fn legacy_cost(
+    language: &diffy_semantic::Language,
+    config: &diffy_semantic::Config,
+    old: &str,
+    new: &str,
+    limits: &Limits,
+) -> Option<i64> {
+    let options = Options {
+        legacy: true,
+        ..eval::get()
+    };
+    if eval::get().legacy {
+        return None;
+    }
+    let e = eval::explain(language, config, old, new, limits, &options).ok()?;
+    Some(e.cost(&options.weights))
+}
+
 #[derive(Default)]
 pub struct Checks {
     runs: u32,
@@ -127,14 +145,24 @@ pub struct Checks {
     repaired: u32,
     repairs: u32,
     first: Option<String>,
+    compared: u32,
+    cheaper: Vec<String>,
 }
 
 impl Checks {
-    pub fn note(&mut self, label: &str, e: &Explained) {
+    pub fn note(&mut self, label: &str, e: &Explained, legacy: Option<i64>) {
         if eval::get().legacy {
             return;
         }
         self.runs += 1;
+        if let Some(legacy) = legacy {
+            self.compared += 1;
+            let native = e.cost(&eval::get().weights);
+            if legacy < native {
+                self.cheaper
+                    .push(format!("{label}: native {native} legacy {legacy}"));
+            }
+        }
         if !e.agrees() {
             self.disagree += 1;
             if self.first.is_none() {
@@ -166,6 +194,16 @@ impl Checks {
         );
         if let Some(first) = &self.first {
             println!("  first: {first}");
+        }
+        if self.compared > 0 {
+            println!(
+                "legacy cheaper under the native cost: {} of {} runs",
+                self.cheaper.len(),
+                self.compared
+            );
+            for case in &self.cheaper {
+                println!("  CHEAPER {case}");
+            }
         }
         if self.disagree > 0 || self.repaired > 0 {
             return Err(format!(

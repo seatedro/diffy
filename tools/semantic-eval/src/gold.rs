@@ -85,7 +85,11 @@ pub fn run(args: Args) -> Result<(), String> {
                 continue;
             }
         };
-        checks.note(&case.label, &explained);
+        checks.note(
+            &case.label,
+            &explained,
+            explain::legacy_cost(&language, config, &case.old, &case.new, &limits),
+        );
         let view = View {
             diff: &explained.diff,
             texts: [&case.old, &case.new],

@@ -33,7 +33,7 @@ pub struct Change {
 /// texts, and SipHash costs several times more per byte; the seed keeps a
 /// crafted input from predicting collisions.
 #[derive(Clone, Copy)]
-pub(crate) struct FastHash(u64);
+pub struct FastHash(u64);
 
 impl Default for FastHash {
     fn default() -> Self {
@@ -49,7 +49,7 @@ impl BuildHasher for FastHash {
     }
 }
 
-pub(crate) struct FastHasher(u64);
+pub struct FastHasher(u64);
 
 impl FastHasher {
     #[inline]
@@ -80,6 +80,21 @@ impl Hasher for FastHasher {
 
     #[inline]
     fn write_usize(&mut self, i: usize) {
+        self.mix(i as u64);
+    }
+
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.mix(u64::from(i));
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.mix(i);
+    }
+
+    #[inline]
+    fn write_i64(&mut self, i: i64) {
         self.mix(i as u64);
     }
 

@@ -13,7 +13,7 @@ use crate::merge::{join_lines, refolds};
 use crate::model::{BlockKind, DiffDocument, Side};
 use crate::myers::{diff, intern};
 use crate::projection::NONE;
-use crate::semantic::{AlignedRow, Move};
+use crate::semantic::{AlignedRow, ChangeIntensity, Move};
 use crate::text::TextStore;
 
 /// Which spaces a comparison ignores. Only spaces and tabs count; a `\r`,
@@ -366,13 +366,24 @@ impl Comparison {
     /// in the new side, so the line only dissolved into others.
     fn hide_dissolved(&mut self, doc: &DiffDocument, file: u32, start: usize) {
         let old = doc.text(file, Side::Old);
-        for step in &mut self.steps[start..] {
-            let Step::Removed(o) = *step else {
-                continue;
-            };
-            let solid = old.display_line(o).is_some_and(|t| !t.trim().is_empty());
-            if solid && doc.semantic_spans(file, Side::Old, o).is_empty() {
-                *step = Step::Hidden(o);
+        let dissolved = |o: u32| {
+            old.display_line(o).is_some_and(|t| !t.trim().is_empty())
+                && doc.semantic_spans(file, Side::Old, o).iter().all(|s| {
+                    matches!(
+                        s.intensity,
+                        ChangeIntensity::UnchangedContext | ChangeIntensity::Renamed
+                    )
+                })
+        };
+        let block = self.steps.split_off(start);
+        for step in block {
+            match step {
+                Step::Removed(o) if dissolved(o) => self.steps.push(Step::Hidden(o)),
+                Step::Paired(o, n) if dissolved(o) => {
+                    self.steps.push(Step::Hidden(o));
+                    self.steps.push(Step::Added(n));
+                }
+                _ => self.steps.push(step),
             }
         }
     }

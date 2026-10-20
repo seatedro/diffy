@@ -1016,56 +1016,78 @@ fn mark_silent(
             region[1][n as usize] = current;
         }
     }
-    let mut far = [
+    let mut moved = [
         vec![false; sides[0].lines.count() as usize],
         vec![false; sides[1].lines.count() as usize],
     ];
+    for m in moves {
+        for line in m.old_line..m.old_line + m.old_lines {
+            moved[0][line as usize] = true;
+        }
+        for line in m.new_line..m.new_line + m.lines {
+            moved[1][line as usize] = true;
+        }
+    }
     for s in 0..2 {
+        let mut far: Vec<(u32, Range<u32>)> = Vec::new();
         let (own, other) = (&sides[s], &sides[1 - s]);
         for (k, node) in own.tree.nodes.iter().enumerate() {
             let partner = matching.partner[s][k];
-            if node.class == Class::List || partner == NONE {
+            let marks: Vec<Range<u32>> = match node.class {
+                Class::Plain => vec![node.span.clone()],
+                Class::List => vec![node.open.clone(), node.close.clone()],
+                _ => continue,
+            };
+            if partner == NONE {
                 continue;
             }
-            let line = own.lines.of(node.span.start);
-            let theirs = other
-                .lines
-                .of(other.tree.nodes[partner as usize].span.start);
-            if region[s][line as usize] != region[1 - s][theirs as usize] {
-                far[s][line as usize] = true;
+            let theirs = &other.tree.nodes[partner as usize];
+            for (at, range) in marks.into_iter().enumerate() {
+                if range.is_empty() {
+                    continue;
+                }
+                let line = own.lines.of(range.start);
+                let anchor = if at == 1 {
+                    theirs.close.start
+                } else {
+                    theirs.span.start
+                };
+                let pline = other.lines.of(anchor);
+                let displaced = region[s][line as usize] != region[1 - s][pline as usize]
+                    && !moved[s][line as usize]
+                    && !moved[1 - s][pline as usize];
+                if displaced && own.lines.of(range.end.saturating_sub(1)) == line {
+                    let start = own.lines.content(own.tree.src, line).start;
+                    far.push((line, range.start - start..range.end - start));
+                }
             }
         }
-    }
-    for &(o, n) in aligned {
-        let (s, line) = match (o, n) {
-            (Some(o), None) => (0, o),
-            (None, Some(n)) => (1, n),
-            _ => continue,
-        };
-        let moved = moves.iter().any(|m| {
-            let (start, len) = if s == 0 {
-                (m.old_line, m.old_lines)
-            } else {
-                (m.new_line, m.lines)
-            };
-            (start..start + len).contains(&line)
-        });
+        far.sort_by_key(|(line, range)| (*line, range.start));
         let side = &mut sides[s];
-        if moved || !far[s][line as usize] || !side.spans[line as usize].is_empty() {
-            continue;
+        let text = side.tree.src;
+        let mut touched: Vec<u32> = Vec::new();
+        for (line, range) in far {
+            let spans = &mut side.spans[line as usize];
+            if spans
+                .iter()
+                .any(|x| x.start < range.end && range.start < x.end)
+            {
+                continue;
+            }
+            spans.push(SemanticSpan {
+                start: range.start,
+                end: range.end,
+                intensity: ChangeIntensity::Novel,
+            });
+            touched.push(line);
         }
-        let content = side.lines.content(side.tree.src, line);
-        let text = &side.tree.src[content.start as usize..content.end as usize];
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            continue;
+        touched.dedup();
+        for line in touched {
+            let content = side.lines.content(text, line);
+            let spans = &mut side.spans[line as usize];
+            spans.sort_by_key(|span| span.start);
+            join_novel(&text[content.start as usize..content.end as usize], spans);
         }
-        let start = (text.len() - text.trim_start().len()) as u32;
-        side.spans[line as usize].push(SemanticSpan {
-            start,
-            end: start + trimmed.len() as u32,
-            intensity: ChangeIntensity::Novel,
-        });
     }
 }
 

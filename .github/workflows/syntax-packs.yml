@@ -55,6 +55,25 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
 
+      - uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
+        if: runner.os != 'Windows'
+        with:
+          cache-key-prefix: kache-syntax-packs-${{ matrix.target }}
+          s3-bucket: ${{ secrets.KACHE_S3_ACCESS_KEY_ID != '' && 'quark-kache' || '' }}
+          s3-endpoint: https://d996894143090cc02f1539e379655b2c.r2.cloudflarestorage.com
+          s3-region: auto
+          s3-access-key-id: ${{ secrets.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ secrets.KACHE_S3_SECRET_ACCESS_KEY }}
+          save-cache: ${{ github.ref == 'refs/heads/master' }}
+          pr-comment: false
+          cache-executables: true
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: runner.os == 'Windows'
+        with:
+          key: syntax-packs-windows-v1
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
       - name: Install lld (macOS)
         if: runner.os == 'macOS'
         run: brew install lld
@@ -63,11 +82,20 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y lld
 
+      - uses: actions/cache@v4
+        id: packs
+        if: inputs.languages == ''
+        with:
+          path: target/syntax-packs/${{ matrix.target }}
+          key: syntax-packs-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'tools/syntax-pack/**', 'crates/diffy-syntax/**') }}
+
       - uses: actions/setup-node@v4
+        if: steps.packs.outputs.cache-hit != 'true'
         with:
           node-version: "22"
 
       - name: Install tree-sitter CLI
+        if: steps.packs.outputs.cache-hit != 'true'
         run: |
           npm install --global "tree-sitter-cli@${TREE_SITTER_CLI}"
           cli="$(npm root -g)/tree-sitter-cli/tree-sitter"
@@ -76,6 +104,7 @@ jobs:
           echo "TREE_SITTER=$cli" >> "$GITHUB_ENV"
 
       - name: Build and check packs
+        if: steps.packs.outputs.cache-hit != 'true'
         run: |
           host=$(rustc -vV | sed -n 's/^host: //p')
           if [ "$host" != "${{ matrix.target }}" ]; then
@@ -102,6 +131,19 @@ jobs:
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
+
+      - uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
+        if: runner.os != 'Windows'
+        with:
+          cache-key-prefix: kache-syntax-packs-x86_64-unknown-linux-gnu
+          s3-bucket: ${{ secrets.KACHE_S3_ACCESS_KEY_ID != '' && 'quark-kache' || '' }}
+          s3-endpoint: https://d996894143090cc02f1539e379655b2c.r2.cloudflarestorage.com
+          s3-region: auto
+          s3-access-key-id: ${{ secrets.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ secrets.KACHE_S3_SECRET_ACCESS_KEY }}
+          save-cache: ${{ github.ref == 'refs/heads/master' }}
+          pr-comment: false
+          cache-executables: true
 
       - name: Install lld
         run: sudo apt-get update && sudo apt-get install -y lld
@@ -141,6 +183,19 @@ jobs:
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
+
+      - uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
+        if: runner.os != 'Windows'
+        with:
+          cache-key-prefix: kache-syntax-packs-x86_64-unknown-linux-gnu
+          s3-bucket: ${{ secrets.KACHE_S3_ACCESS_KEY_ID != '' && 'quark-kache' || '' }}
+          s3-endpoint: https://d996894143090cc02f1539e379655b2c.r2.cloudflarestorage.com
+          s3-region: auto
+          s3-access-key-id: ${{ secrets.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ secrets.KACHE_S3_SECRET_ACCESS_KEY }}
+          save-cache: ${{ github.ref == 'refs/heads/master' }}
+          pr-comment: false
+          cache-executables: true
 
       - name: Install lld
         run: sudo apt-get update && sudo apt-get install -y lld
@@ -193,6 +248,25 @@ jobs:
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
+
+      - uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
+        if: runner.os != 'Windows'
+        with:
+          cache-key-prefix: kache-syntax-packs-${{ matrix.target }}
+          s3-bucket: ${{ secrets.KACHE_S3_ACCESS_KEY_ID != '' && 'quark-kache' || '' }}
+          s3-endpoint: https://d996894143090cc02f1539e379655b2c.r2.cloudflarestorage.com
+          s3-region: auto
+          s3-access-key-id: ${{ secrets.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ secrets.KACHE_S3_SECRET_ACCESS_KEY }}
+          save-cache: ${{ github.ref == 'refs/heads/master' }}
+          pr-comment: false
+          cache-executables: true
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: runner.os == 'Windows'
+        with:
+          key: syntax-packs-windows-v1
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Install lld (macOS)
         if: runner.os == 'macOS'

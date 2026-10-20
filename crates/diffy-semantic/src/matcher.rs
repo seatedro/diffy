@@ -52,6 +52,7 @@ pub(crate) fn run(
     matcher.pair_lists(0, 0)?;
     matcher.detect_moves()?;
     matcher.detect_run_moves()?;
+    matcher.lift()?;
     Ok(Matching {
         partner: matcher.partner,
         replaced: matcher.replaced,
@@ -560,6 +561,97 @@ impl Matcher<'_, '_> {
         Ok(())
     }
 
+    fn lift(&mut self) -> Result<(), Fallback> {
+        if self.relocated.is_empty() {
+            return Ok(());
+        }
+        let parents = [parents(self.trees[0]), parents(self.trees[1])];
+        for (o, n) in self.relocated.clone() {
+            let (mut a, mut b) = (parents[0][o as usize], parents[1][n as usize]);
+            let mut top = None;
+            while a != NONE && b != NONE && self.liftable(a, b) {
+                let current = self.partner[0][a as usize];
+                if current != NONE {
+                    self.partner[1][current as usize] = NONE;
+                    self.weak.remove(&a);
+                }
+                self.fill(a, b)?;
+                top = Some((a, b));
+                (a, b) = (parents[0][a as usize], parents[1][b as usize]);
+            }
+            if let Some(pair) = top {
+                self.relocated.push(pair);
+            }
+        }
+        Ok(())
+    }
+
+    fn liftable(&self, a: u32, b: u32) -> bool {
+        let current = self.partner[0][a as usize];
+        if current == b || self.partner[1][b as usize] != NONE || !self.pairable_lists(a, b) {
+            return false;
+        }
+        let (agree, matched) = self.agreement(a, b);
+        agree * 2 > matched && (current == NONE || self.agreement(a, current).0 == 0)
+    }
+
+    fn agreement(&self, a: u32, b: u32) -> (usize, usize) {
+        let theirs = self.trees[1].children(b);
+        let mut agree = 0;
+        let mut matched = 0;
+        for child in self.trees[0].children(a) {
+            let partner = self.partner[0][child as usize];
+            if partner != NONE {
+                matched += 1;
+                agree += usize::from(theirs.contains(&partner));
+            }
+        }
+        (agree, matched)
+    }
+
+    fn fill(&mut self, a: u32, b: u32) -> Result<(), Fallback> {
+        self.link(a, b);
+        let (left, right) = (self.trees[0].children(a), self.trees[1].children(b));
+        self.spend(left.len() + right.len())?;
+        let (mut i, mut j) = (0, 0);
+        for (x, &child) in left.iter().enumerate() {
+            let partner = self.partner[0][child as usize];
+            let Some(y) = right[j..].iter().position(|&r| r == partner) else {
+                continue;
+            };
+            self.fill_gap(&left[i..x], &right[j..j + y])?;
+            (i, j) = (x + 1, j + y + 1);
+        }
+        self.fill_gap(&left[i..], &right[j..])
+    }
+
+    fn fill_gap(&mut self, a: &[u32], b: &[u32]) -> Result<(), Fallback> {
+        if a.len() == b.len() {
+            for (&x, &y) in a.iter().zip(b) {
+                if self.subtree_free(0, x) && self.subtree_free(1, y) {
+                    self.seq(&[x], &[y])?;
+                } else if self.partner[0][x as usize] == NONE
+                    && self.partner[1][y as usize] == NONE
+                    && self.pairable_lists(x, y)
+                {
+                    self.fill(x, y)?;
+                }
+            }
+            return Ok(());
+        }
+        let a: Vec<u32> = a
+            .iter()
+            .copied()
+            .filter(|&x| self.subtree_free(0, x))
+            .collect();
+        let b: Vec<u32> = b
+            .iter()
+            .copied()
+            .filter(|&y| self.subtree_free(1, y))
+            .collect();
+        self.seq(&a, &b)
+    }
+
     fn signatures(&self, side: usize, run: &[u32]) -> Vec<Vec<u64>> {
         run.iter().map(|&n| self.signature(side, n)).collect()
     }
@@ -883,6 +975,27 @@ fn join(p: &myers::Change, c: &myers::Change, a: &[u32], b: &[u32]) -> Option<my
         });
     }
     None
+}
+
+fn parents(tree: &Tree<'_>) -> Vec<u32> {
+    let mut out = vec![NONE; tree.nodes.len()];
+    let mut stack: Vec<u32> = Vec::new();
+    for (at, node) in tree.nodes.iter().enumerate() {
+        let at = at as u32;
+        while stack
+            .last()
+            .is_some_and(|&p| tree.nodes[p as usize].next <= at)
+        {
+            stack.pop();
+        }
+        if let Some(&p) = stack.last() {
+            out[at as usize] = p;
+        }
+        if node.class == Class::List {
+            stack.push(at);
+        }
+    }
+    out
 }
 
 fn whole_lines(tree: &Tree<'_>, node: u32) -> bool {

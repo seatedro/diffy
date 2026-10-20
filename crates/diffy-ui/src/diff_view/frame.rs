@@ -905,12 +905,7 @@ impl DiffViewState {
                 }
             }
         }
-        if kind == RowKind::Moved
-            && let Some(index) = p.line(row, Side::New)
-        {
-            let line = source_line(doc, file, Side::New, index);
-            paint.hint = move_hint(doc, file, line);
-        } else if let Some(line) = &paint.sides[Side::New as usize]
+        if let Some(line) = &paint.sides[Side::New as usize]
             && !line.renamed.is_empty()
         {
             let text = line.layout.text();
@@ -1293,14 +1288,6 @@ fn move_note(
             m.new_line + 1
         ),
     })
-}
-
-fn move_hint(doc: &DiffDocument, file: u32, line: u32) -> Option<Arc<str>> {
-    let moves = doc.semantics(file)?.moves();
-    let found = moves
-        .iter()
-        .find(|m| (m.new_line..m.new_line + m.lines).contains(&line))?;
-    Some(format!("Moved from line {}", found.old_line + 1).into())
 }
 
 fn rename_hint(doc: &DiffDocument, file: u32, names: &[&str]) -> Option<Arc<str>> {

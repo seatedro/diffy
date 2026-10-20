@@ -1008,8 +1008,11 @@ fn focus_overlay(
     let (width, height) = (frame.viewport.0, row.height);
     let color = look.colors.focused_row;
     let utility = utility(frame, row, deco);
-    let header = row.paint.kind.diff() == Some(RowKind::FileHeader);
-    let outline = look.env.focused && !header && !picked;
+    let band = matches!(
+        row.paint.kind.diff(),
+        Some(RowKind::FileHeader | RowKind::MovedHere | RowKind::MovedAway)
+    );
+    let outline = look.env.focused && !band && !picked;
     view! {
         <div class="absolute left-0" top={row.top} w={width} h={height}>
             if outline {
@@ -1054,8 +1057,10 @@ fn band(
     let columns = frame.columns;
     let deco = deco.clone();
     let key = row.key;
+    let focused = row.focused;
     let hash = inputs_hash(&(
         paint.stamp,
+        focused,
         width.to_bits(),
         height.to_bits(),
         look.env,
@@ -1072,7 +1077,9 @@ fn band(
         ),
         PreparedKind::Diff(RowKind::MovedHere | RowKind::MovedAway) => {
             let indent = columns.sides[Side::New as usize].map_or(pad, |c| c.text_x);
-            move_note(&paint, width, height, indent, font_size, look, on_event)
+            move_note(
+                &paint, width, height, indent, font_size, focused, look, on_event,
+            )
         }
         PreparedKind::Pending { state, .. } => {
             let header_h = header_h.min(height);
@@ -1418,12 +1425,14 @@ fn file_header(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn move_note(
     paint: &RowPaint,
     width: f32,
     height: f32,
     indent: f32,
     font_size: f32,
+    focused: bool,
     look: Look,
     on_event: fn(DiffEvent) -> Action,
 ) -> AnyElement {
@@ -1443,6 +1452,12 @@ fn move_note(
     };
     let size = font_size * 0.9;
     let label = paint.title.to_string();
+    let accent = colors.tone(HighlightKind::Keyword);
+    let (bg, ink) = if focused {
+        (Some(colors.hover), accent)
+    } else {
+        (None, colors.muted)
+    };
     view! {
         <div w={width} h={height} class="flex-row items-center" pl={indent}>
             <div
@@ -1451,6 +1466,7 @@ fn move_note(
                 px={size * 0.4}
                 h={(height - 2.0).max(size)}
                 rounded={4.0}
+                @when {let Some(bg) = bg} { bg={bg} }
                 hover_bg={colors.hover}
                 on:click={jump}
                 @when {env.accessible} {
@@ -1458,8 +1474,8 @@ fn move_note(
                     aria-label={label.clone()}
                 }
             >
-                <icon svg={arrow} size={size.round()} color={colors.tone(HighlightKind::Keyword)} />
-                <text size={size} color={colors.muted}>{label}</text>
+                <icon svg={arrow} size={size.round()} color={accent} />
+                <text size={size} color={ink}>{label}</text>
             </div>
         </div>
     }

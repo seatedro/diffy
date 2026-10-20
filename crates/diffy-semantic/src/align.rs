@@ -124,8 +124,13 @@ pub(crate) fn rows(
     let renames = renames(&mut sides, matching);
     mark_words(&mut sides, words, &renames);
     for side in &mut sides {
-        for spans in &mut side.spans {
+        for (line, spans) in side.spans.iter_mut().enumerate() {
             spans.sort_by_key(|span| span.start);
+            let content = side.lines.content(side.tree.src, line as u32);
+            join_novel(
+                &side.tree.src[content.start as usize..content.end as usize],
+                spans,
+            );
         }
     }
     let outline = outline(&sides, matching);
@@ -500,6 +505,40 @@ fn replaced(sides: &mut [Side<'_, '_>; 2], x: u32, y: u32) -> Option<[Vec<Range<
         sides[1].mark(rb, ChangeIntensity::Novel);
     }
     None
+}
+
+fn join_novel(text: &str, spans: &mut Vec<SemanticSpan>) {
+    let mut i = 0;
+    while i + 1 < spans.len() {
+        let (a, b) = (spans[i], spans[i + 1]);
+        let gap = &text[a.end as usize..b.start as usize];
+        let width = gap.len() as u32;
+        let novel = a.intensity == ChangeIntensity::Novel && b.intensity == ChangeIntensity::Novel;
+        if !novel || gap.contains(char::is_whitespace) {
+            i += 1;
+            continue;
+        }
+        let joined = if gap.is_empty() {
+            Some(a.start..b.end)
+        } else if a.end - a.start > width && text[a.start as usize..].starts_with(gap) {
+            Some(a.start + width..b.end)
+        } else if b.end - b.start > width && text[..b.end as usize].ends_with(gap) {
+            Some(a.start..b.end - width)
+        } else {
+            None
+        };
+        match joined {
+            Some(range) => {
+                spans[i] = SemanticSpan {
+                    start: range.start,
+                    end: range.end,
+                    intensity: ChangeIntensity::Novel,
+                };
+                spans.remove(i + 1);
+            }
+            None => i += 1,
+        }
+    }
 }
 
 fn mark_words(sides: &mut [Side<'_, '_>; 2], words: Vec<[Vec<Range<u32>>; 2]>, renames: &[Rename]) {

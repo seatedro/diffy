@@ -94,6 +94,10 @@ pub(crate) fn run(
         hashes: [Default::default(), Default::default()],
         pins: Vec::new(),
         pins_new: Vec::new(),
+        anchors: Vec::new(),
+        forced: Vec::new(),
+        fixed: Vec::new(),
+        owner: [vec![NONE; old.nodes.len()], vec![NONE; new.nodes.len()]],
         memo: HashMap::default(),
         wrapped: HashMap::default(),
         acts: HashMap::default(),
@@ -113,6 +117,7 @@ pub(crate) fn run(
         return Ok(m.finish(Vec::new()));
     }
     m.index()?;
+    m.identities()?;
     m.solve()?;
     let (mut renames, rejected) = m.finalize();
     if rejected {
@@ -151,6 +156,10 @@ struct Matcher<'t, 'a> {
     hashes: [HashMap<u64, Vec<u32>>; 2],
     pins: Vec<(u32, u32)>,
     pins_new: Vec<(u32, u32)>,
+    anchors: Vec<(u32, u32)>,
+    forced: Vec<(u32, u32)>,
+    fixed: Vec<(u32, u32)>,
+    owner: [Vec<u32>; 2],
     memo: HashMap<(u32, u32), Entry>,
     wrapped: HashMap<(u32, u32, u32, bool), Entry>,
     acts: HashMap<(u32, u32), Rc<[Act]>>,
@@ -194,6 +203,7 @@ struct Cell {
     new: (usize, usize),
     value: i64,
     exact: bool,
+    fixed: bool,
     act: Act,
 }
 
@@ -617,7 +627,12 @@ impl<'a> Matcher<'_, 'a> {
     fn select(&mut self, cells: &mut [Cell]) -> Result<Vec<usize>, Fallback> {
         loop {
             self.spend(cells.len())?;
-            let chosen = chain(cells).1;
+            let mut chosen = chain(cells).1;
+            let mut taken = vec![false; cells.len()];
+            for &k in &chosen {
+                taken[k] = true;
+            }
+            chosen.extend((0..cells.len()).filter(|&k| cells[k].fixed && !taken[k]));
             let mut refined = false;
             for &k in &chosen {
                 if cells[k].exact {
@@ -651,6 +666,12 @@ impl<'a> Matcher<'_, 'a> {
             return Ok(out);
         }
         self.spend(xs.len() + ys.len())?;
+        let fixed = self.anchored(xs, ys)?;
+        let mut held = [vec![false; xs.len()], vec![false; ys.len()]];
+        for &(i, j, _, _) in &fixed {
+            held[0][i] = true;
+            held[1][j] = true;
+        }
         let (ia, ib) = self.intern(xs, ys);
         let lead_a = |i: usize| self.leads(0, xs[i]);
         let lead_b = |i: usize| self.leads(1, ys[i]);
@@ -693,9 +714,9 @@ impl<'a> Matcher<'_, 'a> {
         };
         for (olds, news) in &dense {
             self.spend(olds.len() * news.len())?;
-            for i in olds.clone() {
+            for i in olds.clone().filter(|&i| !held[0][i]) {
                 let mut ranked: Vec<(i64, usize)> = Vec::new();
-                for j in news.clone() {
+                for j in news.clone().filter(|&j| !held[1][j]) {
                     let (x, y) = (xs[i], ys[j]);
                     if !self.feasible(x, y) {
                         continue;
@@ -724,7 +745,8 @@ impl<'a> Matcher<'_, 'a> {
         let open = [0, 1].map(|side| {
             matched[side]
                 .iter()
-                .map(|&m| exhaustive || !m)
+                .zip(&held[side])
+                .map(|(&m, &h)| (exhaustive || !m) && !h)
                 .collect::<Vec<bool>>()
         });
         for i in 0..xs.len() {
@@ -745,8 +767,11 @@ impl<'a> Matcher<'_, 'a> {
         keys.dedup();
         self.spend(keys.len())?;
         let mut deep: Vec<(usize, usize, u32, u32)> = Vec::new();
-        let mut reached = [vec![false; xs.len()], vec![false; ys.len()]];
+        let mut reached = held;
         for (i, j, x, y) in keys {
+            if !fits(&fixed, (i, i), (j, j)) || !self.respects(x, y) {
+                continue;
+            }
             let c = (x == xs[i] && ctx.0, y == ys[j] && ctx.1);
             let cell = if self.is_list(0, x) {
                 if !self.feasible(x, y) {
@@ -758,6 +783,7 @@ impl<'a> Matcher<'_, 'a> {
                     new: (j, j),
                     value: self.value(&e.d),
                     exact: true,
+                    fixed: false,
                     act: Act::List(x, y),
                 }
             } else {
@@ -769,6 +795,7 @@ impl<'a> Matcher<'_, 'a> {
                     new: (j, j),
                     value: self.value(&e.d),
                     exact: !self.inexact(x, y),
+                    fixed: false,
                     act: Act::Leaf(x, y, c),
                 }
             };
@@ -783,7 +810,203 @@ impl<'a> Matcher<'_, 'a> {
             out.push(cell);
         }
         self.wraps(xs, ys, a, b, ctx, &deep, &gaps, &reached, &mut out)?;
+        out.retain(|c| fits(&fixed, c.old, c.new));
+        for (i, j, x, y) in fixed {
+            let e = self.savings(x, y)?;
+            out.push(Cell {
+                old: (i, i),
+                new: (j, j),
+                value: self.value(&e.d),
+                exact: true,
+                fixed: true,
+                act: Act::List(x, y),
+            });
+        }
         Ok(out)
+    }
+
+    fn anchored(
+        &mut self,
+        xs: &[u32],
+        ys: &[u32],
+    ) -> Result<Vec<(usize, usize, u32, u32)>, Fallback> {
+        let (Some(&first), Some(&last)) = (xs.first(), xs.last()) else {
+            return Ok(Vec::new());
+        };
+        let (Some(&low), Some(&high)) = (ys.first(), ys.last()) else {
+            return Ok(Vec::new());
+        };
+        let (end, top) = (self.next(0, last), self.next(1, high));
+        let from = self.anchors.partition_point(|&(x, _)| x < first);
+        let to = self.anchors.partition_point(|&(x, _)| x < end);
+        self.spend(to - from)?;
+        let mut found: Vec<(usize, usize, u32, u32)> = Vec::new();
+        for &(x, y) in &self.anchors[from..to] {
+            if y < low || y >= top {
+                continue;
+            }
+            let i = xs.partition_point(|&c| c <= x) - 1;
+            let j = ys.partition_point(|&c| c <= y) - 1;
+            if found.last().is_none_or(|f| (f.0, f.1) != (i, j)) {
+                found.push((i, j, x, y));
+            }
+        }
+        if found.is_empty() {
+            return Ok(found);
+        }
+        let mut rows = vec![0u32; xs.len()];
+        let mut cols = vec![0u32; ys.len()];
+        for f in &found {
+            rows[f.0] += 1;
+            cols[f.1] += 1;
+        }
+        found.retain(|f| rows[f.0] == 1 && cols[f.1] == 1);
+        let keyed: Vec<(u32, u32, u64)> = found
+            .iter()
+            .enumerate()
+            .map(|(k, f)| {
+                let w = self.total(0, xs[f.0]) + self.total(1, ys[f.1]);
+                (k as u32, f.1 as u32, w as u64)
+            })
+            .collect();
+        let kept = heaviest_increasing(&keyed);
+        let mut out = Vec::new();
+        for (k, (i, j, x, y)) in found.into_iter().enumerate() {
+            if !kept[k] {
+                continue;
+            }
+            let (p, q) = (xs[i], ys[j]);
+            let ends = if self.feasible(p, q) && self.respects(p, q) {
+                Some((p, q))
+            } else if let Some(n) =
+                self.outermost(1, y, q, |m, n| m.feasible(p, n) && m.respects(p, n))
+            {
+                Some((p, n))
+            } else {
+                self.outermost(0, x, p, |m, n| m.feasible(n, q) && m.respects(n, q))
+                    .map(|n| (n, q))
+            };
+            if let Some((p, q)) = ends {
+                out.push((i, j, p, q));
+            }
+        }
+        Ok(out)
+    }
+
+    fn outermost(
+        &self,
+        side: usize,
+        from: u32,
+        top: u32,
+        fits: impl Fn(&Self, u32) -> bool,
+    ) -> Option<u32> {
+        let mut found = None;
+        let mut at = from;
+        while at != top && at != NONE {
+            if fits(self, at) {
+                found = Some(at);
+            }
+            at = self.parents[side][at as usize];
+        }
+        found
+    }
+
+    fn respects(&self, x: u32, y: u32) -> bool {
+        [(0, x, y), (1, y, x)].into_iter().all(|(side, n, m)| {
+            let o = self.owner[side][n as usize];
+            if o == NONE {
+                return true;
+            }
+            let pair = self.fixed[o as usize];
+            let (root, peer) = if side == 0 { pair } else { (pair.1, pair.0) };
+            if n == root {
+                m == peer
+            } else {
+                peer <= m && m < self.next(1 - side, peer)
+            }
+        })
+    }
+
+    fn identities(&mut self) -> Result<(), Fallback> {
+        let mut ids: HashMap<(u32, &'a str, &'a str), u32> = HashMap::default();
+        let mut keyed: [Vec<(u32, u32, u32)>; 2] = Default::default();
+        let mut seen: HashMap<u32, [(u32, u32); 2]> = HashMap::default();
+        for side in [0, 1] {
+            let tree = self.trees[side];
+            self.spend(tree.items.len())?;
+            let mut stack: Vec<(u32, u32, u32)> = Vec::new();
+            for item in &tree.items {
+                while stack.last().is_some_and(|&(end, _, _)| end <= item.node) {
+                    stack.pop();
+                }
+                let (scope, parent) = stack.last().map_or((NONE, 0), |&(_, k, n)| (k, n));
+                let next = ids.len() as u32;
+                let key = *ids
+                    .entry((scope, item.kind, tree.text(item.name.clone())))
+                    .or_insert(next);
+                let slot = &mut seen.entry(key).or_insert([(0, NONE); 2])[side];
+                *slot = (slot.0 + 1, item.node);
+                keyed[side].push((item.node, key, parent));
+                stack.push((self.next(side, item.node), key, item.node));
+            }
+        }
+        let parent_of: HashMap<u32, u32> = keyed[1].iter().map(|&(n, _, p)| (n, p)).collect();
+        let mut pairs: HashMap<u32, u32> = HashMap::default();
+        let mut groups: Vec<(u32, u32, u32)> = Vec::new();
+        for &(x, key, parent) in &keyed[0] {
+            let [(1, _), (1, y)] = seen[&key] else {
+                continue;
+            };
+            let peer = parent_of[&y];
+            let enclosed = parent == 0 && peer == 0 || pairs.get(&parent) == Some(&peer);
+            if enclosed && self.feasible(x, y) {
+                pairs.insert(x, y);
+                groups.push((parent, x, y));
+            }
+        }
+        groups.sort_unstable();
+        let (old, new) = (self.trees[0], self.trees[1]);
+        let mut placed: HashSet<u32> = HashSet::default();
+        for group in groups.chunk_by(|p, q| p.0 == q.0) {
+            let parent = group[0].0;
+            if parent != 0 && !placed.contains(&parent) {
+                continue;
+            }
+            let keys: Vec<(u32, u32, u64)> = group
+                .iter()
+                .enumerate()
+                .map(|(k, &(_, x, y))| (k as u32, y, (self.total(0, x) + self.total(1, y)) as u64))
+                .collect();
+            let kept = heaviest_increasing(&keys);
+            for (k, &(_, x, y)) in group.iter().enumerate() {
+                if kept[k] {
+                    self.anchors.push((x, y));
+                } else if whole_lines(old, x) && whole_lines(new, y) {
+                    self.forced.push((x, y));
+                } else {
+                    continue;
+                }
+                placed.insert(x);
+            }
+        }
+        self.anchors.sort_unstable();
+        self.forced.sort_unstable();
+        self.fixed = self.anchors.iter().chain(&self.forced).copied().collect();
+        for side in [0, 1] {
+            let mut roots: Vec<(u32, u32)> = self
+                .fixed
+                .iter()
+                .enumerate()
+                .map(|(k, &(x, y))| (if side == 0 { x } else { y }, k as u32))
+                .collect();
+            roots.sort_unstable();
+            for (node, k) in roots {
+                let end = self.next(side, node);
+                self.spend((end - node) as usize)?;
+                self.owner[side][node as usize..end as usize].fill(k);
+            }
+        }
+        Ok(())
     }
 
     fn candidate_leaf(&self, x: u32, y: u32) -> bool {
@@ -873,6 +1096,7 @@ impl<'a> Matcher<'_, 'a> {
                 new,
                 value: 0,
                 exact: true,
+                fixed: false,
                 act,
             };
             let key = self.wrap_key(&cell);
@@ -1200,6 +1424,14 @@ impl<'a> Matcher<'_, 'a> {
     /// note: anchors that landed outside their container, equal subtrees
     /// and same-named items, best first.
     fn relocate(&mut self) -> Result<(), Fallback> {
+        for (x, y) in self.forced.clone() {
+            if self.free(0, x)? && self.free(1, y)? && self.disjoint(x, y) {
+                let e = self.moved(x, y)?;
+                self.apply(x, y)?;
+                self.moves.push((x, y));
+                self.predicted += e.d;
+            }
+        }
         let mut candidates: Vec<(u32, u32)> = Vec::new();
         let pins = self.pins.clone();
         self.spend(pins.len())?;
@@ -1248,6 +1480,7 @@ impl<'a> Matcher<'_, 'a> {
         let mut valued = Vec::new();
         for (x, y) in candidates {
             if !self.feasible(x, y)
+                || !self.respects(x, y)
                 || !whole_lines(self.trees[0], x)
                 || !whole_lines(self.trees[1], y)
                 || !self.free(0, x)?
@@ -1530,6 +1763,13 @@ impl<'a> Matcher<'_, 'a> {
         }
         Ok(())
     }
+}
+
+fn fits(fixed: &[(usize, usize, u32, u32)], old: (usize, usize), new: (usize, usize)) -> bool {
+    let k = fixed.partition_point(|f| f.0 < old.0);
+    let before = k.checked_sub(1).is_none_or(|p| fixed[p].1 < new.0);
+    let after = fixed.get(k).is_none_or(|f| old.1 < f.0 && new.1 < f.1);
+    before && after
 }
 
 fn chain(cells: &[Cell]) -> (i64, Vec<usize>) {

@@ -1,13 +1,16 @@
+mod audit;
 mod capture;
 mod check;
 mod contract;
 mod corpus;
 mod engine;
 mod fixtures;
+mod grade;
 mod moves;
 mod mutate;
 mod render;
 mod report;
+mod truth;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -36,6 +39,12 @@ enum Command {
         about = "Applies known edits to real files and checks the diff reports exactly them."
     )]
     Mutate(mutate::Args),
+    #[command(about = "Grades the token links of generated edits whose true links are known.")]
+    Truth(truth::Args),
+    #[command(
+        about = "Grades token links on real history against unique lines and same-named items."
+    )]
+    Audit(audit::Args),
     #[command(about = "Scores how noisy move notes are on a list of commit and path pairs.")]
     Moves(moves::Args),
     #[command(about = "Renders one file's diff, from two files or from a commit.")]
@@ -66,6 +75,8 @@ fn main() -> ExitCode {
         Command::Fixtures(args) => fixtures::run(args),
         Command::Mutate(args) => mutate::run(args),
         Command::Moves(args) => moves::run(args),
+        Command::Truth(args) => truth::run(args),
+        Command::Audit(args) => audit::run(args),
         Command::Show(args) => show(args),
         Command::Tree { path } => tree(&path),
     };

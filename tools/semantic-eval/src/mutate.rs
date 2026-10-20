@@ -32,14 +32,14 @@ pub struct Args {
     filter: Option<String>,
 }
 
-struct Syntax {
-    functions: &'static [&'static str],
-    block: &'static str,
+pub(crate) struct Syntax {
+    pub(crate) functions: &'static [&'static str],
+    pub(crate) block: &'static str,
     arguments: &'static str,
     wrap: (&'static str, Option<&'static str>),
 }
 
-fn syntax(language: &str) -> Option<Syntax> {
+pub(crate) fn syntax(language: &str) -> Option<Syntax> {
     Some(match language {
         "rust" => Syntax {
             functions: &["function_item"],
@@ -232,7 +232,11 @@ pub fn run(args: Args) -> Result<(), String> {
     Ok(())
 }
 
-fn list(repo: &Path, exts: &[String], filter: Option<&str>) -> Result<Vec<String>, String> {
+pub(crate) fn list(
+    repo: &Path,
+    exts: &[String],
+    filter: Option<&str>,
+) -> Result<Vec<String>, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -255,7 +259,7 @@ fn list(repo: &Path, exts: &[String], filter: Option<&str>) -> Result<Vec<String
         .collect())
 }
 
-fn spread<T>(items: Vec<T>, max: usize) -> Vec<T> {
+pub(crate) fn spread<T>(items: Vec<T>, max: usize) -> Vec<T> {
     let len = items.len();
     if len <= max {
         return items;
@@ -282,7 +286,7 @@ fn write_fixture(out: &Path, path: &str, case: &Case) -> Result<(), String> {
     std::fs::write(out.join(name), text).map_err(|error| error.to_string())
 }
 
-fn error_count(node: ts::Node) -> usize {
+pub(crate) fn error_count(node: ts::Node) -> usize {
     if !node.has_error() {
         return 0;
     }
@@ -324,7 +328,7 @@ fn push_both(out: &mut Vec<Case>, mut case: Case, kind: &'static str, back: &'st
     out.push(case);
 }
 
-fn collect<'t>(node: ts::Node<'t>, out: &mut Vec<ts::Node<'t>>) {
+pub(crate) fn collect<'t>(node: ts::Node<'t>, out: &mut Vec<ts::Node<'t>>) {
     out.push(node);
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -332,34 +336,34 @@ fn collect<'t>(node: ts::Node<'t>, out: &mut Vec<ts::Node<'t>>) {
     }
 }
 
-struct LineIndex {
-    starts: Vec<usize>,
+pub(crate) struct LineIndex {
+    pub(crate) starts: Vec<usize>,
 }
 
 impl LineIndex {
-    fn new(text: &str) -> Self {
+    pub(crate) fn new(text: &str) -> Self {
         let mut starts = vec![0];
         starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
         Self { starts }
     }
 
-    fn line(&self, row: usize) -> Range<usize> {
+    pub(crate) fn line(&self, row: usize) -> Range<usize> {
         let start = self.starts[row];
         let end = self.starts.get(row + 1).map_or(usize::MAX, |&s| s - 1);
         start..end
     }
 
-    fn opens_line(&self, text: &str, node: &ts::Node) -> bool {
+    pub(crate) fn opens_line(&self, text: &str, node: &ts::Node) -> bool {
         let start = self.starts[node.start_position().row];
         text[start..node.start_byte()].trim().is_empty()
     }
 
-    fn closes_line(&self, text: &str, node: &ts::Node) -> bool {
+    pub(crate) fn closes_line(&self, text: &str, node: &ts::Node) -> bool {
         let end = self.line(node.end_position().row).end.min(text.len());
         text[node.end_byte()..end].trim().is_empty()
     }
 
-    fn indent<'a>(&self, text: &'a str, row: usize) -> &'a str {
+    pub(crate) fn indent<'a>(&self, text: &'a str, row: usize) -> &'a str {
         let line = self.line(row);
         let line = &text[line.start..line.end.min(text.len())];
         &line[..line.len() - line.trim_start().len()]

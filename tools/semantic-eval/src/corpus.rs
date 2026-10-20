@@ -243,7 +243,7 @@ fn write_jsonl(path: &Path, records: &[Record]) -> Result<(), String> {
     out.flush().map_err(|error| error.to_string())
 }
 
-fn extension(path: &str) -> String {
+pub(crate) fn extension(path: &str) -> String {
     Path::new(path)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -251,7 +251,7 @@ fn extension(path: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn binary(bytes: &[u8]) -> bool {
+pub(crate) fn binary(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(BINARY_SCAN_BYTES)].contains(&0)
 }
 
@@ -268,7 +268,11 @@ fn git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 
-fn commits(repo: &Path, rev: &str, count: usize) -> Result<Vec<(String, String)>, String> {
+pub(crate) fn commits(
+    repo: &Path,
+    rev: &str,
+    count: usize,
+) -> Result<Vec<(String, String)>, String> {
     let limit = format!("-n{count}");
     let out = git(
         repo,
@@ -290,7 +294,11 @@ fn commits(repo: &Path, rev: &str, count: usize) -> Result<Vec<(String, String)>
         .collect())
 }
 
-fn changes(repo: &Path, parent: &str, commit: &str) -> Result<Vec<(String, String)>, String> {
+pub(crate) fn changes(
+    repo: &Path,
+    parent: &str,
+    commit: &str,
+) -> Result<Vec<(String, String)>, String> {
     let out = git(repo, &["diff", "--name-status", "-z", "-M", parent, commit])?;
     let text = String::from_utf8_lossy(&out);
     let mut fields = text.split('\0').filter(|field| !field.is_empty());

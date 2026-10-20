@@ -115,10 +115,11 @@ impl<'a> Tree<'a> {
             let name =
                 class == Class::Plain && node.is_named() && node.kind().ends_with("identifier");
             self.atom(node.kind_id(), span(node), class, name);
-            if name && callee(node) {
-                if let Some(last) = self.nodes.last_mut() {
-                    last.callee = true;
-                }
+            if name
+                && callee(node)
+                && let Some(last) = self.nodes.last_mut()
+            {
+                last.callee = true;
             }
             return;
         }

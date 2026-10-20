@@ -6,9 +6,10 @@ use std::time::Duration;
 use notify::event::{EventKind, MetadataKind, ModifyKind};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::apprt::vcs_worker::VcsWorkerCommand;
+use crate::apprt::vcs_worker::{VcsCommand, VcsWorkerCommand};
+use crate::contracts::navigation::RepositoryChangeKind;
+use crate::contracts::shared::WorkspaceEpoch;
 use crate::core::vcs::discovery;
-use crate::events::RepositoryChangeKind;
 
 const REPO_WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
@@ -24,17 +25,18 @@ impl RepoWatchWorker {
         Self { sender }
     }
 
-    pub fn dispatch(&self, path: Option<PathBuf>) {
-        let _ = self.sender.send(WatchCommand::SetRepo(path));
+    pub fn dispatch(&self, workspace: WorkspaceEpoch, path: Option<PathBuf>) {
+        let _ = self.sender.send(WatchCommand::SetRepo(workspace, path));
     }
 }
 
 enum WatchCommand {
-    SetRepo(Option<PathBuf>),
+    SetRepo(WorkspaceEpoch, Option<PathBuf>),
     Notify(Result<Event, notify::Error>),
 }
 
 struct ActiveRepoWatch {
+    workspace: WorkspaceEpoch,
     request_path: PathBuf,
     metadata_dir: PathBuf,
     workdir: Option<PathBuf>,
@@ -75,9 +77,9 @@ fn repo_watch_worker_loop(
         };
 
         match command {
-            Some(WatchCommand::SetRepo(path)) => {
+            Some(WatchCommand::SetRepo(workspace, path)) => {
                 pending_dirty = None;
-                replace_active_watch(&mut watcher, &mut active, path);
+                replace_active_watch(&mut watcher, &mut active, workspace, path);
             }
             Some(WatchCommand::Notify(Ok(event))) => {
                 if let Some(active_watch) = active.as_ref()
@@ -103,9 +105,12 @@ fn repo_watch_worker_loop(
                 let Some(change_hint) = pending_dirty.take() else {
                     continue;
                 };
-                let _ = dirty_sender.send(VcsWorkerCommand::Dirty {
-                    path: active_watch.request_path.clone(),
-                    change_hint,
+                let _ = dirty_sender.send(VcsWorkerCommand {
+                    workspace: active_watch.workspace,
+                    command: VcsCommand::Dirty {
+                        path: active_watch.request_path.clone(),
+                        change_hint,
+                    },
                 });
             }
         }
@@ -115,6 +120,7 @@ fn repo_watch_worker_loop(
 fn replace_active_watch(
     watcher: &mut RecommendedWatcher,
     active: &mut Option<ActiveRepoWatch>,
+    workspace: WorkspaceEpoch,
     path: Option<PathBuf>,
 ) {
     if let Some(existing) = active.take() {
@@ -158,6 +164,7 @@ fn replace_active_watch(
         .collect();
 
     *active = Some(ActiveRepoWatch {
+        workspace,
         request_path: path,
         metadata_dir,
         workdir,

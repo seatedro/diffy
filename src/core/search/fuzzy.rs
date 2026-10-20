@@ -69,6 +69,22 @@ fn is_camel_boundary(candidate: &[char], index: usize) -> bool {
     index > 0 && candidate[index].is_ascii_uppercase() && !candidate[index - 1].is_ascii_uppercase()
 }
 
+pub fn match_ranges(label: &str, positions: &[u32]) -> Vec<(usize, usize)> {
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for &position in positions {
+        let start = position as usize;
+        let Some(ch) = label.get(start..).and_then(|rest| rest.chars().next()) else {
+            continue;
+        };
+        let end = start + ch.len_utf8();
+        match out.last_mut() {
+            Some(last) if last.1 == start => last.1 = end,
+            _ => out.push((start, end)),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::fuzzy_score;

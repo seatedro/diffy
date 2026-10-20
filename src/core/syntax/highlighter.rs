@@ -1,113 +1,60 @@
-use std::path::Path;
+use std::ops::Range;
 
-use crate::core::error::{DiffyError, Result};
+use diffy_syntax::{GrammarStore, HighlightKind, HighlightSpan, LanguageId};
+
 use crate::core::text::{DiffTokenSpan, SyntaxTokenKind};
-use carbon::TextStore;
-use phosphor::{
-    HighlightKind, HighlightSpan, Highlighter as PhosphorHighlighter,
-    LanguageId as PhosphorLanguageId, TextByteRange,
-};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub struct Highlighter {
-    inner: PhosphorHighlighter,
-}
-
-impl Default for Highlighter {
-    fn default() -> Self {
-        Self::new()
-    }
+    store: GrammarStore,
 }
 
 impl Highlighter {
-    pub fn new() -> Self {
-        Self {
-            inner: PhosphorHighlighter::new(),
+    pub fn new(store: GrammarStore) -> Self {
+        Self { store }
+    }
+
+    pub fn resolve_language(path: &str) -> Option<LanguageId> {
+        LanguageId::from_path(path)
+    }
+
+    pub fn highlight(&self, path: &str, source: &str) -> Vec<DiffTokenSpan> {
+        match Self::resolve_language(path) {
+            Some(language) => self.highlight_language(&language, source),
+            None => Vec::new(),
         }
     }
 
-    pub fn highlight(&self, path: &str, source: &str) -> Result<Vec<DiffTokenSpan>> {
-        let language = self.resolve_language(path);
-        self.highlight_resolved(language, source)
+    pub fn highlight_language(&self, language: &LanguageId, source: &str) -> Vec<DiffTokenSpan> {
+        diffy_syntax::highlight(&self.store, language, source)
+            .into_iter()
+            .map(token_span)
+            .collect()
     }
 
-    pub fn resolve_language(&self, path: &str) -> Option<PhosphorLanguageId> {
-        self.inner.guess_language(Path::new(path))
-    }
-
-    pub fn highlight_resolved(
+    pub fn highlight_fragments(
         &self,
-        language: Option<PhosphorLanguageId>,
+        language: &LanguageId,
         source: &str,
-    ) -> Result<Vec<DiffTokenSpan>> {
-        let Some(language) = language else {
-            return Ok(Vec::new());
-        };
-        if !self.inner.is_parser_available(language) {
-            return Ok(Vec::new());
-        }
-        self.inner
-            .highlight_language(language, source)
-            .map(|spans| spans.into_iter().map(map_span).collect())
-            .map_err(|error| DiffyError::Syntax(error.to_string()))
-    }
-
-    pub fn highlight_text_store_resolved(
-        &self,
-        language: Option<PhosphorLanguageId>,
-        text: &TextStore,
-    ) -> Result<Vec<DiffTokenSpan>> {
-        let Some(source) = text.as_str() else {
-            return Err(DiffyError::Syntax(
-                "syntax source is not valid UTF-8".to_owned(),
-            ));
-        };
-        self.highlight_resolved(language, source)
-    }
-
-    pub fn highlight_text_store_resolved_ranges(
-        &self,
-        language: Option<PhosphorLanguageId>,
-        text: &TextStore,
-        byte_ranges: &[TextByteRange],
-    ) -> Result<Vec<DiffTokenSpan>> {
-        let Some(source) = text.as_str() else {
-            return Err(DiffyError::Syntax(
-                "syntax source is not valid UTF-8".to_owned(),
-            ));
-        };
-        self.highlight_resolved_ranges(language, source, byte_ranges)
-    }
-
-    pub fn highlight_resolved_ranges(
-        &self,
-        language: Option<PhosphorLanguageId>,
-        source: &str,
-        byte_ranges: &[TextByteRange],
-    ) -> Result<Vec<DiffTokenSpan>> {
-        let Some(language) = language else {
-            return Ok(Vec::new());
-        };
-        if !self.inner.is_parser_available(language) {
-            return Ok(Vec::new());
-        }
-        self.inner
-            .highlight_language_ranges(language, source, byte_ranges)
-            .map(|spans| spans.into_iter().map(map_span).collect())
-            .map_err(|error| DiffyError::Syntax(error.to_string()))
+        fragments: &[Range<u32>],
+    ) -> Vec<DiffTokenSpan> {
+        diffy_syntax::highlight_fragments(&self.store, language, source, fragments)
+            .into_iter()
+            .map(token_span)
+            .collect()
     }
 }
 
-fn map_span(span: HighlightSpan) -> DiffTokenSpan {
+pub fn token_span(span: HighlightSpan) -> DiffTokenSpan {
     DiffTokenSpan {
         offset: span.offset,
         length: span.length,
-        kind: map_kind(span.kind),
+        kind: token_kind(span.kind),
         ..DiffTokenSpan::default()
     }
 }
 
-fn map_kind(kind: HighlightKind) -> SyntaxTokenKind {
+pub fn token_kind(kind: HighlightKind) -> SyntaxTokenKind {
     match kind {
         HighlightKind::Normal => SyntaxTokenKind::Normal,
         HighlightKind::Keyword => SyntaxTokenKind::Keyword,
@@ -133,39 +80,74 @@ fn map_kind(kind: HighlightKind) -> SyntaxTokenKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::syntax::grammar::{GrammarConfig, Grammars};
 
     #[test]
-    fn resolves_js_family_paths_through_typescript_languages() {
-        let highlighter = Highlighter::new();
+    fn js_family_paths_use_the_typescript_grammars() {
+        let resolved = ["src/app.js", "src/app.mjs", "src/app.jsx", "src/app.ts"]
+            .map(|path| crate::core::syntax::grammar::language_for_path(path).map(|l| l.name));
 
         assert_eq!(
-            highlighter.resolve_language("src/app.js"),
-            Some(PhosphorLanguageId::TypeScript)
-        );
-        assert_eq!(
-            highlighter.resolve_language("src/app.jsx"),
-            Some(PhosphorLanguageId::TypeScriptTsx)
+            resolved,
+            [
+                Some("typescript"),
+                Some("typescript"),
+                Some("tsx"),
+                Some("typescript")
+            ]
         );
     }
 
     #[test]
-    fn typescript_imports_include_keyword_and_string_tokens_when_parser_is_available() {
-        let highlighter = Highlighter::new();
-        let source = "import { x } from \"y\";\n";
-        let spans = highlighter.highlight("src/app.ts", source).unwrap();
-        if spans.is_empty() {
+    fn typescript_imports_map_to_product_token_kinds() {
+        let Some(store) = diffy_syntax::testing::store_with("typescript") else {
             return;
-        }
+        };
+        let highlighter = Highlighter::new(store);
+        let source = "import { x } from \"y\";\n";
+        let spans = highlighter.highlight("src/app.ts", source);
+        let text = |kind| {
+            spans
+                .iter()
+                .filter(|span| span.kind == kind)
+                .map(|span| &source[span.offset as usize..(span.offset + span.length) as usize])
+                .collect::<Vec<_>>()
+        };
 
-        assert!(spans.iter().any(|span| {
-            span.kind == SyntaxTokenKind::Keyword
-                && &source[span.offset as usize..span.offset as usize + span.length as usize]
-                    == "import"
-        }));
-        assert!(spans.iter().any(|span| {
-            span.kind == SyntaxTokenKind::String
-                && &source[span.offset as usize..span.offset as usize + span.length as usize]
-                    == "\"y\""
-        }));
+        assert!(text(SyntaxTokenKind::Keyword).contains(&"import"));
+        assert_eq!(text(SyntaxTokenKind::String), vec!["\"y\""]);
+    }
+
+    #[test]
+    fn shared_workers_answer_on_their_own_handles() {
+        let Some(store) = diffy_syntax::testing::store_with("rust") else {
+            return;
+        };
+        let grammars = Grammars::with_store(store);
+        let (viewport, review) = (grammars.worker(), grammars.worker());
+        let source: std::sync::Arc<str> = "fn main() {}\n".into();
+
+        viewport.request(1, 1, LanguageId::from_fence("rs").unwrap(), source.clone());
+        review.request(1, 7, LanguageId::from_fence("rs").unwrap(), source);
+        let (first, second) = (viewport.recv().unwrap(), review.recv().unwrap());
+
+        assert_eq!((first.generation, second.generation), (1, 7));
+        assert!(
+            first
+                .spans
+                .iter()
+                .any(|span| span.kind == HighlightKind::Keyword)
+        );
+    }
+
+    #[test]
+    fn product_config_uses_the_phosphor_cache_and_publisher_key() {
+        let config = GrammarConfig::product();
+        let legacy = config
+            .legacy
+            .expect("a data directory exists on test hosts");
+
+        assert!(legacy.storage_dir().ends_with("diffy/phosphor/languages"));
+        assert!(legacy.downloads_enabled());
     }
 }

@@ -8,6 +8,8 @@ use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 const DEFAULT_GITHUB_CLIENT_ID: &str = "Ov23lijXMwtY1XmHedUM";
 const DEFAULT_APP_DISPLAY_NAME: &str = "Diffy";
 const DEFAULT_WINDOW_TITLE_PREFIX: &str = "diffy native";
+const CONFIG_DIR_ENV: &str = "DIFFY_CONFIG_DIR";
+const APP_DIR_NAME: &str = "diffy";
 
 #[derive(Debug, Clone, Parser, PartialEq, Eq)]
 #[command(name = "diffy", version = crate::APP_VERSION, about = "Native desktop diff viewer")]
@@ -214,6 +216,38 @@ pub fn window_title_prefix() -> String {
     env_var("DIFFY_WINDOW_TITLE_PREFIX").unwrap_or_else(|| DEFAULT_WINDOW_TITLE_PREFIX.to_owned())
 }
 
+fn config_dir_override() -> Option<PathBuf> {
+    config_dir_from(env_var(CONFIG_DIR_ENV))
+}
+
+fn config_dir_from(value: Option<String>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|path| path.is_absolute())
+}
+
+pub fn app_config_dir() -> Option<PathBuf> {
+    config_dir_override().or_else(|| dirs::config_dir().map(|base| base.join(APP_DIR_NAME)))
+}
+
+pub fn app_log_dir() -> Option<PathBuf> {
+    if let Some(dir) = config_dir_override() {
+        return Some(dir.join("logs"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir().map(|home| home.join("Library/Logs").join(APP_DIR_NAME))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dirs::state_dir()
+            .or_else(dirs::data_local_dir)
+            .map(|base| base.join(APP_DIR_NAME))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        dirs::data_local_dir().map(|base| base.join(APP_DIR_NAME).join("logs"))
+    }
+}
+
 fn parse_compare_mode(value: &str) -> Result<CompareMode, String> {
     value.parse().map_err(str::to_owned)
 }
@@ -301,10 +335,34 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Args, GitHubTokenStore, StartupEnvDefaults, StartupOptions, github_token_store_from_env,
+        Args, GitHubTokenStore, StartupEnvDefaults, StartupOptions, app_config_dir, app_log_dir,
+        config_dir_from, config_dir_override, github_token_store_from_env,
         keyring_enabled_from_env,
     };
     use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
+
+    #[test]
+    fn config_dir_override_takes_absolute_paths_only() {
+        assert_eq!(
+            config_dir_from(Some("/tmp/diffy-dev".to_owned())),
+            Some(PathBuf::from("/tmp/diffy-dev"))
+        );
+        assert_eq!(config_dir_from(Some("relative/dir".to_owned())), None);
+        assert_eq!(config_dir_from(None), None);
+    }
+
+    #[test]
+    fn settings_reviews_and_logs_follow_the_app_config_dir() {
+        let Some(dir) = app_config_dir() else {
+            return;
+        };
+        let settings = crate::platform::persistence::SettingsStore::new_default();
+
+        assert_eq!(settings.path().parent(), Some(dir.as_path()));
+        if config_dir_override().is_some() {
+            assert_eq!(app_log_dir(), Some(dir.join("logs")));
+        }
+    }
 
     #[test]
     fn parses_cli_contract() {

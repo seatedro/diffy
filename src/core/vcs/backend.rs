@@ -1,18 +1,18 @@
 use std::path::{Path, PathBuf};
 
-use carbon::TextStore;
-
-use crate::core::compare::{
-    CompareFileStatsTarget, CompareFileSummary, CompareOutput, ProgressSink, RendererKind,
-};
+use crate::contracts::navigation::RepositorySyncReason;
+use crate::core::compare::output::{CompareEntry, CompareOutput};
+use crate::core::compare::{ProgressSink, RendererKind};
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::forge::github::PullRequestInfo;
+use crate::core::vcs::compare_port::entry_stats;
 use crate::core::vcs::model::{
-    FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan, PullFastForwardOutcome,
-    RepoCapabilities, RepoLocation, RevisionId, VcsChange, VcsCompareRequest, VcsKind,
-    VcsOperation, VcsSnapshot,
+    CommitRecord, FileChange, FileOperation, PublishAction, PublishOutcome, PublishPlan,
+    PullFastForwardOutcome, RepoCapabilities, RepoLocation, RevisionId, VcsChange,
+    VcsCompareRequest, VcsKind, VcsOperation, VcsSnapshot,
 };
-use crate::events::RepositorySyncReason;
+use crate::core::vcs::mutation::{MutationMaterial, PatchApplication};
+use crate::core::vcs::source::SourceText;
 
 fn unsupported_operation(location: &RepoLocation, op: &str) -> DiffyError {
     let backend = if location.kind == VcsKind::JJ {
@@ -68,18 +68,15 @@ pub trait VcsRepository: Send {
     fn compare_file_stats(
         &mut self,
         _request: &VcsCompareRequest,
-        files: &[CompareFileStatsTarget],
+        files: &[CompareEntry],
     ) -> Result<Vec<(i32, i32)>> {
-        Ok(files
-            .iter()
-            .map(CompareFileStatsTarget::fallback_stats)
-            .collect())
+        Ok(files.iter().map(entry_stats).collect())
     }
     fn compare_path(
         &mut self,
         request: &VcsCompareRequest,
         path: &str,
-        deferred_file: Option<&CompareFileSummary>,
+        deferred_file: Option<&CompareEntry>,
     ) -> Result<CompareOutput>;
     fn file_change_diff(
         &mut self,
@@ -108,11 +105,20 @@ pub trait VcsRepository: Send {
         }
         Ok(())
     }
-    fn apply_patch_operation(&mut self, _patch: &str, _operation: FileOperation) -> Result<()> {
+    fn mutation_material(&mut self, _change: &FileChange) -> Result<MutationMaterial> {
+        Err(unsupported_operation(self.location(), "line operation"))
+    }
+    fn apply_patch(&mut self, _patch: &[u8], _application: PatchApplication) -> Result<()> {
         Err(unsupported_operation(self.location(), "patch operation"))
     }
-    fn create_commit(&mut self, _message: &str) -> Result<()> {
+    fn create_commit(&mut self, _message: &str, _amend: bool) -> Result<CommitRecord> {
         Err(unsupported_operation(self.location(), "commit"))
+    }
+    fn last_commit(&mut self) -> Result<Option<CommitRecord>> {
+        Err(unsupported_operation(self.location(), "read last commit"))
+    }
+    fn undo_commit(&mut self, _sha: &str) -> Result<()> {
+        Err(unsupported_operation(self.location(), "undo commit"))
     }
     fn run_operation(&mut self, _operation: &VcsOperation) -> Result<String> {
         Err(unsupported_operation(self.location(), "operation"))
@@ -157,5 +163,5 @@ pub trait VcsRepository: Send {
         ))
     }
     fn compare_working_file(&mut self, path: &str) -> Result<CompareOutput>;
-    fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore>;
+    fn read_file_source(&mut self, revision: &RevisionId, path: &str) -> Result<SourceText>;
 }

@@ -25,6 +25,8 @@ pub enum DiffyError {
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
     /// A VCS operation failed. `recoverable` is true when retrying after
     /// fixing repository state can succeed, false for operations the backend
     /// cannot perform at all (or invariant violations).

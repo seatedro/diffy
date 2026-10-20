@@ -35,6 +35,10 @@ impl JjCli {
         self.run_inner(args, true)
     }
 
+    pub fn run_bytes(&self, args: &[OsString]) -> Result<Vec<u8>> {
+        self.run_inner_bytes(args, false)
+    }
+
     pub fn run_bytes_ignored_wc(&self, args: &[OsString]) -> Result<Vec<u8>> {
         self.run_inner_bytes(args, true)
     }
@@ -82,15 +86,25 @@ impl JjCli {
 
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let detail = stderr
-            .trim()
-            .lines()
-            .last()
-            .or_else(|| stdout.trim().lines().last())
+        let detail = failure_line(&stderr)
+            .or_else(|| failure_line(&stdout))
             .map(str::to_owned)
             .unwrap_or_else(|| format!("jj exited with {}", output.status));
         Err(DiffyError::vcs(VcsBackendKind::Jj, command_label, detail))
     }
+}
+
+fn failure_line(output: &str) -> Option<&str> {
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines
+        .iter()
+        .find(|line| line.starts_with("Error:"))
+        .or_else(|| lines.last())
+        .copied()
 }
 
 fn command_label(args: &[OsString]) -> String {

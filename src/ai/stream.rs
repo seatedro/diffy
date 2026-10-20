@@ -1,12 +1,14 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const OPENAI_MODEL: &str = "gpt-5.4-nano";
 pub const ANTHROPIC_MODEL: &str = "claude-haiku-4-5";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Provider {
     OpenAi,
     Anthropic,

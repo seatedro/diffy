@@ -8,13 +8,16 @@ use std::time::Instant;
 use gix::bstr::ByteSlice;
 use serde::Serialize;
 
-use crate::core::compare::backends::{RENAME_DETECTION_LIMIT, compare_output_from_raw_patch};
-use crate::core::compare::service::CompareOutput;
+use crate::core::compare::backends::RENAME_DETECTION_LIMIT;
+use crate::core::compare::output::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::forge::github::{GitHubApi, PullRequestInfo, parse_pr_url};
+use crate::core::vcs::compare_port::output_from_patch;
 use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
+use crate::core::vcs::mutation::{ApplyTarget, PatchApplication};
+use crate::core::vcs::source::SourceText;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PullError {
@@ -46,12 +49,6 @@ impl std::error::Error for PullError {}
 pub enum PullOutcome {
     AlreadyUpToDate,
     FastForwarded { behind: usize },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PatchApplyTarget {
-    Index,
-    Workdir,
 }
 
 fn workdir_is_dirty(repo_path: &Path) -> Result<bool> {
@@ -93,6 +90,8 @@ pub struct CommitInfo {
     pub short_oid: String,
     pub summary: String,
     pub author_name: String,
+    pub author_email: Option<String>,
+    pub parents: Vec<String>,
     pub timestamp: i64,
 }
 
@@ -145,25 +144,6 @@ fn prune_stale_pr_refs(repo_path: &Path, pr_number: i32, keep_base: &str, keep_h
     }
 }
 
-fn split_lines(text: &str) -> Vec<String> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(idx) = rest.find('\n') {
-        let (head, tail) = rest.split_at(idx);
-        let line = head.strip_suffix('\r').unwrap_or(head);
-        out.push(line.to_owned());
-        rest = &tail[1..];
-    }
-    if !rest.is_empty() {
-        let line = rest.strip_suffix('\r').unwrap_or(rest);
-        out.push(line.to_owned());
-    }
-    out
-}
-
 fn git_workdir(repo: &gix::Repository) -> Result<PathBuf> {
     repo.workdir()
         .map(Path::to_path_buf)
@@ -189,6 +169,50 @@ fn run_system_git_capture(repo_path: &Path, args: &[OsString]) -> Result<GitOutp
     run_system_git_inner(repo_path, args, false)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefMetadata {
+    pub name: String,
+    pub oid: String,
+    pub subject: String,
+    pub author: String,
+    pub timestamp: i64,
+}
+
+/// Subject, author and date of every branch and tag tip in one
+/// `for-each-ref`, peeling annotated tags to their commit.
+pub fn ref_metadata(repo_path: &Path) -> Result<Vec<RefMetadata>> {
+    let output = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("for-each-ref"),
+            OsString::from(
+                "--format=%(refname:short)%00%(objectname)%00%(*objectname)%00%(subject)%00%(*subject)%00%(authorname)%00%(*authorname)%00%(committerdate:unix)%00%(*committerdate:unix)",
+            ),
+            OsString::from("refs/heads"),
+            OsString::from("refs/remotes"),
+            OsString::from("refs/tags"),
+        ],
+    )?;
+    let mut refs = Vec::new();
+    for line in output.stdout.split(|byte| *byte == b'\n') {
+        let fields: Vec<&[u8]> = line.split(|byte| *byte == 0).collect();
+        if fields.len() < 9 {
+            continue;
+        }
+        let pick = |direct: &[u8], peeled: &[u8]| {
+            String::from_utf8_lossy(if peeled.is_empty() { direct } else { peeled }).into_owned()
+        };
+        refs.push(RefMetadata {
+            name: String::from_utf8_lossy(fields[0]).into_owned(),
+            oid: pick(fields[1], fields[2]),
+            subject: pick(fields[3], fields[4]),
+            author: pick(fields[5], fields[6]),
+            timestamp: pick(fields[7], fields[8]).parse().unwrap_or(0),
+        });
+    }
+    Ok(refs)
+}
+
 /// Run git with stderr streamed live, invoking `on_progress` with
 /// `(current, total, bytes)` for each sideband update on the given phase
 /// (e.g. "Receiving objects" for fetch, "Writing objects" for push).
@@ -210,7 +234,7 @@ fn run_system_git_progress(
         .spawn()
         .map_err(|e| git_error_fatal(git_command_label(args), format!("failed to run git: {e}")))?;
 
-    let mut last_line = String::new();
+    let mut lines = Vec::new();
     if let Some(stderr) = child.stderr.take() {
         let mut reader = BufReader::new(stderr);
         let mut buf = Vec::new();
@@ -221,7 +245,9 @@ fn run_system_git_progress(
                 if let Some((current, total, bytes)) = parse_objects_progress(line, phase) {
                     on_progress(current, total, bytes);
                 }
-                last_line = line.to_owned();
+                if parse_objects_progress(line, phase).is_none() {
+                    lines.push(line.to_owned());
+                }
             }
             buf.clear();
         }
@@ -233,11 +259,9 @@ fn run_system_git_progress(
     if status.success() {
         return Ok(());
     }
-    let detail = if last_line.is_empty() {
-        format!("git exited with {status}")
-    } else {
-        last_line
-    };
+    let detail = failure_line(lines.iter().map(String::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("git exited with {status}"));
     let command = git_command_label(args);
     if failure_is_network(&detail) {
         return Err(DiffyError::network(format!(
@@ -302,6 +326,19 @@ fn parse_transfer_bytes(rest: &str) -> Option<usize> {
     Some((value * unit) as usize)
 }
 
+fn failure_line<'a>(lines: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let lines: Vec<&str> = lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines
+        .iter()
+        .find(|line| line.starts_with("fatal:"))
+        .or_else(|| lines.iter().find(|line| line.starts_with("error:")))
+        .or_else(|| lines.last())
+        .copied()
+}
+
 fn run_system_git_inner(
     repo_path: &Path,
     args: &[OsString],
@@ -323,11 +360,8 @@ fn run_system_git_inner(
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = stderr
-        .trim()
-        .lines()
-        .last()
-        .or_else(|| stdout.trim().lines().last())
+    let detail = failure_line(stderr.lines())
+        .or_else(|| failure_line(stdout.lines()))
         .map(str::to_owned)
         .unwrap_or_else(|| format!("git exited with {}", output.status));
     let command = git_command_label(args);
@@ -848,39 +882,10 @@ impl GitService {
             .map_err(gix_error)
     }
 
-    fn validate_text_bytes(reference: &str, path: &str, bytes: &[u8]) -> Result<()> {
-        if bytes.contains(&0u8) {
-            return Err(git_error_fatal(
-                "read file",
-                format!("path {path} is binary at {reference}"),
-            ));
-        }
-
-        std::str::from_utf8(bytes).map_err(|e| {
-            git_error_fatal(
-                "read file",
-                format!("path {path} at {reference} is not valid UTF-8: {e}"),
-            )
-        })?;
-        Ok(())
-    }
-
-    pub fn read_file_text_store_at(
-        &self,
-        reference: &str,
-        path: &str,
-    ) -> Result<carbon::TextStore> {
-        let bytes = self.read_file_bytes_at(reference, path)?;
-        Self::validate_text_bytes(reference, path, &bytes)?;
-        Ok(carbon::TextStore::from_bytes(bytes))
-    }
-
-    pub fn read_file_lines_at(&self, reference: &str, path: &str) -> Result<Vec<String>> {
-        let bytes = self.read_file_bytes_at(reference, path)?;
-        Self::validate_text_bytes(reference, path, &bytes)?;
-        let text = std::str::from_utf8(&bytes).unwrap_or_default();
-
-        Ok(split_lines(text))
+    pub fn read_file_source_at(&self, reference: &str, path: &str) -> Result<SourceText> {
+        Ok(SourceText::from_bytes(
+            self.read_file_bytes_at(reference, path)?,
+        ))
     }
 
     /// Unified-diff patch text against HEAD suitable for feeding to an LLM
@@ -901,8 +906,7 @@ impl GitService {
     }
 
     pub fn diff_status_item(&self, item: &StatusItem) -> Result<CompareOutput> {
-        let patch = self.status_item_patch(item)?;
-        compare_output_from_raw_patch(&patch)
+        output_from_patch(&self.status_item_exact_patch(item)?)
     }
 
     pub fn status_item_patch(&self, item: &StatusItem) -> Result<String> {
@@ -928,6 +932,53 @@ impl GitService {
         args.extend(status_item_pathspecs(item).into_iter().map(OsString::from));
         let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    pub fn diff_refs_paths(&self, left: &str, right: &str, paths: &[&str]) -> Result<Vec<u8>> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
+            OsString::from("--no-color"),
+            OsString::from("--src-prefix=a/"),
+            OsString::from("--dst-prefix=b/"),
+            OsString::from(self.resolve_commit_oid(left)?),
+        ];
+        if right != WORKDIR_REF {
+            args.push(OsString::from(self.resolve_commit_oid(right)?));
+        }
+        args.push(OsString::from("--"));
+        args.extend(paths.iter().map(OsString::from));
+        Ok(run_system_git_allow_diff(self.repo_path_ref()?, &args)?.stdout)
+    }
+
+    pub fn status_item_exact_patch(&self, item: &StatusItem) -> Result<Vec<u8>> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
+            OsString::from("--no-color"),
+            OsString::from("--full-index"),
+            OsString::from("--src-prefix=a/"),
+            OsString::from("--dst-prefix=b/"),
+        ];
+        match item.scope {
+            StatusScope::Staged => {
+                args.push(OsString::from("--cached"));
+                args.push(OsString::from("--find-renames"));
+            }
+            StatusScope::Unstaged => args.push(OsString::from("--no-renames")),
+            StatusScope::Untracked => {
+                args.push(OsString::from("--no-index"));
+                args.push(OsString::from("--"));
+                args.push(OsString::from("/dev/null"));
+                args.push(OsString::from(&item.path));
+                return Ok(run_system_git_allow_diff(self.repo_path_ref()?, &args)?.stdout);
+            }
+        }
+        args.push(OsString::from("--"));
+        args.extend(status_item_pathspecs(item).into_iter().map(OsString::from));
+        Ok(run_system_git_allow_diff(self.repo_path_ref()?, &args)?.stdout)
     }
 
     pub fn apply_status_operation(
@@ -1525,16 +1576,69 @@ impl GitService {
         Ok(Path::new(&self.repo_path))
     }
 
-    pub fn commit(&self, message: &str) -> Result<String> {
-        run_system_git(
+    pub fn commit(&self, message: &str, amend: bool) -> Result<String> {
+        let mut args = vec![
+            OsString::from("commit"),
+            OsString::from("--cleanup=whitespace"),
+            OsString::from("-m"),
+            OsString::from(message),
+        ];
+        if amend {
+            args.push(OsString::from("--amend"));
+        }
+        run_system_git(self.repo_path_ref()?, &args)?;
+        self.resolve_ref("HEAD")
+    }
+
+    pub fn last_commit(&self) -> Result<Option<(String, String, String)>> {
+        let Ok(head) = self.resolve_commit_oid("HEAD") else {
+            return Ok(None);
+        };
+        let output = run_system_git_capture(
             self.repo_path_ref()?,
             &[
-                OsString::from("commit"),
-                OsString::from("-m"),
-                OsString::from(message),
+                OsString::from("log"),
+                OsString::from("-1"),
+                OsString::from("--format=%h%x00%B"),
+                OsString::from(head.as_str()),
             ],
         )?;
-        self.resolve_ref("HEAD")
+        let text = String::from_utf8_lossy(&output.stdout);
+        let (short, message) = text.split_once('\0').unwrap_or((head.as_str(), ""));
+        Ok(Some((
+            head.clone(),
+            short.trim().to_owned(),
+            message.trim_end().to_owned(),
+        )))
+    }
+
+    pub fn soft_reset_commit(&self, sha: &str) -> Result<()> {
+        let head = self.resolve_commit_oid("HEAD")?;
+        if !head.eq_ignore_ascii_case(sha) {
+            return Err(git_error(
+                "undo commit",
+                "HEAD moved since the commit was created",
+            ));
+        }
+        let repo_path = self.repo_path_ref()?;
+        match first_parent(self.repo()?, &head) {
+            Some(parent) => run_system_git(
+                repo_path,
+                &[
+                    OsString::from("reset"),
+                    OsString::from("--soft"),
+                    OsString::from(parent),
+                ],
+            ),
+            None => run_system_git(
+                repo_path,
+                &[
+                    OsString::from("update-ref"),
+                    OsString::from("-d"),
+                    OsString::from("HEAD"),
+                ],
+            ),
+        }
     }
 
     fn stage_paths<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Result<()> {
@@ -1591,12 +1695,18 @@ impl GitService {
         Ok(())
     }
 
-    pub fn apply_patch(&self, patch_text: &str, target: PatchApplyTarget) -> Result<()> {
+    pub fn apply_patch(&self, patch: &[u8], application: PatchApplication) -> Result<()> {
+        let mut args = vec!["apply", "--whitespace=nowarn"];
+        match application.target {
+            ApplyTarget::Index => args.push("--cached"),
+            ApplyTarget::Worktree => {}
+            ApplyTarget::IndexAndWorktree => args.push("--index"),
+        }
+        if application.reverse {
+            args.push("--reverse");
+        }
         let mut child = Command::new("git")
-            .args(match target {
-                PatchApplyTarget::Index => ["apply", "--cached"].as_slice(),
-                PatchApplyTarget::Workdir => ["apply"].as_slice(),
-            })
+            .args(&args)
             .current_dir(self.repo_path_ref()?)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_OPTIONAL_LOCKS", "0")
@@ -1610,7 +1720,7 @@ impl GitService {
             .stdin
             .as_mut()
             .ok_or_else(|| git_error_fatal("apply", "failed to open git apply stdin"))?
-            .write_all(patch_text.as_bytes())?;
+            .write_all(patch)?;
         let output = child.wait_with_output()?;
         if output.status.success() {
             Ok(())
@@ -1637,7 +1747,7 @@ impl GitService {
         let mut args = vec![
             OsString::from("log"),
             OsString::from("--date-order"),
-            OsString::from("--format=%H%x00%h%x00%s%x00%an%x00%ct"),
+            OsString::from("--format=%H%x00%h%x00%s%x00%an%x00%ct%x00%ae%x00%P"),
         ];
         args.extend_from_slice(rev_args);
         let output = run_system_git_capture(self.repo_path_ref()?, &args)?;
@@ -1726,11 +1836,21 @@ fn parse_commit_info_line(line: &str) -> Option<CommitInfo> {
         .next()
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
+    let author_email = fields
+        .next()
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let parents = fields
+        .next()
+        .map(|value| value.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
     Some(CommitInfo {
         oid,
         short_oid,
         summary,
         author_name,
+        author_email,
+        parents,
         timestamp,
     })
 }
@@ -1991,9 +2111,27 @@ mod tests {
         local_remote_for_github_repo, parse_objects_progress, parse_porcelain_status,
         parse_shortstat, pr_ref_path,
     };
-    use crate::core::vcs::git::{
-        GitService, PatchApplyTarget, StatusItem, StatusOperation, StatusScope,
-    };
+    use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
+    use crate::core::vcs::mutation::{ApplyTarget, PatchApplication};
+
+    #[test]
+    fn commits_carry_author_email_and_parents() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo = Repository::init(repo_dir.path()).unwrap();
+        let first = commit_file(&repo, "a.txt", "one\n", "first");
+        let second = commit_file(&repo, "a.txt", "two\n", "second");
+        let mut git = GitService::new();
+        git.open(repo_dir.path().to_str().unwrap()).unwrap();
+        let commits = git.commits("HEAD", 5).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].oid, second);
+        assert_eq!(commits[0].parents, std::slice::from_ref(&first));
+        assert!(commits[1].parents.is_empty());
+        let author = repo
+            .find_commit(git2::Oid::from_str(&first).unwrap())
+            .unwrap();
+        assert_eq!(commits[1].author_email.as_deref(), author.author().email());
+    }
 
     fn commit_file(repo: &Repository, relative_path: &str, content: &str, message: &str) -> String {
         // Pin `core.autocrlf=false` on the test repo so LF content written
@@ -2051,6 +2189,17 @@ mod tests {
             .iter()
             .map(|entry| (entry.path().unwrap_or_default().to_owned(), entry.status()))
             .collect()
+    }
+
+    #[test]
+    fn failures_prefer_the_fatal_line() {
+        let stderr = "fatal: 'origin' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n";
+        assert_eq!(
+            super::failure_line(stderr.lines()),
+            Some("fatal: 'origin' does not appear to be a git repository")
+        );
+        assert_eq!(super::failure_line("hint: a\nlast".lines()), Some("last"));
+        assert_eq!(super::failure_line("".lines()), None);
     }
 
     #[test]
@@ -2298,26 +2447,33 @@ mod tests {
             " line3\n",
             "+extra\n",
         );
-        git.apply_patch(patch, PatchApplyTarget::Index).unwrap();
+        git.apply_patch(
+            patch.as_bytes(),
+            PatchApplication {
+                target: ApplyTarget::Index,
+                reverse: false,
+            },
+        )
+        .unwrap();
 
         let st = statuses(&repo);
         assert!(st[0].1.contains(Status::INDEX_MODIFIED));
     }
 
     #[test]
-    fn read_file_lines_at_reads_commit_blob() {
+    fn read_file_source_at_reads_commit_blob() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let head = commit_file(&repo, "src/lib.rs", "one\ntwo\nthree\n", "initial");
 
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        let lines = git.read_file_lines_at(&head, "src/lib.rs").unwrap();
-        assert_eq!(lines, vec!["one", "two", "three"]);
+        let source = git.read_file_source_at(&head, "src/lib.rs").unwrap();
+        assert_eq!(&*source.bytes(), b"one\ntwo\nthree\n");
     }
 
     #[test]
-    fn read_file_lines_at_reads_workdir() {
+    fn read_file_source_at_reads_workdir() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         commit_file(&repo, "src/lib.rs", "old\n", "initial");
@@ -2325,12 +2481,12 @@ mod tests {
 
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        let lines = git.read_file_lines_at(WORKDIR_REF, "src/lib.rs").unwrap();
-        assert_eq!(lines, vec!["a", "b", "c"]);
+        let source = git.read_file_source_at(WORKDIR_REF, "src/lib.rs").unwrap();
+        assert_eq!(&*source.bytes(), b"a\nb\nc");
     }
 
     #[test]
-    fn read_file_lines_at_reads_index() {
+    fn read_file_source_at_reads_index() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         commit_file(&repo, "src/lib.rs", "a\nb\n", "initial");
@@ -2340,12 +2496,12 @@ mod tests {
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
         git.stage_paths(["src/lib.rs"]).unwrap();
 
-        let lines = git.read_file_lines_at(INDEX_REF, "src/lib.rs").unwrap();
-        assert_eq!(lines, vec!["a", "b", "c"]);
+        let source = git.read_file_source_at(INDEX_REF, "src/lib.rs").unwrap();
+        assert_eq!(&*source.bytes(), b"a\nb\nc\n");
     }
 
     #[test]
-    fn read_file_lines_at_handles_crlf_and_missing_trailing_newline() {
+    fn read_file_source_at_handles_crlf_and_missing_trailing_newline() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         commit_file(&repo, "src/lib.rs", "old\n", "initial");
@@ -2353,12 +2509,16 @@ mod tests {
 
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        let lines = git.read_file_lines_at(WORKDIR_REF, "src/lib.rs").unwrap();
-        assert_eq!(lines, vec!["a", "b", "c"]);
+        let source = git.read_file_source_at(WORKDIR_REF, "src/lib.rs").unwrap();
+        assert_eq!(&*source.bytes(), b"a\r\nb\r\nc");
+        let text = source.text().unwrap();
+        assert_eq!(text.line(0), Some("a\r"));
+        assert_eq!(text.display_line(2), Some("c"));
+        assert!(text.no_newline_at_eof());
     }
 
     #[test]
-    fn read_file_lines_at_rejects_binary_file() {
+    fn read_file_source_at_keeps_binary_bytes() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         commit_file(&repo, "src/lib.rs", "old\n", "initial");
@@ -2366,14 +2526,13 @@ mod tests {
 
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
-        let err = git
-            .read_file_lines_at(WORKDIR_REF, "img.bin")
-            .expect_err("binary file should fail");
-        assert!(err.to_string().contains("binary"));
+        let source = git.read_file_source_at(WORKDIR_REF, "img.bin").unwrap();
+        assert!(source.is_binary());
+        assert_eq!(&*source.bytes(), [0u8, 1, 2, 0, 3]);
     }
 
     #[test]
-    fn read_file_lines_at_returns_error_when_path_missing_at_ref() {
+    fn read_file_source_at_returns_error_when_path_missing_at_ref() {
         let repo_dir = TempDir::new().unwrap();
         let repo = Repository::init(repo_dir.path()).unwrap();
         let head = commit_file(&repo, "src/lib.rs", "x\n", "initial");
@@ -2381,7 +2540,7 @@ mod tests {
         let mut git = GitService::new();
         git.open(repo_dir.path().to_str().unwrap()).unwrap();
         let err = git
-            .read_file_lines_at(&head, "src/nope.rs")
+            .read_file_source_at(&head, "src/nope.rs")
             .expect_err("missing path should fail");
         assert!(err.to_string().contains("not present"));
     }
@@ -2409,8 +2568,14 @@ mod tests {
             "-ccc\n",
             "+bbb\n",
         );
-        git.apply_patch(reverse_patch, PatchApplyTarget::Index)
-            .unwrap();
+        git.apply_patch(
+            reverse_patch.as_bytes(),
+            PatchApplication {
+                target: ApplyTarget::Index,
+                reverse: false,
+            },
+        )
+        .unwrap();
 
         let st2 = statuses(&repo);
         assert!(st2[0].1.contains(Status::WT_MODIFIED));

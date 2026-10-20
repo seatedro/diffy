@@ -1,12 +1,19 @@
 {
   description = "Diffy - Rust native diff viewer";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
   outputs =
     {
       self,
       nixpkgs,
+      rust-overlay,
     }:
     let
       lib = nixpkgs.lib;
@@ -17,7 +24,13 @@
         "aarch64-darwin"
       ];
       forAllSystems = lib.genAttrs supportedSystems;
-      pkgsFor = system: import nixpkgs { inherit system; };
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+      rustToolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       packageSrc =
         if self.sourceInfo ? rev then
@@ -46,12 +59,18 @@
         let
           pkgs = pkgsFor system;
           isLinux = pkgs.stdenv.isLinux;
-          diffy = pkgs.rustPlatform.buildRustPackage {
+          rustToolchain = rustToolchainFor pkgs;
+          rustPlatform = pkgs.makeRustPlatform {
+            cargo = rustToolchain;
+            rustc = rustToolchain;
+          };
+          diffy = rustPlatform.buildRustPackage {
             pname = "diffy";
             version = cargoToml.workspace.package.version;
             src = packageSrc;
             cargoLock = {
               lockFile = ./Cargo.lock;
+              allowBuiltinFetchGit = true;
             };
             doCheck = false;
 
@@ -212,13 +231,10 @@
         in
         {
           default = pkgs.mkShell {
-            inputsFrom = [ self.packages.${system}.default ];
-
             packages = [
-              pkgs.cargo
-              pkgs.rustc
-              pkgs.rustfmt
-              pkgs.clippy
+              pkgs.pkg-config
+              pkgs.openssl
+              (rustToolchainFor pkgs)
               pkgs.nodejs_22
               pkgs.uv
               pkgs.git
@@ -230,6 +246,14 @@
               (mkDevCommand pkgs)
             ]
             ++ pkgs.lib.optionals isLinux [
+              pkgs.libxkbcommon
+              pkgs.wayland
+              pkgs.libGL
+              pkgs.libx11
+              pkgs.libxi
+              pkgs.libxcursor
+              pkgs.libxrandr
+              pkgs.dbus
               pkgs.gcc
               pkgs.gdb
               pkgs.rr

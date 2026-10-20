@@ -53,8 +53,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Use stable Rust
-        run: rustup default stable
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
 
       - name: Validate update public key
         if: startsWith(github.ref, 'refs/tags/v')

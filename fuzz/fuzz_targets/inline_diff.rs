@@ -1,35 +1,34 @@
 #![no_main]
 
-use carbon::{InlineDiffMode, InlineOptions, compute_inline_diff};
+use diffy_diff::{InlineMode, InlineOptions, paired_inline_diff};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: (&str, &str, u8)| {
     let (old, new, mode_byte) = data;
-    let mode = match mode_byte % 4 {
-        0 => InlineDiffMode::Word,
-        1 => InlineDiffMode::WordAlt,
-        2 => InlineDiffMode::Char,
-        _ => InlineDiffMode::None,
+    let mode = match mode_byte % 3 {
+        0 => InlineMode::Word,
+        1 => InlineMode::Grapheme,
+        _ => InlineMode::Off,
     };
-    let diff = compute_inline_diff(
+    let diff = paired_inline_diff(
         old,
         new,
-        InlineOptions {
+        &InlineOptions {
             mode,
-            max_line_len: 512,
+            max_line_bytes: 512,
+            ..InlineOptions::default()
         },
     );
 
-    for (text, spans) in [(old, &diff.old), (new, &diff.new)] {
+    for (text, ranges) in [(old, &diff.old), (new, &diff.new)] {
         let mut previous_end = 0;
-        for span in spans {
-            let end = span.offset.saturating_add(span.len);
-            assert!(span.len > 0);
-            assert!(end as usize <= text.len());
-            assert!(span.offset >= previous_end);
-            assert!(text.is_char_boundary(span.offset as usize));
-            assert!(text.is_char_boundary(end as usize));
-            previous_end = end;
+        for range in ranges {
+            assert!(range.start < range.end);
+            assert!(range.start >= previous_end);
+            assert!(range.end as usize <= text.len());
+            assert!(text.is_char_boundary(range.start as usize));
+            assert!(text.is_char_boundary(range.end as usize));
+            previous_end = range.end;
         }
     }
 });

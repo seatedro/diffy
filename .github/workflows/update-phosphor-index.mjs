@@ -321,8 +321,8 @@ async function buildPack(packLanguage, registryEntry, registryRevision, workDir,
   const queryRepoDir = path.join(languageWorkDir, "queries");
   await mkdir(languageWorkDir, { recursive: true });
 
-  await cloneRepo(source.parserUrl, parserRepoDir);
-  await cloneRepo(source.queryUrl ?? source.parserUrl, queryRepoDir);
+  await cloneRepo(source.parserUrl, parserRepoDir, source.parserSemver);
+  await cloneRepo(source.queryUrl ?? source.parserUrl, queryRepoDir, source.queriesSemver);
 
   const parserRevision = await gitRevParse(parserRepoDir);
   const queryRevision = await gitRevParse(queryRepoDir);
@@ -409,12 +409,16 @@ function normalizeSource(source) {
       parserUrl: source.url,
       queryUrl: source.url,
       parserLocation: source.parser_location,
+      parserSemver: source.semver === true,
+      queriesSemver: source.semver === true,
     };
   }
   return {
     parserUrl: source.parser_url,
     queryUrl: source.queries_url,
     parserLocation: source.parser_location,
+    parserSemver: source.parser_semver === true,
+    queriesSemver: source.queries_semver === true,
   };
 }
 
@@ -422,11 +426,42 @@ function hasBuildableSource(source) {
   return source?.type !== "queries_only" && Boolean(source?.parser_url || source?.url);
 }
 
-async function cloneRepo(url, destination) {
+async function cloneRepo(url, destination, semver) {
   if (!url) {
     throw new Error("missing repository URL");
   }
-  await run("git", ["clone", "--depth", "1", url, destination]);
+  const tag = semver ? await latestReleaseTag(url) : null;
+  if (semver && !tag) {
+    console.warn(`${url} has no release tag; using its default branch`);
+  }
+  const branch = tag ? ["--branch", tag] : [];
+  await run("git", ["clone", "--depth", "1", ...branch, url, destination]);
+}
+
+async function latestReleaseTag(url) {
+  const { stdout } = await run("git", ["ls-remote", "--tags", "--refs", url]);
+  let latest = null;
+  for (const line of stdout.split("\n")) {
+    const tag = line.split("\t")[1]?.replace("refs/tags/", "");
+    const match = tag && /^v?(\d+)\.(\d+)\.(\d+)$/.exec(tag);
+    if (!match) {
+      continue;
+    }
+    const version = match.slice(1).map(Number);
+    if (!latest || compareVersions(version, latest.version) > 0) {
+      latest = { tag, version };
+    }
+  }
+  return latest?.tag ?? null;
+}
+
+function compareVersions(left, right) {
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) {
+      return left[index] - right[index];
+    }
+  }
+  return 0;
 }
 
 async function gitRevParse(cwd) {

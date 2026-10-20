@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Serialize, Serializer};
 
+use crate::contracts::navigation::{RepositoryChangeKind, RepositorySyncReason};
 use crate::core::compare::{LayoutMode, RendererKind};
-use crate::events::{RepositoryChangeKind, RepositorySyncReason};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VcsKind(&'static str);
@@ -127,6 +127,8 @@ pub struct VcsChange {
     pub short_revision: String,
     pub summary: String,
     pub author_name: String,
+    pub author_email: Option<String>,
+    pub parents: Vec<String>,
     pub timestamp: i64,
     pub flags: ChangeFlags,
 }
@@ -149,7 +151,7 @@ pub struct ChangeFlags {
     pub conflicted: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum FileChangeStatus {
     Added,
     Modified,
@@ -162,7 +164,7 @@ pub enum FileChangeStatus {
     Untracked,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum ChangeBucket {
     WorkingCopy,
     Staged,
@@ -171,7 +173,7 @@ pub enum ChangeBucket {
     Conflicted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct FileChange {
     pub path: String,
     pub old_path: Option<String>,
@@ -368,6 +370,25 @@ pub struct PublishPlan {
     pub alternatives: Vec<PublishAction>,
 }
 
+impl PublishPlan {
+    pub fn no_remote(subject: &str, hint: &str) -> Self {
+        Self {
+            primary: PublishAction {
+                label: "No remote".to_owned(),
+                description: format!("{subject} has no remote to push to."),
+                kind: PublishActionKind::NoRemote,
+                disabled_reason: Some(hint.to_owned()),
+                change_id_token: None,
+            },
+            alternatives: Vec::new(),
+        }
+    }
+
+    pub fn has_remote(&self) -> bool {
+        self.primary.kind != PublishActionKind::NoRemote
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishAction {
     pub label: String,
@@ -424,6 +445,7 @@ pub enum PublishActionKind {
         bookmark: String,
         revision: String,
     },
+    NoRemote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -478,4 +500,11 @@ pub struct VcsSnapshot {
     pub changes: Vec<VcsChange>,
     pub operation_log: Vec<VcsOperationLogEntry>,
     pub file_changes: Vec<FileChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitRecord {
+    pub sha: String,
+    pub short: String,
+    pub message: String,
 }

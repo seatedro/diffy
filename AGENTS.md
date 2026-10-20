@@ -12,26 +12,29 @@ justification), and clean, boring Rust.
 
 ## Repository Map
 
-- `src/ui/app.rs` — winit loop, window lifecycle, input dispatch, redraw scheduling.
-- `src/ui/state/` — `AppState`; actions mutate state and return `Effect`s.
-- `src/actions.rs` / `src/effects.rs` / `src/events.rs` — the action/effect/event
-  boundary; extend these contracts rather than wiring work through UI code.
-- `src/apprt/` — services and worker threads; all blocking Git/fs/network/AI work.
-- `src/core/` — product logic: diff parsing, compare backends, text/token buffers,
-  syntax, fuzzy search, themes, VCS.
-- `src/render/` — low-level wgpu/glyphon renderer; per-frame allocation, texture
-  churn, and text caches are performance-sensitive.
-- `src/ui/components|overlays|editor/` — UI surfaces; use design constants from
-  `src/ui/design.rs` and theme tokens from `src/ui/theme.rs`.
-- `crates/carbon/` — diff substrate. `crates/halogen/` — UI/reactivity toolkit;
-  read its `ARCHITECTURE.md` before touching signals, scene primitives, or `view!`.
-  `crates/halogen-macros/` — `#[derive(Store)]` and `view!` proc macros.
-  `crates/phosphor/` — tree-sitter syntax highlighting.
+Diffy runs on Quark (`seatedro/quark`, git dependency pinned in the root
+`Cargo.toml`; `rust-toolchain.toml` follows Quark's nightly pin). Quark owns
+generic UI, input, rendering and accessibility and never depends on Diffy; diff
+and syntax code stays here.
+
+- `src/app/` — `DiffyApp` (`quark_app::UiApp`): `shell.rs` routing, reduction
+  and intent processing, `route.rs` fixed intent order, `text_targets.rs` text
+  input, `theme.rs`/`tokens.rs` design tokens, `runtime.rs` effect dispatcher,
+  and one directory per feature stream (`viewport/{pipeline,interaction}`,
+  `navigation`, `commands`, `review`, `mutations`, `delivery`).
+- `src/contracts/` — per-stream actions, effects, events and intents; extend
+  these contracts rather than wiring work through views.
+- `src/apprt/` — runtime and services split per stream; all blocking
+  Git/fs/network/AI work runs on workers and reports through `transport.rs`.
+- `src/core/` — product logic: compare backends, VCS, review, syntax, themes.
+- `crates/diffy-diff/` — diff model; `crates/diffy-ui/` — diff view on Quark;
+  `crates/diffy-syntax/` — tree-sitter packs (see its `PACKS.md`);
+  `tools/syntax-pack/` — pack builder. `crates/carbon/` and `crates/phosphor/`
+  are being retired in favor of diffy-diff and diffy-syntax.
 - `crates/difftastic/` is vendored and out-of-workspace; don't casually refactor it.
 - `.docs/` is reference material, not app source.
 
-Before editing a crate, load its `AGENTS.md`
-(`crates/{carbon,halogen,halogen-macros,phosphor}/AGENTS.md`). Keep shared facts
+Before editing a crate, load its `AGENTS.md` if it has one. Keep shared facts
 at the shallowest node that always applies; when behavior changes, update the
 leaf node first.
 
@@ -56,7 +59,7 @@ leaf node first.
   if added anyway, disable default features and justify the size tradeoff.
   Embedded assets (fonts, icons, grammars) directly affect distribution size.
 - Use `Result` + project error types; keep `unwrap`/`expect` to tests or
-  impossible invariants. Boring Rust over macro magic outside `halogen-macros`.
+  impossible invariants. Boring Rust; no macro magic.
 - Comment only non-obvious invariants, performance choices, or platform behavior.
 
 ## Validation
@@ -71,17 +74,17 @@ high enough that you explicitly call out why.
 - macOS Computer Use dev app: `scripts/dev-loop.sh app` builds and launches
   `Diffy Dev.app` (bundle id `io.github.seatedro.diffy.dev`; ad-hoc signed,
   keyring disabled, dev token file for GitHub auth, startup args after `--`).
-  Target it, not any installed `/Applications/Diffy.app`.
+  Target it, not any installed `/Applications/Diffy.app`. Its settings live in
+  `DIFFY_CONFIG_DIR` (default `~/Library/Application Support/diffy-dev`), never
+  the release app's. `--bundle-dir DIR --bundle-suffix NAME` builds a separate
+  `Diffy Dev NAME.app` with its own bundle id and `DIR/config`, so parallel work
+  never overwrites a shared bundle.
 - GUI validation: use the global `$cua` skill/CLI; keep captures under `/tmp/cua/`.
 
-Headless UI loop, for surfaces with a fixture (review card via
-`src/ui/harness.rs`): run `cargo test --lib <surface>::` first, then
-`cargo run --example render_fixture --features headless-render` for a PNG.
-Ground truth rules: text content comes from `dump_accessibility(frame)`;
-spacing/overlap/alignment comes from `dump_text_layout(scene, font_system)`
-gaps. Never read either off the PNG — antialiased glyphs have produced phantom
-bugs; the image is only for visual quality (kerning, padding, centering). For
-genuinely visual glyph questions, tint pieces distinct colors and crop+zoom.
+Headless UI loop: drive surfaces with `quark_app::testing::UiTestHarness`
+(`src/app/testing.rs`) and assert on accessibility roles, labels and test ids.
+Text content comes from the accessibility tree and spacing from layout bounds,
+never from PNGs; pixel captures (`headless-render`) are only for visual quality.
 Keep PNGs under `target/`; never commit them.
 
 If a command can't run in this environment, say so and note what went unverified.

@@ -1,0 +1,10 @@
+# Workflow settings.
+name: quark
+version: 1
+stable: true
+anchors:
+  base: &base
+    image: ubuntu
+  job: *base
+steps:
+  - run: cargo test

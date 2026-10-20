@@ -2,30 +2,32 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use carbon::TextStore;
-
-use crate::core::compare::backends::compare_output_from_raw_patch;
+use crate::contracts::navigation::RepositorySyncReason;
 #[cfg(feature = "difftastic")]
-use crate::core::compare::backends::{DifftasticChangedPath, compare_changed_paths};
+use crate::core::compare::semantic;
 use crate::core::compare::{
-    COMPARE_SUMMARY_FILE_LIMIT, CompareFileStatsTarget, CompareFileSummary, CompareOutput,
-    ProgressSink, RendererKind,
+    COMPARE_SUMMARY_FILE_LIMIT, CompareEntry, CompareOutput, ProgressSink, RendererKind,
 };
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
 use crate::core::vcs::backend::{VcsBackend, VcsRepository, VcsWatchPaths};
 use crate::core::vcs::cache::VcsReadCache;
+use crate::core::vcs::compare_port::{
+    deferred_entry, entry_stats, output_from_patch, patch_stats, with_semantic_fallback,
+};
 use crate::core::vcs::jj::cli::JjCli;
 use crate::core::vcs::jj::parse::{
     parse_bookmark_list, parse_change_log, parse_conflict_list, parse_diff_summary,
     parse_operation_log,
 };
 use crate::core::vcs::model::{
-    ChangeIdToken, FileChange, FileChangeStatus, FileOperation, JjOperation, PublishAction,
+    ChangeIdToken, CommitRecord, FileChange, FileOperation, JjOperation, PublishAction,
     PublishActionKind, PublishOutcome, PublishPlan, RefKind, RepoCapabilities, RepoLocation,
     RevisionId, VCS_PROFILE_JJ, VcsCompareRequest, VcsCompareSpec, VcsKind, VcsOperation, VcsRef,
     VcsSnapshot,
 };
-use crate::events::RepositorySyncReason;
+use crate::core::vcs::mutation::{ApplyTarget, MutationMaterial, PatchApplication};
+use crate::core::vcs::patch::patch_identity;
+use crate::core::vcs::source::SourceText;
 
 const JJ_FILE_STATS_PATH_CHUNK: usize = 512;
 
@@ -153,94 +155,81 @@ impl JjRepository {
         Ok(args)
     }
 
-    #[cfg(feature = "difftastic")]
-    fn compare_difftastic(
+    fn compare_uncached(
         &self,
         request: &VcsCompareRequest,
         reporter: Option<&dyn ProgressSink>,
         only_path: Option<&str>,
     ) -> Result<CompareOutput> {
-        let mut summary_args = self.diff_summary_args_for_spec(&request.spec)?;
-        if let Some(path) = only_path {
-            summary_args.push(jj_root_pathspec(path));
-        }
-        let summary = self.cli.run_ignored_wc(&summary_args)?;
-        let changes = parse_diff_summary(&summary);
-        if only_path.is_none() && changes.len() > COMPARE_SUMMARY_FILE_LIMIT {
-            let mut output = CompareOutput {
-                file_summaries: changes
-                    .into_iter()
-                    .map(|change| {
-                        CompareFileSummary::from_paths_status(
-                            change.old_path.as_deref(),
-                            Some(change.path.as_str()),
-                            carbon_status_from_file_change_status(change.status),
-                            true,
-                        )
-                    })
-                    .collect(),
-                ..CompareOutput::default()
-            };
-            output.compact_file_summaries();
-            return Ok(output);
-        }
-
-        let (old_rev, new_rev) = difftastic_revisions_for_spec(&request.spec);
-        let mut changed_paths = Vec::with_capacity(changes.len());
-        for change in changes {
-            changed_paths.push(self.difftastic_changed_path(&change, &old_rev, &new_rev)?);
-        }
-        compare_changed_paths(changed_paths, reporter)
-    }
-
-    #[cfg(feature = "difftastic")]
-    fn difftastic_changed_path(
-        &self,
-        change: &FileChange,
-        old_rev: &str,
-        new_rev: &str,
-    ) -> Result<DifftasticChangedPath> {
-        let old_path = match change.status {
-            FileChangeStatus::Added | FileChangeStatus::Untracked => None,
-            _ => Some(change.old_path.as_deref().unwrap_or(change.path.as_str())),
+        let path_args = |mut args: Vec<OsString>| {
+            args.extend(only_path.map(jj_root_pathspec));
+            args
         };
-        let new_path = match change.status {
-            FileChangeStatus::Deleted => None,
-            _ => Some(change.path.as_str()),
-        };
-        let old_content = old_path
-            .map(|path| self.jj_file_show_bytes(old_rev, path))
-            .transpose()?
-            .unwrap_or_default();
-        let new_content = new_path
-            .map(|path| self.jj_file_show_bytes(new_rev, path))
-            .transpose()?
-            .unwrap_or_default();
-        let is_binary = matches!(
-            change.status,
-            FileChangeStatus::Binary | FileChangeStatus::Conflicted | FileChangeStatus::TypeChanged
-        ) || looks_binary(&old_content)
-            || looks_binary(&new_content);
-
-        Ok(DifftasticChangedPath {
-            status: difftastic_status_label(change.status).to_owned(),
-            old_path: old_path.map(str::to_owned),
-            new_path: new_path.map(str::to_owned),
-            old_content,
-            new_content,
-            is_binary,
+        let semantic = request.renderer == RendererKind::Difftastic;
+        if only_path.is_none() || (semantic && cfg!(feature = "difftastic")) {
+            let summary = self
+                .cli
+                .run_ignored_wc(&path_args(self.diff_summary_args_for_spec(&request.spec)?))?;
+            let changes = parse_diff_summary(&summary);
+            if only_path.is_none() && changes.len() > COMPARE_SUMMARY_FILE_LIMIT {
+                return Ok(CompareOutput::deferred(compare_entries(&changes)));
+            }
+            #[cfg(feature = "difftastic")]
+            if semantic {
+                let (old_rev, new_rev) = semantic_revisions(&request.spec);
+                let changed = changes
+                    .iter()
+                    .map(|change| self.changed_path(change, &old_rev, &new_rev))
+                    .collect::<Result<Vec<_>>>()?;
+                return semantic::compare_changed_paths(changed, reporter);
+            }
+        }
+        let _ = reporter;
+        let raw_diff = self
+            .cli
+            .run_bytes_ignored_wc(&path_args(self.diff_args_for_spec(&request.spec)?))?;
+        let output = output_from_patch(&raw_diff)?;
+        Ok(if semantic {
+            with_semantic_fallback(output)
+        } else {
+            output
         })
     }
 
     #[cfg(feature = "difftastic")]
-    fn jj_file_show_bytes(&self, revision: &str, path: &str) -> Result<Vec<u8>> {
-        self.cli.run_bytes_ignored_wc(&[
-            OsString::from("file"),
-            OsString::from("show"),
-            OsString::from("-r"),
-            OsString::from(revision),
-            jj_root_pathspec(path),
-        ])
+    fn changed_path(
+        &self,
+        change: &FileChange,
+        old_rev: &str,
+        new_rev: &str,
+    ) -> Result<semantic::ChangedPath> {
+        use crate::core::vcs::compare_port::file_status;
+        use crate::core::vcs::model::FileChangeStatus;
+        let old_path = match change.status {
+            FileChangeStatus::Added | FileChangeStatus::Untracked => None,
+            _ => Some(change.old_path.as_deref().unwrap_or(&change.path)),
+        };
+        let new_path = (change.status != FileChangeStatus::Deleted).then_some(change.path.as_str());
+        let read = |revision: &str, path: Option<&str>| -> Result<Vec<u8>> {
+            path.map(|path| {
+                self.cli.run_bytes_ignored_wc(&[
+                    OsString::from("file"),
+                    OsString::from("show"),
+                    OsString::from("-r"),
+                    OsString::from(revision),
+                    jj_root_pathspec(path),
+                ])
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
+        };
+        Ok(semantic::ChangedPath {
+            status: file_status(change.status),
+            old_content: read(old_rev, old_path)?,
+            new_content: read(new_rev, new_path)?,
+            old_path: old_path.map(str::to_owned),
+            new_path: new_path.map(str::to_owned),
+        })
     }
 
     fn current_operation_id(&self) -> Result<String> {
@@ -560,7 +549,7 @@ impl VcsRepository for JjRepository {
             OsString::from("ancestors(@, 200) ~ root()"),
             OsString::from("-T"),
             OsString::from(
-                "change_id ++ \"\\t\" ++ change_id.shortest(8).prefix() ++ \"\\t\" ++ change_id.shortest(8).rest() ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ description.first_line() ++ \"\\t\" ++ author.name() ++ \"\\t\" ++ committer.timestamp() ++ \"\\n\"",
+                "change_id ++ \"\\t\" ++ change_id.shortest(8).prefix() ++ \"\\t\" ++ change_id.shortest(8).rest() ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ description.first_line() ++ \"\\t\" ++ author.name() ++ \"\\t\" ++ committer.timestamp() ++ \"\\t\" ++ author.email() ++ \"\\t\" ++ parents.map(|c| c.commit_id()).join(\" \") ++ \"\\n\"",
             ),
         ])?;
         let bookmarks = self.cli.run_ignored_wc(&[
@@ -667,7 +656,7 @@ impl VcsRepository for JjRepository {
     fn compare(
         &mut self,
         request: &VcsCompareRequest,
-        _reporter: Option<&dyn ProgressSink>,
+        reporter: Option<&dyn ProgressSink>,
     ) -> Result<CompareOutput> {
         let operation_id = self.ensure_read_epoch()?;
         if let Some(output) = self
@@ -676,30 +665,7 @@ impl VcsRepository for JjRepository {
         {
             return Ok(output);
         }
-        #[cfg(feature = "difftastic")]
-        if request.renderer == RendererKind::Difftastic {
-            let output = self.compare_difftastic(request, _reporter, None)?;
-            self.read_cache
-                .insert_diff(operation_id, request.clone(), None, output.clone());
-            return Ok(output);
-        }
-
-        let summary_args = self.diff_summary_args_for_spec(&request.spec)?;
-        let summary = self.cli.run_ignored_wc(&summary_args)?;
-        let summaries = compare_summaries_from_jj_diff_summary(&summary, true);
-        if summaries.len() > COMPARE_SUMMARY_FILE_LIMIT {
-            let mut output = CompareOutput {
-                file_summaries: summaries,
-                ..CompareOutput::default()
-            };
-            output.compact_file_summaries();
-            self.read_cache
-                .insert_diff(operation_id, request.clone(), None, output.clone());
-            return Ok(output);
-        }
-        let args = self.diff_args_for_spec(&request.spec)?;
-        let raw_diff = self.cli.run_ignored_wc(&args)?;
-        let output = compare_output_from_raw_patch(&raw_diff)?;
+        let output = self.compare_uncached(request, reporter, None)?;
         self.read_cache
             .insert_diff(operation_id, request.clone(), None, output.clone());
         Ok(output)
@@ -715,27 +681,18 @@ impl VcsRepository for JjRepository {
 
         let raw_diff = self
             .cli
-            .run_ignored_wc(&self.diff_args_for_spec(&request.spec)?)?;
-        let output = compare_output_from_raw_patch(&raw_diff)?;
-        let additions = output
-            .carbon
-            .files
-            .iter()
-            .map(|file| u32_to_i32_saturating(file.additions))
-            .sum();
-        let deletions = output
-            .carbon
-            .files
-            .iter()
-            .map(|file| u32_to_i32_saturating(file.deletions))
-            .sum();
-        Ok((additions, deletions))
+            .run_bytes_ignored_wc(&self.diff_args_for_spec(&request.spec)?)?;
+        Ok(patch_stats(&raw_diff)?
+            .into_values()
+            .fold((0, 0), |(adds, dels), (a, d)| {
+                (adds.saturating_add(a), dels.saturating_add(d))
+            }))
     }
 
     fn compare_file_stats(
         &mut self,
         request: &VcsCompareRequest,
-        files: &[CompareFileStatsTarget],
+        files: &[CompareEntry],
     ) -> Result<Vec<(i32, i32)>> {
         self.ensure_read_epoch()?;
         let mut stats_by_path = HashMap::with_capacity(files.len());
@@ -745,17 +702,8 @@ impl VcsRepository for JjRepository {
                 let path = file.path();
                 (!path.is_empty()).then(|| OsString::from(format!("file:{path}")))
             }));
-            let raw_diff = self.cli.run_ignored_wc(&args)?;
-            let output = compare_output_from_raw_patch(&raw_diff)?;
-            for file in output.carbon.files {
-                let stats = (
-                    u32_to_i32_saturating(file.additions),
-                    u32_to_i32_saturating(file.deletions),
-                );
-                if let Some(path) = file.new_path.as_ref().or(file.old_path.as_ref()) {
-                    stats_by_path.insert(path.clone(), stats);
-                }
-            }
+            let raw_diff = self.cli.run_bytes_ignored_wc(&args)?;
+            stats_by_path.extend(patch_stats(&raw_diff)?);
         }
         Ok(files
             .iter()
@@ -764,7 +712,7 @@ impl VcsRepository for JjRepository {
                 stats_by_path
                     .get(path.as_ref())
                     .copied()
-                    .unwrap_or_else(|| file.fallback_stats())
+                    .unwrap_or_else(|| entry_stats(file))
             })
             .collect())
     }
@@ -773,7 +721,7 @@ impl VcsRepository for JjRepository {
         &mut self,
         request: &VcsCompareRequest,
         path: &str,
-        _deferred_file: Option<&CompareFileSummary>,
+        _deferred_file: Option<&CompareEntry>,
     ) -> Result<CompareOutput> {
         let operation_id = self.ensure_read_epoch()?;
         if let Some(output) =
@@ -782,22 +730,7 @@ impl VcsRepository for JjRepository {
         {
             return Ok(output);
         }
-        #[cfg(feature = "difftastic")]
-        if request.renderer == RendererKind::Difftastic {
-            let output = self.compare_difftastic(request, None, Some(path))?;
-            self.read_cache.insert_diff(
-                operation_id,
-                request.clone(),
-                Some(path.to_owned()),
-                output.clone(),
-            );
-            return Ok(output);
-        }
-
-        let mut args = self.diff_args_for_spec(&request.spec)?;
-        args.push(jj_root_pathspec(path));
-        let raw_diff = self.cli.run_ignored_wc(&args)?;
-        let output = compare_output_from_raw_patch(&raw_diff)?;
+        let output = self.compare_uncached(request, None, Some(path))?;
         self.read_cache.insert_diff(
             operation_id,
             request.clone(),
@@ -846,12 +779,53 @@ impl VcsRepository for JjRepository {
         Ok(())
     }
 
-    fn create_commit(&mut self, message: &str) -> Result<()> {
+    fn create_commit(&mut self, message: &str, amend: bool) -> Result<CommitRecord> {
+        if amend {
+            return Err(jj_error_fatal(
+                "amend",
+                "jj describes changes in place; edit the description instead",
+            ));
+        }
         self.cli.run(&[
             OsString::from("commit"),
             OsString::from("-m"),
             OsString::from(message),
         ])?;
+        self.clear_after_write();
+        let ids = self.cli.run_ignored_wc(&[
+            OsString::from("log"),
+            OsString::from("--no-graph"),
+            OsString::from("-r"),
+            OsString::from("@-"),
+            OsString::from("-T"),
+            OsString::from("commit_id ++ \"\\n\" ++ commit_id.short()"),
+        ])?;
+        let mut lines = ids.lines();
+        let sha = lines.next().unwrap_or_default().trim().to_owned();
+        let short = lines.next().unwrap_or_default().trim().to_owned();
+        Ok(CommitRecord {
+            sha,
+            short,
+            message: message.to_owned(),
+        })
+    }
+
+    fn undo_commit(&mut self, sha: &str) -> Result<()> {
+        let parent = self.cli.run_ignored_wc(&[
+            OsString::from("log"),
+            OsString::from("--no-graph"),
+            OsString::from("-r"),
+            OsString::from("@-"),
+            OsString::from("-T"),
+            OsString::from("commit_id"),
+        ])?;
+        if parent.trim() != sha {
+            return Err(jj_error(
+                "undo commit",
+                "the working copy moved since the commit was created",
+            ));
+        }
+        self.cli.run(&[OsString::from("undo")])?;
         self.clear_after_write();
         Ok(())
     }
@@ -977,6 +951,12 @@ impl VcsRepository for JjRepository {
 
     fn publish_plan(&mut self) -> Result<PublishPlan> {
         self.ensure_read_epoch()?;
+        if self.remote_names()?.is_empty() {
+            return Ok(PublishPlan::no_remote(
+                "This repository",
+                "Add one with jj git remote add <name> <url>, then publish.",
+            ));
+        }
         let remote = self.preferred_remote()?;
         let target = self.default_publish_target()?;
         let bookmarks = self.local_bookmarks_at(&target.commit_id)?;
@@ -1230,6 +1210,9 @@ impl VcsRepository for JjRepository {
                     "jj cannot run a Git refspec publish action",
                 ));
             }
+            PublishActionKind::NoRemote => {
+                return Err(jj_error("publish", "no remotes are configured"));
+            }
         }
         self.clear_after_write();
         Ok(PublishOutcome {
@@ -1250,43 +1233,112 @@ impl VcsRepository for JjRepository {
         {
             return Ok(output);
         }
-        let raw_diff = self.cli.run_ignored_wc(&[
+        let raw_diff = self.cli.run_bytes_ignored_wc(&[
             OsString::from("diff"),
             OsString::from("-r"),
             OsString::from("@"),
             OsString::from("--git"),
             jj_root_pathspec(path),
         ])?;
-        let output = compare_output_from_raw_patch(&raw_diff)?;
+        let output = output_from_patch(&raw_diff)?;
         self.read_cache
             .insert_diff(operation_id, request, Some(path.to_owned()), output.clone());
         Ok(output)
     }
 
-    fn read_file_text(&mut self, revision: &RevisionId, path: &str) -> Result<TextStore> {
+    fn read_file_source(&mut self, revision: &RevisionId, path: &str) -> Result<SourceText> {
         let operation_id = self.ensure_read_epoch()?;
-        if let Some(text) =
+        if let Some(source) =
             self.read_cache
-                .cached_file_text(operation_id.as_deref(), revision, path)
+                .cached_file_source(operation_id.as_deref(), revision, path)
         {
-            return Ok(text);
+            return Ok(source);
         }
-        let output = self.cli.run_ignored_wc(&[
+        let output = self.cli.run_bytes_ignored_wc(&[
             OsString::from("file"),
             OsString::from("show"),
             OsString::from("-r"),
             OsString::from(revision.id.as_str()),
             jj_root_pathspec(path),
         ])?;
-        let text = TextStore::from_text(output);
-        self.read_cache.insert_file_text(
+        let source = SourceText::from_bytes(output);
+        self.read_cache.insert_file_source(
             operation_id,
             revision.clone(),
             path.to_owned(),
-            text.clone(),
+            source.clone(),
         );
-        Ok(text)
+        Ok(source)
     }
+
+    fn mutation_material(&mut self, change: &FileChange) -> Result<MutationMaterial> {
+        let mut args = vec![
+            OsString::from("diff"),
+            OsString::from("-r"),
+            OsString::from("@"),
+            OsString::from("--git"),
+        ];
+        if let Some(old_path) = change.old_path.as_deref() {
+            args.push(jj_root_pathspec(old_path));
+        }
+        args.push(jj_root_pathspec(&change.path));
+        let patch = self.cli.run_bytes(&args)?;
+        self.clear_after_write();
+        let identity = patch_identity(&patch);
+        Ok(MutationMaterial {
+            patch: patch.into(),
+            identity,
+        })
+    }
+
+    fn apply_patch(&mut self, patch: &[u8], application: PatchApplication) -> Result<()> {
+        if application.target != ApplyTarget::Worktree {
+            return Err(jj_error_fatal(
+                "apply",
+                "jj has no staging area; only working-copy changes can be applied",
+            ));
+        }
+        apply_worktree_patch(self.cli.root(), patch, application.reverse)?;
+        self.clear_after_write();
+        Ok(())
+    }
+}
+
+fn apply_worktree_patch(root: &Path, patch: &[u8], reverse: bool) -> Result<()> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut command = Command::new("git");
+    command
+        .arg("apply")
+        .arg("--whitespace=nowarn")
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(parent) = root.parent() {
+        command.env("GIT_CEILING_DIRECTORIES", parent);
+    }
+    if reverse {
+        command.arg("--reverse");
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| jj_error_fatal("apply", format!("failed to run git apply: {error}")))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| jj_error_fatal("apply", "failed to open git apply stdin"))?
+        .write_all(patch)?;
+    let output = child.wait_with_output()?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(jj_error(
+        "apply",
+        String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+    ))
 }
 
 fn jj_error(op: impl Into<String>, details: impl Into<String>) -> DiffyError {
@@ -1297,38 +1349,11 @@ fn jj_error_fatal(op: impl Into<String>, details: impl Into<String>) -> DiffyErr
     DiffyError::vcs_fatal(VcsBackendKind::Jj, op, details)
 }
 
-fn u32_to_i32_saturating(value: u32) -> i32 {
-    i32::try_from(value).unwrap_or(i32::MAX)
-}
-
-fn compare_summaries_from_jj_diff_summary(
-    output: &str,
-    stats_deferred: bool,
-) -> Vec<CompareFileSummary> {
-    parse_diff_summary(output)
-        .into_iter()
-        .map(|change| {
-            CompareFileSummary::from_paths_status(
-                change.old_path.as_deref(),
-                Some(change.path.as_str()),
-                carbon_status_from_file_change_status(change.status),
-                stats_deferred,
-            )
-        })
+fn compare_entries(changes: &[FileChange]) -> Vec<CompareEntry> {
+    changes
+        .iter()
+        .map(|change| deferred_entry(change.old_path.as_deref(), &change.path, change.status))
         .collect()
-}
-
-fn carbon_status_from_file_change_status(status: FileChangeStatus) -> carbon::FileStatus {
-    match status {
-        FileChangeStatus::Added | FileChangeStatus::Untracked => carbon::FileStatus::Added,
-        FileChangeStatus::Deleted => carbon::FileStatus::Deleted,
-        FileChangeStatus::Renamed => carbon::FileStatus::Renamed,
-        FileChangeStatus::TypeChanged => carbon::FileStatus::ModeChanged,
-        FileChangeStatus::Binary => carbon::FileStatus::Binary,
-        FileChangeStatus::Copied | FileChangeStatus::Modified | FileChangeStatus::Conflicted => {
-            carbon::FileStatus::Modified
-        }
-    }
 }
 
 fn parse_jj_diff_stat_total(output: &str) -> Option<(i32, i32)> {
@@ -1363,7 +1388,7 @@ pub fn jj_capabilities(colocated: bool) -> RepoCapabilities {
         pull_fast_forward: false,
         create_commit: true,
         partial_file_restore: true,
-        partial_hunk_mutation: false,
+        partial_hunk_mutation: true,
         operation_log: true,
         // PR comparisons run through the git backend against the colocated
         // .git store, so they are only available in colocated workspaces.
@@ -1445,7 +1470,7 @@ fn jj_fork_point_revset(base: &str, head: &str) -> String {
 }
 
 #[cfg(feature = "difftastic")]
-fn difftastic_revisions_for_spec(spec: &VcsCompareSpec) -> (String, String) {
+fn semantic_revisions(spec: &VcsCompareSpec) -> (String, String) {
     match spec {
         VcsCompareSpec::WorkingCopy => ("@-".to_owned(), "@".to_owned()),
         VcsCompareSpec::Change { revision } => (format!("({revision})-"), revision.clone()),
@@ -1454,21 +1479,6 @@ fn difftastic_revisions_for_spec(spec: &VcsCompareSpec) -> (String, String) {
             (jj_fork_point_revset(base, head), head.clone())
         }
     }
-}
-
-#[cfg(feature = "difftastic")]
-fn difftastic_status_label(status: FileChangeStatus) -> &'static str {
-    match status {
-        FileChangeStatus::Added | FileChangeStatus::Untracked => "A",
-        FileChangeStatus::Deleted => "D",
-        FileChangeStatus::Renamed => "R",
-        _ => "M",
-    }
-}
-
-#[cfg(feature = "difftastic")]
-fn looks_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(1024).any(|byte| *byte == 0)
 }
 
 /// Local bookmarks are always movable. Remote bookmarks are movable only when
@@ -1574,16 +1584,17 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        JjBackend, compare_summaries_from_jj_diff_summary, jj_fork_point_revset,
+        JjBackend, compare_entries, jj_fork_point_revset, parse_diff_summary,
         parse_jj_diff_stat_total, parse_movable_bookmark_list,
     };
-    use crate::core::compare::{CompareFileStatsTarget, LayoutMode, RendererKind};
+    use crate::contracts::navigation::RepositorySyncReason;
+    use crate::core::compare::{LayoutMode, RendererKind};
     use crate::core::vcs::backend::VcsBackend;
     use crate::core::vcs::model::{
         ChangeBucket, FileChangeStatus, FileOperation, PublishActionKind, VcsCompareRequest,
         VcsCompareSpec, VcsKind,
     };
-    use crate::events::RepositorySyncReason;
+    use diffy_diff::FileStatus;
 
     #[test]
     fn jj_pr_support_follows_colocation() {
@@ -1611,9 +1622,9 @@ mod tests {
 
     #[cfg(feature = "difftastic")]
     #[test]
-    fn jj_difftastic_revisions_follow_compare_spec() {
+    fn jj_semantic_revisions_follow_compare_spec() {
         assert_eq!(
-            super::difftastic_revisions_for_spec(&VcsCompareSpec::MergeBaseRange {
+            super::semantic_revisions(&VcsCompareSpec::MergeBaseRange {
                 base: "main".to_owned(),
                 head: "feature".to_owned(),
             }),
@@ -1626,20 +1637,19 @@ mod tests {
 
     #[test]
     fn jj_diff_summary_builds_compare_summaries() {
-        let summaries = compare_summaries_from_jj_diff_summary(
+        let summaries = compare_entries(&parse_diff_summary(
             "A README.md\nM src/lib.rs\nR src/{old => new}.rs\n",
-            true,
-        );
+        ));
 
         assert_eq!(summaries.len(), 3);
         assert_eq!(summaries[0].path(), "README.md");
-        assert_eq!(summaries[0].status, carbon::FileStatus::Added);
-        assert!(summaries[0].stats_deferred);
+        assert_eq!(summaries[0].status(), FileStatus::Added);
+        assert!(summaries[0].stats.is_pending());
         assert_eq!(summaries[1].path(), "src/lib.rs");
-        assert_eq!(summaries[1].status, carbon::FileStatus::Modified);
+        assert_eq!(summaries[1].status(), FileStatus::Modified);
         assert_eq!(summaries[2].paths.old_path().as_deref(), Some("src/old.rs"));
         assert_eq!(summaries[2].paths.new_path().as_deref(), Some("src/new.rs"));
-        assert_eq!(summaries[2].status, carbon::FileStatus::Renamed);
+        assert_eq!(summaries[2].status(), FileStatus::Renamed);
     }
 
     #[test]
@@ -1671,6 +1681,9 @@ mod tests {
         let snapshot = repo
             .snapshot(RepositorySyncReason::Open, None)
             .expect("jj snapshot");
+        let working = &snapshot.changes[0];
+        assert_eq!(working.parents.len(), 1);
+        assert!(working.parents[0].chars().all(|c| c.is_ascii_hexdigit()));
         assert!(snapshot.capabilities.bookmarks);
         assert!(!snapshot.capabilities.staging_area);
         assert!(snapshot.capabilities.github_pull_requests);
@@ -1681,8 +1694,9 @@ mod tests {
         }));
 
         let output = repo.compare_working_file("README.md").unwrap();
-        assert_eq!(output.carbon.files.len(), 1);
-        assert_eq!(output.carbon.files[0].path(), "README.md");
+        assert_eq!(output.file_count(), 1);
+        let summary = output.entry(0).unwrap().clone();
+        assert_eq!(summary.path(), "README.md");
 
         let request = VcsCompareRequest {
             spec: VcsCompareSpec::Range {
@@ -1694,12 +1708,7 @@ mod tests {
         };
         let (additions, deletions) = repo.compare_stats(&request).unwrap();
         assert_eq!((additions, deletions), (1, 0));
-        let file_stats = repo
-            .compare_file_stats(
-                &request,
-                &[CompareFileStatsTarget::from_file(&output.carbon.files[0])],
-            )
-            .unwrap();
+        let file_stats = repo.compare_file_stats(&request, &[summary]).unwrap();
         assert_eq!(file_stats, vec![(1, 0)]);
 
         let readme_change = snapshot
@@ -1721,7 +1730,7 @@ mod tests {
         );
 
         fs::write(repo_dir.path().join("COMMIT.md"), "committed\n").unwrap();
-        repo.create_commit("add commit from diffy").unwrap();
+        repo.create_commit("add commit from diffy", false).unwrap();
         let description = Command::new("jj")
             .arg("--no-pager")
             .arg("--color=never")
@@ -1778,7 +1787,7 @@ mod tests {
         let location = backend.detect(repo_dir.path()).unwrap().unwrap();
         let mut repo = backend.open(location).unwrap();
         fs::write(repo_dir.path().join("PUBLISH.md"), "publish me\n").unwrap();
-        repo.create_commit("publish me").unwrap();
+        repo.create_commit("publish me", false).unwrap();
 
         let plan = repo.publish_plan().unwrap();
         match &plan.primary.kind {
@@ -1853,7 +1862,7 @@ mod tests {
         let location = backend.detect(repo_dir.path()).unwrap().unwrap();
         let mut repo = backend.open(location).unwrap();
         fs::write(repo_dir.path().join("PUBLISHED.md"), "already published\n").unwrap();
-        repo.create_commit("already published").unwrap();
+        repo.create_commit("already published", false).unwrap();
 
         let status = Command::new("jj")
             .arg("--quiet")
@@ -1940,7 +1949,7 @@ mod tests {
         let location = backend.detect(repo_dir.path()).unwrap().unwrap();
         let mut repo = backend.open(location).unwrap();
         fs::write(repo_dir.path().join("BASE.md"), "base\n").unwrap();
-        repo.create_commit("base").unwrap();
+        repo.create_commit("base", false).unwrap();
 
         // Leave `feat` as a remote-only untracked bookmark on the parent — the
         // state a fresh fetch of someone's branch (or a fetched PR head) is in.
@@ -1968,7 +1977,7 @@ mod tests {
         }
 
         fs::write(repo_dir.path().join("NEXT.md"), "next\n").unwrap();
-        repo.create_commit("next").unwrap();
+        repo.create_commit("next", false).unwrap();
 
         let plan = repo.publish_plan().unwrap();
         match &plan.primary.kind {

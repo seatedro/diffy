@@ -4,22 +4,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use carbon::{FileDiff, FileStatus};
-
 pub const COMPARE_SUMMARY_FILE_LIMIT: usize = 2_000;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompareFileSummary {
-    pub paths: CompareFilePaths,
-    pub old_oid: Option<Arc<str>>,
-    pub new_oid: Option<Arc<str>>,
-    pub status: FileStatus,
-    pub is_binary: bool,
-    pub is_partial: bool,
-    pub additions: u32,
-    pub deletions: u32,
-    pub stats_deferred: bool,
-}
 
 #[derive(Debug)]
 pub struct ComparePathStore {
@@ -340,134 +325,19 @@ impl CompareFilePaths {
     }
 }
 
-impl CompareFileSummary {
-    pub fn from_paths_status(
-        old_path: Option<&str>,
-        new_path: Option<&str>,
-        status: FileStatus,
-        stats_deferred: bool,
-    ) -> Self {
-        Self {
-            paths: CompareFilePaths::from_paths(old_path, new_path),
-            old_oid: None,
-            new_oid: None,
-            status,
-            is_binary: false,
-            is_partial: stats_deferred,
-            additions: 0,
-            deletions: 0,
-            stats_deferred,
-        }
-    }
-
-    pub fn from_file(file: &FileDiff) -> Self {
-        Self {
-            paths: CompareFilePaths::from_paths(file.old_path.as_deref(), file.new_path.as_deref()),
-            old_oid: file.old_oid.as_ref().map(|oid| Arc::from(oid.0.as_str())),
-            new_oid: file.new_oid.as_ref().map(|oid| Arc::from(oid.0.as_str())),
-            status: file.status,
-            is_binary: file.is_binary,
-            is_partial: file.is_partial,
-            additions: file.additions,
-            deletions: file.deletions,
-            stats_deferred: file.stats_deferred,
-        }
-    }
-
-    pub fn to_file_diff(&self) -> FileDiff {
-        FileDiff {
-            old_path: self.paths.old_path().map(Cow::into_owned),
-            new_path: self.paths.new_path().map(Cow::into_owned),
-            old_oid: self
-                .old_oid
-                .as_ref()
-                .map(|oid| carbon::ObjectId(oid.to_string())),
-            new_oid: self
-                .new_oid
-                .as_ref()
-                .map(|oid| carbon::ObjectId(oid.to_string())),
-            status: self.status,
-            is_binary: self.is_binary,
-            is_partial: self.is_partial,
-            additions: self.additions,
-            deletions: self.deletions,
-            stats_deferred: self.stats_deferred,
-            ..FileDiff::default()
-        }
-    }
-
-    pub fn stats_target(&self) -> CompareFileStatsTarget {
-        CompareFileStatsTarget {
-            paths: self.paths.clone(),
-            status: self.status,
-            is_binary: self.is_binary,
-            additions: self.additions,
-            deletions: self.deletions,
-        }
-    }
-
-    pub fn fallback_stats(&self) -> (i32, i32) {
-        (
-            u32_to_i32_saturating(self.additions),
-            u32_to_i32_saturating(self.deletions),
-        )
-    }
-
-    pub fn path(&self) -> Cow<'_, str> {
-        self.paths.display_path()
-    }
-
-    pub fn push_path_to(&self, out: &mut String) {
-        self.paths.push_display_path_to(out);
-    }
-
-    pub fn path_chars(&self) -> usize {
-        self.paths.display_path_chars()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompareFileStatsTarget {
-    pub paths: CompareFilePaths,
-    pub status: FileStatus,
-    pub is_binary: bool,
-    pub additions: u32,
-    pub deletions: u32,
-}
-
-impl CompareFileStatsTarget {
-    pub fn from_file(file: &FileDiff) -> Self {
-        Self {
-            paths: CompareFilePaths::from_paths(file.old_path.as_deref(), file.new_path.as_deref()),
-            status: file.status,
-            is_binary: file.is_binary,
-            additions: file.additions,
-            deletions: file.deletions,
-        }
-    }
-
-    pub fn fallback_stats(&self) -> (i32, i32) {
-        (
-            u32_to_i32_saturating(self.additions),
-            u32_to_i32_saturating(self.deletions),
-        )
-    }
-
-    pub fn path(&self) -> Cow<'_, str> {
-        self.paths.display_path()
-    }
-}
-
 pub fn u32_to_i32_saturating(value: u32) -> i32 {
     value.min(i32::MAX as u32) as i32
 }
 
-pub fn compact_summary_paths(summaries: &mut [CompareFileSummary]) {
-    if summaries.is_empty() {
+pub fn compact_paths_by<T>(
+    items: &mut [T],
+    mut paths: impl FnMut(&mut T) -> &mut CompareFilePaths,
+) {
+    if items.is_empty() {
         return;
     }
 
-    let path_count = compact_path_count(summaries);
+    let path_count = compact_path_count(items.iter_mut().map(&mut paths));
     let mut dirs = String::new();
     let mut dir_offsets = Vec::with_capacity(path_count.saturating_add(1));
     dir_offsets.push(0);
@@ -479,9 +349,9 @@ pub fn compact_summary_paths(summaries: &mut [CompareFileSummary]) {
     basename_offsets.push(0);
     let mut entries = Vec::with_capacity(path_count);
 
-    for summary in summaries.iter() {
+    for item in items.iter_mut() {
         push_paths_to_store(
-            &summary.paths,
+            paths(item),
             &mut dirs,
             &mut dir_offsets,
             &mut dir_ids,
@@ -501,17 +371,18 @@ pub fn compact_summary_paths(summaries: &mut [CompareFileSummary]) {
         entries: entries.into_boxed_slice(),
     });
     let mut next_id = 0;
-    for summary in summaries.iter_mut() {
-        summary.paths = compact_paths_with_ids(&summary.paths, Arc::clone(&store), &mut next_id);
+    for item in items.iter_mut() {
+        let slot = paths(item);
+        *slot = compact_paths_with_ids(slot, Arc::clone(&store), &mut next_id);
     }
 
     debug_assert_eq!(next_id, path_count);
 }
 
-fn compact_path_count(summaries: &[CompareFileSummary]) -> usize {
+fn compact_path_count<'a>(paths: impl Iterator<Item = &'a mut CompareFilePaths>) -> usize {
     let mut count = 0;
-    for summary in summaries {
-        match &summary.paths {
+    for paths in paths {
+        match paths {
             CompareFilePaths::Unknown => {}
             CompareFilePaths::Same(_)
             | CompareFilePaths::Added(_)
@@ -639,49 +510,41 @@ fn next_compact_path(store: Arc<ComparePathStore>, next_id: &mut usize) -> Compa
 
 #[cfg(test)]
 mod tests {
-    use super::{CompareFileSummary, compact_summary_paths};
-    use carbon::FileStatus;
+    use diffy_diff::FileStatus;
+
+    use crate::core::compare::output::{CompareEntry, CompareOutput};
 
     #[test]
-    fn compact_summary_paths_preserves_root_and_nested_paths() {
-        let mut summaries = vec![
-            CompareFileSummary::from_paths_status(
+    fn compacting_paths_preserves_root_nested_and_renamed_paths() {
+        let output = CompareOutput::deferred(vec![
+            CompareEntry::deferred(
                 Some(".clang-format"),
                 Some(".clang-format"),
                 FileStatus::Modified,
-                true,
             ),
-            CompareFileSummary::from_paths_status(
-                None,
-                Some("Documentation/.renames.txt"),
-                FileStatus::Added,
-                true,
-            ),
-            CompareFileSummary::from_paths_status(
+            CompareEntry::deferred(None, Some("Documentation/.renames.txt"), FileStatus::Added),
+            CompareEntry::deferred(
                 Some("drivers/old.c"),
                 Some("drivers/new.c"),
                 FileStatus::Renamed,
-                true,
             ),
-        ];
-
-        compact_summary_paths(&mut summaries);
-
-        assert_eq!(summaries[0].path(), ".clang-format");
-        assert_eq!(summaries[0].path_chars(), ".clang-format".chars().count());
-        assert_eq!(summaries[1].path(), "Documentation/.renames.txt");
+        ]);
+        let entries = &output.entries;
+        assert_eq!(entries[0].path(), ".clang-format");
+        assert_eq!(entries[0].path_chars(), ".clang-format".chars().count());
+        assert_eq!(entries[1].path(), "Documentation/.renames.txt");
         assert_eq!(
-            summaries[1].path_chars(),
+            entries[1].path_chars(),
             "Documentation/.renames.txt".chars().count()
         );
         assert_eq!(
-            summaries[2].paths.old_path().as_deref(),
+            entries[2].paths.old_path().as_deref(),
             Some("drivers/old.c")
         );
         assert_eq!(
-            summaries[2].paths.new_path().as_deref(),
+            entries[2].paths.new_path().as_deref(),
             Some("drivers/new.c")
         );
-        assert_eq!(summaries[2].path_chars(), "drivers/new.c".chars().count());
+        assert_eq!(entries[2].path_chars(), "drivers/new.c".chars().count());
     }
 }

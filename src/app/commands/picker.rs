@@ -1,0 +1,484 @@
+use crate::core::search::fuzzy::match_ranges;
+use std::path::PathBuf;
+
+use quark_components::FuzzyMatcher;
+use quark_ui::element::ScrollbarVisibility;
+use quark_ui::text_input::TextField;
+
+use super::repo_picker::RepoView;
+use crate::contracts::navigation::{CompareField, NavigationAction};
+use crate::contracts::shell::Action;
+use crate::core::compare::CompareMode;
+use crate::fonts::{FontFamilyEntry, FontRole};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerKind {
+    Repository,
+    Ref(CompareField),
+    Theme,
+    Font(FontRole),
+    CompareMenu,
+    PullRequest,
+}
+
+impl PickerKind {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Repository => "Open repository",
+            Self::Ref(CompareField::Left) => "Base ref",
+            Self::Ref(CompareField::Right) => "Head ref",
+            Self::Theme => "Theme",
+            Self::Font(FontRole::Ui) => "UI font",
+            Self::Font(FontRole::Mono) => "Code font",
+            Self::CompareMenu => "Compare",
+            Self::PullRequest => "Open pull request",
+        }
+    }
+
+    pub fn placeholder(self) -> &'static str {
+        match self {
+            Self::Repository => "Search repositories or type a path",
+            Self::Ref(_) => "Search refs or type a revision",
+            Self::Theme => "Search themes",
+            Self::Font(_) => "Search fonts",
+            Self::CompareMenu => "Search compare options",
+            Self::PullRequest => "Paste a GitHub pull request URL",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PickerChoice {
+    Heading,
+    Group(String),
+    Repository(PathBuf),
+    Ref(String),
+    Theme(String),
+    Font(String),
+    Action(Action),
+    PullRequest(String),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RowKind {
+    #[default]
+    Item,
+    Section {
+        count: Option<usize>,
+        busy: bool,
+    },
+    Group {
+        count: usize,
+        expanded: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PickerRow {
+    pub label: String,
+    pub detail: Option<String>,
+    pub meta: Option<String>,
+    pub highlights: Vec<(usize, usize)>,
+    pub choice: PickerChoice,
+    pub current: bool,
+    pub kind: RowKind,
+    pub branch: Option<String>,
+    pub indent: bool,
+}
+
+impl PickerRow {
+    pub fn selectable(&self) -> bool {
+        !matches!(self.kind, RowKind::Section { .. })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PickerCandidate {
+    pub label: String,
+    pub detail: Option<String>,
+    pub meta: Option<String>,
+    pub alias: Option<String>,
+    pub choice: PickerChoice,
+    pub current: bool,
+}
+
+impl PickerCandidate {
+    pub fn new(label: impl Into<String>, choice: PickerChoice) -> Self {
+        Self {
+            label: label.into(),
+            detail: None,
+            meta: None,
+            alias: None,
+            choice,
+            current: false,
+        }
+    }
+
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    pub fn alias(mut self, alias: impl Into<String>) -> Self {
+        self.alias = Some(alias.into());
+        self
+    }
+
+    pub fn meta(mut self, meta: impl Into<String>) -> Self {
+        self.meta = Some(meta.into()).filter(|meta: &String| !meta.is_empty());
+        self
+    }
+
+    pub fn current(mut self, current: bool) -> Self {
+        self.current = current;
+        self
+    }
+}
+
+#[derive(Debug)]
+pub struct PickerState {
+    pub kind: PickerKind,
+    pub query: TextField,
+    pub candidates: Vec<PickerCandidate>,
+    pub rows: Vec<PickerRow>,
+    pub selected: usize,
+    pub scroll_px: f32,
+    pub scrollbar: ScrollbarVisibility,
+    pub pending_reveal: bool,
+    pub repos: Option<RepoView>,
+    matcher: FuzzyMatcher,
+}
+
+pub const PICKER_VISIBLE_ROWS: usize = 9;
+pub const REPO_PICKER_VISIBLE_ROWS: usize = 14;
+pub const TYPED_PATH: &str = "Open this path";
+
+impl PickerState {
+    pub fn new(kind: PickerKind, candidates: Vec<PickerCandidate>) -> Self {
+        let mut state = Self {
+            kind,
+            query: TextField::new(""),
+            candidates,
+            rows: Vec::new(),
+            selected: 0,
+            scroll_px: 0.0,
+            scrollbar: ScrollbarVisibility::new(),
+            pending_reveal: true,
+            repos: None,
+            matcher: FuzzyMatcher::default(),
+        };
+        state.refilter();
+        state
+    }
+
+    pub fn repositories(view: RepoView) -> Self {
+        let mut state = Self::new(PickerKind::Repository, Vec::new());
+        state.repos = Some(view);
+        state.refilter();
+        state
+    }
+
+    pub fn visible_rows(&self) -> usize {
+        if self.repos.is_some() {
+            REPO_PICKER_VISIBLE_ROWS
+        } else {
+            PICKER_VISIBLE_ROWS
+        }
+    }
+
+    pub fn refresh(&mut self) {
+        let keep = self.selected_choice().cloned();
+        let scroll = self.scroll_px;
+        self.refilter();
+        self.scroll_px = scroll;
+        if let Some(index) = keep.and_then(|keep| self.rows.iter().position(|r| r.choice == keep)) {
+            self.selected = index;
+        }
+    }
+
+    pub fn set_candidates(&mut self, candidates: Vec<PickerCandidate>) {
+        self.candidates = candidates;
+        self.refilter();
+    }
+
+    pub fn refilter(&mut self) {
+        let query = self.query.text().trim();
+        self.rows.clear();
+        if let Some(view) = &self.repos {
+            self.rows = view.rows(query, &mut self.matcher);
+            if !query.is_empty()
+                && let Some(typed) = self.typed_choice(query)
+            {
+                self.rows.push(typed);
+            }
+            self.selected = self
+                .rows
+                .iter()
+                .position(|r| r.current)
+                .or_else(|| self.rows.iter().position(PickerRow::selectable))
+                .unwrap_or(0);
+            self.scroll_px = 0.0;
+            self.pending_reveal = true;
+            return;
+        }
+        if query.is_empty() {
+            self.rows
+                .extend(self.candidates.iter().map(|c| row(c, Vec::new())));
+            self.selected = self.rows.iter().position(|r| r.current).unwrap_or(0);
+        } else {
+            self.matcher.set_query(query);
+            let mut positions = Vec::new();
+            let mut scored: Vec<(i32, usize, Vec<(usize, usize)>)> = Vec::new();
+            for (i, candidate) in self.candidates.iter().enumerate() {
+                positions.clear();
+                if let Some(score) = self.matcher.score(&candidate.label, &mut positions) {
+                    scored.push((score, i, match_ranges(&candidate.label, &positions)));
+                } else if let Some(score) = candidate
+                    .alias
+                    .as_deref()
+                    .and_then(|alias| self.matcher.score(alias, &mut positions))
+                {
+                    scored.push((score, i, Vec::new()));
+                }
+            }
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            self.rows.extend(
+                scored
+                    .into_iter()
+                    .map(|(_, i, ranges)| row(&self.candidates[i], ranges)),
+            );
+            if let Some(typed) = self.typed_choice(query) {
+                self.rows.push(typed);
+            }
+            self.selected = 0;
+        }
+        self.scroll_px = 0.0;
+    }
+
+    fn typed_choice(&self, query: &str) -> Option<PickerRow> {
+        let choice = match self.kind {
+            PickerKind::Repository => PickerChoice::Repository(expand_path(query)),
+            PickerKind::Ref(_) => PickerChoice::Ref(query.to_owned()),
+            PickerKind::PullRequest => PickerChoice::PullRequest(query.to_owned()),
+            _ => return None,
+        };
+        if self.rows.iter().any(|r| r.label == query) {
+            return None;
+        }
+        Some(PickerRow {
+            label: query.to_owned(),
+            meta: None,
+            detail: Some(match self.kind {
+                PickerKind::Repository => TYPED_PATH.to_owned(),
+                PickerKind::PullRequest => "Load this pull request".to_owned(),
+                _ => "Use this revision".to_owned(),
+            }),
+            highlights: Vec::new(),
+            choice,
+            current: false,
+            kind: RowKind::Item,
+            branch: None,
+            indent: false,
+        })
+    }
+
+    pub fn reveal_pending(&mut self, row_stride: f32) {
+        if self.pending_reveal && row_stride > 0.0 {
+            self.pending_reveal = false;
+            self.reveal(row_stride);
+        }
+    }
+
+    pub fn move_selection(&mut self, delta: i32, row_stride: f32) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let last = self.rows.len() as i32 - 1;
+        let step = delta.signum();
+        let mut target = self.selected as i32;
+        let mut remaining = delta.abs();
+        while remaining > 0 {
+            let mut next = target + step;
+            while (0..=last).contains(&next) && !self.rows[next as usize].selectable() {
+                next += step;
+            }
+            if !(0..=last).contains(&next) {
+                break;
+            }
+            target = next;
+            remaining -= 1;
+        }
+        self.selected = target as usize;
+        self.reveal(row_stride);
+    }
+
+    pub fn reveal(&mut self, row_stride: f32) {
+        let top = self.selected as f32 * row_stride;
+        let viewport = self.visible_rows() as f32 * row_stride;
+        if top < self.scroll_px {
+            self.scroll_px = top;
+        } else if top + row_stride > self.scroll_px + viewport {
+            self.scroll_px = top + row_stride - viewport;
+        }
+    }
+
+    pub fn scroll(&mut self, lines: i32, row_stride: f32) {
+        let max = (self.rows.len().saturating_sub(self.visible_rows())) as f32 * row_stride;
+        self.scroll_px = (self.scroll_px + lines as f32 * row_stride).clamp(0.0, max.max(0.0));
+    }
+
+    pub fn selected_choice(&self) -> Option<&PickerChoice> {
+        self.rows.get(self.selected).map(|row| &row.choice)
+    }
+
+    pub fn complete_directory(&mut self) -> bool {
+        if self.kind != PickerKind::Repository {
+            return false;
+        }
+        let Some(PickerChoice::Repository(path)) = self.selected_choice().cloned() else {
+            return false;
+        };
+        if !path.is_dir() {
+            return false;
+        }
+        let mut text = path.display().to_string();
+        if !text.ends_with(std::path::MAIN_SEPARATOR) {
+            text.push(std::path::MAIN_SEPARATOR);
+        }
+        self.query.set_text(text);
+        self.refilter();
+        true
+    }
+}
+
+fn row(candidate: &PickerCandidate, highlights: Vec<(usize, usize)>) -> PickerRow {
+    PickerRow {
+        label: candidate.label.clone(),
+        detail: candidate.detail.clone(),
+        meta: candidate.meta.clone(),
+        highlights,
+        choice: candidate.choice.clone(),
+        current: candidate.current,
+        kind: RowKind::Item,
+        branch: None,
+        indent: false,
+    }
+}
+
+pub fn expand_path(query: &str) -> PathBuf {
+    match query.strip_prefix('~') {
+        Some(rest) => match dirs::home_dir() {
+            Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
+            None => PathBuf::from(query),
+        },
+        None => PathBuf::from(query),
+    }
+}
+
+pub fn font_candidates(entries: &[FontFamilyEntry], current: &str) -> Vec<PickerCandidate> {
+    entries
+        .iter()
+        .map(|entry| {
+            PickerCandidate::new(
+                entry.label.clone(),
+                PickerChoice::Font(entry.family.clone()),
+            )
+            .detail(entry.source.label())
+            .current(entry.family == current)
+        })
+        .collect()
+}
+
+pub fn compare_menu_candidates(mode: CompareMode) -> Vec<PickerCandidate> {
+    let action = |a: NavigationAction| PickerChoice::Action(a.into());
+    let modes = [
+        (
+            CompareMode::ThreeDot,
+            "Three-dot compare",
+            "Changes since the merge base",
+        ),
+        (
+            CompareMode::TwoDot,
+            "Two-dot compare",
+            "Direct difference between refs",
+        ),
+        (
+            CompareMode::SingleCommit,
+            "Single commit",
+            "Changes introduced by one commit",
+        ),
+    ];
+    let mut candidates: Vec<PickerCandidate> = modes
+        .into_iter()
+        .map(|(m, label, detail)| {
+            PickerCandidate::new(label, action(NavigationAction::SetCompareMode(m)))
+                .detail(detail)
+                .current(m == mode)
+        })
+        .collect();
+    candidates.extend([
+        PickerCandidate::new("Working tree", action(NavigationAction::ShowWorkingTree))
+            .detail("Uncommitted changes"),
+        PickerCandidate::new("Swap refs", action(NavigationAction::SwapRefs)),
+        PickerCandidate::new(
+            "Choose base ref",
+            PickerChoice::Action(
+                crate::contracts::commands::CommandsAction::OpenRefPicker(CompareField::Left)
+                    .into(),
+            ),
+        ),
+        PickerCandidate::new(
+            "Choose head ref",
+            PickerChoice::Action(
+                crate::contracts::commands::CommandsAction::OpenRefPicker(CompareField::Right)
+                    .into(),
+            ),
+        ),
+        PickerCandidate::new("Start compare", action(NavigationAction::StartCompare)),
+    ]);
+    candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidates() -> Vec<PickerCandidate> {
+        ["alpha", "beta", "gamma"]
+            .into_iter()
+            .map(|name| PickerCandidate::new(name, PickerChoice::Ref(name.to_owned())))
+            .collect()
+    }
+
+    #[test]
+    fn filtering_ranks_matches_and_offers_the_typed_revision() {
+        let mut picker = PickerState::new(PickerKind::Ref(CompareField::Left), candidates());
+        assert_eq!(picker.rows.len(), 3);
+        picker.query.set_text("bet");
+        picker.refilter();
+        assert_eq!(picker.rows[0].label, "beta");
+        assert_eq!(picker.rows.last().map(|r| r.label.as_str()), Some("bet"));
+        picker.query.set_text("zz9");
+        picker.refilter();
+        assert_eq!(picker.rows.len(), 1);
+        assert_eq!(
+            picker.selected_choice(),
+            Some(&PickerChoice::Ref("zz9".to_owned()))
+        );
+    }
+
+    #[test]
+    fn selection_clamps_and_scrolls_into_view() {
+        let rows = (0..20)
+            .map(|i| PickerCandidate::new(format!("ref{i}"), PickerChoice::Ref(i.to_string())))
+            .collect();
+        let mut picker = PickerState::new(PickerKind::Theme, rows);
+        picker.move_selection(-3, 10.0);
+        assert_eq!(picker.selected, 0);
+        picker.move_selection(12, 10.0);
+        assert_eq!(picker.selected, 12);
+        assert_eq!(picker.scroll_px, 40.0);
+        picker.move_selection(100, 10.0);
+        assert_eq!(picker.selected, 19);
+    }
+}

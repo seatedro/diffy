@@ -136,3 +136,29 @@ fn parse(path: &Path) -> Result<Fixture, String> {
         expect,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_engine_matches_every_fixture() {
+        if engine::language("rust").is_none() {
+            return;
+        }
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        let fixtures = load(&dir, None).unwrap();
+        let failing: Vec<&str> = fixtures
+            .iter()
+            .filter(|fixture| {
+                let actual = output(Engine::Native, fixture).unwrap();
+                !fixture
+                    .expect
+                    .iter()
+                    .any(|e| e.trim_end() == actual.trim_end())
+            })
+            .map(|fixture| fixture.name.as_str())
+            .collect();
+        assert!(failing.is_empty(), "fixtures read differently: {failing:?}");
+    }
+}

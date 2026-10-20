@@ -10,9 +10,9 @@
 # 1. `syntax-pack verify` every target's index: signed by $PACK_INDEX_KEY,
 #    every pinned language, local files matching, immutable URLs. Nothing
 #    is uploaded unless every target passes.
-# 2. Upload each file to the key its URL names, never replacing an object
-#    already there. URLs carry the file's SHA-256, so an existing object
-#    should already be identical.
+# 2. Upload each file to the key its URL names with one parallel
+#    `aws s3 sync`, skipping objects already there at the same size. URLs
+#    carry the file's SHA-256, so an existing object is already identical.
 # 3. Download every file through the public URL and check its SHA-256.
 # 4. Only then replace each <target>/index.json (a single PUT, so readers
 #    see the old index or the new one) and check the public copies.
@@ -59,32 +59,26 @@ export AWS_DEFAULT_REGION=auto
 prefix=$(printf '%s' "$base" | sed -E 's#^[a-z]+://[^/]+/?##')
 s3() { aws s3api "$@" --bucket "$PACK_R2_BUCKET" --endpoint-url "$PACK_R2_ENDPOINT"; }
 
-uploaded=0
-while IFS= read -r -d '' file; do
-  rel=${file#"$stage"/}
-  key=${prefix:+$prefix/}$rel
-  if s3 head-object --key "$key" >/dev/null 2>&1; then
-    continue
-  fi
-  s3 put-object --key "$key" --body "$file" \
-    --cache-control "public, max-age=31536000, immutable" \
-    --content-type application/octet-stream >/dev/null
-  uploaded=$((uploaded + 1))
-done < <(find "$stage" -type f -print0)
-echo "uploaded $uploaded new pack files"
+aws s3 sync "$stage" "s3://$PACK_R2_BUCKET${prefix:+/$prefix}" --size-only --no-progress \
+  --cache-control "public, max-age=31536000, immutable" \
+  --content-type application/octet-stream --endpoint-url "$PACK_R2_ENDPOINT" >"$work/sync.log"
+echo "uploaded $(grep -c '^upload:' "$work/sync.log" || true) new pack files"
 
 sha_of_url() {
   curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$1" | sha256sum | cut -d' ' -f1
 }
 
+check_served() {
+  served=$(sha_of_url "$1")
+  if [ "$served" != "$2" ]; then
+    echo "::error::$1 serves SHA-256 $served, the index lists $2"
+    return 1
+  fi
+}
+export -f sha_of_url check_served
+
 for target in $TARGETS; do
-  while IFS=$'\t' read -r _ url sha; do
-    served=$(sha_of_url "$url")
-    if [ "$served" != "$sha" ]; then
-      echo "::error::$url serves SHA-256 $served, the index lists $sha"
-      exit 1
-    fi
-  done <"$work/$target.tsv"
+  cut -f2,3 "$work/$target.tsv" | tr '\t' '\n' | xargs -n 2 -P 16 bash -c 'check_served "$0" "$1"'
   echo "$target: every pack file is served"
 done
 

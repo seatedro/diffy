@@ -96,8 +96,8 @@ publish.sh:
 
 1. Verifies every target's index (signature, every pinned language not
    skipped, local files, URLs); uploads nothing unless all pass.
-2. Uploads each file to the key its URL names through R2's S3 API, skipping
-   existing keys, so a published file is never replaced.
+2. Uploads each file to the key its URL names with one parallel `aws s3
+   sync` through R2's S3 API, skipping keys already there.
 3. Downloads every file through the public URL and checks its SHA-256.
 4. Replaces each `index.json` with a single PUT (readers see the old index
    or the new one).

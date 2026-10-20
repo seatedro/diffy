@@ -114,8 +114,7 @@ pub fn diff(
     run(
         language,
         config,
-        old,
-        new,
+        [old, new],
         limits,
         &options,
         None,
@@ -140,8 +139,7 @@ pub fn diff_vetted(
     run(
         language,
         config,
-        old,
-        new,
+        [old, new],
         limits,
         &options,
         Some(vet),
@@ -152,8 +150,7 @@ pub fn diff_vetted(
 fn run<T>(
     language: &ts::Language,
     config: &Config,
-    old: &str,
-    new: &str,
+    [old, new]: [&str; 2],
     limits: &Limits,
     options: &matcher::Options,
     vet: Option<&Vet<'_>>,
@@ -292,8 +289,7 @@ pub mod eval {
         crate::run(
             language,
             config,
-            old,
-            new,
+            [old, new],
             limits,
             &inner(options),
             None,

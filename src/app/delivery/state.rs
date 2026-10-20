@@ -2,7 +2,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use diffy_syntax::{GrammarState, GrammarStatus};
+use diffy_syntax::{Catalog, GrammarState, GrammarStatus, LanguageId};
+use quark_ui::element::ScrollHandle;
 
 use crate::contracts::commands::{CommandDescriptor, CommandSource, ToastKind, ToastUpdate};
 use crate::contracts::delivery::{
@@ -33,10 +34,11 @@ pub struct DeliveryController {
     updates_supported: bool,
     auto_update: bool,
     update: UpdateState,
-    grammars: Arc<[GrammarStatus]>,
-    requested: HashSet<&'static str>,
+    catalog: Arc<Catalog>,
+    requested: HashSet<String>,
     availability: GrammarAvailability,
     languages_open: bool,
+    languages_scroll: ScrollHandle,
     poll_generation: u64,
 }
 
@@ -52,10 +54,11 @@ impl DeliveryController {
             updates_supported,
             auto_update: false,
             update: UpdateState::Idle,
-            grammars: Arc::from([]),
+            catalog: Arc::default(),
             requested: HashSet::new(),
             availability: GrammarAvailability::default(),
             languages_open: false,
+            languages_scroll: ScrollHandle::new(),
             poll_generation: 0,
         }
     }
@@ -65,15 +68,28 @@ impl DeliveryController {
     }
 
     pub fn grammars(&self) -> &[GrammarStatus] {
-        &self.grammars
+        &self.catalog.statuses
+    }
+
+    pub fn catalog(&self) -> &Catalog {
+        &self.catalog
     }
 
     pub fn languages_open(&self) -> bool {
         self.languages_open
     }
 
+    pub fn languages_scroll(&self) -> &ScrollHandle {
+        &self.languages_scroll
+    }
+
+    pub fn language_for_path(&self, path: &str) -> Option<&str> {
+        let tag = LanguageId::from_path(path)?;
+        self.catalog.tags.get(tag.as_str()).map(String::as_str)
+    }
+
     pub fn failed_grammars(&self) -> impl Iterator<Item = &GrammarStatus> {
-        self.grammars
+        self.grammars()
             .iter()
             .filter(|status| matches!(status.state, GrammarState::Failed(_)))
     }
@@ -137,10 +153,10 @@ impl DeliveryController {
         reduction
     }
 
-    fn ensure(&mut self, languages: impl IntoIterator<Item = &'static str>) -> Reduction {
-        let missing: Vec<&'static str> = languages
+    fn ensure(&mut self, languages: impl IntoIterator<Item = String>) -> Reduction {
+        let missing: Vec<String> = languages
             .into_iter()
-            .filter(|language| self.requested.insert(language))
+            .filter(|language| self.requested.insert(language.clone()))
             .collect();
         if missing.is_empty() {
             return Reduction::default();
@@ -151,7 +167,13 @@ impl DeliveryController {
     fn startup(&mut self, auto_update: bool) -> Reduction {
         self.auto_update = auto_update;
         let mut reduction = Reduction::default().effect(DeliveryEffect::WatchGrammars);
-        reduction.merge(self.ensure(grammar::common_languages().map(|language| language.name)));
+        reduction.merge(
+            self.ensure(
+                grammar::COMMON_LANGUAGES
+                    .iter()
+                    .map(|&language| language.to_owned()),
+            ),
+        );
         if self.polls_for_updates() {
             reduction = reduction.effect(DeliveryEffect::CheckForUpdates { silent: true });
         }
@@ -172,10 +194,10 @@ impl DeliveryController {
         self.ensure(languages)
     }
 
-    fn grammars_changed(&mut self, grammars: Arc<[GrammarStatus]>) -> Reduction {
-        self.grammars = grammars;
+    fn grammars_changed(&mut self, catalog: Arc<Catalog>) -> Reduction {
+        self.catalog = catalog;
         let installed: Vec<String> = self
-            .grammars
+            .grammars()
             .iter()
             .filter(|status| matches!(status.state, GrammarState::Ready | GrammarState::Installed))
             .map(|status| status.language.to_owned())
@@ -197,14 +219,10 @@ impl DeliveryController {
     }
 }
 
-pub fn grammar_languages(path: &str) -> impl Iterator<Item = &'static str> {
-    let highlight = grammar::language_for_path(path).map(|language| language.name);
-    let semantic = path
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase())
-        .filter(|extension| matches!(extension.as_str(), "js" | "mjs" | "jsx"))
-        .map(|_| "javascript");
-    highlight.into_iter().chain(semantic)
+pub fn grammar_languages(path: &str) -> impl Iterator<Item = String> {
+    LanguageId::from_path(path)
+        .map(|language| language.as_str().to_owned())
+        .into_iter()
 }
 
 fn toast(kind: ToastKind, message: String) -> Intent {
@@ -250,15 +268,14 @@ impl Controller for DeliveryController {
             }
             DeliveryAction::RetryGrammar { language } => {
                 let Some(position) = self
-                    .grammars
+                    .grammars()
                     .iter()
                     .position(|status| status.language == language)
                 else {
                     return Reduction::default();
                 };
-                let mut grammars = self.grammars.to_vec();
-                grammars[position].state = GrammarState::Downloading;
-                self.grammars = grammars.into();
+                Arc::make_mut(&mut self.catalog).statuses[position].state =
+                    GrammarState::Downloading;
                 Reduction::changed().effect(DeliveryEffect::RetryGrammar { language })
             }
         }
@@ -305,7 +322,7 @@ impl Controller for DeliveryController {
                     reduction.intent(toast(ToastKind::Success, message))
                 }
             }
-            DeliveryEvent::GrammarsChanged(grammars) => self.grammars_changed(grammars),
+            DeliveryEvent::GrammarsChanged(catalog) => self.grammars_changed(catalog),
             DeliveryEvent::UpdatePollDue { generation } => self.poll_due(generation),
         }
     }

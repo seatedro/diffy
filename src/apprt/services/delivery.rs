@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use diffy_syntax::{GrammarStatus, GrammarStore, LanguageId};
+use diffy_syntax::{Catalog, GrammarStore, LanguageId};
 
 use crate::core::error::Result;
 use crate::core::syntax::Grammars;
@@ -27,13 +27,13 @@ impl DeliveryServices {
     }
 }
 
-pub fn grammar_status(store: &GrammarStore) -> Arc<[GrammarStatus]> {
-    store.legacy_status().into()
+pub fn grammar_status(store: &GrammarStore) -> Arc<Catalog> {
+    Arc::new(store.catalog())
 }
 
-pub fn ensure_grammars(store: &GrammarStore, languages: &[&str]) {
+pub fn ensure_grammars(store: &GrammarStore, languages: &[impl AsRef<str>]) {
     for language in languages {
-        if let Some(tag) = LanguageId::from_fence(language) {
+        if let Some(tag) = LanguageId::from_fence(language.as_ref()) {
             store.status(&tag);
         }
     }

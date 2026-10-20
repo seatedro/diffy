@@ -90,6 +90,7 @@ impl Layout {
     pub const AGE_W: f32 = 40.0;
     pub const BRANCH_MAX_W: f32 = 150.0;
     pub const HOVER_CARD_W: f32 = 330.0;
+    pub const LANGUAGE_LIST_MAX_H: f32 = 240.0;
     pub const POPOVER_GAP: f32 = 4.0;
     pub const CONTROL_H: f32 = 26.0;
     pub const CONTROL_SM_H: f32 = 22.0;

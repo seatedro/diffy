@@ -11,13 +11,42 @@ subcommand.
   header, and query file it reads against the pinned `sha256`.
 - Files are hashed with LF line endings, so a Windows checkout that
   converted them hashes the same. Query files ship with LF on every target.
-- Compiles `parser.c`, plus `scanner.c` when the entry says `scanner = "c"`,
-  into a shared library exporting only the language function.
-- Grammars with C++ scanners are rejected; every pinned grammar has a C
-  scanner or none.
-- Loading grammars.toml checks that every name, alias, and extension belongs
+- Compiles `parser.c`, plus `scanner.c` or `scanner.cc` as the entry's
+  `scanner` says, into a shared library exporting the language function.
+- A grammar marked `generate` ships `grammar.json` but no `parser.c`; the
+  build generates it with tree-sitter CLI 0.26.8 (`$TREE_SITTER`, else
+  `tree-sitter` on PATH), and `grammar.json` is hashed in its place.
+- Loading the lock checks that every name, alias, and extension belongs
   to one language and is lowercase, and that each expected injection is a
   pinned language's tag.
+
+## Languages
+
+- [grammars.toml](grammars.toml): the hand-pinned core languages, each with
+  a sample in [samples](samples) and expected captures. A core language
+  that fails to build fails the build.
+- [registry.toml](registry.toml): every other grammar in nvim-treesitter's
+  [parser registry](https://github.com/neovim-treesitter/treesitter-parser-registry),
+  generated, never edited by hand. Queries come from each language's
+  `nvim-treesitter-queries-*` repository, with `; inherits:` resolved into
+  `[fragment.*]` entries. Extensions come from
+  [extensions.toml](extensions.toml); registry filetypes become aliases.
+  Tags a core language claims stay with it.
+- Queries are adapted for tree-sitter at build time: `#lua-match?` and
+  `#vim-match?` become `#match?`, and patterns using Neovim-only predicates
+  are dropped.
+- A registry language that fails on some target is left out of that
+  target's index and listed in its `skipped.json`.
+
+Regenerate after a registry update:
+
+```sh
+curl -fsSLo /tmp/registry.json https://raw.githubusercontent.com/neovim-treesitter/treesitter-parser-registry/main/registry.json
+cargo run -p syntax-pack -- registry --registry /tmp/registry.json
+```
+
+Every registry language is built and checked for the host before it is
+pinned; failures land in `[skipped]` with the reason.
 
 ## Checks
 
@@ -47,25 +76,26 @@ cargo run -p syntax-pack --target x86_64-apple-darwin -- check
 
 ## Publishing
 
-- Base URL: `https://quark.seated.ro/v1`, the `v1/` prefix of the
-  `quark-packs` Cloudflare R2 bucket through its custom domain.
-- `<base>/<target>/index.json` is each target's signed index.
-- The demos trust the public key that the workflow's `PACK_INDEX_KEY` also
-  names.
+- Base URL: `https://blob.diffygui.com/syntax-packs/v1`, the
+  `syntax-packs/v1/` prefix of Diffy's `diffy` R2 bucket.
+- `<base>/<target>/index.json` is each target's signed index; Diffy reads
+  it through `src/core/syntax/grammar.rs`.
+- The index key is the one `PHOSPHOR_PACK_INDEX_PUBLIC_KEY` names; the
+  workflow's `PACK_INDEX_KEY` must match it.
 - The [Syntax packs](../../.github/workflows/syntax-packs.yml) workflow runs
   on manual dispatch only.
 
 | Job | Runs | Secrets |
 |---|---|---|
-| `build` | Always, on a native runner per target: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin` (`macos-15`), `x86_64-apple-darwin` (`macos-15-intel`), `x86_64-pc-windows-msvc`. Builds, loads, and checks every pack; uploads `syntax-packs-unsigned-<target>`. Fails when the runner's host triple is not the target, so no pack goes unloaded. | None |
-| `sign` | Only when `languages` is empty. Signs each index with `--base-url`, checks it with `syntax-pack verify` against the demos' key, uploads `syntax-packs-signed`. Reads build artifacts as data; restores no cache. | `DIFFY_SYNTAX_SIGNING_KEY` |
-| `publish` | Only with `publish` checked, `languages` empty, on `master`. Runs [publish.sh](publish.sh). One run at a time across refs. | `QUARK_PACKS_R2_*` |
+| `build` | Always, on a native runner per target: `aarch64-apple-darwin` (`macos-26`), `x86_64-apple-darwin` (`macos-26-intel`), `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`. Builds, loads, and checks every pack; uploads `syntax-packs-unsigned-<target>`. Fails when the runner's host triple is not the target. | None |
+| `sign` | Only when `languages` is empty. Signs each index with `--base-url` and verifies it against `PACK_INDEX_KEY`; uploads `syntax-packs-signed`. | `PHOSPHOR_PACK_INDEX_PRIVATE_KEY` |
+| `publish` | Only with `publish` checked, `languages` empty, on `master`. Runs [publish.sh](publish.sh). One run at a time. | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` |
 | `smoke` | After `publish`, on every target's runner. `syntax-pack remote-check` downloads each pack through the public index and highlights its sample. | None |
 
 publish.sh:
 
-1. Verifies every target's index (signature, every pinned language, local
-   files, URLs); uploads nothing unless all pass.
+1. Verifies every target's index (signature, every pinned language not
+   skipped, local files, URLs); uploads nothing unless all pass.
 2. Uploads each file to the key its URL names through R2's S3 API, skipping
    existing keys, so a published file is never replaced.
 3. Downloads every file through the public URL and checks its SHA-256.
@@ -77,32 +107,13 @@ publish.sh:
   skip it, and `syntax-pack index` refuses any language set but the full
   pinned one.
 
-## One-time setup
-
-- Create the `syntax-packs-signing` and `syntax-packs-publish` environments
-  (Settings > Environments) with required reviewers and a deployment branch
-  rule for `master`.
-- Move `DIFFY_SYNTAX_SIGNING_KEY` from repository secrets into
-  `syntax-packs-signing`, so only `sign` reads it.
-- New key: `cargo run -p quark-update --example manifest_tool keygen`;
-  compile the public half (`syntax-pack public-key`) into apps; update
-  `PACK_INDEX_KEY` in the workflow.
-- Keep it separate from the update key. To rotate, ship the new public key
-  beside the old one before signing with it.
-- In `syntax-packs-publish`, set `QUARK_PACKS_R2_ACCESS_KEY_ID` and
-  `QUARK_PACKS_R2_SECRET_ACCESS_KEY`: S3 credentials of a Cloudflare API
-  token limited to object read and write on `quark-packs`. The workflow
-  names the bucket and account endpoint.
-- Let non-browser clients through Cloudflare for `/v1/*`: apps download with
-  ureq, and the publish job checks URLs with curl.
-
 ## Running a release
 
 1. Dispatch **Syntax packs** on `master` with `languages` empty and
    `publish` unchecked. Every target builds and checks; the signed artifact
    is ready to inspect.
-2. Dispatch again with `publish` checked, approve both environments, and
-   wait for `smoke` on all five targets.
+2. Dispatch again with `publish` checked and wait for `smoke` on every
+   target.
 
 - `languages` set to, say, `yaml toml` builds and tests just those on every
   target, for trying a grammar bump.

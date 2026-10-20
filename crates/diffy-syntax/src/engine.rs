@@ -28,7 +28,9 @@ use crate::{HighlightKind, HighlightSpan, LanguageId};
 /// and compiled injection query when its pack has one.
 pub(crate) struct Grammar {
     id: u64,
+    name: Option<Arc<str>>,
     language: ts::Language,
+    highlights: Arc<str>,
     query: ts::Query,
     capture_kinds: Vec<HighlightKind>,
     /// `@none`, which clears the colors of the captures around it (Markdown
@@ -58,13 +60,29 @@ impl Grammar {
             Some(file) => Some(std::fs::read_to_string(dir.join(&file.path))?),
             None => None,
         };
-        Self::compile(
+        let grammar = Self::compile(
             &dir.join(&manifest.library.path),
             &manifest.symbol,
             Some(manifest.abi),
             &highlights,
             injections.as_deref(),
-        )
+        )?;
+        Ok(Self {
+            name: Some(Arc::from(manifest.language.as_str())),
+            ..grammar
+        })
+    }
+
+    pub(crate) fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    pub(crate) fn language(&self) -> &ts::Language {
+        &self.language
+    }
+
+    pub(crate) fn highlights(&self) -> &Arc<str> {
+        &self.highlights
     }
 
     pub(crate) fn compile(
@@ -113,7 +131,9 @@ impl Grammar {
             .transpose()?;
         Ok(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            name: None,
             language,
+            highlights: Arc::from(highlights),
             query,
             none,
             capture_kinds,

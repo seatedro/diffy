@@ -184,7 +184,6 @@ mod tests {
     use std::sync::mpsc::{Receiver, channel};
     use std::time::Duration;
 
-    use diffy_syntax::testing::legacy as fixture;
     use diffy_syntax::{GrammarState, GrammarStatus};
 
     use super::*;
@@ -195,7 +194,12 @@ mod tests {
     fn next(messages: &Receiver<AppMessage>) -> Vec<GrammarStatus> {
         match messages.recv_timeout(Duration::from_secs(30)) {
             Ok(AppMessage::Runtime(envelope)) => match envelope.event {
-                AppEvent::Delivery(DeliveryEvent::GrammarsChanged(grammars)) => grammars.to_vec(),
+                AppEvent::Delivery(DeliveryEvent::GrammarsChanged(catalog)) => catalog
+                    .statuses
+                    .iter()
+                    .filter(|status| status.language == "rust")
+                    .cloned()
+                    .collect(),
                 other => panic!("unexpected event {other:?}"),
             },
             other => panic!("unexpected message {other:?}"),
@@ -204,12 +208,9 @@ mod tests {
 
     #[test]
     fn grammar_effects_report_store_status() {
-        let Some(packs) = fixture::native_packs(&[("rust", "rust")]) else {
+        let Some(store) = diffy_syntax::testing::store_with("rust") else {
             return;
         };
-        let storage = tempfile::tempdir().unwrap();
-        fixture::install_signed(storage.path(), &packs).unwrap();
-        let store = fixture::cached_store(storage.path()).unwrap();
         let runtime = DeliveryRuntime::with_store(DeliveryServices, store);
         let (sender, messages) = channel();
         let events = RuntimeEventSender::from_channel(sender).scoped(WorkspaceEpoch::default());
@@ -218,7 +219,7 @@ mod tests {
         let watched = next(&messages);
         runtime.dispatch(
             DeliveryEffect::EnsureGrammars {
-                languages: vec!["rust"],
+                languages: vec!["rust".to_owned()],
             },
             events,
         );
@@ -226,14 +227,14 @@ mod tests {
         assert_eq!(
             watched,
             vec![GrammarStatus {
-                language: "rust",
+                language: "rust".to_owned(),
                 state: GrammarState::Installed
             }]
         );
         assert_eq!(
             next(&messages),
             vec![GrammarStatus {
-                language: "rust",
+                language: "rust".to_owned(),
                 state: GrammarState::Ready
             }]
         );

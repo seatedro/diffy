@@ -313,9 +313,9 @@ pub fn check_pack_dir(dir: &Path) -> Result<PackManifest, PackError> {
 }
 
 #[cfg(feature = "download")]
-pub use signed::{VerifiedIndex, verify_index};
+pub(crate) use signed::unhex;
 #[cfg(feature = "download")]
-pub(crate) use signed::{unhex, verify_signed};
+pub use signed::{VerifiedIndex, verify_index};
 
 #[cfg(feature = "download")]
 mod signed {

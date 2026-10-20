@@ -53,10 +53,12 @@ diff.enable_syntax(store); // DiffViewState
 - `GrammarStore::subscribe` calls back on the fetch thread when a pending
   language resolves. Wake the event loop there so recolored blocks get
   polled.
-- Quark's public packs (until Diffy publishes its own): index
-  `https://quark.seated.ro/v1/{target}/index.json`, key
-  `2194429b3227f613ac19401deddbb0bdc2b4b283e1ecec0d0d38892c28d63955` (what
-  `diff_demo` trusts).
+- Diffy's published packs: index
+  `https://blob.diffygui.com/syntax-packs/v1/{target}/index.json`, key
+  `1f3d2cb98f99da0321bdfa8549b4a43a36f96d7e25b710fb49739d46065b19f1`.
+- `GrammarStore::catalog` lists every language the store knows of (local
+  packs and the cached index), each tag's language, and the state of those
+  installed, loaded, downloading, or failed.
 
 ### Lookup behavior
 
@@ -74,41 +76,6 @@ so an unknown language costs one map lookup afterwards.
 
 - `HighlightWorker` answers a pending language with a plain result marked
   `pending`, then sends the real result for the same slot and generation.
-
-### Legacy-format packs
-
-Diffy's published grammars use the older Phosphor format, which
-difftastic also reads. `StoreConfig::legacy_packs(LegacyPacks::new(dir,
-&keys).downloads(url))` loads them (feature `download`); see
-[legacy_pack.rs](src/legacy_pack.rs).
-
-- Languages: the 13 in `legacy_pack::LANGUAGES` (Bash, C, C++, Go,
-  JavaScript, JSON, Nix, Python, Rust, TOML, TypeScript, TSX, Zig). Tags
-  resolve by name or extension; `js`/`mjs` use TypeScript and `jsx` uses
-  TSX.
-- Cache: `<dir>/<language>/<version>/<platform>/` with `manifest.json`,
-  `parser.<dylib|so|dll>`, `highlights.scm`, optional `injections.scm`;
-  `<platform>` is `macos-aarch64`, `linux-x86_64`, and so on. Diffy uses
-  `<data-local dir>/diffy/phosphor/languages`. The verified index is kept at
-  `<dir>/.index/<platform>.json`.
-- Index: `{"payload": {"schema_version": 1, "platform", "tree_sitter_abi",
-  "packs": [...]}, "signature"}`, Ed25519 over the canonical payload.
-- Trust: a cached pack loads only when its `manifest.json` matches the
-  SHA-256 in an index that verifies against a configured key, and every
-  file matches its SHA-256. Without a verified index nothing loads.
-- Queries: `; inherits: ecma` adds the built-in ECMAScript query and TSX
-  adds TypeScript's; other inherits are ignored, as Phosphor did.
-- A download installs the manifest last and removes this platform's other
-  versions of the language, so difftastic reads the same pack.
-- A failed download, or a pack whose queries do not compile, leaves the
-  language failed until `GrammarStore::retry`, which refetches the index
-  and downloads again.
-- Publishing: `.github/workflows/update-phosphor-index.mjs` builds each
-  parser and query repository at its latest release tag when the registry
-  marks it `*_semver`, else at its default branch. Before signing, CI runs
-  `cargo run -p syntax-pack -- legacy-check --out .phosphor-pack-out`,
-  which loads every pack with this crate's tree-sitter and fails when one
-  of the 13 languages does not load.
 
 ### Enclosing scopes
 
@@ -129,13 +96,16 @@ grammar is skipped, and other languages get an empty table.
 
 [tools/syntax-pack](../../tools/syntax-pack/src/main.rs) builds packs from
 the pinned sources in
-[grammars.toml](../../tools/syntax-pack/grammars.toml).
+[grammars.toml](../../tools/syntax-pack/grammars.toml) and
+[registry.toml](../../tools/syntax-pack/registry.toml).
 
-- Languages: Bash, C, C++, CSS, Go, HTML, JavaScript, JSON, Markdown
-  (`markdown` plus `markdown_inline`, which its injection query names),
-  Python, Rust, TOML, TSX, TypeScript, YAML.
-- Every grammar is MIT licensed; `syntax-pack list` prints license,
-  repository, and commit.
+- Core languages (grammars.toml): Bash, C, C++, CSS, Go, HTML, JavaScript,
+  JSON, Markdown (`markdown` plus `markdown_inline`, which its injection
+  query names), Python, Rust, TOML, TSX, TypeScript, YAML.
+- Registry languages (registry.toml): every other grammar in
+  nvim-treesitter's parser registry that builds, with its queries.
+- `syntax-pack list` prints each language's license, repository, and
+  commit.
 
 ```sh
 cargo run -p syntax-pack -- build                 # every language, for this host

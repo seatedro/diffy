@@ -1,21 +1,34 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use diffy_syntax::legacy_pack::{self, LegacyLanguage};
-use diffy_syntax::{
-    GrammarStore, HighlightWorker, LegacyPacks, PublicKey, ScopeWorker, StoreConfig,
-};
+use diffy_syntax::{Downloads, GrammarStore, HighlightWorker, PublicKey, ScopeWorker, StoreConfig};
 
 const PACK_INDEX_PUBLIC_KEY: &str = match option_env!("PHOSPHOR_PACK_INDEX_PUBLIC_KEY") {
     Some(key) => key,
     None => "1f3d2cb98f99da0321bdfa8549b4a43a36f96d7e25b710fb49739d46065b19f1",
 };
+const PACK_INDEX_URL: &str = "https://blob.diffygui.com/syntax-packs/v1/{target}/index.json";
+const APP_ID: &str = "diffy";
 const LOCAL_PACKS_ENV: &str = "DIFFY_SYNTAX_PACKS";
+
+pub const COMMON_LANGUAGES: &[&str] = &[
+    "bash",
+    "c",
+    "cpp",
+    "go",
+    "javascript",
+    "json",
+    "python",
+    "rust",
+    "toml",
+    "typescript",
+    "tsx",
+];
 
 #[derive(Debug, Clone, Default)]
 pub struct GrammarConfig {
     pub local_packs: Vec<PathBuf>,
-    pub legacy: Option<LegacyPacks>,
+    pub downloads: Option<Downloads>,
 }
 
 impl GrammarConfig {
@@ -24,12 +37,9 @@ impl GrammarConfig {
             .map(PathBuf::from)
             .into_iter()
             .collect();
-        let legacy = legacy_storage_dir().map(|dir| {
-            LegacyPacks::new(dir, &trusted_keys()).downloads(legacy_pack::default_index_url())
-        });
         Self {
             local_packs,
-            legacy,
+            downloads: Some(Downloads::new(APP_ID, PACK_INDEX_URL, &trusted_keys())),
         }
     }
 
@@ -38,15 +48,11 @@ impl GrammarConfig {
         for root in &self.local_packs {
             config = config.local_packs(root);
         }
-        if let Some(legacy) = &self.legacy {
-            config = config.legacy_packs(legacy.clone());
+        if let Some(downloads) = &self.downloads {
+            config = config.downloads(downloads.clone());
         }
         config
     }
-}
-
-pub fn legacy_storage_dir() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|base| base.join("diffy").join("phosphor").join("languages"))
 }
 
 pub fn trusted_keys() -> Vec<PublicKey> {
@@ -54,20 +60,6 @@ pub fn trusted_keys() -> Vec<PublicKey> {
         .split(',')
         .filter_map(|key| PublicKey::from_hex(key.trim()).ok())
         .collect()
-}
-
-pub fn languages() -> &'static [LegacyLanguage] {
-    legacy_pack::LANGUAGES
-}
-
-pub fn common_languages() -> impl Iterator<Item = &'static LegacyLanguage> {
-    legacy_pack::LANGUAGES
-        .iter()
-        .filter(|language| language.common)
-}
-
-pub fn language_for_path(path: &str) -> Option<&'static LegacyLanguage> {
-    legacy_pack::language_for_path(path)
 }
 
 #[derive(Clone)]

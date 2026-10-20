@@ -117,6 +117,7 @@ pub(crate) struct Remote {
     /// This session's index fetch finished (or failed). Until then a tag
     /// missing from `cached` may still be in the fresh index.
     fetched: bool,
+    failures: std::collections::HashMap<String, String>,
 }
 
 impl Remote {
@@ -124,6 +125,37 @@ impl Remote {
         self.started = false;
         self.fetched = false;
     }
+
+    pub(crate) fn failure(&self, language: &str) -> Option<String> {
+        self.failures.get(language).cloned()
+    }
+
+    pub(crate) fn forget_failure(&mut self, tag: &str) -> bool {
+        let language = self
+            .cached
+            .as_deref()
+            .and_then(|packs| find(packs, tag))
+            .map_or_else(|| tag.to_owned(), |manifest| manifest.language.clone());
+        self.failures.remove(&language).is_some()
+    }
+}
+
+pub(crate) fn packs(
+    downloads: &Downloads,
+    state: &mut State,
+) -> Vec<(PathBuf, Arc<PackManifest>, bool)> {
+    let cached = state
+        .remote
+        .cached
+        .get_or_insert_with(|| read_cached_index(downloads));
+    cached
+        .iter()
+        .map(|manifest| {
+            let dir = downloads.pack_dir(manifest);
+            let installed = manifest.files().all(|f| dir.join(&f.path).is_file());
+            (dir, manifest.clone(), installed)
+        })
+        .collect()
 }
 
 fn find<'a>(packs: &'a [Arc<PackManifest>], tag: &str) -> Option<&'a Arc<PackManifest>> {
@@ -221,12 +253,28 @@ fn fetch_loop(store: &Weak<Inner>, tags: &Receiver<String>) {
         let outcome = fetch(&inner, downloads, &agent, &tag);
         {
             let mut state = lock(&inner.state);
+            let language = state
+                .remote
+                .cached
+                .as_deref()
+                .and_then(|packs| find(packs, &tag))
+                .map(|manifest| manifest.language.clone());
             match outcome {
                 // The next lookup loads it from the cache.
-                Ok(()) => state.tags.remove(&tag),
+                Ok(()) => {
+                    if let Some(language) = &language {
+                        state.remote.failures.remove(language);
+                    }
+                    state.tags.remove(&tag);
+                }
                 Err(error) => {
                     tracing::warn!(tag, %error, "syntax pack unavailable");
-                    state.tags.insert(tag, Tag::Unavailable)
+                    if let Some(language) = language
+                        && !matches!(error, FetchError::NotListed)
+                    {
+                        state.remote.failures.insert(language, error.to_string());
+                    }
+                    state.tags.insert(tag, Tag::Unavailable);
                 }
             };
         }

@@ -1000,6 +1000,9 @@ impl<'a> Matcher<'_, 'a> {
             for (k, &(_, x, y)) in group.iter().enumerate() {
                 if kept[k] {
                     self.anchors.push((x, y));
+                    if let Some(body) = self.body(x, y) {
+                        self.anchors.push(body);
+                    }
                 } else if whole_lines(old, x) && whole_lines(new, y) {
                     self.forced.push((x, y));
                 } else {
@@ -1026,6 +1029,28 @@ impl<'a> Matcher<'_, 'a> {
             }
         }
         Ok(())
+    }
+
+    fn body(&self, x: u32, y: u32) -> Option<(u32, u32)> {
+        let (old, new) = (self.trees[0], self.trees[1]);
+        let lists = |tree: &Tree<'_>, item: u32| -> Vec<u32> {
+            tree.children(item)
+                .into_iter()
+                .filter(|&c| tree.is_list(c) && !tree.nodes[c as usize].open.is_empty())
+                .collect()
+        };
+        let (a, b) = (lists(old, x), lists(new, y));
+        let kind = |tree: &Tree<'_>, n: u32| tree.nodes[n as usize].kind;
+        let pairs: Vec<(u32, u32)> = a
+            .iter()
+            .filter_map(|&p| {
+                let q = b.iter().copied().find(|&q| kind(new, q) == kind(old, p))?;
+                let unique = a.iter().filter(|&&o| kind(old, o) == kind(old, p)).count() == 1
+                    && b.iter().filter(|&&n| kind(new, n) == kind(new, q)).count() == 1;
+                (unique && self.feasible(p, q)).then_some((p, q))
+            })
+            .collect();
+        pairs.last().copied()
     }
 
     fn candidate_leaf(&self, x: u32, y: u32) -> bool {

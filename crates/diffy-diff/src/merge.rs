@@ -239,7 +239,7 @@ pub fn refolds(old: &Joined, new: &Joined) -> bool {
         return false;
     }
     match (breaks(old), breaks(new)) {
-        (Some(a), Some(b)) => a != b,
+        (Some(a), Some(b)) => a != b && !a.iter().any(|x| b.binary_search(x).is_ok()),
         _ => false,
     }
 }

@@ -3,6 +3,7 @@ mod check;
 mod corpus;
 mod engine;
 mod fixtures;
+mod moves;
 mod mutate;
 mod render;
 mod report;
@@ -34,6 +35,8 @@ enum Command {
         about = "Applies known edits to real files and checks the diff reports exactly them."
     )]
     Mutate(mutate::Args),
+    #[command(about = "Scores how noisy move notes are on a list of commit and path pairs.")]
+    Moves(moves::Args),
     #[command(about = "Renders one file's diff, from two files or from a commit.")]
     Show(ShowArgs),
 }
@@ -59,6 +62,7 @@ fn main() -> ExitCode {
         Command::Corpus(args) => corpus::run(args),
         Command::Fixtures(args) => fixtures::run(args),
         Command::Mutate(args) => mutate::run(args),
+        Command::Moves(args) => moves::run(args),
         Command::Show(args) => show(args),
     };
     match result {

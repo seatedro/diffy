@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use diffy_diff::{
     ChangeIntensity, DiffDocument, FileStatus, InlineDetail, InlineMode, InlineOptions, ItemChange,
-    Mode, RowKind, Side, line_detail, merge_pair, moved_from,
+    Mode, Move, RowKind, Side, line_detail, merge_pair, move_leaders, moved_from,
 };
 use diffy_syntax::HighlightKind;
 use quark_render::FontKind;
@@ -756,10 +756,16 @@ impl DiffViewState {
                     RowKind::MovedHere
                 };
                 let index = p.pair[r];
+                let target = if here {
+                    index
+                } else {
+                    lead_move(doc, file, index)
+                };
                 let partner = (0..p.len()).find(|&k| {
                     p.kind[k as usize] == other
                         && p.file[k as usize] == file
-                        && p.pair[k as usize] == index
+                        && (p.pair[k as usize] == target
+                            || here && lead_move(doc, file, p.pair[k as usize]) == index)
                 });
                 let up = partner.map(|k| k < row);
                 paint.note = Some(MoveNote { index, here, up });
@@ -1238,6 +1244,12 @@ fn semantic_summary(doc: &DiffDocument, file: u32) -> Option<Arc<str>> {
     (!parts.is_empty()).then(|| parts.join(" \u{00b7} ").into())
 }
 
+pub(crate) fn lead_move(doc: &DiffDocument, file: u32, index: u32) -> u32 {
+    doc.semantics(file)
+        .and_then(|s| move_leaders(s.moves()).get(index as usize).copied())
+        .unwrap_or(index)
+}
+
 fn move_note(
     doc: &DiffDocument,
     file: u32,
@@ -1264,6 +1276,32 @@ fn move_note(
             format!("{n} lines")
         }
     };
+    let moves = doc.semantics(file)?.moves();
+    let pieces: Vec<&Move> = move_leaders(moves)
+        .iter()
+        .zip(moves)
+        .filter(|&(&leader, _)| leader == index)
+        .map(|(_, m)| m)
+        .collect();
+    if here && elsewhere && pieces.len() > 1 {
+        let first = pieces
+            .iter()
+            .map(|m| m.old_line)
+            .min()
+            .unwrap_or(m.old_line);
+        let last = pieces
+            .iter()
+            .map(|m| m.old_line + m.old_lines)
+            .max()
+            .unwrap_or(m.old_line + m.old_lines);
+        return Some(format!(
+            "{} pieces moved from {} \u{00b7} lines {}\u{2013}{}",
+            pieces.len(),
+            m.from.as_deref().unwrap_or(""),
+            first + 1,
+            last
+        ));
+    }
     Some(match (here, elsewhere) {
         (true, true) => format!(
             "moved from {} \u{00b7} line {}",

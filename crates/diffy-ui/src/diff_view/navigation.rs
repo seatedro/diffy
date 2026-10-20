@@ -359,9 +359,17 @@ impl DiffViewState {
         };
         let segment = &self.segments[seg];
         let p = &segment.projection;
+        let index = if here {
+            index
+        } else {
+            super::frame::lead_move(&segment.doc, file, index)
+        };
         let row = (0..p.len()).find(|&k| {
             let r = k as usize;
-            p.kind[r] == target && p.file[r] == file && p.pair[r] == index
+            p.kind[r] == target
+                && p.file[r] == file
+                && (p.pair[r] == index
+                    || here && super::frame::lead_move(&segment.doc, file, p.pair[r]) == index)
         });
         let Some(list) = row.and_then(|row| segment.list_rows.index(row)) else {
             return false;

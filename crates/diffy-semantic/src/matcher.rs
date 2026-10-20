@@ -16,6 +16,7 @@ const SIMILAR_DEPTH: usize = 2;
 const CLOCK_STRIDE: u64 = 1 << 16;
 const WIDEN_SIMILARITY: f32 = 0.5;
 const MIN_MOVE_NODES: u32 = 12;
+const LIFT_MOVE: f32 = 0.6;
 const MOVE_SIMILARITY: f32 = 0.8;
 const MAX_MOVE_CANDIDATES: usize = 512;
 const RUN_PAIR: f32 = 0.5;
@@ -28,6 +29,7 @@ pub(crate) struct Matching {
     pub(crate) renamed: Vec<(u32, u32)>,
     pub(crate) moved: Vec<(u32, u32)>,
     pub(crate) relocated: Vec<(u32, u32)>,
+    pub(crate) lifted: Vec<(u32, u32)>,
 }
 
 pub(crate) fn run(
@@ -43,6 +45,7 @@ pub(crate) fn run(
         renamed: Vec::new(),
         moved: Vec::new(),
         relocated: Vec::new(),
+        lifted: Vec::new(),
         weak: HashMap::new(),
         work: 0,
         max_work,
@@ -59,6 +62,7 @@ pub(crate) fn run(
         renamed: matcher.renamed,
         moved: matcher.moved,
         relocated: matcher.relocated,
+        lifted: matcher.lifted,
     })
 }
 
@@ -82,6 +86,7 @@ struct Matcher<'t, 'a> {
     renamed: Vec<(u32, u32)>,
     moved: Vec<(u32, u32)>,
     relocated: Vec<(u32, u32)>,
+    lifted: Vec<(u32, u32)>,
     weak: HashMap<u32, f32>,
     work: u64,
     max_work: u64,
@@ -579,11 +584,26 @@ impl Matcher<'_, '_> {
                 top = Some((a, b));
                 (a, b) = (parents[0][a as usize], parents[1][b as usize]);
             }
-            if let Some(pair) = top {
-                self.relocated.push(pair);
+            if let Some((a, b)) = top {
+                if self.kept(a, b) >= LIFT_MOVE {
+                    self.relocated.push((a, b));
+                } else {
+                    self.lifted.push((a, b));
+                }
             }
         }
         Ok(())
+    }
+
+    fn kept(&self, a: u32, b: u32) -> f32 {
+        let (ea, eb) = (
+            self.trees[0].nodes[a as usize].next,
+            self.trees[1].nodes[b as usize].next,
+        );
+        let inside = (a..ea)
+            .filter(|&k| (b..eb).contains(&self.partner[0][k as usize]))
+            .count();
+        inside as f32 / (ea - a).max(eb - b) as f32
     }
 
     fn liftable(&self, a: u32, b: u32) -> bool {

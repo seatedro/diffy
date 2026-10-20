@@ -13,6 +13,8 @@ use crate::syntax::{Class, NONE, Tree};
 const CONTEXT: usize = 3;
 const MIN_RENAME_USES: u32 = 2;
 const LEADING_WEIGHT: u64 = 4;
+const MOVE_KEPT: f32 = 0.6;
+const MIN_PIECE_NODES: u32 = 6;
 
 struct Lines {
     starts: Vec<u32>,
@@ -161,7 +163,11 @@ fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching, chain: &[(u32, u32, u64
             .any(|&(_, b, _)| new.contains(&b));
         !kept && (new.start < before || new.end > after) && !in_place(sides, matching, o, n)
     });
+    let mut pairs = Vec::new();
     for &(o, n) in matching.moved.iter().chain(stranded) {
+        refine(sides, matching, o, n, &mut pairs);
+    }
+    for (o, n) in pairs {
         let (a, b) = (
             sides[0].tree.nodes[o as usize].span.clone(),
             sides[1].tree.nodes[n as usize].span.clone(),
@@ -192,15 +198,55 @@ fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching, chain: &[(u32, u32, u64
         }
         match kept.last_mut() {
             Some(k)
-                if k.old_line + k.old_lines == m.old_line && k.new_line + k.lines == m.new_line =>
+                if blank_between(&sides[0], k.old_line + k.old_lines, m.old_line)
+                    && blank_between(&sides[1], k.new_line + k.lines, m.new_line) =>
             {
-                k.old_lines += m.old_lines;
-                k.lines += m.lines;
+                k.old_lines = m.old_line + m.old_lines - k.old_line;
+                k.lines = m.new_line + m.lines - k.new_line;
             }
             _ => kept.push(m),
         }
     }
     kept
+}
+
+fn refine(
+    sides: &[Side<'_, '_>; 2],
+    matching: &Matching,
+    o: u32,
+    n: u32,
+    out: &mut Vec<(u32, u32)>,
+) {
+    let (old, new) = (sides[0].tree, sides[1].tree);
+    let (eo, en) = (old.nodes[o as usize].next, new.nodes[n as usize].next);
+    let inside = (o..eo)
+        .filter(|&k| (n..en).contains(&matching.partner[0][k as usize]))
+        .count();
+    if inside as f32 >= MOVE_KEPT * (eo - o).max(en - n) as f32 {
+        out.push((o, n));
+        return;
+    }
+    for child in old.children(o) {
+        let partner = matching.partner[0][child as usize];
+        let size = old.nodes[child as usize].next - child;
+        if old.is_list(child)
+            && size >= MIN_PIECE_NODES
+            && (n..en).contains(&partner)
+            && new.is_list(partner)
+        {
+            refine(sides, matching, child, partner, out);
+        }
+    }
+}
+
+fn blank_between(side: &Side<'_, '_>, from: u32, to: u32) -> bool {
+    from <= to
+        && (from..to).all(|line| {
+            let content = side.lines.content(side.tree.src, line);
+            side.tree.src[content.start as usize..content.end as usize]
+                .trim()
+                .is_empty()
+        })
 }
 
 fn enclosing(tree: &Tree<'_>, node: u32) -> Option<std::sync::Arc<str>> {
@@ -511,15 +557,17 @@ fn join_novel(text: &str, spans: &mut Vec<SemanticSpan>) {
     let mut i = 0;
     while i + 1 < spans.len() {
         let (a, b) = (spans[i], spans[i + 1]);
-        let gap = &text[a.end as usize..b.start as usize];
-        let width = gap.len() as u32;
         let novel = a.intensity == ChangeIntensity::Novel && b.intensity == ChangeIntensity::Novel;
+        let gap = text
+            .get(a.end as usize..b.start as usize)
+            .unwrap_or_default();
+        let width = gap.len() as u32;
         if !novel || gap.contains(char::is_whitespace) {
             i += 1;
             continue;
         }
         let joined = if gap.is_empty() {
-            Some(a.start..b.end)
+            Some(a.start..a.end.max(b.end))
         } else if a.end - a.start > width && text[a.start as usize..].starts_with(gap) {
             Some(a.start + width..b.end)
         } else if b.end - b.start > width && text[..b.end as usize].ends_with(gap) {
@@ -592,7 +640,7 @@ fn anchors(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<(u32, u32, u64
         moved[o as usize..end as usize].fill(true);
     }
     let mut relocated = vec![false; old.tree.nodes.len()];
-    for &(o, _) in &matching.relocated {
+    for &(o, _) in matching.relocated.iter().chain(&matching.lifted) {
         let end = old.tree.nodes[o as usize].next;
         relocated[o as usize..end as usize].fill(true);
     }

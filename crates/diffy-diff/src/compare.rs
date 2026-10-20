@@ -12,7 +12,7 @@ use crate::merge::merge_pair;
 use crate::model::{BlockKind, DiffDocument, Side};
 use crate::myers::{diff, intern};
 use crate::projection::NONE;
-use crate::semantic::AlignedRow;
+use crate::semantic::{AlignedRow, Move};
 use crate::text::TextStore;
 
 /// Which spaces a comparison ignores. Only spaces and tabs count; a `\r`,
@@ -57,6 +57,7 @@ pub const PAIRING_COMPARISONS_PER_LINE: u32 = 4;
 pub const SIMILARITY_SCAN_BYTES: usize = 256;
 
 const MAX_REFLOW_ADDED: usize = 2;
+pub const MOVE_GROUP_GAP: u32 = 8;
 const MAX_REFLOW_STEPS: usize = 64;
 
 /// Fewest sample lines a shift is scored from.
@@ -389,6 +390,7 @@ impl Comparison {
                 .iter()
                 .any(|m| (m.new_line..m.new_line + m.lines).contains(&line))
         };
+        let leaders = move_leaders(moves);
         let mut noted = vec![[false; 2]; moves.len()];
         let block = self.steps.split_off(start);
         for step in block {
@@ -400,7 +402,7 @@ impl Comparison {
                     noted[i][0] = true;
                     self.steps.push(Step::MovedAway(i as u32));
                 }
-                if moved && n == m.new_line && !noted[i][1] {
+                if moved && n == m.new_line && !noted[i][1] && leaders[i] == i as u32 {
                     noted[i][1] = true;
                     self.steps.push(Step::MovedHere(i as u32));
                 }
@@ -592,6 +594,31 @@ impl Step {
             Self::Paired(o, n) | Self::Merged(o, n) | Self::Equivalent(o, n) => (o, n),
         }
     }
+}
+
+/// Per move, the first of the moves landing close together from the same
+/// item, which notes them all at their new place.
+pub fn move_leaders(moves: &[Move]) -> Vec<u32> {
+    let mut order: Vec<usize> = (0..moves.len()).collect();
+    order.sort_by_key(|&i| moves[i].new_line);
+    let mut leaders: Vec<u32> = (0..moves.len() as u32).collect();
+    let mut group: Option<(usize, u32)> = None;
+    for i in order {
+        let m = &moves[i];
+        match group {
+            Some((leader, end))
+                if m.from.is_some()
+                    && m.from == moves[leader].from
+                    && m.from != m.into
+                    && m.new_line.saturating_sub(end) <= MOVE_GROUP_GAP =>
+            {
+                leaders[i] = leader as u32;
+                group = Some((leader, end.max(m.new_line + m.lines)));
+            }
+            _ => group = Some((i, m.new_line + m.lines)),
+        }
+    }
+    leaders
 }
 
 pub fn moved_from(doc: &DiffDocument, file: u32, new_line: u32) -> Option<u32> {

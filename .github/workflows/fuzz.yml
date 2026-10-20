@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "crates/carbon/**"
+      - "crates/diffy-diff/**"
       - "fuzz/**"
       - ".github/workflows/fuzz.yml"
 
@@ -20,7 +20,7 @@ env:
 
 jobs:
   fuzz-smoke:
-    name: Carbon fuzz smoke
+    name: Diff fuzz smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

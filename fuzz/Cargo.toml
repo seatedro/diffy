@@ -1,5 +1,5 @@
 [package]
-name = "carbon-fuzz"
+name = "diffy-diff-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -10,7 +10,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-carbon = { path = "../crates/carbon" }
+diffy-diff = { path = "../crates/diffy-diff" }
 libfuzzer-sys = "0.4"
 
 [[bin]]
@@ -37,13 +37,6 @@ bench = false
 [[bin]]
 name = "patch_parse"
 path = "fuzz_targets/patch_parse.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "review_anchor"
-path = "fuzz_targets/review_anchor.rs"
 test = false
 doc = false
 bench = false

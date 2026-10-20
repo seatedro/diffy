@@ -30,6 +30,57 @@ impl<'a> Matcher<'_, 'a> {
         }
     }
 
+    fn slots(&self, xs: &[u32], ys: &[u32], a: u32, b: u32, fixed: &mut Vec<Anchor>) {
+        let (old, new) = (self.trees[0], self.trees[1]);
+        if self.parents[0][xs[0] as usize] != a || self.parents[1][ys[0] as usize] != b {
+            return;
+        }
+        let kind = |tree: &Tree<'_>, n: u32| tree.nodes[n as usize].kind;
+        let bracketed = |side: usize, n: u32| self.is_list(side, n) && self.bracketed(side, n);
+        let lists = |side: usize, nodes: &[u32]| -> Vec<usize> {
+            (0..nodes.len())
+                .filter(|&k| bracketed(side, nodes[k]))
+                .collect()
+        };
+        let (la, lb) = (lists(0, xs), lists(1, ys));
+        let rest = |side: usize, nodes: &[u32]| -> Vec<u64> {
+            nodes
+                .iter()
+                .filter(|&&n| !bracketed(side, n))
+                .map(|&n| self.hash(side, n))
+                .collect()
+        };
+        let paired = self.anchors.binary_search(&(a, b)).is_ok();
+        if !paired && rest(0, xs) != rest(1, ys) {
+            return;
+        }
+        for &i in &la {
+            let same = |k: &&usize| kind(old, xs[**k]) == kind(old, xs[i]);
+            if la.iter().filter(same).count() != 1 {
+                continue;
+            }
+            let mut matches = lb.iter().filter(|&&j| kind(new, ys[j]) == kind(old, xs[i]));
+            let (Some(&j), None) = (matches.next(), matches.next()) else {
+                continue;
+            };
+            let taken = fixed.iter().any(|f| f.old == i || f.new == j);
+            if taken || !self.feasible(xs[i], ys[j]) || !fits(fixed, (i, i), (j, j)) {
+                continue;
+            }
+            let at = fixed.partition_point(|f| f.old < i);
+            fixed.insert(
+                at,
+                Anchor {
+                    old: i,
+                    new: j,
+                    x: xs[i],
+                    y: ys[j],
+                    deep: false,
+                },
+            );
+        }
+    }
+
     pub(super) fn cells(
         &mut self,
         xs: &[u32],
@@ -43,7 +94,8 @@ impl<'a> Matcher<'_, 'a> {
             return Ok(out);
         }
         self.spend(xs.len() + ys.len())?;
-        let fixed = self.anchored(xs, ys)?;
+        let mut fixed = self.anchored(xs, ys)?;
+        self.slots(xs, ys, a, b, &mut fixed);
         let mut held = [vec![false; xs.len()], vec![false; ys.len()]];
         for f in fixed.iter().filter(|f| !f.deep) {
             held[0][f.old] = true;

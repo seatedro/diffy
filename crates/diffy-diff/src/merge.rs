@@ -82,12 +82,22 @@ pub fn merge_pair(
             .map_or(0, |&(_, end, _)| end);
         let insert = skip_space(new, after).max(at);
         push_new(&mut pieces, at..insert, &new_marks, &renamed);
+        let lead = range.start - old[..range.start].trim_end_matches([' ', '\t']).len();
+        let trail = old[range.end..].len() - old[range.end..].trim_start_matches([' ', '\t']).len();
+        let spaced_before = new[..insert].ends_with(char::is_whitespace);
+        let spaced_after = new[insert..].starts_with(char::is_whitespace);
+        if insert > 0 && !spaced_before && lead > 0 {
+            pieces.push(old_gap(range.start - lead..range.start));
+        }
         pieces.push(MergePiece {
             side: Side::Old,
             range: range.start as u32..range.end as u32,
             changed: true,
             renamed: false,
         });
+        if insert < new.len() && !spaced_after && trail > 0 {
+            pieces.push(old_gap(range.end..range.end + trail));
+        }
         at = insert;
     }
     push_new(&mut pieces, at..new.len(), &new_marks, &renamed);
@@ -136,6 +146,15 @@ fn kept(text: &str, marks: &[Range<usize>], renamed: &[Range<usize>]) -> Vec<(us
 
 fn solid(text: &str) -> usize {
     text.chars().filter(|c| !c.is_whitespace()).count()
+}
+
+fn old_gap(range: Range<usize>) -> MergePiece {
+    MergePiece {
+        side: Side::Old,
+        range: range.start as u32..range.end as u32,
+        changed: false,
+        renamed: false,
+    }
 }
 
 fn skip_space(text: &str, from: usize) -> usize {

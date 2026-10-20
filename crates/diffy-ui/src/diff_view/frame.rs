@@ -1001,6 +1001,7 @@ impl DiffViewState {
             if let Some(end) = previous_old.take()
                 && piece.side == Side::New
                 && piece.changed
+                && !composed.ends_with(char::is_whitespace)
             {
                 let at = composed.len();
                 composed.push(' ');
@@ -1053,10 +1054,11 @@ impl DiffViewState {
                 previous_old = Some(range.end);
             }
             match (piece.side, piece.changed, piece.renamed) {
-                (Side::Old, _, _) => {
+                (Side::Old, true, _) => {
                     unspoken.push(shown.clone());
                     struck.push(shown.clone());
                 }
+                (Side::Old, false, _) => unspoken.push(shown.clone()),
                 (Side::New, true, true) => renamed.push(shown.clone()),
                 (Side::New, true, false) => words.push(shown.clone()),
                 (Side::New, false, _) => {}

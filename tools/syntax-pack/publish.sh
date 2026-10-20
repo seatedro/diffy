@@ -11,7 +11,7 @@
 #    every pinned language, local files matching, immutable URLs. Nothing
 #    is uploaded unless every target passes.
 # 2. Upload each file to the key its URL names with one parallel
-#    `aws s3 sync`, skipping objects already there at the same size. URLs
+#    `s5cmd sync`, skipping objects already there at the same size. URLs
 #    carry the file's SHA-256, so an existing object is already identical.
 # 3. Download every file through the public URL and check its SHA-256.
 # 4. Only then replace each <target>/index.json (a single PUT, so readers
@@ -19,8 +19,8 @@
 #
 # Environment: SYNTAX_PACK (the tool binary), PACK_BASE_URL, PACK_INDEX_KEY,
 # TARGETS (space-separated), PACK_R2_ENDPOINT, PACK_R2_BUCKET, and the
-# bucket credentials in AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (the
-# `aws` CLI talks to R2's S3 API). Object keys are the URL path below the
+# bucket credentials in AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (`s5cmd`
+# and the `aws` CLI talk to R2's S3 API). Object keys are the URL path below the
 # host, so PACK_BASE_URL https://host/v1 maps to keys under v1/.
 # PACK_DRY_RUN=1 stops after step 1 and prints the URLs it would upload.
 set -euo pipefail
@@ -59,10 +59,11 @@ export AWS_DEFAULT_REGION=auto
 prefix=$(printf '%s' "$base" | sed -E 's#^[a-z]+://[^/]+/?##')
 s3() { aws s3api "$@" --bucket "$PACK_R2_BUCKET" --endpoint-url "$PACK_R2_ENDPOINT"; }
 
-aws s3 sync "$stage" "s3://$PACK_R2_BUCKET${prefix:+/$prefix}" --size-only --no-progress \
+AWS_REGION=auto s5cmd --endpoint-url "$PACK_R2_ENDPOINT" sync --size-only \
   --cache-control "public, max-age=31536000, immutable" \
-  --content-type application/octet-stream --endpoint-url "$PACK_R2_ENDPOINT" >"$work/sync.log"
-echo "uploaded $(grep -c '^upload:' "$work/sync.log" || true) new pack files"
+  --content-type application/octet-stream \
+  "$stage/" "s3://$PACK_R2_BUCKET/${prefix:+$prefix/}" >"$work/sync.log"
+echo "uploaded $(grep -c '^cp ' "$work/sync.log" || true) new pack files"
 
 sha_of_url() {
   curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$1" | sha256sum | cut -d' ' -f1

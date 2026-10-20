@@ -34,6 +34,9 @@ pub(crate) struct Item {
     pub(crate) node: u32,
     pub(crate) kind: &'static str,
     pub(crate) name: Range<u32>,
+    pub(crate) key: Range<u32>,
+    pub(crate) unit: u32,
+    pub(crate) lead: u32,
 }
 
 pub(crate) struct Tree<'a> {
@@ -145,13 +148,52 @@ impl<'a> Tree<'a> {
             None if node.kind() == "function_definition" => ("fn", declared_name(node)),
             None => (kind, None),
         };
-        if let Some(name) = name {
-            self.items.push(Item {
-                node: self.nodes.len() as u32,
-                kind,
-                name: span(name),
-            });
+        let Some(name) = name else {
+            return;
+        };
+        let node_at = self.nodes.len() as u32;
+        let key = match node.child_by_field_name("trait") {
+            Some(t) if node.kind() == "impl_item" => t.start_byte() as u32..name.end_byte() as u32,
+            _ => span(name),
+        };
+        let wrapper = node
+            .parent()
+            .filter(|p| p.kind() == "decorated_definition")
+            .and_then(|p| self.lowered(span(p)));
+        let unit = wrapper.unwrap_or(node_at);
+        let outer = match wrapper {
+            Some(_) => node.parent(),
+            None => Some(node),
+        };
+        let mut first = None;
+        let mut at = outer.and_then(|n| n.prev_sibling());
+        while let Some(sibling) = at.filter(|s| matches!(s.kind(), "attribute_item" | "decorator"))
+        {
+            first = Some(sibling);
+            at = sibling.prev_sibling();
         }
+        let lead = first.and_then(|f| self.lowered(span(f))).unwrap_or(unit);
+        self.items.push(Item {
+            node: node_at,
+            kind,
+            name: span(name),
+            key,
+            unit,
+            lead,
+        });
+    }
+
+    fn lowered(&self, range: Range<u32>) -> Option<u32> {
+        let mut found = None;
+        for (k, n) in self.nodes.iter().enumerate().rev() {
+            if n.span.start < range.start {
+                break;
+            }
+            if n.span == range {
+                found = Some(k as u32);
+            }
+        }
+        found
     }
 
     fn delimiters(&self, children: &[ts::Node<'_>], config: &Config) -> Option<(usize, usize)> {

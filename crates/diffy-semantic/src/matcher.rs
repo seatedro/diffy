@@ -935,10 +935,13 @@ impl<'a> Matcher<'_, 'a> {
             }
             let pair = self.fixed[o as usize];
             let (root, peer) = if side == 0 { pair } else { (pair.1, pair.0) };
+            let (own, other) = (self.unit(side, root), self.unit(1 - side, peer));
             if n == root {
                 m == peer
+            } else if n == own.1 {
+                m == other.1
             } else {
-                peer <= m && m < self.next(1 - side, peer)
+                other.0 <= m && m < self.next(1 - side, other.1)
             }
         })
     }
@@ -958,7 +961,7 @@ impl<'a> Matcher<'_, 'a> {
                 let (scope, parent) = stack.last().map_or((NONE, 0), |&(_, k, n)| (k, n));
                 let next = ids.len() as u32;
                 let key = *ids
-                    .entry((scope, item.kind, tree.text(item.name.clone())))
+                    .entry((scope, item.kind, tree.text(item.key.clone())))
                     .or_insert(next);
                 let slot = &mut seen.entry(key).or_insert([(0, NONE); 2])[side];
                 *slot = (slot.0 + 1, item.node);
@@ -1009,17 +1012,17 @@ impl<'a> Matcher<'_, 'a> {
         self.forced.sort_unstable();
         self.fixed = self.anchors.iter().chain(&self.forced).copied().collect();
         for side in [0, 1] {
-            let mut roots: Vec<(u32, u32)> = self
+            let mut roots: Vec<((u32, u32), u32)> = self
                 .fixed
                 .iter()
                 .enumerate()
-                .map(|(k, &(x, y))| (if side == 0 { x } else { y }, k as u32))
+                .map(|(k, &(x, y))| (self.unit(side, if side == 0 { x } else { y }), k as u32))
                 .collect();
             roots.sort_unstable();
-            for (node, k) in roots {
-                let end = self.next(side, node);
-                self.spend((end - node) as usize)?;
-                self.owner[side][node as usize..end as usize].fill(k);
+            for ((lead, unit), k) in roots {
+                let end = self.next(side, unit);
+                self.spend((end - lead) as usize)?;
+                self.owner[side][lead as usize..end as usize].fill(k);
             }
         }
         Ok(())
@@ -1441,11 +1444,26 @@ impl<'a> Matcher<'_, 'a> {
     /// and same-named items, best first.
     fn relocate(&mut self) -> Result<(), Fallback> {
         for (x, y) in self.forced.clone() {
-            if self.free(0, x)? && self.free(1, y)? && self.disjoint(x, y) {
-                let e = self.moved(x, y)?;
-                self.apply(x, y)?;
-                self.moves.push((x, y));
-                self.predicted += e.d;
+            let (a, b) = (self.unit(0, x), self.unit(1, y));
+            let mut pairs = vec![(x, y)];
+            if self.feasible(a.1, b.1) {
+                pairs = vec![(a.1, b.1)];
+                let (p, q) = (self.siblings(0, a.0, a.1), self.siblings(1, b.0, b.1));
+                if p.len() == q.len() {
+                    pairs.extend(p.into_iter().zip(q));
+                }
+            }
+            for (p, q) in pairs {
+                if self.feasible(p, q)
+                    && self.free(0, p)?
+                    && self.free(1, q)?
+                    && self.disjoint(p, q)
+                {
+                    let e = self.moved(p, q)?;
+                    self.apply(p, q)?;
+                    self.moves.push((p, q));
+                    self.predicted += e.d;
+                }
             }
         }
         let mut candidates: Vec<(u32, u32)> = Vec::new();
@@ -1570,6 +1588,24 @@ impl<'a> Matcher<'_, 'a> {
         self.predicted[MOVES] -= leaders;
         self.predicted[FOLLOWS] -= followers;
         Ok(())
+    }
+
+    fn unit(&self, side: usize, node: u32) -> (u32, u32) {
+        let items = &self.trees[side].items;
+        match items.binary_search_by_key(&node, |i| i.node) {
+            Ok(at) => (items[at].lead, items[at].unit),
+            Err(_) => (node, node),
+        }
+    }
+
+    fn siblings(&self, side: usize, from: u32, to: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut at = from;
+        while at < to {
+            out.push(at);
+            at = self.next(side, at);
+        }
+        out
     }
 
     fn moved(&mut self, x: u32, y: u32) -> Result<Entry, Fallback> {

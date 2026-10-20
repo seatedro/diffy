@@ -196,16 +196,11 @@ impl<'a> Tree<'a> {
     }
 
     fn lowered(&self, range: Range<u32>) -> Option<u32> {
-        let mut found = None;
-        for (k, n) in self.nodes.iter().enumerate().rev() {
-            if n.span.start < range.start {
-                break;
-            }
-            if n.span == range {
-                found = Some(k as u32);
-            }
-        }
-        found
+        self.nodes
+            .iter()
+            .rposition(|n| n.span == range || n.span.start < range.start)
+            .filter(|&k| self.nodes[k].span == range)
+            .map(|k| k as u32)
     }
 
     fn delimiters(&self, children: &[ts::Node<'_>], config: &Config) -> Option<(usize, usize)> {

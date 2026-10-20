@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -404,28 +403,27 @@ pub fn semantic_tag(path: &str) -> Option<LanguageId> {
 }
 
 pub fn semantic_grammar(store: &GrammarStore, tag: &LanguageId) -> Option<SemanticGrammar> {
-    static RULES: Mutex<Option<HashMap<Arc<str>, (Arc<str>, Arc<Rules>)>>> = Mutex::new(None);
+    static RULES: Mutex<Vec<(Arc<str>, Arc<Rules>)>> = Mutex::new(Vec::new());
     let (language, queries) = store.parser(tag.as_str())?;
-    let cached = RULES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .and_then(|rules| rules.get(&queries.language))
-        .filter(|(highlights, _)| Arc::ptr_eq(highlights, &queries.highlights))
-        .map(|(_, rules)| rules.clone());
-    let rules = match cached {
+    let cached = |rules: &[(Arc<str>, Arc<Rules>)]| {
+        rules
+            .iter()
+            .find(|(highlights, _)| Arc::ptr_eq(highlights, &queries.highlights))
+            .map(|(_, rules)| rules.clone())
+    };
+    let found = cached(&RULES.lock().unwrap_or_else(PoisonError::into_inner));
+    let rules = match found {
         Some(rules) => rules,
         None => {
             let rules = Arc::new(compile_rules(&language, &queries));
-            RULES
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .get_or_insert_default()
-                .insert(
-                    queries.language.clone(),
-                    (queries.highlights.clone(), rules.clone()),
-                );
-            rules
+            let mut all = RULES.lock().unwrap_or_else(PoisonError::into_inner);
+            match cached(&all) {
+                Some(rules) => rules,
+                None => {
+                    all.push((queries.highlights.clone(), rules.clone()));
+                    rules
+                }
+            }
         }
     };
     Some(SemanticGrammar {

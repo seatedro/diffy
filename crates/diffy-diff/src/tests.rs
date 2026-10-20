@@ -989,7 +989,7 @@ fn reflow_doc(
     old_marks: &[crate::SemanticSpan],
     new_marks: &[(u32, crate::SemanticSpan)],
 ) -> DiffDocument {
-    use crate::{AlignedRow, DocumentBuilder, FileMeta};
+    use crate::{AlignedRow, DocumentBuilder, FileMeta, LineGroupSpan};
     let old = TextStore::new("a();\ncall(x, y);\nb();\n");
     let new = TextStore::new("a();\ncall(\n    x,\n    y,\n);\nb();\n");
     let mut builder = DocumentBuilder::new();
@@ -1012,6 +1012,10 @@ fn reflow_doc(
     if !old_marks.is_empty() {
         file.spans(Side::Old, 1, old_marks);
     }
+    file.groups(vec![LineGroupSpan {
+        old: 1..2,
+        new: 1..5,
+    }]);
     file.finish().unwrap();
     builder.build()
 }

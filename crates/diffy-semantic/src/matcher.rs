@@ -40,6 +40,7 @@ pub(crate) fn run(
         partner: [vec![NONE; old.nodes.len()], vec![NONE; new.nodes.len()]],
         parents: [parents(old), parents(new)],
         leaves: [leaf_counts(old), leaf_counts(new)],
+        names: [named(old), named(new)],
         moves: Vec::new(),
         work: 0,
         max_work,
@@ -66,6 +67,7 @@ struct Matcher<'t, 'a> {
     partner: [Vec<u32>; 2],
     parents: [Vec<u32>; 2],
     leaves: [Vec<u32>; 2],
+    names: [HashMap<&'a str, Vec<u32>>; 2],
     moves: Vec<(u32, u32)>,
     work: u64,
     max_work: u64,
@@ -160,6 +162,9 @@ impl Matcher<'_, '_> {
         true
     }
 
+    /// Lists pair when kind and brackets agree; an unbracketed list that
+    /// only wraps one child pairs only with a list whose first child is of
+    /// the same kind.
     fn pairable(&self, a: u32, b: u32) -> bool {
         let (ta, tb) = (self.trees[0], self.trees[1]);
         let (na, nb) = (&ta.nodes[a as usize], &tb.nodes[b as usize]);
@@ -168,6 +173,9 @@ impl Matcher<'_, '_> {
             && na.kind == nb.kind
             && ta.text(na.open.clone()) == tb.text(nb.open.clone())
             && ta.text(na.close.clone()) == tb.text(nb.close.clone())
+            && (!na.open.is_empty()
+                || !(lone(ta, a) || lone(tb, b))
+                || ta.nodes[a as usize + 1].kind == tb.nodes[b as usize + 1].kind)
     }
 
     /// Whether two lists hold children of the same kinds in the same order.
@@ -230,8 +238,9 @@ impl Matcher<'_, '_> {
     }
 
     /// Phase 2: from the root down, each unlinked old list pairs with the
-    /// list inside its parent's partner that holds most of its anchored
-    /// descendants, the shallowest and then the closest on a tie.
+    /// item of the same name inside its parent's partner, else with the
+    /// list there that holds most of its anchored descendants, the
+    /// shallowest and then the closest on a tie.
     fn containers(&mut self) -> Result<(), Fallback> {
         let mut pairs = vec![(0u32, 0u32)];
         while let Some((p, q)) = pairs.pop() {
@@ -248,7 +257,11 @@ impl Matcher<'_, '_> {
                     }
                     continue;
                 }
-                match self.candidate(x, q)? {
+                let found = match self.namesake(x, p, q) {
+                    Some(c) => Some(c),
+                    None => self.candidate(x, q)?,
+                };
+                match found {
                     Some(c) => {
                         self.link(x, c);
                         pairs.push((x, c));
@@ -258,6 +271,25 @@ impl Matcher<'_, '_> {
             }
         }
         Ok(())
+    }
+
+    /// The one unlinked item inside `q` named like `x`, when `x` is the
+    /// one item of that name inside `p`.
+    fn namesake(&self, x: u32, p: u32, q: u32) -> Option<u32> {
+        let name = item_name(self.trees[0], x)?;
+        let one = |side: usize, list: u32| {
+            let end = self.next(side, list);
+            let mut inside = self.names[side]
+                .get(name)?
+                .iter()
+                .copied()
+                .filter(|&n| n > list && n < end);
+            let first = inside.next()?;
+            inside.next().is_none().then_some(first)
+        };
+        one(0, p)?;
+        let c = one(1, q)?;
+        (self.partner[1][c as usize] == NONE && self.pairable(x, c)).then_some(c)
     }
 
     fn candidate(&mut self, x: u32, q: u32) -> Result<Option<u32>, Fallback> {
@@ -939,6 +971,12 @@ impl Matcher<'_, '_> {
 
 /// Which entries of `items` (in order, keyed by position on the other
 /// side) form the heaviest strictly increasing subsequence.
+fn lone(tree: &Tree<'_>, list: u32) -> bool {
+    let first = list as usize + 1;
+    first < tree.nodes[list as usize].next as usize
+        && tree.nodes[first].next == tree.nodes[list as usize].next
+}
+
 fn heaviest_increasing(items: &[(u32, u32, u64)]) -> Vec<bool> {
     let n = items.len();
     let mut kept = vec![false; n];
@@ -1112,6 +1150,16 @@ pub(crate) fn whole_lines(tree: &Tree<'_>, node: u32) -> bool {
         .take_while(|&&b| b != b'\n')
         .all(|&b| b.is_ascii_whitespace() || b == b',' || b == b';');
     before && after
+}
+
+fn named<'a>(tree: &Tree<'a>) -> HashMap<&'a str, Vec<u32>> {
+    let mut out: HashMap<&'a str, Vec<u32>> = HashMap::new();
+    for item in &tree.items {
+        out.entry(tree.text(item.name.clone()))
+            .or_default()
+            .push(item.node);
+    }
+    out
 }
 
 fn is_item(tree: &Tree<'_>, node: u32) -> bool {

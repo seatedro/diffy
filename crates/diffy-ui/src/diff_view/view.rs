@@ -690,6 +690,7 @@ fn text_cell(
     let selected = row.selected[shown as usize];
     let search = row.search[shown as usize].clone();
     let pad = frame.metrics.text_pad;
+    let line_h = frame.metrics.line_h;
     let font_size = frame.metrics.font_size;
     let position = (row.index + 1, frame.row_count);
     let colors = look.colors;
@@ -712,12 +713,17 @@ fn text_cell(
         let canvas_paint = paint.clone();
         let fold = paint.fold.zip(paint.source_lines[Side::New as usize]).map(
             |((count, open), line_index)| {
-                let x = pad + line.layout.size().0 + FOLD_GAP - origin as f32;
+                let (end, top) = line
+                    .layout
+                    .lines()
+                    .last()
+                    .map_or((line.layout.size().0, 0.0), |last| (last.width, last.top));
+                let x = pad + end + FOLD_GAP - origin as f32;
                 let toggle = DiffEvent::ToggleReflow {
                     file: paint.file,
                     line: line_index,
                 };
-                (x, count, open, on_event(toggle))
+                (x, top, count, open, on_event(toggle))
             },
         );
         let whole = line.whole.then_some(match shown {
@@ -756,14 +762,15 @@ fn text_cell(
                     }}
                 }
             >
-                if let Some((x, count, open, toggle)) = fold.clone() {
+                if let Some((x, top, count, open, toggle)) = fold.clone() {
                     <div
-                        class="absolute top-0 flex-row items-center"
+                        class="absolute flex-row items-center"
                         left={x}
-                        h={height}
+                        top={top}
+                        h={line_h}
                     >
                         <div
-                            h={(height - 4.0).max(12.0)}
+                            h={(line_h - 4.0).max(12.0)}
                             px={4.0}
                             rounded={4.0}
                             class="flex-row items-center cursor-pointer"
@@ -780,7 +787,7 @@ fn text_cell(
                         >
                             <icon
                                 svg={if open { lucide::CHEVRON_UP } else { lucide::MORE_HORIZONTAL }}
-                                size={(height * 0.6).round()}
+                                size={(line_h * 0.6).round()}
                                 color={colors.muted}
                             />
                         </div>

@@ -50,7 +50,9 @@ pub fn merge_pair(
         let (a, b) = (gaps(&old_marks, &old_kept), gaps(&new_marks, &new_kept));
         a.len() == 1 && a == b
     };
+    let one_sided = old_marks.is_empty() || new_marks.is_empty();
     if !swap
+        && !one_sided
         && longest > 0
         && ((new_kept.len() + renamed_len) as f32) < MIN_MERGE_KEPT * longest as f32
     {

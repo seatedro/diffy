@@ -450,10 +450,7 @@ impl Comparison {
                 .filter(|_| solid(doc, file, rest[0]))
                 .find(|&k| {
                     let part = &rest[..k];
-                    let uneven = part
-                        .iter()
-                        .any(|s| matches!(s, Step::Removed(_) | Step::Added(_)));
-                    uneven && solid(doc, file, part[k - 1]) && reflowed(doc, file, part)
+                    k > 1 && solid(doc, file, part[k - 1]) && reflowed(doc, file, part)
                 });
             let Some(k) = fold else {
                 self.steps.push(rest[0]);

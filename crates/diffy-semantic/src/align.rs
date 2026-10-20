@@ -15,6 +15,7 @@ const MIN_RENAME_USES: u32 = 2;
 const LEADING_WEIGHT: u64 = 4;
 const MOVE_KEPT: f32 = 0.6;
 const MIN_PIECE_NODES: u32 = 6;
+const MAX_PAIR_CELLS: usize = 40_000;
 
 struct Lines {
     starts: Vec<u32>,
@@ -139,7 +140,8 @@ pub(crate) fn rows(
     let displaced = displaced(&sides, matching);
     let anchors = anchors(&sides, matching, &displaced);
     let moves = moves(&sides, matching, &anchors, &displaced);
-    let aligned = align(&sides, &anchors);
+    let links = links(&sides, matching);
+    let aligned = align(&sides, &anchors, &links);
     mark_silent(&mut sides, &aligned, &moves, matching);
     (chunks(&mut sides, aligned), outline, renames, moves)
 }
@@ -777,19 +779,39 @@ fn heaviest_chain(mut candidates: Vec<(u32, u32, u64)>, new_lines: u32) -> Vec<(
     chain
 }
 
+/// Matched tokens between each old line and each new line.
+type Links = HashMap<(u32, u32), u32>;
+
+fn links(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Links {
+    let (old, new) = (&sides[0], &sides[1]);
+    let mut out = Links::new();
+    for (k, node) in old.tree.nodes.iter().enumerate() {
+        let partner = matching.partner[0][k];
+        if node.class == Class::List || partner == NONE {
+            continue;
+        }
+        let a = old.lines.of(node.span.start);
+        let b = new.lines.of(new.tree.nodes[partner as usize].span.start);
+        *out.entry((a, b)).or_default() += 1;
+    }
+    out
+}
+
 fn align(
     sides: &[Side<'_, '_>; 2],
     anchors: &[(u32, u32, u64)],
+    links: &Links,
 ) -> Vec<(Option<u32>, Option<u32>)> {
     let mut rows = Vec::new();
     let (mut o, mut n) = (0, 0);
     for &(ao, an, _) in anchors {
-        fill(sides, o..ao, n..an, &mut rows);
+        fill(sides, links, o..ao, n..an, &mut rows);
         rows.push((Some(ao), Some(an)));
         (o, n) = (ao + 1, an + 1);
     }
     fill(
         sides,
+        links,
         o..sides[0].lines.count(),
         n..sides[1].lines.count(),
         &mut rows,
@@ -799,6 +821,7 @@ fn align(
 
 fn fill(
     sides: &[Side<'_, '_>; 2],
+    links: &Links,
     olds: Range<u32>,
     news: Range<u32>,
     rows: &mut Vec<(Option<u32>, Option<u32>)>,
@@ -812,24 +835,17 @@ fn fill(
     let a = intern(&mut ids, &sides[0], olds.clone());
     let b = intern(&mut ids, &sides[1], news.clone());
     let (mut i, mut j) = (0, 0);
-    let run = |rows: &mut Vec<_>, old: Range<u32>, new: Range<u32>| {
-        let paired = old.len().min(new.len()) as u32;
-        for k in 0..paired {
-            rows.push((Some(old.start + k), Some(new.start + k)));
-        }
-        rows.extend((old.start + paired..old.end).map(|o| (Some(o), None)));
-        rows.extend((new.start + paired..new.end).map(|n| (None, Some(n))));
-    };
     for change in myers::diff(&a, &b) {
         while i < change.old.start {
             rows.push((Some(olds.start + i), Some(news.start + j)));
             i += 1;
             j += 1;
         }
-        run(
-            rows,
+        pair_lines(
+            links,
             olds.start + change.old.start..olds.start + change.old.end,
             news.start + change.new.start..news.start + change.new.end,
+            rows,
         );
         (i, j) = (change.old.end, change.new.end);
     }
@@ -837,6 +853,90 @@ fn fill(
         rows.push((Some(olds.start + i), Some(news.start + j)));
         i += 1;
         j += 1;
+    }
+}
+
+/// Rows for a run of changed lines: lines paired where their tokens
+/// matched each other, most shared tokens first and in order; lines that
+/// matched nothing pair by position, as a replacement.
+fn pair_lines(
+    links: &Links,
+    old: Range<u32>,
+    new: Range<u32>,
+    rows: &mut Vec<(Option<u32>, Option<u32>)>,
+) {
+    let (m, n) = (old.len(), new.len());
+    let linked = |a: u32| (new.start..new.end).any(|b| links.contains_key(&(a, b)));
+    let linked_new = |b: u32| (old.start..old.end).any(|a| links.contains_key(&(a, b)));
+    let mut pairs: Vec<(u32, u32)> = Vec::new();
+    if m * n <= MAX_PAIR_CELLS {
+        let weight = |i: usize, j: usize| {
+            links
+                .get(&(old.start + i as u32, new.start + j as u32))
+                .copied()
+                .unwrap_or(0)
+        };
+        let mut best = vec![0u32; (m + 1) * (n + 1)];
+        let at = |i: usize, j: usize| i * (n + 1) + j;
+        for i in 1..=m {
+            for j in 1..=n {
+                let w = weight(i - 1, j - 1);
+                let diagonal = if w > 0 { best[at(i - 1, j - 1)] + w } else { 0 };
+                best[at(i, j)] = best[at(i - 1, j)].max(best[at(i, j - 1)]).max(diagonal);
+            }
+        }
+        let (mut i, mut j) = (m, n);
+        while i > 0 && j > 0 {
+            let w = weight(i - 1, j - 1);
+            if w > 0 && best[at(i, j)] == best[at(i - 1, j - 1)] + w {
+                pairs.push((old.start + i as u32 - 1, new.start + j as u32 - 1));
+                (i, j) = (i - 1, j - 1);
+            } else if best[at(i - 1, j)] >= best[at(i, j - 1)] {
+                i -= 1;
+            } else {
+                j -= 1;
+            }
+        }
+        pairs.reverse();
+    }
+    let (mut a, mut b) = (old.start, new.start);
+    for (pa, pb) in pairs.into_iter().chain([(old.end, new.end)]) {
+        let lone_old: Vec<u32> = (a..pa).collect();
+        let lone_new: Vec<u32> = (b..pb).collect();
+        let free_old: Vec<u32> = lone_old.iter().copied().filter(|&x| !linked(x)).collect();
+        let free_new: Vec<u32> = lone_new
+            .iter()
+            .copied()
+            .filter(|&y| !linked_new(y))
+            .collect();
+        let together = free_old.len().min(free_new.len());
+        let partner_of = |x: u32| {
+            free_old
+                .iter()
+                .position(|&f| f == x)
+                .filter(|&k| k < together)
+        };
+        let mut k_new = 0;
+        for &x in &lone_old {
+            match partner_of(x) {
+                Some(k) => {
+                    while lone_new[k_new] != free_new[k] {
+                        rows.push((None, Some(lone_new[k_new])));
+                        k_new += 1;
+                    }
+                    rows.push((Some(x), Some(free_new[k])));
+                    k_new += 1;
+                }
+                None => rows.push((Some(x), None)),
+            }
+        }
+        for &y in &lone_new[k_new..] {
+            rows.push((None, Some(y)));
+        }
+        if pa < old.end {
+            rows.push((Some(pa), Some(pb)));
+        }
+        (a, b) = (pa + 1, pb + 1);
     }
 }
 

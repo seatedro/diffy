@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use diffy_diff::{
     ChangeIntensity, DiffDocument, FileStatus, InlineDetail, InlineMode, InlineOptions, ItemChange,
-    Mode, Move, RowKind, Side, line_detail, merge_pair, move_leaders, moved_from,
+    Joined, Mode, Move, RowKind, Side, join_lines, line_detail, merge_pair, move_leaders,
+    moved_from,
 };
 use diffy_syntax::HighlightKind;
 use quark_render::FontKind;
@@ -795,7 +796,8 @@ impl DiffViewState {
             }
             RowKind::Reflowed
                 if let Some((count, false)) = paint.fold
-                    && let Some(line) = self.folded_line(seg, row, count, text, layouts, scale) =>
+                    && let Some(line) =
+                        self.folded_line(seg, row, count, text, layouts, scale, columns) =>
             {
                 paint.source_lines[Side::New as usize] = p
                     .line(row, Side::New)
@@ -925,6 +927,7 @@ impl DiffViewState {
         paint
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn folded_line(
         &self,
         seg: usize,
@@ -933,41 +936,16 @@ impl DiffViewState {
         text: &mut TextSystem,
         layouts: &mut LayoutCache,
         scale: f32,
+        columns: &Columns,
     ) -> Option<LinePaint> {
         let segment = &self.segments[seg];
         let (doc, p) = (&segment.doc, &segment.projection);
         let file = p.file[row as usize];
         let first = p.line(row, Side::New)?;
-        let store = doc.text(file, Side::New);
-        let indent = store.display_line(first)?;
-        let indent = &indent[..indent.len() - indent.trim_start().len()];
-        let mut joined = String::from(indent);
-        for line in first..first + count {
-            let part = store.display_line(line).unwrap_or("").trim();
-            let tight = joined.ends_with(['(', '['])
-                || part.starts_with([')', ']', ',', ';', '.'])
-                || joined.len() == indent.len();
-            if !tight {
-                joined.push(' ');
-            }
-            joined.push_str(part);
-        }
-        let params = TextParams::new(joined, self.text_style()).scale_factor(scale);
-        let layout = layouts.layout(text, &params).ok()?;
-        Some(LinePaint {
-            layout,
-            tones: Arc::from([]),
-            words: Vec::new(),
-            detail: LineDetail::Complete,
-            word_detail: WordDetail::Done(InlineDetail::Exact),
-            window: None,
-            struck: Vec::new(),
-            unspoken: Vec::new(),
-            renamed: Vec::new(),
-            removed_spans: Arc::from([]),
-            merge: None,
-            whole: false,
-        })
+        let old = p.fold_old(row).unwrap_or(0..0);
+        let [old, new] = [(Side::Old, old), (Side::New, first..first + count)]
+            .map(|(side, lines)| joined(doc, file, side, lines));
+        self.compose(seg, file, &old, &new, text, layouts, scale, columns)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -982,16 +960,32 @@ impl DiffViewState {
         columns: &Columns,
     ) -> Option<LinePaint> {
         let doc = &self.segments[seg].doc;
-        let lines = [Side::Old, Side::New].map(|side| {
-            doc.text(file, side)
-                .display_line(index[side as usize])
-                .unwrap_or("")
+        let [old, new] = [Side::Old, Side::New].map(|side| {
+            joined(
+                doc,
+                file,
+                side,
+                index[side as usize]..index[side as usize] + 1,
+            )
         });
-        let spans = [Side::Old, Side::New].map(|side| {
-            let line = source_line(doc, file, side, index[side as usize]);
-            doc.semantic_spans(file, side, line)
-        });
-        let pieces = merge_pair(lines[0], lines[1], spans[0], spans[1])?;
+        self.compose(seg, file, &old, &new, text, layouts, scale, columns)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose(
+        &self,
+        seg: usize,
+        file: u32,
+        old: &Joined,
+        new: &Joined,
+        text: &mut TextSystem,
+        layouts: &mut LayoutCache,
+        scale: f32,
+        columns: &Columns,
+    ) -> Option<LinePaint> {
+        let doc = &self.segments[seg].doc;
+        let lines = [old.text.as_str(), new.text.as_str()];
+        let pieces = merge_pair(lines[0], lines[1], &old.spans, &new.spans)?;
         let syntax = self.syntax_of(seg, file);
         let mut composed = String::new();
         let mut text_spans = Vec::new();
@@ -1022,20 +1016,37 @@ impl DiffViewState {
                 text_spans.push(plain_span(shown.clone()));
                 tones.push(HighlightKind::Normal);
                 removed.push(true);
-            } else if let Some((syntax, file)) = &syntax {
-                let base = doc
-                    .text(*file, Side::New)
-                    .display_range(index[side])
-                    .map_or(0, |r| r.start);
-                let (piece_spans, piece_tones) =
-                    syntax.spans(*file, Side::New, base + range.start..base + range.end);
-                for (span, tone) in piece_spans.into_iter().zip(piece_tones.iter()) {
-                    text_spans.push(TextSpan {
-                        range: span.range.start + start..span.range.end + start,
-                        ..span
-                    });
-                    tones.push(*tone);
-                    removed.push(false);
+            } else {
+                for (sub, source) in pieces_in(new, range.clone()) {
+                    let at = start + sub.start - range.start;
+                    let shifted = at..at + sub.len();
+                    let toned =
+                        source
+                            .zip(syntax.as_ref())
+                            .map(|((line, from), (syntax, file))| {
+                                let base = doc
+                                    .text(*file, Side::New)
+                                    .display_range(line)
+                                    .map_or(0, |r| r.start);
+                                syntax.spans(*file, Side::New, base + from..base + from + sub.len())
+                            });
+                    match toned {
+                        Some((piece_spans, piece_tones)) => {
+                            for (span, tone) in piece_spans.into_iter().zip(piece_tones.iter()) {
+                                text_spans.push(TextSpan {
+                                    range: span.range.start + at..span.range.end + at,
+                                    ..span
+                                });
+                                tones.push(*tone);
+                                removed.push(false);
+                            }
+                        }
+                        None => {
+                            text_spans.push(plain_span(shifted));
+                            tones.push(HighlightKind::Normal);
+                            removed.push(false);
+                        }
+                    }
                 }
             }
             if piece.side == Side::Old {
@@ -1248,6 +1259,52 @@ pub(crate) fn lead_move(doc: &DiffDocument, file: u32, index: u32) -> u32 {
     doc.semantics(file)
         .and_then(|s| move_leaders(s.moves()).get(index as usize).copied())
         .unwrap_or(index)
+}
+
+fn joined(doc: &DiffDocument, file: u32, side: Side, lines: std::ops::Range<u32>) -> Joined {
+    let store = doc.text(file, side);
+    join_lines(lines.map(|line| {
+        (
+            line,
+            store.display_line(line).unwrap_or(""),
+            doc.semantic_spans(file, side, source_line(doc, file, side, line)),
+        )
+    }))
+}
+
+/// A line and a byte in it, or `None` for a joining space.
+type Source = Option<(u32, usize)>;
+
+/// The parts of `range` of `joined`'s text, each with the line and byte
+/// in that line it came from, or `None` for a joining space.
+fn pieces_in(
+    joined: &Joined,
+    range: std::ops::Range<usize>,
+) -> Vec<(std::ops::Range<usize>, Source)> {
+    let mut out = Vec::new();
+    let mut at = range.start;
+    for part in &joined.parts {
+        let (start, end) = (part.at as usize, (part.at + part.len) as usize);
+        if end <= at || start >= range.end {
+            continue;
+        }
+        if at < start {
+            out.push((at..start.min(range.end), None));
+            at = start.min(range.end);
+        }
+        let stop = end.min(range.end);
+        if at < stop {
+            out.push((
+                at..stop,
+                Some((part.line, part.offset as usize + at - start)),
+            ));
+            at = stop;
+        }
+    }
+    if at < range.end {
+        out.push((at..range.end, None));
+    }
+    out
 }
 
 fn move_note(

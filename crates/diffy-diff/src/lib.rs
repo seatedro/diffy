@@ -61,7 +61,10 @@ pub use limits::{
     DETAIL_SIDE_BYTES, DiffError, DiffLimits, LimitKind, LineDetail, MAX_REPRESENTABLE,
     diff_texts_checked, line_detail, parse_unified_checked,
 };
-pub use merge::{MAX_MERGE_BYTES, MIN_MERGE_KEPT, MergePiece, merge_pair};
+pub use merge::{
+    Joined, JoinedPart, MAX_MERGE_BYTES, MIN_MERGE_KEPT, MergePiece, join_lines, merge_pair,
+    refolds,
+};
 pub use model::{
     BlockKind, BlockTable, ChangeSummary, ContentChange, DiffDocument, DiffStats, FileFacts,
     FileMeta, FileStatus, FileSummary, FileTable, HunkTable, IntegrityError, ObjectId, Side,

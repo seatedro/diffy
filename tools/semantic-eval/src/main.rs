@@ -39,6 +39,8 @@ enum Command {
     Moves(moves::Args),
     #[command(about = "Renders one file's diff, from two files or from a commit.")]
     Show(ShowArgs),
+    #[command(hide = true)]
+    Tree { path: PathBuf },
 }
 
 #[derive(clap::Args)]
@@ -64,6 +66,7 @@ fn main() -> ExitCode {
         Command::Mutate(args) => mutate::run(args),
         Command::Moves(args) => moves::run(args),
         Command::Show(args) => show(args),
+        Command::Tree { path } => tree(&path),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -125,4 +128,39 @@ fn show(args: ShowArgs) -> Result<(), String> {
         println!("! {violation}");
     }
     Ok(())
+}
+
+fn tree(path: &std::path::Path) -> Result<(), String> {
+    let name = path.to_string_lossy();
+    let language = diffy::core::compare::semantic::semantic_language(&name)
+        .and_then(engine::language)
+        .ok_or("no grammar")?;
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language).map_err(|e| e.to_string())?;
+    let tree = parser.parse(&text, None).ok_or("parse failed")?;
+    let mut cursor = tree.walk();
+    let mut depth = 0;
+    loop {
+        let node = cursor.node();
+        if node.is_named() && depth <= 3 || node.is_error() {
+            println!(
+                "{}{} {}..{}",
+                "  ".repeat(depth),
+                node.kind(),
+                node.start_position().row + 1,
+                node.end_position().row + 1
+            );
+        }
+        if cursor.goto_first_child() {
+            depth += 1;
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return Ok(());
+            }
+            depth -= 1;
+        }
+    }
 }

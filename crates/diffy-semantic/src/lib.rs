@@ -51,6 +51,7 @@ impl Default for Limits {
 pub enum Fallback {
     TooLarge(usize),
     ParseErrors(usize),
+    ErrorCoverage(usize),
     Unparsed,
     Budget,
     Timeout,
@@ -61,6 +62,9 @@ impl fmt::Display for Fallback {
         match self {
             Self::TooLarge(bytes) => write!(f, "{bytes} bytes exceeds the semantic byte limit"),
             Self::ParseErrors(count) => write!(f, "{count} parse errors"),
+            Self::ErrorCoverage(percent) => {
+                write!(f, "parse errors cover {percent}% of the file")
+            }
             Self::Unparsed => f.write_str("the parser gave up"),
             Self::Budget => f.write_str("exceeded the semantic work budget"),
             Self::Timeout => f.write_str("exceeded the semantic time budget"),
@@ -88,6 +92,12 @@ pub fn diff(
         .map_err(|_| Fallback::Unparsed)?;
     let old_tree = parser.parse(old, None).ok_or(Fallback::Unparsed)?;
     let new_tree = parser.parse(new, None).ok_or(Fallback::Unparsed)?;
+    for (tree, text) in [(&old_tree, old), (&new_tree, new)] {
+        let covered = error_bytes(tree.root_node());
+        if covered * 100 > text.len() * MAX_ERROR_PERCENT {
+            return Err(Fallback::ErrorCoverage(covered * 100 / text.len().max(1)));
+        }
+    }
     let old = syntax::Tree::lower(&old_tree, old, config);
     let new = syntax::Tree::lower(&new_tree, new, config);
     let errors = old.errors + new.errors;
@@ -102,4 +112,17 @@ pub fn diff(
         renames,
         moves,
     })
+}
+
+const MAX_ERROR_PERCENT: usize = 20;
+
+fn error_bytes(node: ts::Node<'_>) -> usize {
+    if node.is_error() {
+        return node.end_byte() - node.start_byte();
+    }
+    if !node.has_error() {
+        return 0;
+    }
+    let mut cursor = node.walk();
+    node.children(&mut cursor).map(error_bytes).sum()
 }

@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use diffy_diff::{ChangeIntensity, DiffDocument, MOVE_GROUP_GAP, Side, move_leaders};
+use diffy_diff::{
+    ChangeIntensity, Comparison, ComparisonOptions, DiffDocument, Expansion, MOVE_GROUP_GAP, Mode,
+    Projection, RowKind, Side, move_leaders,
+};
 
 use crate::corpus::Blobs;
 use crate::engine::{self, Engine};
@@ -13,6 +16,8 @@ pub struct Args {
     list: PathBuf,
     #[arg(long, default_value_t = 15)]
     worst: usize,
+    #[arg(long)]
+    dump: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -25,11 +30,17 @@ struct Noise {
     tiny: u32,
     crowded: u32,
     leftover: u32,
+    silent: u32,
 }
 
 impl Noise {
     fn score(&self) -> u32 {
-        self.novel + 10 * self.mostly_new + 2 * self.crowded + self.tiny + 2 * self.leftover
+        self.novel
+            + 10 * self.mostly_new
+            + 2 * self.crowded
+            + self.tiny
+            + 2 * self.leftover
+            + 3 * self.silent
     }
 
     fn add(&mut self, other: &Noise) {
@@ -41,6 +52,7 @@ impl Noise {
         self.tiny += other.tiny;
         self.crowded += other.crowded;
         self.leftover += other.leftover;
+        self.silent += other.silent;
     }
 }
 
@@ -63,16 +75,19 @@ pub fn run(args: Args) -> Result<(), String> {
         if run.fallback.is_some() {
             continue;
         }
-        let noise = measure(&run.doc);
+        let noise = measure(
+            &run.doc,
+            args.dump.then_some(format!("{commit} {path}")).as_deref(),
+        );
         files += 1;
         total.add(&noise);
         scored.push((noise, format!("{commit} {path}")));
     }
     scored.sort_by_key(|(noise, _)| std::cmp::Reverse(noise.score()));
-    println!("score moves notes novel mostly tiny crowded leftover  file");
+    println!("score moves notes novel mostly tiny crowded leftover silent  file");
     for (n, name) in scored.iter().take(args.worst) {
         println!(
-            "{:5} {:5} {:5} {:5} {:6} {:4} {:7} {:8}  {name}",
+            "{:5} {:5} {:5} {:5} {:6} {:4} {:7} {:8} {:6}  {name}",
             n.score(),
             n.moves,
             n.notes,
@@ -80,11 +95,12 @@ pub fn run(args: Args) -> Result<(), String> {
             n.mostly_new,
             n.tiny,
             n.crowded,
-            n.leftover
+            n.leftover,
+            n.silent
         );
     }
     println!(
-        "{files} files: {} moves over {} lines, {} notes; {} novel lines inside moves, {} mostly new moves, {} one-line moves, {} crowded notes, {} leftover lines",
+        "{files} files: {} moves over {} lines, {} notes; {} novel lines inside moves, {} mostly new moves, {} one-line moves, {} crowded notes, {} leftover lines, {} silent lines",
         total.moves,
         total.moved_lines,
         total.notes,
@@ -92,12 +108,25 @@ pub fn run(args: Args) -> Result<(), String> {
         total.mostly_new,
         total.tiny,
         total.crowded,
-        total.leftover
+        total.leftover,
+        total.silent
     );
     Ok(())
 }
 
-fn measure(doc: &DiffDocument) -> Noise {
+fn measure(doc: &DiffDocument, dump: Option<&str>) -> Noise {
+    let text = |side: Side, line: u32| {
+        doc.text(0, side)
+            .display_line(line)
+            .unwrap_or("")
+            .trim()
+            .to_owned()
+    };
+    let report = |class: &str, side: Side, line: u32| {
+        if let Some(name) = dump {
+            println!("{class}\t{name}:{}\t{}", line + 1, text(side, line));
+        }
+    };
     let mut noise = Noise::default();
     let Some(semantics) = doc.semantics(0) else {
         return noise;
@@ -110,12 +139,14 @@ fn measure(doc: &DiffDocument) -> Noise {
         noise.moved_lines += m.lines;
         if m.lines == 1 && m.old_lines == 1 {
             noise.tiny += 1;
+            report("tiny", Side::New, m.new_line);
         }
         if leaders[i] == i as u32 {
             notes.push(m.new_line);
         }
         let novel = (m.new_line..m.new_line + m.lines)
             .filter(|&line| mostly_novel(doc, Side::New, line))
+            .inspect(|&line| report("novel", Side::New, line))
             .count() as u32;
         noise.novel += novel;
         if novel * 3 > m.lines {
@@ -127,7 +158,44 @@ fn measure(doc: &DiffDocument) -> Noise {
         {
             if leftover(doc, line) {
                 noise.leftover += 1;
+                report("leftover", Side::Old, line);
             }
+        }
+    }
+    let comparison = Comparison::new(doc, ComparisonOptions::default());
+    let p = Projection::with_comparison(doc, Mode::Unified, &Expansion::new(doc), &comparison);
+    for row in 0..p.len() {
+        if let (Some(count), Some(old), Some(name)) = (p.reflow(row), p.fold_old(row), dump) {
+            let new = p.line(row, Side::New).unwrap_or(0);
+            println!(
+                "fold\t{name}:{}\t{} old -> {count} new\t{}",
+                new + 1,
+                old.len(),
+                text(Side::New, new)
+            );
+        }
+        let side = match p.kind[row as usize] {
+            RowKind::Added => Side::New,
+            RowKind::Removed => Side::Old,
+            _ => continue,
+        };
+        let Some(line) = p.line(row, side) else {
+            continue;
+        };
+        let blank = text(side, line).is_empty();
+        let worded = text(side, line)
+            .chars()
+            .any(|c| c.is_alphanumeric() || c == '_');
+        if !blank && worded && doc.semantic_spans(0, side, line).is_empty() {
+            noise.silent += 1;
+            report(
+                match side {
+                    Side::Old => "silent-old",
+                    Side::New => "silent-new",
+                },
+                side,
+                line,
+            );
         }
     }
     noise.notes = notes.len() as u32;
@@ -135,6 +203,7 @@ fn measure(doc: &DiffDocument) -> Noise {
     noise.crowded = notes
         .windows(2)
         .filter(|w| w[1] - w[0] <= MOVE_GROUP_GAP)
+        .inspect(|w| report("crowded", Side::New, w[1]))
         .count() as u32;
     noise
 }

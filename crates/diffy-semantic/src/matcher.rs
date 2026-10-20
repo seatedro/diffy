@@ -170,7 +170,9 @@ impl Matcher<'_, '_> {
         }
         let (ia, ib) = self.intern(a, b);
         let (mut i, mut j) = (0, 0);
-        for change in slide(myers::diff(&ia, &ib), &ia, &ib) {
+        let lead_a = |i: usize| self.leads(0, a[i]);
+        let lead_b = |i: usize| self.leads(1, b[i]);
+        for change in slide(myers::diff(&ia, &ib), &ia, &ib, [&lead_a, &lead_b]) {
             let (old, new) = (
                 change.old.start as usize..change.old.end as usize,
                 change.new.start as usize..change.new.end as usize,
@@ -541,24 +543,31 @@ impl Matcher<'_, '_> {
             };
             for (i, j) in pairs {
                 let (o, n) = (old_runs[r][i], run[j]);
-                let end = self.trees[0].nodes[o as usize].next;
-                taken[o as usize..end as usize].fill(true);
-                self.unlink(o);
                 let inner = |side: usize, list: u32, fits: &dyn Fn(u32) -> bool| {
                     self.trees[side]
                         .is_list(list)
                         .then(|| self.trees[side].children(list))
                         .and_then(|children| children.into_iter().find(|&c| fits(c)))
                 };
-                if self.pairable_lists(o, n) {
-                    self.pair_lists(o, n)?;
+                let plan = if self.pairable_lists(o, n) {
+                    Some((o, n))
                 } else if let Some(c) = inner(1, n, &|c| self.pairable_lists(o, c)) {
-                    self.pair_lists(o, c)?;
+                    Some((o, c))
                 } else if let Some(c) = inner(0, o, &|c| self.pairable_lists(c, n)) {
-                    self.pair_lists(c, n)?;
-                } else if !self.same(o, n) {
-                    self.link(o, n);
-                    self.replaced.push((o, n));
+                    Some((c, n))
+                } else if self.hash(0, o) == self.hash(1, n) {
+                    Some((o, n))
+                } else {
+                    None
+                };
+                let Some((x, y)) = plan else {
+                    continue;
+                };
+                let end = self.trees[0].nodes[o as usize].next;
+                taken[o as usize..end as usize].fill(true);
+                self.unlink(o);
+                if !self.same(x, y) {
+                    self.pair_lists(x, y)?;
                 }
                 self.relocated.push((o, n));
             }
@@ -802,6 +811,16 @@ impl Matcher<'_, '_> {
         Ok(out)
     }
 
+    fn leads(&self, side: usize, node: u32) -> bool {
+        let tree = self.trees[side];
+        let start = tree.nodes[node as usize].span.start as usize;
+        tree.src.as_bytes()[..start]
+            .iter()
+            .rev()
+            .take_while(|&&c| c != b'\n')
+            .all(u8::is_ascii_whitespace)
+    }
+
     fn item(&self, side: usize, node: u32) -> bool {
         self.trees[side]
             .items
@@ -944,25 +963,55 @@ impl Matcher<'_, '_> {
     }
 }
 
-fn slide(mut changes: Vec<myers::Change>, a: &[u32], b: &[u32]) -> Vec<myers::Change> {
+fn slide(
+    mut changes: Vec<myers::Change>,
+    a: &[u32],
+    b: &[u32],
+    leads: [&dyn Fn(usize) -> bool; 2],
+) -> Vec<myers::Change> {
     for k in 0..changes.len() {
         let limit = changes
             .get(k + 1)
             .map_or((a.len() as u32, b.len() as u32), |next| {
                 (next.old.start, next.new.start)
             });
+        let floor = k
+            .checked_sub(1)
+            .map_or((0, 0), |p| (changes[p].old.end, changes[p].new.end));
         let c = &mut changes[k];
-        if c.old.is_empty() {
-            while c.new.end < limit.1 && b[c.new.start as usize] == b[c.new.end as usize] {
-                c.new = c.new.start + 1..c.new.end + 1;
-                c.old = c.old.start + 1..c.old.end + 1;
-            }
+        let (side, items, run, other, ceiling, bottom) = if c.old.is_empty() {
+            (1, b, &mut c.new, &mut c.old, limit.1, floor.1)
         } else if c.new.is_empty() {
-            while c.old.end < limit.0 && a[c.old.start as usize] == a[c.old.end as usize] {
-                c.old = c.old.start + 1..c.old.end + 1;
-                c.new = c.new.start + 1..c.new.end + 1;
+            (0, a, &mut c.old, &mut c.new, limit.0, floor.0)
+        } else {
+            continue;
+        };
+        let other_floor = if side == 1 { floor.0 } else { floor.1 };
+        while run.start > bottom
+            && other.start > other_floor
+            && items[run.start as usize - 1] == items[run.end as usize - 1]
+        {
+            *run = run.start - 1..run.end - 1;
+            *other = other.start - 1..other.end - 1;
+        }
+        let score = |run: &Range<u32>| {
+            let end = run.end as usize;
+            2 * u8::from(leads[side](run.start as usize))
+                + u8::from(end == items.len() || leads[side](end))
+        };
+        let (mut best, mut best_score) = (run.clone(), score(run));
+        let (mut probe, mut probe_other) = (run.clone(), other.clone());
+        while probe.end < ceiling && items[probe.start as usize] == items[probe.end as usize] {
+            probe = probe.start + 1..probe.end + 1;
+            probe_other = probe_other.start + 1..probe_other.end + 1;
+            let s = score(&probe);
+            if s >= best_score {
+                (best, best_score) = (probe.clone(), s);
             }
         }
+        let shift = best.start - run.start;
+        *run = best;
+        *other = other.start + shift..other.end + shift;
     }
     let mut out: Vec<myers::Change> = Vec::with_capacity(changes.len());
     for c in changes {

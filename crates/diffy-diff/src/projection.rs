@@ -5,6 +5,8 @@
 //! mode or the [`Expansion`] changes. Rows refer to lines by store index,
 //! so an app reads the text from the document.
 
+use std::ops::Range;
+
 use crate::compare::{Comparison, LinePair, Step};
 use crate::model::{BlockKind, DiffDocument, Side, lines_before};
 
@@ -293,9 +295,23 @@ pub struct Projection {
     /// inverse of `old` and `new` per file.
     old_rows: Vec<u32>,
     new_rows: Vec<u32>,
+    /// Per folded reflow, by file and first new store index: the old store
+    /// indices it replaced.
+    folds: Vec<(u32, u32, Range<u32>)>,
 }
 
 impl Projection {
+    /// The old lines a folded reflow at `row` replaced.
+    pub fn fold_old(&self, row: u32) -> Option<Range<u32>> {
+        let r = row as usize;
+        let key = (self.file[r], self.new[r]);
+        let at = self
+            .folds
+            .binary_search_by_key(&key, |(file, new, _)| (*file, *new))
+            .ok()?;
+        Some(self.folds[at].2.clone())
+    }
+
     pub fn new(doc: &DiffDocument, mode: Mode, expansion: &Expansion) -> Self {
         let mut p = Self {
             mode,
@@ -443,6 +459,7 @@ impl Projection {
         }
         self.kind.clear();
         self.gaps.clear();
+        self.folds.clear();
         let (files, h, b) = (doc.files(), doc.hunks(), doc.blocks());
         for file in 0..doc.file_count() {
             let f = file as usize;
@@ -623,11 +640,25 @@ impl Projection {
                         .collect();
                     if let Some(&first) = lines.first() {
                         let count = lines.len() as u32;
-                        if count > 1 && !expansion.reflow_open(file, first) {
+                        let hidden = steps[end..end + run].iter().filter_map(|s| match s {
+                            Step::Hidden(o) => Some(*o),
+                            _ => None,
+                        });
+                        let (low, high) =
+                            hidden.fold((NONE, 0), |(lo, hi), o| (lo.min(o), hi.max(o + 1)));
+                        if low < high {
+                            self.folds.push((file, first, low..high));
+                        }
+                        if !expansion.reflow_open(file, first) {
                             self.push(RowKind::Reflowed, file, hunk, NONE, first, count);
                         } else {
+                            for step in &steps[end..end + run] {
+                                if let Step::Hidden(old) = *step {
+                                    self.push(RowKind::Removed, file, hunk, old, NONE, NONE);
+                                }
+                            }
                             for (k, &line) in lines.iter().enumerate() {
-                                let pair = if k == 0 && count > 1 { count } else { NONE };
+                                let pair = if k == 0 { count } else { NONE };
                                 self.push(RowKind::Reflowed, file, hunk, NONE, line, pair);
                             }
                         }

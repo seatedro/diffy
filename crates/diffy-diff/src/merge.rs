@@ -173,6 +173,107 @@ fn new_piece(range: Range<usize>, changed: bool, renamed: bool) -> MergePiece {
     }
 }
 
+/// Several lines read as one: trimmed and joined with single spaces, with
+/// their spans moved to match.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Joined {
+    pub text: String,
+    pub spans: Vec<SemanticSpan>,
+    pub parts: Vec<JoinedPart>,
+}
+
+/// Where one line's trimmed text sits in [`Joined::text`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JoinedPart {
+    pub at: u32,
+    pub line: u32,
+    pub offset: u32,
+    pub len: u32,
+}
+
+/// Joins `(line, text, spans)` in order. The first line keeps its indent;
+/// no space goes after an opening bracket or before closing punctuation.
+pub fn join_lines<'a>(
+    lines: impl IntoIterator<Item = (u32, &'a str, &'a [SemanticSpan])>,
+) -> Joined {
+    let mut out = Joined::default();
+    for (line, full, spans) in lines {
+        let part = full.trim();
+        let lead = full.len() - full.trim_start().len();
+        if out.parts.is_empty() {
+            out.text.push_str(&full[..lead]);
+        } else if part.is_empty() {
+            continue;
+        } else if !(out.text.ends_with(['(', '[']) || part.starts_with([')', ']', ',', ';', '.'])) {
+            out.text.push(' ');
+        }
+        let at = out.text.len();
+        out.text.push_str(part);
+        out.parts.push(JoinedPart {
+            at: at as u32,
+            line,
+            offset: lead as u32,
+            len: part.len() as u32,
+        });
+        let (from, to) = (lead as u32, (lead + part.len()) as u32);
+        for span in spans {
+            let (start, end) = (span.start.max(from), span.end.min(to));
+            if start < end {
+                out.spans.push(SemanticSpan {
+                    start: start - from + at as u32,
+                    end: end - from + at as u32,
+                    intensity: span.intensity,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Whether `old` and `new` hold the same kept text broken into lines in
+/// different places, so they read best folded into one merged line.
+pub fn refolds(old: &Joined, new: &Joined) -> bool {
+    if merge_pair(&old.text, &new.text, &old.spans, &new.spans).is_none() {
+        return false;
+    }
+    match (breaks(old), breaks(new)) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    }
+}
+
+/// Kept characters before each line break, or `None` when a line that
+/// keeps nothing is more than a list item between kept lines: a fully
+/// added or removed statement, block or comment is not part of a reflow.
+fn breaks(joined: &Joined) -> Option<Vec<usize>> {
+    let kept = kept(
+        &joined.text,
+        &marked(&joined.spans),
+        &renamed(&joined.spans),
+    );
+    let total = kept.len();
+    let mut out = Vec::with_capacity(joined.parts.len());
+    let mut before = 0;
+    let last = joined.parts.len().saturating_sub(1);
+    for (index, part) in joined.parts.iter().enumerate() {
+        let count = kept.partition_point(|&(at, _, _)| at < (part.at + part.len) as usize);
+        if count == before {
+            let text = &joined.text[part.at as usize..(part.at + part.len) as usize];
+            let item = !text.contains([';', '{', '}'])
+                && !text.starts_with(['/', '*', '#'])
+                && !text.starts_with("--");
+            if index == 0 || index == last || !item {
+                return None;
+            }
+        }
+        before = count;
+        if count < total {
+            out.push(count);
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MergePiece, merge_pair};

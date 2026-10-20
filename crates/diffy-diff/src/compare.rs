@@ -9,6 +9,7 @@
 use std::ops::Range;
 
 use crate::merge::merge_pair;
+use crate::merge::{join_lines, refolds};
 use crate::model::{BlockKind, DiffDocument, Side};
 use crate::myers::{diff, intern};
 use crate::projection::NONE;
@@ -56,7 +57,6 @@ pub const PAIRING_COMPARISONS_PER_LINE: u32 = 4;
 /// Bytes compared from each end of a line when scoring similarity.
 pub const SIMILARITY_SCAN_BYTES: usize = 256;
 
-const MAX_REFLOW_ADDED: usize = 2;
 pub const MOVE_GROUP_GAP: u32 = 8;
 const MAX_REFLOW_STEPS: usize = 64;
 
@@ -666,9 +666,7 @@ fn solid(doc: &DiffDocument, file: u32, step: Step) -> bool {
 }
 
 fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
-    use crate::semantic::ChangeIntensity::{Renamed, UnchangedContext};
-    let mut texts = [String::new(), String::new()];
-    let mut added = 0usize;
+    let mut lines: [Vec<u32>; 2] = [Vec::new(), Vec::new()];
     for &step in run {
         if matches!(
             step,
@@ -677,33 +675,24 @@ fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
             continue;
         }
         let (o, n) = step.lines();
-        for (side, line) in [(Side::Old, o), (Side::New, n)] {
-            if line == NONE {
-                continue;
-            }
-            let text = doc.text(file, side).display_line(line).unwrap_or("");
-            let spans = doc.semantic_spans(file, side, line);
-            let out = &mut texts[side as usize];
-            for (at, c) in text.char_indices().filter(|(_, c)| !c.is_whitespace()) {
-                let span = spans.iter().find(|s| {
-                    s.intensity != UnchangedContext
-                        && (s.start as usize..s.end as usize).contains(&at)
-                });
-                match span {
-                    None => out.push(c),
-                    Some(s) if s.intensity == Renamed => {
-                        if s.start as usize == at {
-                            out.push('\u{0}');
-                        }
-                    }
-                    Some(_) if side == Side::Old => return false,
-                    Some(_) => added += 1,
-                }
-            }
+        if o != NONE {
+            lines[0].push(o);
+        }
+        if n != NONE {
+            lines[1].push(n);
         }
     }
-    let [old_text, new_text] = texts;
-    !old_text.is_empty() && added <= MAX_REFLOW_ADDED && old_text == new_text
+    let [old, new] = [Side::Old, Side::New].map(|side| {
+        let store = doc.text(file, side);
+        join_lines(lines[side as usize].iter().map(|&line| {
+            (
+                line,
+                store.display_line(line).unwrap_or(""),
+                doc.semantic_spans(file, side, line),
+            )
+        }))
+    });
+    !old.text.trim().is_empty() && refolds(&old, &new)
 }
 
 /// A broken [`Comparison`] invariant.

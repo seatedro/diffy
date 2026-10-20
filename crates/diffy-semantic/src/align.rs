@@ -136,13 +136,20 @@ pub(crate) fn rows(
         }
     }
     let outline = outline(&sides, matching);
-    let anchors = anchors(&sides, matching);
-    let moves = moves(&sides, matching, &anchors);
+    let displaced = displaced(&sides, matching);
+    let anchors = anchors(&sides, matching, &displaced);
+    let moves = moves(&sides, matching, &anchors, &displaced);
     let aligned = align(&sides, &anchors);
+    mark_silent(&mut sides, &aligned, &moves, matching);
     (chunks(&mut sides, aligned), outline, renames, moves)
 }
 
-fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching, chain: &[(u32, u32, u64)]) -> Vec<Move> {
+fn moves(
+    sides: &[Side<'_, '_>; 2],
+    matching: &Matching,
+    chain: &[(u32, u32, u64)],
+    displaced: &[(u32, u32)],
+) -> Vec<Move> {
     let mut out = Vec::new();
     let lines = |side: usize, node: u32| {
         let span = sides[side].tree.nodes[node as usize].span.clone();
@@ -164,7 +171,7 @@ fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching, chain: &[(u32, u32, u64
         !kept && (new.start < before || new.end > after) && !in_place(sides, matching, o, n)
     });
     let mut pairs = Vec::new();
-    for &(o, n) in matching.moved.iter().chain(stranded) {
+    for &(o, n) in displaced.iter().chain(stranded) {
         refine(sides, matching, o, n, &mut pairs);
     }
     for (o, n) in pairs {
@@ -207,6 +214,7 @@ fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching, chain: &[(u32, u32, u64
             _ => kept.push(m),
         }
     }
+    kept.retain(|m| m.lines > 1 || m.old_lines > 1 || m.item.is_some());
     kept
 }
 
@@ -278,6 +286,53 @@ fn parent(tree: &Tree<'_>, node: u32) -> Option<u32> {
     (0..node)
         .rev()
         .find(|&p| tree.nodes[p as usize].next > node && tree.is_list(p))
+}
+
+/// The detected moves that are out of order among their siblings. When
+/// a move only crosses smaller siblings, those siblings are what moved.
+fn displaced(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<(u32, u32)> {
+    let (old, new) = (sides[0].tree, sides[1].tree);
+    let size = |c: u32| {
+        let span = &old.nodes[c as usize].span;
+        let last = span.end.saturating_sub(1).max(span.start);
+        sides[0].lines.of(last) + 1 - sides[0].lines.of(span.start)
+    };
+    let mut out = Vec::new();
+    for &(o, n) in &matching.moved {
+        let crossing = match (parent(old, o), parent(new, n)) {
+            (Some(p), Some(q)) if matching.partner[0][p as usize] == q => {
+                let (olds, news) = (old.children(p), new.children(q));
+                let (Some(i), Some(j)) = (
+                    olds.iter().position(|&c| c == o),
+                    news.iter().position(|&c| c == n),
+                ) else {
+                    out.push((o, n));
+                    continue;
+                };
+                olds.iter()
+                    .enumerate()
+                    .filter(|&(k, _)| k != i)
+                    .filter_map(|(k, &c)| {
+                        let partner = matching.partner[0][c as usize];
+                        let at = news.iter().position(|&x| x == partner)?;
+                        ((k < i) != (at < j)).then_some((c, partner))
+                    })
+                    .collect::<Vec<_>>()
+            }
+            _ => {
+                out.push((o, n));
+                continue;
+            }
+        };
+        if crossing.iter().all(|&(c, _)| size(c) < size(o)) {
+            out.extend(crossing);
+        } else {
+            out.push((o, n));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 fn in_place(sides: &[Side<'_, '_>; 2], matching: &Matching, o: u32, n: u32) -> bool {
@@ -617,7 +672,11 @@ fn mark_words(sides: &mut [Side<'_, '_>; 2], words: Vec<[Vec<Range<u32>>; 2]>, r
     }
 }
 
-fn anchors(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<(u32, u32, u64)> {
+fn anchors(
+    sides: &[Side<'_, '_>; 2],
+    matching: &Matching,
+    displaced: &[(u32, u32)],
+) -> Vec<(u32, u32, u64)> {
     let (old, new) = (&sides[0], &sides[1]);
     let mut out = Vec::new();
     let mut push = |a: &Range<u32>, b: &Range<u32>, weight: u64| {
@@ -634,10 +693,10 @@ fn anchors(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<(u32, u32, u64
             out.push((la, lb, weight));
         }
     };
-    let mut moved = vec![false; old.tree.nodes.len()];
-    for &(o, _) in &matching.moved {
+    let mut skipped = vec![false; old.tree.nodes.len()];
+    for &(o, _) in displaced {
         let end = old.tree.nodes[o as usize].next;
-        moved[o as usize..end as usize].fill(true);
+        skipped[o as usize..end as usize].fill(true);
     }
     let mut relocated = vec![false; old.tree.nodes.len()];
     for &(o, _) in matching.relocated.iter().chain(&matching.lifted) {
@@ -646,7 +705,7 @@ fn anchors(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<(u32, u32, u64
     }
     for (index, node) in old.tree.nodes.iter().enumerate() {
         let partner = matching.partner[0][index];
-        if partner == NONE || moved[index] {
+        if partner == NONE || skipped[index] {
             continue;
         }
         let other = &new.tree.nodes[partner as usize];
@@ -789,6 +848,96 @@ fn intern<'a>(ids: &mut HashMap<&'a str, u32>, side: &Side<'_, 'a>, lines: Range
                 .or_insert(next)
         })
         .collect()
+}
+
+fn mark_silent(
+    sides: &mut [Side<'_, '_>; 2],
+    aligned: &[(Option<u32>, Option<u32>)],
+    moves: &[Move],
+    matching: &Matching,
+) {
+    let mut region = [
+        vec![u32::MAX; sides[0].lines.count() as usize],
+        vec![u32::MAX; sides[1].lines.count() as usize],
+    ];
+    let mut current = 0;
+    let mut open = false;
+    for &(o, n) in aligned {
+        let changed = match (o, n) {
+            (Some(o), Some(n)) => {
+                !sides[0].spans[o as usize].is_empty()
+                    || !sides[1].spans[n as usize].is_empty()
+                    || sides[0].lines.text(sides[0].tree.src, o)
+                        != sides[1].lines.text(sides[1].tree.src, n)
+            }
+            _ => true,
+        };
+        if !changed {
+            open = false;
+            continue;
+        }
+        if !open {
+            current += 1;
+            open = true;
+        }
+        if let Some(o) = o {
+            region[0][o as usize] = current;
+        }
+        if let Some(n) = n {
+            region[1][n as usize] = current;
+        }
+    }
+    let mut far = [
+        vec![false; sides[0].lines.count() as usize],
+        vec![false; sides[1].lines.count() as usize],
+    ];
+    for s in 0..2 {
+        let (own, other) = (&sides[s], &sides[1 - s]);
+        for (k, node) in own.tree.nodes.iter().enumerate() {
+            let partner = matching.partner[s][k];
+            if node.class == Class::List || partner == NONE {
+                continue;
+            }
+            let line = own.lines.of(node.span.start);
+            let theirs = other
+                .lines
+                .of(other.tree.nodes[partner as usize].span.start);
+            if region[s][line as usize] != region[1 - s][theirs as usize] {
+                far[s][line as usize] = true;
+            }
+        }
+    }
+    for &(o, n) in aligned {
+        let (s, line) = match (o, n) {
+            (Some(o), None) => (0, o),
+            (None, Some(n)) => (1, n),
+            _ => continue,
+        };
+        let moved = moves.iter().any(|m| {
+            let (start, len) = if s == 0 {
+                (m.old_line, m.old_lines)
+            } else {
+                (m.new_line, m.lines)
+            };
+            (start..start + len).contains(&line)
+        });
+        let side = &mut sides[s];
+        if moved || !far[s][line as usize] || !side.spans[line as usize].is_empty() {
+            continue;
+        }
+        let content = side.lines.content(side.tree.src, line);
+        let text = &side.tree.src[content.start as usize..content.end as usize];
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let start = (text.len() - text.trim_start().len()) as u32;
+        side.spans[line as usize].push(SemanticSpan {
+            start,
+            end: start + trimmed.len() as u32,
+            intensity: ChangeIntensity::Novel,
+        });
+    }
 }
 
 fn chunks(

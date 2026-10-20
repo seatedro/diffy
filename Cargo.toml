@@ -12,13 +12,13 @@ exclude = ["crates/difftastic"]
 version = "0.1.12"
 
 [workspace.dependencies]
-quark = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104" }
-quark-app = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104" }
-quark-components = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104" }
-quark-render = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104" }
-quark-text = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104", default-features = false }
-quark-ui = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104" }
-quark-update = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104" }
+quark = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97" }
+quark-app = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97" }
+quark-components = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97" }
+quark-render = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97" }
+quark-text = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97", default-features = false }
+quark-ui = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97" }
+quark-update = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97" }
 
 [package]
 name = "diffy"
@@ -127,6 +127,6 @@ panic = "abort"
 strip = true
 
 [patch.crates-io]
-accesskit_unix = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104" }
-cosmic-text = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104" }
-taffy = { git = "https://github.com/seatedro/quark", rev = "627d0fabd1f686b5777b23414fbe053700bd5104" }
+accesskit_unix = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97" }
+cosmic-text = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97" }
+taffy = { git = "https://github.com/seatedro/quark", rev = "3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97" }

@@ -197,6 +197,14 @@ enum Act {
     Unwrap(u32, u32, u32, (u32, u32)),
 }
 
+struct Anchor {
+    old: usize,
+    new: usize,
+    x: u32,
+    y: u32,
+    deep: bool,
+}
+
 #[derive(Clone, Copy)]
 struct Cell {
     old: (usize, usize),
@@ -668,9 +676,9 @@ impl<'a> Matcher<'_, 'a> {
         self.spend(xs.len() + ys.len())?;
         let fixed = self.anchored(xs, ys)?;
         let mut held = [vec![false; xs.len()], vec![false; ys.len()]];
-        for &(i, j, _, _) in &fixed {
-            held[0][i] = true;
-            held[1][j] = true;
+        for f in fixed.iter().filter(|f| !f.deep) {
+            held[0][f.old] = true;
+            held[1][f.new] = true;
         }
         let (ia, ib) = self.intern(xs, ys);
         let lead_a = |i: usize| self.leads(0, xs[i]);
@@ -763,6 +771,12 @@ impl<'a> Matcher<'_, 'a> {
                 }
             }
         }
+        keys.extend(
+            fixed
+                .iter()
+                .filter(|f| f.deep)
+                .map(|f| (f.old, f.new, f.x, f.y)),
+        );
         keys.sort_unstable();
         keys.dedup();
         self.spend(keys.len())?;
@@ -811,25 +825,21 @@ impl<'a> Matcher<'_, 'a> {
         }
         self.wraps(xs, ys, a, b, ctx, &deep, &gaps, &reached, &mut out)?;
         out.retain(|c| fits(&fixed, c.old, c.new));
-        for (i, j, x, y) in fixed {
-            let e = self.savings(x, y)?;
+        for f in fixed.into_iter().filter(|f| !f.deep) {
+            let e = self.savings(f.x, f.y)?;
             out.push(Cell {
-                old: (i, i),
-                new: (j, j),
+                old: (f.old, f.old),
+                new: (f.new, f.new),
                 value: self.value(&e.d),
                 exact: true,
                 fixed: true,
-                act: Act::List(x, y),
+                act: Act::List(f.x, f.y),
             });
         }
         Ok(out)
     }
 
-    fn anchored(
-        &mut self,
-        xs: &[u32],
-        ys: &[u32],
-    ) -> Result<Vec<(usize, usize, u32, u32)>, Fallback> {
+    fn anchored(&mut self, xs: &[u32], ys: &[u32]) -> Result<Vec<Anchor>, Fallback> {
         let (Some(&first), Some(&last)) = (xs.first(), xs.last()) else {
             return Ok(Vec::new());
         };
@@ -852,7 +862,7 @@ impl<'a> Matcher<'_, 'a> {
             }
         }
         if found.is_empty() {
-            return Ok(found);
+            return Ok(Vec::new());
         }
         let mut rows = vec![0u32; xs.len()];
         let mut cols = vec![0u32; ys.len()];
@@ -886,8 +896,14 @@ impl<'a> Matcher<'_, 'a> {
                 self.outermost(0, x, p, |m, n| m.feasible(n, q) && m.respects(n, q))
                     .map(|n| (n, q))
             };
-            if let Some((p, q)) = ends {
-                out.push((i, j, p, q));
+            if let Some((x, y)) = ends {
+                out.push(Anchor {
+                    old: i,
+                    new: j,
+                    x,
+                    y,
+                    deep: (x, y) != (p, q),
+                });
             }
         }
         Ok(out)
@@ -1765,10 +1781,14 @@ impl<'a> Matcher<'_, 'a> {
     }
 }
 
-fn fits(fixed: &[(usize, usize, u32, u32)], old: (usize, usize), new: (usize, usize)) -> bool {
-    let k = fixed.partition_point(|f| f.0 < old.0);
-    let before = k.checked_sub(1).is_none_or(|p| fixed[p].1 < new.0);
-    let after = fixed.get(k).is_none_or(|f| old.1 < f.0 && new.1 < f.1);
+fn fits(fixed: &[Anchor], old: (usize, usize), new: (usize, usize)) -> bool {
+    let k = fixed.partition_point(|f| f.old < old.0);
+    let covers = |f: &Anchor| f.deep && f.old <= old.1 && new.0 <= f.new && f.new <= new.1;
+    let high = k + usize::from(fixed.get(k).is_some_and(covers));
+    let before = k.checked_sub(1).is_none_or(|p| fixed[p].new < new.0);
+    let after = fixed
+        .get(high)
+        .is_none_or(|f| old.1 < f.old && new.1 < f.new);
     before && after
 }
 

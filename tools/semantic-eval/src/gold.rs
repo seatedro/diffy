@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use diffy::core::compare::semantic::semantic_language;
 use diffy_semantic::{Limits, SemanticDiff, Token};
 
 use crate::corpus::Blobs;
@@ -71,12 +70,16 @@ pub fn run(args: Args) -> Result<(), String> {
     let mut checks = Checks::default();
     let (mut held, mut failed, mut cases_failed) = (0, 0, 0);
     for case in &cases {
-        let name = semantic_language(&case.path).ok_or("no grammar")?;
-        let (Some(language), Some(config)) = (engine::language(name), diffy_semantic::config(name))
-        else {
+        let Some(grammar) = engine::grammar(&case.path) else {
             return Err(format!("{}: no grammar", case.path));
         };
-        let explained = match explain::run(&language, config, &case.old, &case.new, &limits) {
+        let explained = match explain::run(
+            &grammar.language,
+            &grammar.rules,
+            &case.old,
+            &case.new,
+            &limits,
+        ) {
             Ok(e) => e,
             Err(fallback) => {
                 println!("FALLBACK {}: {fallback}", case.label);

@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use diffy::core::compare::semantic::semantic_language;
 use diffy_semantic::Limits;
 use diffy_semantic::eval::{self, Options};
 
@@ -55,14 +54,10 @@ pub fn run(args: Args) -> Result<(), String> {
             let (Ok(old), Ok(new)) = (String::from_utf8(old), String::from_utf8(new)) else {
                 continue;
             };
-            let Some(name) = semantic_language(&path) else {
+            let Some(grammar) = engine::grammar(&path) else {
                 continue;
             };
-            let (Some(language), Some(config)) =
-                (engine::language(name), diffy_semantic::config(name))
-            else {
-                continue;
-            };
+            let (language, config) = (grammar.language, &*grammar.rules);
             let label = format!("{commit} {path}");
             let mut costs = [0i64; 2];
             let mut ok = true;

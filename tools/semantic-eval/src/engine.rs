@@ -2,7 +2,8 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use diffy::core::compare::semantic::{
-    ChangedPath, document_from_difftastic, document_from_native_with,
+    ChangedPath, SemanticGrammar, document_from_difftastic, document_from_native_with,
+    semantic_grammar, semantic_tag,
 };
 use diffy::core::syntax::grammar::GrammarConfig;
 use diffy_diff::{DEFAULT_CONTEXT, DiffDocument, FileStatus, diff_texts};
@@ -47,7 +48,7 @@ pub fn run(engine: Engine, path: &str, old: &[u8], new: &[u8]) -> Result<Run, St
         Engine::Native => {
             let changed = changed();
             let start = Instant::now();
-            let (doc, fallback) = document_from_native_with(&changed, language, None)
+            let (doc, fallback) = document_from_native_with(&changed, tagged, None)
                 .map_err(|error| error.to_string())?;
             Ok(Run {
                 doc,
@@ -86,14 +87,17 @@ pub fn run(engine: Engine, path: &str, old: &[u8], new: &[u8]) -> Result<Run, St
     }
 }
 
-pub fn language(name: &str) -> Option<diffy_semantic::Language> {
-    let id = LanguageId::from_fence(name)?;
+pub fn grammar(path: &str) -> Option<SemanticGrammar> {
+    tagged(&semantic_tag(path)?)
+}
+
+fn tagged(id: &LanguageId) -> Option<SemanticGrammar> {
     let store = grammars();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while store.status(&id) == LanguageStatus::Pending && std::time::Instant::now() < deadline {
+    while store.status(id) == LanguageStatus::Pending && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    store.tree_sitter_language(&id)
+    semantic_grammar(store, id)
 }
 
 fn grammars() -> &'static GrammarStore {

@@ -3,7 +3,6 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use diffy::core::compare::semantic::semantic_language;
 use diffy_diff::{
     ChangeIntensity, Comparison, ComparisonOptions, DiffDocument, Expansion, Mode, Projection,
     RowKind, Side,
@@ -164,12 +163,13 @@ pub fn run(args: Args) -> Result<(), String> {
         let Some(text) = text else {
             continue;
         };
-        let Some(language) = semantic_language(path) else {
+        let Some(grammar) = engine::grammar(path) else {
             continue;
         };
-        let (Some(syntax), Some(grammar)) = (syntax(language), engine::language(language)) else {
+        let Some(syntax) = syntax(&grammar.name) else {
             continue;
         };
+        let grammar = grammar.language;
         let mut parser = ts::Parser::new();
         if parser.set_language(&grammar).is_err() {
             continue;

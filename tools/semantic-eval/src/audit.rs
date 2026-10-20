@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use diffy::core::compare::semantic::semantic_language;
 use diffy_semantic::{Limits, SemanticDiff};
 use tree_sitter as ts;
 
@@ -89,13 +88,10 @@ pub fn run(args: Args) -> Result<(), String> {
         let (Ok(old), Ok(new)) = (String::from_utf8(old), String::from_utf8(new)) else {
             continue;
         };
-        let Some(name) = semantic_language(path) else {
+        let Some(grammar) = engine::grammar(path) else {
             continue;
         };
-        let (Some(language), Some(config)) = (engine::language(name), diffy_semantic::config(name))
-        else {
-            continue;
-        };
+        let (language, config) = (grammar.language, &*grammar.rules);
         let file = format!("{commit} {path}");
         let (Ok(forward), Ok(backward)) = (
             explain::run(&language, config, &old, &new, &limits),

@@ -191,9 +191,7 @@ fn show(args: ShowArgs) -> Result<(), String> {
 
 fn tree(path: &std::path::Path) -> Result<(), String> {
     let name = path.to_string_lossy();
-    let language = diffy::core::compare::semantic::semantic_language(&name)
-        .and_then(engine::language)
-        .ok_or("no grammar")?;
+    let language = engine::grammar(&name).ok_or("no grammar")?.language;
     let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&language).map_err(|e| e.to_string())?;
@@ -228,14 +226,12 @@ fn bench(old: &std::path::Path, new: &std::path::Path, times: u32) -> Result<(),
     let read = |p: &std::path::Path| std::fs::read_to_string(p).map_err(|e| e.to_string());
     let (a, b) = (read(old)?, read(new)?);
     let name = new.to_string_lossy();
-    let language = diffy::core::compare::semantic::semantic_language(&name).ok_or("no grammar")?;
-    let grammar = engine::language(language).ok_or("no grammar")?;
-    let config = diffy_semantic::config(language).ok_or("no config")?;
+    let grammar = engine::grammar(&name).ok_or("no grammar")?;
     let limits = diffy_semantic::Limits::default();
     let mut times_ms = Vec::new();
     for _ in 0..times {
         let start = std::time::Instant::now();
-        let out = diffy_semantic::diff(&grammar, config, &a, &b, &limits);
+        let out = diffy_semantic::diff(&grammar.language, &grammar.rules, &a, &b, &limits);
         times_ms.push(start.elapsed().as_secs_f64() * 1000.0);
         if let Err(e) = out {
             return Err(e.to_string());

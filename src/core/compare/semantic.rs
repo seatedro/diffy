@@ -1,13 +1,14 @@
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use diffy_diff::{
     AlignedRow, ChangeIntensity, DiffDocument, DocumentBuilder, FileMeta, FileStatus, SemanticSpan,
     Side, SourceCoverage, TextStore,
 };
-use diffy_semantic::{Limits, Move, OutlineItem, Rename, Row};
-use diffy_syntax::{GrammarStore, LanguageId};
+use diffy_semantic::{Limits, Move, OutlineItem, Queries, Rename, Row, Rules};
+use diffy_syntax::{GrammarQueries, GrammarStore, LanguageId};
 #[cfg(feature = "difftastic")]
 use vendored_difftastic::{
     ChangeIntensity as DftIntensity, ChangeSpan, DiffRequest, DiffStatus, SemanticDiffResult,
@@ -264,11 +265,8 @@ fn document_from_changed_vetted(
     vet: Option<&diffy_semantic::Vet<'_>>,
 ) -> Result<DiffDocument> {
     let store = Grammars::shared().store();
-    let (doc, fallback) = document_from_native_with(
-        changed,
-        |name| LanguageId::from_fence(name).and_then(|id| store.tree_sitter_language(&id)),
-        vet,
-    )?;
+    let (doc, fallback) =
+        document_from_native_with(changed, |tag| semantic_grammar(&store, tag), vet)?;
     if let Some(reason) = fallback {
         tracing::info!(
             target: "diffy::semantic",
@@ -387,34 +385,82 @@ pub fn document_from_native(
     changed: &ChangedPath,
     grammars: &GrammarStore,
 ) -> Result<(DiffDocument, Option<String>)> {
-    document_from_native_with(
-        changed,
-        |name| LanguageId::from_fence(name).and_then(|id| grammars.tree_sitter_language(&id)),
-        None,
-    )
+    document_from_native_with(changed, |tag| semantic_grammar(grammars, tag), None)
 }
 
-pub fn semantic_language(path: &str) -> Option<&'static str> {
+pub struct SemanticGrammar {
+    pub name: Arc<str>,
+    pub language: diffy_semantic::Language,
+    pub rules: Arc<Rules>,
+}
+
+pub fn semantic_tag(path: &str) -> Option<LanguageId> {
     let id = LanguageId::from_path(path)?;
-    Some(match id.as_str() {
-        "bash" | "sh" | "zsh" => "bash",
-        "c" | "h" => "c",
-        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => "cpp",
-        "go" => "go",
-        "js" | "mjs" | "cjs" | "ts" | "mts" | "cts" => "typescript",
-        "jsx" | "tsx" => "tsx",
-        "json" => "json",
-        "nix" => "nix",
-        "py" | "pyi" => "python",
-        "rs" => "rust",
-        "toml" => "toml",
-        _ => return None,
+    match id.as_str() {
+        "js" | "mjs" | "cjs" => LanguageId::from_fence("typescript"),
+        "jsx" => LanguageId::from_fence("tsx"),
+        _ => Some(id),
+    }
+}
+
+pub fn semantic_grammar(store: &GrammarStore, tag: &LanguageId) -> Option<SemanticGrammar> {
+    static RULES: Mutex<Option<HashMap<Arc<str>, (Arc<str>, Arc<Rules>)>>> = Mutex::new(None);
+    let (language, queries) = store.parser(tag.as_str())?;
+    let cached = RULES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|rules| rules.get(&queries.language))
+        .filter(|(highlights, _)| Arc::ptr_eq(highlights, &queries.highlights))
+        .map(|(_, rules)| rules.clone());
+    let rules = match cached {
+        Some(rules) => rules,
+        None => {
+            let rules = Arc::new(compile_rules(&language, &queries));
+            RULES
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_or_insert_default()
+                .insert(
+                    queries.language.clone(),
+                    (queries.highlights.clone(), rules.clone()),
+                );
+            rules
+        }
+    };
+    Some(SemanticGrammar {
+        name: queries.language,
+        language,
+        rules,
     })
+}
+
+fn compile_rules(language: &diffy_semantic::Language, grammar: &GrammarQueries) -> Rules {
+    let queries = Queries {
+        highlights: &grammar.highlights,
+        locals: grammar.locals.as_deref(),
+    };
+    let own = [
+        diffy_semantic::semantic_query(&grammar.language),
+        grammar.semantic.as_deref(),
+    ];
+    for semantic in own.into_iter().flatten() {
+        match Rules::new(language, semantic, &queries) {
+            Ok(rules) => return rules,
+            Err(error) => tracing::warn!(
+                target: "diffy::semantic",
+                language = %grammar.language,
+                %error,
+                "semantic query does not compile"
+            ),
+        }
+    }
+    Rules::derived(language, &queries)
 }
 
 pub fn document_from_native_with(
     changed: &ChangedPath,
-    grammar: impl FnOnce(&str) -> Option<diffy_semantic::Language>,
+    grammar: impl FnOnce(&LanguageId) -> Option<SemanticGrammar>,
     vet: Option<&diffy_semantic::Vet<'_>>,
 ) -> Result<(DiffDocument, Option<String>)> {
     let meta = changed.meta();
@@ -436,22 +482,32 @@ pub fn document_from_native_with(
         document_from_bytes(meta.clone(), &changed.old_content, &changed.new_content)
             .map(|doc| (doc, Some(reason)))
     };
-    let Some(language) = semantic_language(changed.display_path()) else {
+    let Some(tag) = semantic_tag(changed.display_path()) else {
         return line_diff("no grammar for this file".to_owned());
     };
-    let (Some(grammar), Some(config)) = (grammar(language), diffy_semantic::config(language))
-    else {
-        return line_diff(format!("{language} grammar unavailable"));
+    let Some(grammar) = grammar(&tag) else {
+        return line_diff(format!("{tag} grammar unavailable"));
     };
     let limits = Limits {
         max_time: FILE_TIME_BUDGET,
         ..Limits::default()
     };
     let diff = match vet {
-        Some(vet) => {
-            diffy_semantic::diff_vetted(&grammar, config, old.as_str(), new.as_str(), &limits, vet)
-        }
-        None => diffy_semantic::diff(&grammar, config, old.as_str(), new.as_str(), &limits),
+        Some(vet) => diffy_semantic::diff_vetted(
+            &grammar.language,
+            &grammar.rules,
+            old.as_str(),
+            new.as_str(),
+            &limits,
+            vet,
+        ),
+        None => diffy_semantic::diff(
+            &grammar.language,
+            &grammar.rules,
+            old.as_str(),
+            new.as_str(),
+            &limits,
+        ),
     };
     match diff {
         Ok(diff) => {

@@ -20,7 +20,7 @@ pub use crate::contracts::viewport::pipeline::{
     WORKING_SET_LINES,
 };
 use crate::core::compare::git::bucket_refs;
-use crate::core::compare::semantic::semantic_language;
+use crate::core::compare::semantic::semantic_tag;
 use crate::core::compare::{CompareEntry, ComparePhase, RendererKind};
 use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
 use crate::platform::persistence::{PersistedCompare, Settings};
@@ -317,8 +317,8 @@ impl PipelineController {
         Reduction::changed().effect(PipelineEffect::LoadFile(Box::new(request)))
     }
 
-    fn grammars_arrived(&mut self, installed: Arc<[String]>) -> Reduction {
-        let previous = std::mem::replace(&mut self.grammars, installed.clone());
+    fn grammars_arrived(&mut self, tags: Arc<[String]>) -> Reduction {
+        let previous = std::mem::replace(&mut self.grammars, tags.clone());
         let Some(active) = self
             .active
             .as_mut()
@@ -327,8 +327,9 @@ impl PipelineController {
             return Reduction::default();
         };
         let arrived = |path: &str| {
-            semantic_language(path).is_some_and(|name| {
-                installed.iter().any(|l| l == name) && !previous.iter().any(|l| l == name)
+            semantic_tag(path).is_some_and(|tag| {
+                let has = |tags: &[String]| tags.iter().any(|t| tag.matches(t));
+                has(&tags) && !has(&previous)
             })
         };
         let stale: Vec<FileKey> = active
@@ -878,7 +879,7 @@ impl Controller for PipelineController {
             Intent::RequestCompare(intent) => self.start_compare(intent.clone()),
             Intent::SelectFile(selected) => self.select(selected.map(|file| file.key)),
             Intent::GrammarAvailable(availability) => {
-                self.grammars_arrived(availability.installed.clone())
+                self.grammars_arrived(availability.tags.clone())
             }
             Intent::ActivateWorkspace { .. } => {
                 retire(self.active.take());

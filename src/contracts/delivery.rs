@@ -67,7 +67,7 @@ pub enum DeliveryEvent {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GrammarAvailability {
     pub revision: u64,
-    pub installed: Arc<[String]>,
+    pub tags: Arc<[String]>,
 }
 
 #[cfg(test)]

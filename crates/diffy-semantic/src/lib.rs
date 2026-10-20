@@ -1,7 +1,8 @@
 mod align;
-mod config;
 mod cost;
 mod matcher;
+mod query;
+mod rules;
 mod syntax;
 
 use std::fmt;
@@ -11,8 +12,8 @@ use std::time::{Duration, Instant};
 use diffy_diff::SemanticSpan;
 use tree_sitter as ts;
 
-pub use config::{Config, config};
 pub use diffy_diff::{ItemChange, Move, OutlineItem, Rename};
+pub use rules::{Queries, Rules};
 pub use tree_sitter::Language;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +103,7 @@ impl std::error::Error for Fallback {}
 
 pub fn diff(
     language: &ts::Language,
-    config: &Config,
+    rules: &Rules,
     old: &str,
     new: &str,
     limits: &Limits,
@@ -113,7 +114,7 @@ pub fn diff(
     let options = matcher::Options::default();
     run(
         language,
-        config,
+        rules,
         [old, new],
         limits,
         &options,
@@ -126,7 +127,7 @@ pub type Vet<'v> = dyn Fn(&[(&str, &str)]) -> Vec<bool> + Sync + 'v;
 
 pub fn diff_vetted(
     language: &ts::Language,
-    config: &Config,
+    rules: &Rules,
     old: &str,
     new: &str,
     limits: &Limits,
@@ -138,7 +139,7 @@ pub fn diff_vetted(
     let options = matcher::Options::default();
     run(
         language,
-        config,
+        rules,
         [old, new],
         limits,
         &options,
@@ -149,7 +150,7 @@ pub fn diff_vetted(
 
 fn run<T>(
     language: &ts::Language,
-    config: &Config,
+    rules: &Rules,
     [old, new]: [&str; 2],
     limits: &Limits,
     options: &matcher::Options,
@@ -173,8 +174,8 @@ fn run<T>(
             return Err(Fallback::ErrorCoverage(covered * 100 / text.len().max(1)));
         }
     }
-    let old = syntax::Tree::lower(&old_tree, old, config);
-    let new = syntax::Tree::lower(&new_tree, new, config);
+    let old = syntax::Tree::lower(&old_tree, old, rules);
+    let new = syntax::Tree::lower(&new_tree, new, rules);
     let errors = old.errors + new.errors;
     if errors > limits.max_errors {
         return Err(Fallback::ParseErrors(errors));
@@ -195,7 +196,7 @@ fn run<T>(
 #[cfg(feature = "eval")]
 pub mod eval {
     pub use crate::cost::{Features, TERMS, Weights};
-    use crate::{Config, Fallback, Limits, SemanticDiff, cost, matcher, ts};
+    use crate::{Fallback, Limits, Rules, SemanticDiff, cost, matcher, ts};
 
     #[derive(Debug, Clone, Copy)]
     pub struct Options {
@@ -280,7 +281,7 @@ pub mod eval {
 
     pub fn explain(
         language: &ts::Language,
-        config: &Config,
+        rules: &Rules,
         old: &str,
         new: &str,
         limits: &Limits,
@@ -288,7 +289,7 @@ pub mod eval {
     ) -> Result<Explained, Fallback> {
         crate::run(
             language,
-            config,
+            rules,
             [old, new],
             limits,
             &inner(options),
@@ -343,6 +344,24 @@ pub mod eval {
 }
 
 const MAX_ERROR_PERCENT: usize = 20;
+
+pub fn semantic_query(language: &str) -> Option<&'static str> {
+    Some(match language {
+        "bash" => include_str!("../queries/bash/semantic.scm"),
+        "c" => include_str!("../queries/c/semantic.scm"),
+        "cpp" => include_str!("../queries/cpp/semantic.scm"),
+        "go" => include_str!("../queries/go/semantic.scm"),
+        "javascript" => include_str!("../queries/javascript/semantic.scm"),
+        "json" => include_str!("../queries/json/semantic.scm"),
+        "nix" => include_str!("../queries/nix/semantic.scm"),
+        "python" => include_str!("../queries/python/semantic.scm"),
+        "rust" => include_str!("../queries/rust/semantic.scm"),
+        "toml" => include_str!("../queries/toml/semantic.scm"),
+        "tsx" => include_str!("../queries/tsx/semantic.scm"),
+        "typescript" => include_str!("../queries/typescript/semantic.scm"),
+        _ => return None,
+    })
+}
 
 fn error_bytes(node: ts::Node<'_>) -> usize {
     if node.is_error() {

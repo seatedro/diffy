@@ -1,4 +1,3 @@
-use diffy::core::compare::semantic::semantic_language;
 use diffy_semantic::Limits;
 use diffy_semantic::eval::{self, Explained, Features, Options, TERMS, Weights};
 
@@ -11,9 +10,15 @@ pub fn explain(
     limits: &Limits,
     options: &Options,
 ) -> Option<Result<Explained, diffy_semantic::Fallback>> {
-    let name = semantic_language(path)?;
-    let (language, config) = (engine::language(name)?, diffy_semantic::config(name)?);
-    Some(eval::explain(&language, config, old, new, limits, options))
+    let grammar = engine::grammar(path)?;
+    Some(eval::explain(
+        &grammar.language,
+        &grammar.rules,
+        old,
+        new,
+        limits,
+        options,
+    ))
 }
 
 pub fn wide() -> Limits {
@@ -112,7 +117,7 @@ pub fn weights(pairs: &[String]) -> Result<Weights, String> {
 
 pub fn run(
     language: &diffy_semantic::Language,
-    config: &diffy_semantic::Config,
+    config: &diffy_semantic::Rules,
     old: &str,
     new: &str,
     limits: &Limits,

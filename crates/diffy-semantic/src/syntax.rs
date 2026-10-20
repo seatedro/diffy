@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::ops::Range;
 
 use tree_sitter as ts;
 
-use crate::config::Config;
+use crate::rules::{Found, Rules};
 
 pub(crate) const NONE: u32 = u32::MAX;
 const MAX_DEPTH: u32 = 512;
@@ -47,8 +48,17 @@ pub(crate) struct Tree<'a> {
     pub(crate) errors: usize,
 }
 
+struct Lowering<'r> {
+    rules: &'r Rules,
+    found: HashMap<usize, Found>,
+}
+
 impl<'a> Tree<'a> {
-    pub(crate) fn lower(tree: &ts::Tree, src: &'a str, config: &Config) -> Self {
+    pub(crate) fn lower(tree: &ts::Tree, src: &'a str, rules: &Rules) -> Self {
+        let lowering = Lowering {
+            rules,
+            found: rules.items(tree, src),
+        };
         let mut out = Self {
             src,
             nodes: Vec::new(),
@@ -62,7 +72,7 @@ impl<'a> Tree<'a> {
         let mut cursor = root.walk();
         let children: Vec<_> = root.children(&mut cursor).collect();
         for child in children {
-            out.node(child, config, 1);
+            out.node(child, &lowering, 1);
         }
         out.close_list(at);
         for item in &out.items {
@@ -90,7 +100,7 @@ impl<'a> Tree<'a> {
         self.nodes[node as usize].class == Class::List
     }
 
-    fn node(&mut self, node: ts::Node<'_>, config: &Config, depth: u32) {
+    fn node(&mut self, node: ts::Node<'_>, lowering: &Lowering<'_>, depth: u32) {
         if node.is_missing() {
             self.errors += 1;
             return;
@@ -102,7 +112,7 @@ impl<'a> Tree<'a> {
             return;
         }
         let comment = node.is_extra() || node.kind().contains("comment");
-        let text = config.atoms.contains(&node.kind());
+        let text = lowering.rules.text(node.kind_id());
         if node.child_count() == 0 || comment || text || depth >= MAX_DEPTH {
             let class = if comment {
                 Class::Comment
@@ -124,12 +134,12 @@ impl<'a> Tree<'a> {
         }
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
-        let delims = self.delimiters(&children, config);
-        self.note_item(node);
+        let delims = self.delimiters(&children, lowering.rules);
+        self.note_item(node, lowering);
         let Some((i, j)) = delims else {
             let at = self.open_list(node.kind_id(), span(node), 0..0, 0..0);
             for child in children {
-                self.node(child, config, depth + 1);
+                self.node(child, lowering, depth + 1);
             }
             self.close_list(at);
             return;
@@ -138,45 +148,30 @@ impl<'a> Tree<'a> {
         let outer = (i > 0 || j + 1 < children.len())
             .then(|| self.open_list(node.kind_id(), span(node), 0..0, 0..0));
         for &child in &children[..i] {
-            self.node(child, config, depth + 1);
+            self.node(child, lowering, depth + 1);
         }
         let inner = self.open_list(node.kind_id(), open.start..close.end, open, close);
         for &child in &children[i + 1..j] {
-            self.node(child, config, depth + 1);
+            self.node(child, lowering, depth + 1);
         }
         self.close_list(inner);
         for &child in &children[j + 1..] {
-            self.node(child, config, depth + 1);
+            self.node(child, lowering, depth + 1);
         }
         if let Some(outer) = outer {
             self.close_list(outer);
         }
     }
 
-    fn note_item(&mut self, node: ts::Node<'_>) {
-        let Some(kind) = item_kind(node.kind()) else {
+    fn note_item(&mut self, node: ts::Node<'_>, lowering: &Lowering<'_>) {
+        let Some(found) = lowering.found.get(&node.id()) else {
             return;
         };
-        if node.kind().ends_with("_specifier") && node.child_by_field_name("body").is_none() {
-            return;
-        }
-        let (kind, name) = match node.child_by_field_name("name") {
-            Some(name) => (kind, Some(name)),
-            None if node.kind() == "impl_item" => (kind, node.child_by_field_name("type")),
-            None if node.kind() == "function_definition" => ("fn", declared_name(node)),
-            None => (kind, None),
-        };
-        let Some(name) = name else {
-            return;
-        };
+        let rules = lowering.rules;
         let node_at = self.nodes.len() as u32;
-        let key = match node.child_by_field_name("trait") {
-            Some(t) if node.kind() == "impl_item" => t.start_byte() as u32..name.end_byte() as u32,
-            _ => span(name),
-        };
         let wrapper = node
             .parent()
-            .filter(|p| p.kind() == "decorated_definition")
+            .filter(|p| rules.unit(p.kind_id()))
             .and_then(|p| self.lowered(span(p)));
         let unit = wrapper.unwrap_or(node_at);
         let outer = match wrapper {
@@ -185,17 +180,16 @@ impl<'a> Tree<'a> {
         };
         let mut first = None;
         let mut at = outer.and_then(|n| n.prev_sibling());
-        while let Some(sibling) = at.filter(|s| matches!(s.kind(), "attribute_item" | "decorator"))
-        {
+        while let Some(sibling) = at.filter(|s| rules.lead(s.kind_id())) {
             first = Some(sibling);
             at = sibling.prev_sibling();
         }
         let lead = first.and_then(|f| self.lowered(span(f))).unwrap_or(unit);
         self.items.push(Item {
             node: node_at,
-            kind,
-            name: span(name),
-            key,
+            kind: found.kind,
+            name: found.name.clone(),
+            key: found.key.clone(),
             unit,
             lead,
         });
@@ -209,7 +203,7 @@ impl<'a> Tree<'a> {
             .map(|k| k as u32)
     }
 
-    fn delimiters(&self, children: &[ts::Node<'_>], config: &Config) -> Option<(usize, usize)> {
+    fn delimiters(&self, children: &[ts::Node<'_>], rules: &Rules) -> Option<(usize, usize)> {
         let token = |node: &ts::Node<'_>| {
             (node.child_count() <= 1 && !node.is_extra()).then(|| self.text(span(*node)))
         };
@@ -217,13 +211,13 @@ impl<'a> Tree<'a> {
             let Some(text) = token(child) else {
                 continue;
             };
-            for &(open, close) in config.delimiters {
-                if text != open {
+            for (open, close) in &rules.delimiters {
+                if text != &**open {
                     continue;
                 }
                 if let Some(j) = children[i + 1..]
                     .iter()
-                    .position(|c| token(c) == Some(close))
+                    .position(|c| token(c) == Some(&**close))
                 {
                     return Some((i, i + 1 + j));
                 }
@@ -304,40 +298,7 @@ impl<'a> Tree<'a> {
     }
 }
 
-fn item_kind(kind: &str) -> Option<&'static str> {
-    Some(match kind {
-        "function_item" | "function_signature_item" => "fn",
-        "struct_item" | "struct_specifier" => "struct",
-        "enum_item" | "enum_declaration" | "enum_specifier" => "enum",
-        "union_item" => "union",
-        "trait_item" => "trait",
-        "impl_item" => "impl",
-        "mod_item" => "mod",
-        "const_item" => "const",
-        "static_item" => "static",
-        "type_item" | "type_alias_declaration" | "type_spec" => "type",
-        "macro_definition" => "macro",
-        "function_declaration" | "generator_function_declaration" => "function",
-        "method_definition" | "method_declaration" => "method",
-        "class_declaration"
-        | "abstract_class_declaration"
-        | "class_definition"
-        | "class_specifier" => "class",
-        "interface_declaration" => "interface",
-        "function_definition" => "def",
-        _ => return None,
-    })
-}
-
-fn declared_name(node: ts::Node<'_>) -> Option<ts::Node<'_>> {
-    let mut at = node.child_by_field_name("declarator")?;
-    while let Some(inner) = at.child_by_field_name("declarator") {
-        at = inner;
-    }
-    at.kind().ends_with("identifier").then_some(at)
-}
-
-fn span(node: ts::Node<'_>) -> Range<u32> {
+pub(crate) fn span(node: ts::Node<'_>) -> Range<u32> {
     node.start_byte() as u32..node.end_byte() as u32
 }
 

@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use diffy::core::compare::semantic::semantic_language;
 use diffy_semantic::Limits;
 use tree_sitter as ts;
 
@@ -239,16 +238,13 @@ pub fn run(args: Args) -> Result<(), String> {
         let Some(text) = text else {
             continue;
         };
-        let Some(name) = semantic_language(path) else {
+        let Some(grammar) = engine::grammar(path) else {
             continue;
         };
-        let (Some(syntax), Some(language), Some(config)) = (
-            mutate::syntax(name),
-            engine::language(name),
-            diffy_semantic::config(name),
-        ) else {
+        let Some(syntax) = mutate::syntax(&grammar.name) else {
             continue;
         };
+        let (language, config) = (grammar.language, &*grammar.rules);
         let mut parser = ts::Parser::new();
         if parser.set_language(&language).is_err() {
             continue;
@@ -258,7 +254,7 @@ pub fn run(args: Args) -> Result<(), String> {
         };
         let errors = mutate::error_count(tree.root_node());
         let old_items = grade::items(tree.root_node(), &text);
-        for case in cases(&tree, &text, &syntax, name, args.per_file) {
+        for case in cases(&tree, &text, &syntax, &grammar.name, args.per_file) {
             let wanted = |kind: &str| args.kinds.is_empty() || args.kinds.iter().any(|k| k == kind);
             if !wanted(case.kind) && !wanted(case.back) {
                 continue;

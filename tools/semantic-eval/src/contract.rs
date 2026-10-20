@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use diffy::core::compare::semantic::semantic_language;
 use diffy_semantic::{Limits, SemanticDiff, TokenState};
 
 use crate::engine;
@@ -10,13 +9,10 @@ pub fn check(path: &str, old: &[u8], new: &[u8]) -> Vec<String> {
     let (Ok(old), Ok(new)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
         return Vec::new();
     };
-    let Some(name) = semantic_language(path) else {
+    let Some(grammar) = engine::grammar(path) else {
         return Vec::new();
     };
-    let (Some(language), Some(config)) = (engine::language(name), diffy_semantic::config(name))
-    else {
-        return Vec::new();
-    };
+    let (language, config) = (grammar.language, &*grammar.rules);
     let limits = Limits::default();
     let Ok(first) = diffy_semantic::diff(&language, config, old, new, &limits) else {
         return Vec::new();

@@ -196,17 +196,25 @@ impl DeliveryController {
 
     fn grammars_changed(&mut self, catalog: Arc<Catalog>) -> Reduction {
         self.catalog = catalog;
-        let installed: Vec<String> = self
-            .grammars()
+        let installed = |language: &str| {
+            self.grammars().iter().any(|status| {
+                status.language == language
+                    && matches!(status.state, GrammarState::Ready | GrammarState::Installed)
+            })
+        };
+        let mut tags: Vec<String> = self
+            .catalog
+            .tags
             .iter()
-            .filter(|status| matches!(status.state, GrammarState::Ready | GrammarState::Installed))
-            .map(|status| status.language.to_owned())
+            .filter(|(_, language)| installed(language))
+            .map(|(tag, _)| tag.clone())
             .collect();
+        tags.sort_unstable();
         let mut reduction = Reduction::changed();
-        if *installed != *self.availability.installed {
+        if *tags != *self.availability.tags {
             self.availability = GrammarAvailability {
                 revision: self.availability.revision + 1,
-                installed: installed.into(),
+                tags: tags.into(),
             };
             reduction = reduction.intent(Intent::GrammarAvailable(self.availability.clone()));
         }

@@ -13,6 +13,27 @@ use crate::engine::Grammar;
 use crate::pack::{self, PackManifest};
 use crate::{HighlightSpan, LanguageId};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrammarState {
+    Ready,
+    Installed,
+    Downloading,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrammarStatus {
+    pub language: String,
+    pub state: GrammarState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Catalog {
+    pub statuses: Vec<GrammarStatus>,
+    pub tags: std::collections::HashMap<String, String>,
+    pub languages: usize,
+}
+
 /// Whether a language can be highlighted yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LanguageStatus {
@@ -69,8 +90,6 @@ impl GrammarStore {
                 status_listeners: Mutex::default(),
                 #[cfg(feature = "download")]
                 fetcher: Mutex::default(),
-                #[cfg(feature = "download")]
-                legacy_fetcher: Mutex::default(),
             })),
         }
     }
@@ -81,20 +100,15 @@ impl GrammarStore {
             let tag = tag.to_ascii_lowercase();
             let mut state = lock(&inner.state);
             #[cfg(feature = "download")]
-            if let Some(legacy) = &inner.config.legacy
-                && let Some(language) = crate::legacy_pack::language_for_tag(&tag)
-            {
-                let retried = crate::legacy_pack::retry(legacy, &mut state, language);
-                drop(state);
-                if retried {
-                    crate::legacy_pack::queue(inner, language.name);
-                }
-                return retried;
-            }
-            if !matches!(state.tags.get(&tag), Some(Tag::Unavailable)) {
+            let failed = state.remote.forget_failure(&tag);
+            #[cfg(not(feature = "download"))]
+            let failed = false;
+            if !failed && !matches!(state.tags.get(&tag), Some(Tag::Unavailable)) {
                 return false;
             }
-            state.tags.remove(&tag);
+            state
+                .tags
+                .retain(|_, found| !matches!(found, Tag::Unavailable));
             #[cfg(feature = "download")]
             state.remote.invalidate();
             return true;
@@ -103,14 +117,19 @@ impl GrammarStore {
         false
     }
 
-    #[cfg(feature = "download")]
-    pub fn legacy_status(&self) -> Vec<crate::legacy_pack::GrammarStatus> {
-        match &self.inner {
-            Some(inner) => match &inner.config.legacy {
-                Some(legacy) => crate::legacy_pack::status(legacy, &mut lock(&inner.state)),
-                None => Vec::new(),
-            },
-            _ => Vec::new(),
+    pub fn catalog(&self) -> Catalog {
+        #[cfg(feature = "engine")]
+        if let Some(inner) = &self.inner {
+            return inner.catalog();
+        }
+        Catalog::default()
+    }
+
+    #[cfg(feature = "engine")]
+    pub fn parser(&self, tag: &str) -> Option<(tree_sitter::Language, Arc<str>)> {
+        match self.grammar(&LanguageId::from_fence(tag)?) {
+            Tag::Ready(grammar) => Some((grammar.language().clone(), grammar.highlights().clone())),
+            Tag::Pending | Tag::Unavailable => None,
         }
     }
 
@@ -459,8 +478,6 @@ pub struct StoreConfig {
     deferred: Vec<String>,
     #[cfg(feature = "download")]
     pub(crate) downloads: Option<crate::download::Downloads>,
-    #[cfg(feature = "download")]
-    pub(crate) legacy: Option<crate::legacy_pack::LegacyPacks>,
 }
 
 #[cfg(feature = "engine")]
@@ -495,12 +512,6 @@ impl StoreConfig {
         self.downloads = Some(downloads);
         self
     }
-
-    #[cfg(feature = "download")]
-    pub fn legacy_packs(mut self, legacy: crate::legacy_pack::LegacyPacks) -> Self {
-        self.legacy = Some(legacy);
-        self
-    }
 }
 
 #[cfg(feature = "engine")]
@@ -524,8 +535,6 @@ pub(crate) struct Inner {
     status_listeners: Mutex<Vec<Listener>>,
     #[cfg(feature = "download")]
     pub(crate) fetcher: Mutex<Option<std::sync::mpsc::Sender<String>>>,
-    #[cfg(feature = "download")]
-    pub(crate) legacy_fetcher: Mutex<Option<std::sync::mpsc::Sender<&'static str>>>,
 }
 
 #[cfg(feature = "engine")]
@@ -544,8 +553,6 @@ pub(crate) struct State {
     deferred: Vec<String>,
     #[cfg(feature = "download")]
     pub(crate) remote: crate::download::Remote,
-    #[cfg(feature = "download")]
-    pub(crate) legacy: crate::legacy_pack::LegacyState,
 }
 
 #[cfg(feature = "engine")]
@@ -563,13 +570,10 @@ impl Inner {
         if let Some(found) = state.tags.get(tag) {
             return found.clone();
         }
-        #[cfg(feature = "download")]
-        let before = state.legacy.status.revision;
         let found = self.resolve(&mut state, tag);
         state.tags.insert(tag.to_owned(), found.clone());
-        #[cfg(feature = "download")]
-        if state.legacy.status.revision != before {
-            drop(state);
+        drop(state);
+        if !matches!(found, Tag::Unavailable) {
             self.notify_status();
         }
         found
@@ -587,16 +591,76 @@ impl Inner {
             return load(state, &dir, &manifest);
         }
         #[cfg(feature = "download")]
-        if let Some(legacy) = &self.config.legacy
-            && let Some(language) = crate::legacy_pack::language_for_tag(tag)
-        {
-            return crate::legacy_pack::resolve(self, legacy, state, language);
-        }
-        #[cfg(feature = "download")]
         if let Some(downloads) = &self.config.downloads {
             return crate::download::resolve(self, downloads, state, tag);
         }
         Tag::Unavailable
+    }
+
+    fn catalog(&self) -> Catalog {
+        let mut state = lock(&self.state);
+        let local = state
+            .local
+            .get_or_insert_with(|| scan_local(&self.config.local_packs))
+            .clone();
+        let mut packs: Vec<(PathBuf, Arc<PackManifest>, bool)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut local_packs: Vec<_> = local.values().cloned().collect();
+        local_packs.sort_by(|a, b| a.0.cmp(&b.0));
+        for (dir, manifest) in local_packs {
+            if seen.insert(manifest.language.clone()) {
+                packs.push((dir, manifest, true));
+            }
+        }
+        #[cfg(feature = "download")]
+        if let Some(downloads) = &self.config.downloads {
+            for (dir, manifest, installed) in crate::download::packs(downloads, &mut state) {
+                if seen.insert(manifest.language.clone()) {
+                    packs.push((dir, manifest, installed));
+                }
+            }
+        }
+        let mut catalog = Catalog {
+            languages: packs.len(),
+            ..Catalog::default()
+        };
+        for (dir, manifest, installed) in &packs {
+            for tag in manifest.tags() {
+                catalog
+                    .tags
+                    .entry(tag.to_ascii_lowercase())
+                    .or_insert_with(|| manifest.language.clone());
+            }
+            let pending = manifest.tags().any(|tag| {
+                matches!(
+                    state.tags.get(&tag.to_ascii_lowercase()),
+                    Some(Tag::Pending)
+                )
+            });
+            #[cfg(feature = "download")]
+            let failure = state.remote.failure(&manifest.language);
+            #[cfg(not(feature = "download"))]
+            let failure: Option<String> = None;
+            let grammar_state = if matches!(state.loaded.get(dir), Some(Some(_))) {
+                Some(GrammarState::Ready)
+            } else if let Some(reason) = failure {
+                Some(GrammarState::Failed(reason))
+            } else if pending {
+                Some(GrammarState::Downloading)
+            } else if *installed {
+                Some(GrammarState::Installed)
+            } else {
+                None
+            };
+            if let Some(grammar_state) = grammar_state {
+                catalog.statuses.push(GrammarStatus {
+                    language: manifest.language.clone(),
+                    state: grammar_state,
+                });
+            }
+        }
+        catalog.statuses.sort_by(|a, b| a.language.cmp(&b.language));
+        catalog
     }
 
     pub(crate) fn notify(&self) {

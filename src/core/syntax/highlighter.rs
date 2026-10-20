@@ -80,23 +80,7 @@ pub fn token_kind(kind: HighlightKind) -> SyntaxTokenKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::syntax::grammar::{GrammarConfig, Grammars};
-
-    #[test]
-    fn js_family_paths_use_the_typescript_grammars() {
-        let resolved = ["src/app.js", "src/app.mjs", "src/app.jsx", "src/app.ts"]
-            .map(|path| crate::core::syntax::grammar::language_for_path(path).map(|l| l.name));
-
-        assert_eq!(
-            resolved,
-            [
-                Some("typescript"),
-                Some("typescript"),
-                Some("tsx"),
-                Some("typescript")
-            ]
-        );
-    }
+    use crate::core::syntax::grammar::Grammars;
 
     #[test]
     fn typescript_imports_map_to_product_token_kinds() {
@@ -138,16 +122,5 @@ mod tests {
                 .iter()
                 .any(|span| span.kind == HighlightKind::Keyword)
         );
-    }
-
-    #[test]
-    fn product_config_uses_the_phosphor_cache_and_publisher_key() {
-        let config = GrammarConfig::product();
-        let legacy = config
-            .legacy
-            .expect("a data directory exists on test hosts");
-
-        assert!(legacy.storage_dir().ends_with("diffy/phosphor/languages"));
-        assert!(legacy.downloads_enabled());
     }
 }

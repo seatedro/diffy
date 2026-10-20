@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publishes signed syntax packs to the quark-packs R2 bucket, served as
+# Publishes signed syntax packs to Diffy's R2 bucket, served as
 # $PACK_BASE_URL through its Cloudflare custom domain.
 #
 #   publish.sh PACKS_DIR

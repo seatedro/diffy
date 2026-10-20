@@ -1,13 +1,20 @@
 //! Builds diffy-syntax grammar packs and their signed index.
 //!
 //! ```text
-//! syntax-pack build [LANGUAGE...] [--target TRIPLE] [--out DIR] [--sources DIR] [--work DIR]
-//!     Fetch each language's pinned source (grammars.toml), check its hash,
-//!     compile the parser into a shared library for TRIPLE (default: this
-//!     host), and write the pack to <out>/<triple>/<language>/. With no
-//!     languages, builds them all. --sources DIR reads <DIR>/<language>/
-//!     instead of fetching (offline and Nix builds); the hash still applies.
-//!     Packs for this host are then checked as `check` does.
+//! syntax-pack build [LANGUAGE...] [--target TRIPLE] [--out DIR] [--sources DIR] [--work DIR] [--jobs N]
+//!     Fetch each language's pinned source (grammars.toml, registry.toml),
+//!     check its hash, compile the parser into a shared library for TRIPLE
+//!     (default: this host), and write the pack to <out>/<triple>/<language>/.
+//!     With no languages, builds them all. --sources DIR reads
+//!     <DIR>/<language>/ instead of fetching (offline and Nix builds); the
+//!     hash still applies. Packs for this host are then checked as `check`
+//!     does. A registry language that fails is left out and recorded in
+//!     <out>/<triple>/skipped.json; a grammars.toml language fails the build.
+//!     Grammars marked `generate` need tree-sitter CLI 0.26.8 ($TREE_SITTER).
+//! syntax-pack registry --registry FILE [--extensions FILE] [--jobs N]
+//!     Pin every grammar in nvim-treesitter's registry.json that is not in
+//!     grammars.toml, build and check each for this host, and rewrite
+//!     registry.toml. Extensions come from extensions.toml.
 //! syntax-pack check [LANGUAGE...] [--out DIR]
 //!     Load each built pack for this host, parse its sample from samples/,
 //!     and require the captures and injected languages grammars.toml lists.
@@ -42,110 +49,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use diffy_syntax::pack::{self, PackFile, PackManifest, PackSource};
 use diffy_syntax::{GrammarStore, LanguageId, LanguageStatus, StoreConfig};
-use serde::Deserialize;
 use serde_json::json;
 use tree_sitter as ts;
 use tree_sitter::StreamingIterator;
 
+mod lock;
+mod query;
+mod registry;
+
+use lock::{Lock, Scanner, Source};
+
 const HOST: &str = env!("SYNTAX_PACK_HOST");
 const KEY_VAR: &str = "DIFFY_SYNTAX_SIGNING_KEY";
-const LOCK: &str = include_str!("../grammars.toml");
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Grammar {
-    repo: String,
-    rev: String,
-    version: String,
-    #[serde(default = "default_src")]
-    src: String,
-    symbol: Option<String>,
-    #[serde(default)]
-    include: Vec<String>,
-    #[serde(default)]
-    aliases: Vec<String>,
-    #[serde(default)]
-    extensions: Vec<String>,
-    highlights: Vec<String>,
-    #[serde(default)]
-    injections: Vec<String>,
-    sha256: String,
-    /// SPDX expression for the grammar and its queries.
-    license: String,
-    scanner: Scanner,
-    /// Representative source, relative to this crate.
-    sample: String,
-    /// `[text, capture]`: the first occurrence of `text` in the sample must
-    /// be exactly the range of a capture named `capture` or `capture.*`.
-    captures: Vec<(String, String)>,
-    /// Languages the injection query must name for the sample.
-    #[serde(default)]
-    injects: Vec<String>,
-}
-
-/// The external scanner a grammar's `src` holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum Scanner {
-    /// `scanner.c`, compiled beside `parser.c`.
-    C,
-    None,
-}
-
-fn default_src() -> String {
-    "src".to_owned()
-}
-
-type Lock = BTreeMap<String, Grammar>;
-
-fn parse_lock(text: &str) -> Result<Lock, String> {
-    let lock: Lock = toml::from_str(text).map_err(|e| format!("grammars.toml: {e}"))?;
-    validate_lock(&lock)?;
-    Ok(lock)
-}
-
-/// Checks what the build cannot: every name, alias, and extension means
-/// one language (a store resolves a tag to whichever pack claims it
-/// first), tags are lowercase as fence lookups are, each grammar names
-/// something to check, and each expected injection reaches a pinned pack.
-fn validate_lock(lock: &Lock) -> Result<(), String> {
-    let mut owners: BTreeMap<&str, &str> = BTreeMap::new();
-    for (language, grammar) in lock {
-        let tags = std::iter::once(language)
-            .chain(&grammar.aliases)
-            .chain(&grammar.extensions);
-        for tag in tags {
-            if *tag != tag.to_ascii_lowercase() {
-                return Err(format!("{language}: tag {tag:?} is not lowercase"));
-            }
-            if let Some(owner) = owners.insert(tag, language)
-                && owner != language
-            {
-                return Err(format!("{tag:?} is claimed by both {owner} and {language}"));
-            }
-        }
-        if grammar.captures.is_empty() {
-            return Err(format!("{language}: no expected captures"));
-        }
-    }
-    for (language, grammar) in lock {
-        if let Some(missing) = grammar
-            .injects
-            .iter()
-            .find(|tag| !owners.contains_key(tag.as_str()))
-        {
-            return Err(format!(
-                "{language}: expected injection {missing:?} is no pinned language"
-            ));
-        }
-    }
-    Ok(())
-}
+const TREE_SITTER_CLI: &str = "0.26.8";
+const TREE_SITTER_VAR: &str = "TREE_SITTER";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -167,6 +89,9 @@ struct Options {
     base_url: Option<String>,
     key: Option<String>,
     index_url: Option<String>,
+    registry: Option<PathBuf>,
+    extensions: Option<PathBuf>,
+    jobs: usize,
 }
 
 fn workspace() -> PathBuf {
@@ -183,6 +108,9 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
         base_url: None,
         key: None,
         index_url: None,
+        registry: None,
+        extensions: None,
+        jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
     };
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -199,6 +127,13 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
             "--base-url" => options.base_url = Some(value()?.trim_end_matches('/').to_owned()),
             "--key" => options.key = Some(value()?),
             "--index" => options.index_url = Some(value()?),
+            "--registry" => options.registry = Some(value()?.into()),
+            "--extensions" => options.extensions = Some(value()?.into()),
+            "--jobs" => {
+                options.jobs = value()?
+                    .parse()
+                    .map_err(|_| "--jobs needs a number".to_owned())?
+            }
             flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             language => options.languages.push(language.to_owned()),
         }
@@ -207,7 +142,7 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
 }
 
 fn run(args: &[String]) -> Result<(), String> {
-    let lock = parse_lock(LOCK)?;
+    let lock = lock::load()?;
     let options = || -> Result<Options, String> {
         let mut options = parse_options(&args[1..])?;
         if options.languages.is_empty() {
@@ -218,19 +153,35 @@ fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         Some("build") => {
             let options = options()?;
-            for language in &options.languages {
-                build(&lock, language, &options)?;
+            let mut skipped = BTreeMap::new();
+            let results = registry::par_map(&options.languages, options.jobs, |language| {
+                build(&lock, language, &options).and_then(|()| {
+                    if options.target == HOST {
+                        check_language(&lock, language, &options)
+                    } else {
+                        Ok(())
+                    }
+                })
+            });
+            for (language, built) in options.languages.iter().zip(results) {
+                match built {
+                    Ok(()) => {}
+                    Err(error) if !lock.is_core(language) => {
+                        eprintln!("skipping {language}: {error}");
+                        let _ =
+                            fs::remove_dir_all(options.out.join(&options.target).join(language));
+                        skipped.insert(language.clone(), error);
+                    }
+                    Err(error) => return Err(error),
+                }
             }
-            if options.target == HOST {
-                check(&lock, &options)?;
-            }
-            Ok(())
+            write_skipped(&options, &skipped)
         }
         Some("check") => check(&lock, &options()?),
         Some("index") => index(&lock, &options()?),
         Some("verify") => verify(&lock, &options()?),
         Some("remote-check") => remote_check(&lock, &options()?),
-        Some("legacy-check") => legacy_check(&parse_options(&args[1..])?),
+        Some("registry") => registry::generate(&lock, &parse_options(&args[1..])?),
         Some("public-key") => {
             let key =
                 quark_update::manifest::public_key(&signing_seed()?).map_err(|e| e.to_string())?;
@@ -238,81 +189,22 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("list") => {
-            for (language, grammar) in &lock {
+            for (language, grammar) in &lock.grammars {
                 println!(
                     "{language} {} {} {}@{}",
-                    grammar.version, grammar.license, grammar.repo, grammar.rev
+                    grammar.version,
+                    grammar.license.as_deref().unwrap_or("unknown"),
+                    grammar.repo,
+                    grammar.rev
                 );
             }
             Ok(())
         }
         _ => Err(
-            "usage: syntax-pack build|check|index|verify|remote-check|legacy-check|public-key|list \
+            "usage: syntax-pack build|check|index|verify|remote-check|registry|public-key|list \
              (see src/main.rs)"
                 .to_owned(),
         ),
-    }
-}
-
-fn legacy_check(options: &Options) -> Result<(), String> {
-    use diffy_syntax::legacy_pack;
-
-    let root = options.out.join(legacy_pack::platform());
-    let language_of = |dir: &Path| {
-        dir.parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_owned()
-    };
-    let mut packs = Vec::new();
-    for language in fs::read_dir(&root).map_err(|e| format!("{}: {e}", root.display()))? {
-        let language = language.map_err(|e| e.to_string())?.path();
-        for version in fs::read_dir(&language).map_err(|e| e.to_string())? {
-            let dir = version.map_err(|e| e.to_string())?.path();
-            if dir.join(legacy_pack::MANIFEST).is_file() {
-                packs.push(dir);
-            }
-        }
-    }
-    packs.sort();
-    let typescript = packs
-        .iter()
-        .find(|dir| language_of(dir) == "typescript")
-        .cloned();
-    let required: Vec<String> = if options.languages.is_empty() {
-        legacy_pack::LANGUAGES
-            .iter()
-            .map(|language| language.name.to_owned())
-            .collect()
-    } else {
-        options.languages.clone()
-    };
-    let mut problems = Vec::new();
-    let mut loaded = 0;
-    for dir in &packs {
-        let language = language_of(dir);
-        match legacy_pack::check_built_pack(dir, typescript.as_deref()) {
-            Ok(_) => loaded += 1,
-            Err(error) if required.contains(&language) => {
-                problems.push(format!("{language}: {error}"));
-            }
-            Err(error) => eprintln!("warning {language}: {error}"),
-        }
-    }
-    for language in &required {
-        if !packs.iter().any(|dir| language_of(dir) == *language) {
-            problems.push(format!("{language}: no pack"));
-        }
-    }
-    println!("{loaded} of {} packs load", packs.len());
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "packs Diffy uses do not load:\n{}",
-            problems.join("\n")
-        ))
     }
 }
 
@@ -322,20 +214,53 @@ fn legacy_check(options: &Options) -> Result<(), String> {
 fn checkout(lock: &Lock, language: &str, options: &Options) -> Result<PathBuf, String> {
     let grammar = lock
         .get(language)
-        .ok_or_else(|| format!("{language} is not in grammars.toml"))?;
+        .ok_or_else(|| format!("{language} is not pinned"))?;
     if let Some(sources) = &options.sources {
         return Ok(sources.join(language));
     }
+    let source = Source {
+        repo: grammar.repo.clone(),
+        rev: grammar.rev.clone(),
+    };
+    fetch(language, &source, options)
+}
+
+fn queries_checkout(lock: &Lock, name: &str, options: &Options) -> Result<PathBuf, String> {
+    if !lock.fragments.contains_key(name)
+        && lock
+            .get(name)
+            .is_some_and(|grammar| grammar.queries.is_none())
+    {
+        return checkout(lock, name, options);
+    }
+    let source = lock
+        .queries_of(name)
+        .ok_or_else(|| format!("{name} has no pinned queries"))?;
+    if let Some(sources) = &options.sources {
+        return Ok(sources.join(format!("{name}-queries")));
+    }
+    fetch(&format!("{name}-queries"), &source, options)
+}
+
+fn fetch(key: &str, source: &Source, options: &Options) -> Result<PathBuf, String> {
+    static FETCHING: Mutex<BTreeMap<String, Arc<Mutex<()>>>> = Mutex::new(BTreeMap::new());
+    let slot = FETCHING
+        .lock()
+        .map_err(|_| "fetch lock poisoned".to_owned())?
+        .entry(key.to_owned())
+        .or_default()
+        .clone();
+    let _held = slot.lock().map_err(|_| "fetch lock poisoned".to_owned())?;
     let dir = options
         .work
         .join("sources")
-        .join(format!("{language}-{}", grammar.rev));
-    if git(&dir, &["rev-parse", "HEAD"]).is_ok_and(|head| head.trim() == grammar.rev) {
+        .join(format!("{key}-{}", source.rev));
+    if git(&dir, &["rev-parse", "HEAD"]).is_ok_and(|head| head.trim() == source.rev) {
         return Ok(dir);
     }
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    eprintln!("fetching {language} {} at {}", grammar.repo, grammar.rev);
+    eprintln!("fetching {key} {} at {}", source.repo, source.rev);
     git(&dir, &["init", "--quiet"])?;
     // Windows runners default to core.autocrlf=true; keep the bytes as
     // committed (the hash also normalizes, for --sources trees).
@@ -347,8 +272,8 @@ fn checkout(lock: &Lock, language: &str, options: &Options) -> Result<PathBuf, S
             "--quiet",
             "--depth",
             "1",
-            &grammar.repo,
-            &grammar.rev,
+            &source.repo,
+            &source.rev,
         ],
     )?;
     git(&dir, &["checkout", "--quiet", "--detach", "FETCH_HEAD"])?;
@@ -373,36 +298,48 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// A file the build reads: its hashed name and its path on disk.
-/// `@<language>/<path>` names a file in another entry's checkout.
 fn resolve_input(
     lock: &Lock,
+    language: &str,
     root: &Path,
     name: &str,
     options: &Options,
 ) -> Result<(String, PathBuf), String> {
-    match name.strip_prefix('@') {
-        Some(rest) => {
-            let (language, path) = rest
-                .split_once('/')
-                .ok_or_else(|| format!("bad input {name}"))?;
-            Ok((
-                name.to_owned(),
-                checkout(lock, language, options)?.join(path),
-            ))
+    let path = if let Some(path) = name.strip_prefix("q:") {
+        queries_checkout(lock, language, options)?.join(path)
+    } else if let Some(rest) = name.strip_prefix('@') {
+        let (other, path) = rest
+            .split_once('/')
+            .ok_or_else(|| format!("bad input {name}"))?;
+        match other.strip_suffix(":q") {
+            Some(other) => queries_checkout(lock, other, options)?.join(path),
+            None => checkout(lock, other, options)?.join(path),
         }
-        None => Ok((name.to_owned(), root.join(name))),
-    }
+    } else {
+        root.join(name)
+    };
+    Ok((name.to_owned(), path))
 }
 
 /// Every C source and header under `src`, relative to the repository.
-fn source_files(root: &Path, src: &str) -> Result<Vec<String>, String> {
+fn source_files(root: &Path, src: &str, generate: bool) -> Result<Vec<String>, String> {
+    let generated = |rel: &Path| {
+        rel == Path::new(src).join("parser.c")
+            || rel.starts_with(Path::new(src).join("tree_sitter"))
+    };
     let mut files = Vec::new();
+    if generate {
+        files.push(format!("{src}/grammar.json"));
+    }
     let mut stack = vec![PathBuf::from(src)];
     while let Some(dir) = stack.pop() {
         let entries =
             fs::read_dir(root.join(&dir)).map_err(|e| format!("{}: {e}", dir.display()))?;
         for entry in entries.flatten() {
             let rel = dir.join(entry.file_name());
+            if generate && generated(&rel) {
+                continue;
+            }
             if entry.path().is_dir() {
                 stack.push(rel);
             } else if rel
@@ -459,30 +396,45 @@ fn source_hash(inputs: &[(String, PathBuf)]) -> Result<String, String> {
 
 // ---- Build --------------------------------------------------------------
 
-fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
+fn inputs(
+    lock: &Lock,
+    language: &str,
+    options: &Options,
+) -> Result<Vec<(String, PathBuf)>, String> {
     let grammar = lock
         .get(language)
-        .ok_or_else(|| format!("{language} is not in grammars.toml"))?;
+        .ok_or_else(|| format!("{language} is not pinned"))?;
     let root = checkout(lock, language, options)?;
-
     let mut inputs = Vec::new();
-    for name in source_files(&root, &grammar.src)?
+    for name in source_files(&root, &grammar.src, grammar.generate)?
         .iter()
         .chain(&grammar.include)
         .chain(&grammar.highlights)
         .chain(&grammar.injections)
     {
-        inputs.push(resolve_input(lock, &root, name, options)?);
+        inputs.push(resolve_input(lock, language, &root, name, options)?);
     }
-    let hash = source_hash(&inputs)?;
+    Ok(inputs)
+}
+
+fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
+    let grammar = lock
+        .get(language)
+        .ok_or_else(|| format!("{language} is not pinned"))?;
+    let root = checkout(lock, language, options)?;
+    let hash = source_hash(&inputs(lock, language, options)?)?;
     if hash != grammar.sha256 {
         return Err(format!(
-            "{language}: sources hash to {hash}, grammars.toml pins {:?}",
+            "{language}: sources hash to {hash}, the lock pins {:?}",
             grammar.sha256
         ));
     }
 
-    let src = root.join(&grammar.src);
+    let src = if grammar.generate {
+        generate_parser(language, &root.join(&grammar.src), options)?
+    } else {
+        root.join(&grammar.src)
+    };
     let parser_c = fs::read_to_string(src.join("parser.c"))
         .map_err(|e| format!("{language}: parser.c: {e}"))?;
     let abi = parser_c
@@ -490,19 +442,17 @@ fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
         .find_map(|line| line.strip_prefix("#define LANGUAGE_VERSION "))
         .and_then(|v| v.trim().parse::<u32>().ok())
         .ok_or_else(|| format!("{language}: no LANGUAGE_VERSION in parser.c"))?;
-    if src.join("scanner.cc").exists() {
-        return Err(format!("{language}: C++ scanners are not supported"));
-    }
-    let has_scanner = src.join("scanner.c").exists();
-    if has_scanner != (grammar.scanner == Scanner::C) {
+    let found = if src.join("scanner.c").exists() {
+        Scanner::C
+    } else if src.join("scanner.cc").exists() {
+        Scanner::Cc
+    } else {
+        Scanner::None
+    };
+    if found != grammar.scanner {
         return Err(format!(
-            "{language}: grammars.toml says scanner = {:?}, but {} scanner.c",
-            grammar.scanner,
-            if has_scanner {
-                "src has a"
-            } else {
-                "src has no"
-            }
+            "{language}: pinned scanner = {:?}, but src has {found:?}",
+            grammar.scanner
         ));
     }
 
@@ -518,21 +468,40 @@ fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
     eprintln!("compiling {language} for {target}");
     compile(
         &src,
-        has_scanner,
+        grammar.scanner,
         target,
         &objects,
         &out.join(&library_name),
     )?;
 
+    let symbol = grammar
+        .symbol
+        .clone()
+        .unwrap_or_else(|| format!("tree_sitter_{language}"));
+    let ts_language = (target == HOST)
+        .then(|| load_library(&out.join(&library_name), &symbol))
+        .transpose()
+        .map_err(|e| format!("{language}: {e}"))?;
     let write_query = |name: &str, files: &[String]| -> Result<Option<PackFile>, String> {
         if files.is_empty() {
             return Ok(None);
         }
         let mut text = String::new();
         for file in files {
-            let (_, path) = resolve_input(lock, &root, file, options)?;
+            let (_, path) = resolve_input(lock, language, &root, file, options)?;
             text.push_str(&read_text(&path)?);
             text.push('\n');
+        }
+        if let Some(ts_language) = &ts_language {
+            let adapted =
+                query::adapt(ts_language, &text).map_err(|e| format!("{language}: {name}: {e}"))?;
+            if adapted.removed > 0 {
+                eprintln!(
+                    "{language}: {name}: dropped {} incompatible patterns",
+                    adapted.removed
+                );
+            }
+            text = adapted.text;
         }
         fs::write(out.join(name), &text).map_err(|e| e.to_string())?;
         Ok(Some(pack_file(&out, name)?))
@@ -549,10 +518,7 @@ fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
         version: grammar.version.clone(),
         target: target.clone(),
         abi,
-        symbol: grammar
-            .symbol
-            .clone()
-            .unwrap_or_else(|| format!("tree_sitter_{language}")),
+        symbol,
         library: pack_file(&out, &library_name)?,
         highlights,
         injections,
@@ -585,11 +551,53 @@ fn pack_file(dir: &Path, name: &str) -> Result<PackFile, String> {
     })
 }
 
-/// Compiles parser.c, and scanner.c when `scanner`, in `src` into the
-/// shared library `output` for `target`.
+fn generate_parser(language: &str, src: &Path, options: &Options) -> Result<PathBuf, String> {
+    let cli = std::env::var_os(TREE_SITTER_VAR).unwrap_or_else(|| "tree-sitter".into());
+    let version = Command::new(&cli).arg("--version").output().map_err(|e| {
+        format!("{language}: needs tree-sitter CLI {TREE_SITTER_CLI} (${TREE_SITTER_VAR}): {e}")
+    })?;
+    let version = String::from_utf8_lossy(&version.stdout);
+    if version.split_whitespace().nth(1) != Some(TREE_SITTER_CLI) {
+        return Err(format!(
+            "{language}: needs tree-sitter CLI {TREE_SITTER_CLI}, found {}",
+            version.trim()
+        ));
+    }
+    let out = options.work.join("generated").join(language);
+    let _ = fs::remove_dir_all(&out);
+    copy_dir(src, &out)?;
+    eprintln!("generating {language}");
+    let status = Command::new(&cli)
+        .args(["generate", "--abi", "15", "-o"])
+        .arg(&out)
+        .arg(out.join("grammar.json"))
+        .status()
+        .map_err(|e| format!("{language}: tree-sitter generate: {e}"))?;
+    if !status.success() {
+        return Err(format!("{language}: tree-sitter generate failed: {status}"));
+    }
+    Ok(out)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    for entry in fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let dest = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &dest)?;
+        } else {
+            fs::copy(entry.path(), &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Compiles parser.c and its scanner in `src` into the shared library
+/// `output` for `target`.
 fn compile(
     src: &Path,
-    scanner: bool,
+    scanner: Scanner,
     target: &str,
     objects: &Path,
     output: &Path,
@@ -608,18 +616,42 @@ fn compile(
         .out_dir(objects)
         .include(src)
         .file(src.join("parser.c"));
-    if scanner {
+    if scanner == Scanner::C {
         build.file(src.join("scanner.c"));
     }
     let compiler = build.try_get_compiler().map_err(|e| e.to_string())?;
+    let parser = fs::read(src.join("parser.c")).map_err(|e| format!("parser.c: {e}"))?;
+    let marks_export = parser.windows(9).any(|w| w == b"TS_PUBLIC");
     if !compiler.is_like_msvc() {
-        // parser.c marks only the language function visible, so this keeps
-        // every other symbol out of the library's export table.
-        build.flag("-fvisibility=hidden").flag("-std=c11");
+        build.flag("-std=c11");
+        // Newer parser.c marks only the language function visible, so this
+        // keeps every other symbol out of the export table; older ones mark
+        // nothing and would export nothing.
+        if marks_export {
+            build.flag("-fvisibility=hidden");
+        }
     }
-    let objs = build
+    let mut objs = build
         .try_compile_intermediates()
         .map_err(|e| e.to_string())?;
+    if scanner == Scanner::Cc {
+        let mut cxx = cc::Build::new();
+        cxx.cargo_metadata(false)
+            .cargo_warnings(false)
+            .warnings(false)
+            .cpp(true)
+            .target(target)
+            .host(HOST)
+            .opt_level(2)
+            .debug(false)
+            .out_dir(objects)
+            .include(src)
+            .file(src.join("scanner.cc"));
+        if !compiler.is_like_msvc() {
+            cxx.flag("-fvisibility=hidden");
+        }
+        objs.extend(cxx.try_compile_intermediates().map_err(|e| e.to_string())?);
+    }
 
     let mut link = if compiler.is_like_msvc() {
         let mut link = cc::windows_registry::find_tool(target, "link.exe")
@@ -640,6 +672,13 @@ fn compile(
         link
     };
     link.args(&objs);
+    if scanner == Scanner::Cc && !compiler.is_like_msvc() {
+        link.arg(if target.contains("apple") {
+            "-lc++"
+        } else {
+            "-lstdc++"
+        });
+    }
     let status = link.status().map_err(|e| format!("linker: {e}"))?;
     if !status.success() {
         return Err(format!("linking {} failed: {status}", output.display()));
@@ -650,24 +689,55 @@ fn compile(
 // ---- Check --------------------------------------------------------------
 
 fn check(lock: &Lock, options: &Options) -> Result<(), String> {
+    let skipped = read_skipped(&options.out.join(HOST))?;
     for language in &options.languages {
-        check_language(lock, language, &options.out.join(HOST).join(language))?;
+        if !skipped.contains_key(language) {
+            check_language(lock, language, options)?;
+        }
     }
     Ok(())
 }
 
-/// Loads the pack in `dir` as the store would, then on its own: parses the
-/// sample, which must parse without errors, and requires the expected
-/// captures (a capture of the name that starts at some occurrence of the
-/// text and covers it) and injected languages.
-fn check_language(lock: &Lock, language: &str, dir: &Path) -> Result<(), String> {
+fn read_sample(lock: &Lock, language: &str, options: &Options) -> Result<Option<String>, String> {
+    let Some(sample) = lock.get(language).and_then(|g| g.sample.as_deref()) else {
+        return Ok(None);
+    };
+    let path = match sample.strip_prefix("q:") {
+        Some(path) => queries_checkout(lock, language, options)?.join(path),
+        None => Path::new(env!("CARGO_MANIFEST_DIR")).join(sample),
+    };
+    read_text(&path).map(Some)
+}
+
+/// Loads the pack for this host as the store would, then on its own: its
+/// queries must compile. A core language's sample must parse without
+/// errors and yield the expected captures (a capture of the name that
+/// starts at some occurrence of the text and covers it) and injected
+/// languages; a registry language's sample must yield some capture.
+fn check_language(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
     let grammar = lock
         .get(language)
-        .ok_or_else(|| format!("{language} is not in grammars.toml"))?;
+        .ok_or_else(|| format!("{language} is not pinned"))?;
+    let dir = options.out.join(HOST).join(language);
     let fail = |what: &dyn std::fmt::Display| format!("{language}: {what}");
-    let manifest = pack::check_pack_dir(dir).map_err(|e| fail(&format!("does not load: {e}")))?;
-    let ts_language = load_language(dir, &manifest).map_err(|e| fail(&e))?;
-    let sample = read_text(&Path::new(env!("CARGO_MANIFEST_DIR")).join(&grammar.sample))?;
+    let manifest = pack::check_pack_dir(&dir).map_err(|e| fail(&format!("does not load: {e}")))?;
+    let ts_language = load_language(&dir, &manifest).map_err(|e| fail(&e))?;
+    let highlights = ts::Query::new(
+        &ts_language,
+        &read_text(&dir.join(&manifest.highlights.path))?,
+    )
+    .map_err(|e| fail(&format!("highlight query: {e}")))?;
+    let injections = match &manifest.injections {
+        Some(file) => Some(
+            ts::Query::new(&ts_language, &read_text(&dir.join(&file.path))?)
+                .map_err(|e| fail(&format!("injection query: {e}")))?,
+        ),
+        None => None,
+    };
+    let Some(sample) = read_sample(lock, language, options)? else {
+        println!("{language}: loads, queries compile");
+        return Ok(());
+    };
 
     let mut parser = ts::Parser::new();
     parser
@@ -676,20 +746,24 @@ fn check_language(lock: &Lock, language: &str, dir: &Path) -> Result<(), String>
     let tree = parser
         .parse(&sample, None)
         .ok_or_else(|| fail(&"the parser gave up"))?;
+    let captured = captures(&highlights, &tree, &sample);
+    if !lock.is_core(language) {
+        if captured.is_empty() {
+            return Err(fail(&"the sample highlights nothing"));
+        }
+        println!(
+            "{language}: loads, {} captures in its sample",
+            captured.len()
+        );
+        return Ok(());
+    }
     if tree.root_node().has_error() {
         return Err(fail(&format!(
             "{} has parse errors: {}",
-            grammar.sample,
+            grammar.sample.as_deref().unwrap_or_default(),
             tree.root_node().to_sexp()
         )));
     }
-
-    let highlights = ts::Query::new(
-        &ts_language,
-        &read_text(&dir.join(&manifest.highlights.path))?,
-    )
-    .map_err(|e| fail(&format!("highlight query: {e}")))?;
-    let captured = captures(&highlights, &tree, &sample);
     for (text, capture) in &grammar.captures {
         let matches = |name: &&str| {
             name.strip_prefix(capture.as_str())
@@ -721,12 +795,8 @@ fn check_language(lock: &Lock, language: &str, dir: &Path) -> Result<(), String>
         }
     }
 
-    let injected = match &manifest.injections {
-        Some(file) => {
-            let query = ts::Query::new(&ts_language, &read_text(&dir.join(&file.path))?)
-                .map_err(|e| fail(&format!("injection query: {e}")))?;
-            injected_languages(&query, &tree, &sample)
-        }
+    let injected = match &injections {
+        Some(query) => injected_languages(query, &tree, &sample),
         None => BTreeSet::new(),
     };
     if let Some(missing) = grammar.injects.iter().find(|l| !injected.contains(*l)) {
@@ -742,17 +812,41 @@ fn check_language(lock: &Lock, language: &str, dir: &Path) -> Result<(), String>
     Ok(())
 }
 
+const SKIPPED: &str = "skipped.json";
+
+fn read_skipped(dir: &Path) -> Result<BTreeMap<String, String>, String> {
+    match fs::read(dir.join(SKIPPED)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{SKIPPED}: {e}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(format!("{SKIPPED}: {error}")),
+    }
+}
+
+fn write_skipped(options: &Options, skipped: &BTreeMap<String, String>) -> Result<(), String> {
+    let dir = options.out.join(&options.target);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(skipped).map_err(|e| e.to_string())?;
+    fs::write(dir.join(SKIPPED), json + "\n").map_err(|e| e.to_string())?;
+    if !skipped.is_empty() {
+        eprintln!("{} languages skipped for {}", skipped.len(), options.target);
+    }
+    Ok(())
+}
+
 /// The pack's language function, loaded directly. The library stays
 /// loaded for the rest of the process, as in diffy-syntax.
 fn load_language(dir: &Path, manifest: &PackManifest) -> Result<ts::Language, String> {
-    let path = dir.join(&manifest.library.path);
-    let mut symbol = manifest.symbol.clone().into_bytes();
+    load_library(&dir.join(&manifest.library.path), &manifest.symbol)
+}
+
+fn load_library(path: &Path, symbol: &str) -> Result<ts::Language, String> {
+    let mut symbol = symbol.to_owned().into_bytes();
     symbol.push(0);
     // SAFETY: the pack is the one just built from pinned, hashed sources
     // (or downloaded and SHA-checked by `check_pack_dir`), and its symbol
     // is the tree-sitter language function the manifest names.
     unsafe {
-        let library = libloading::Library::new(&path).map_err(|e| e.to_string())?;
+        let library = libloading::Library::new(path).map_err(|e| e.to_string())?;
         let library: &'static libloading::Library = Box::leak(Box::new(library));
         let function = library
             .get::<unsafe extern "C" fn() -> *const ()>(&symbol)
@@ -822,17 +916,105 @@ fn parse_hex32(text: &str, what: &str) -> Result<[u8; 32], String> {
 
 fn signing_seed() -> Result<[u8; 32], String> {
     let text = std::env::var(KEY_VAR).map_err(|_| format!("${KEY_VAR} is not set"))?;
+    if text.contains("OPENSSH PRIVATE KEY") {
+        return openssh_seed(&text).map_err(|e| format!("${KEY_VAR}: {e}"));
+    }
     parse_hex32(&text, &format!("${KEY_VAR}"))
 }
 
-/// Requires `languages` to be exactly the pinned set, so an index built
-/// from a subset of languages can never replace the complete one.
+fn openssh_seed(text: &str) -> Result<[u8; 32], String> {
+    let body: String = text
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .flat_map(|line| line.trim().chars())
+        .collect();
+    let bytes = base64_decode(&body)?;
+    let mut reader = SshReader { bytes: &bytes };
+    if reader.take(15)? != b"openssh-key-v1\0" {
+        return Err("not an OpenSSH private key".to_owned());
+    }
+    let (cipher, kdf) = (reader.string()?, reader.string()?);
+    reader.string()?;
+    if cipher != b"none" || kdf != b"none" || reader.u32()? != 1 {
+        return Err("the key must be a single unencrypted key".to_owned());
+    }
+    reader.string()?;
+    let mut private = SshReader {
+        bytes: reader.string()?,
+    };
+    if private.u32()? != private.u32()? {
+        return Err("the key's check integers differ".to_owned());
+    }
+    if private.string()? != b"ssh-ed25519" {
+        return Err("the key is not Ed25519".to_owned());
+    }
+    private.string()?;
+    let secret = private.string()?;
+    secret
+        .get(..32)
+        .and_then(|seed| seed.try_into().ok())
+        .ok_or_else(|| "the Ed25519 secret is too short".to_owned())
+}
+
+struct SshReader<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> SshReader<'a> {
+    fn take(&mut self, len: usize) -> Result<&'a [u8], String> {
+        if self.bytes.len() < len {
+            return Err("the key is truncated".to_owned());
+        }
+        let (head, rest) = self.bytes.split_at(len);
+        self.bytes = rest;
+        Ok(head)
+    }
+
+    fn u32(&mut self) -> Result<u32, String> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn string(&mut self) -> Result<&'a [u8], String> {
+        let len = self.u32()? as usize;
+        self.take(len)
+    }
+}
+
+fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    let value = |c: u8| -> Result<u32, String> {
+        Ok(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err(format!("{:?} is not base64", c as char)),
+        } as u32)
+    };
+    let digits = text.trim_end_matches('=').as_bytes();
+    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
+    for chunk in digits.chunks(4) {
+        let mut word = 0;
+        for (i, &c) in chunk.iter().enumerate() {
+            word |= value(c)? << (18 - 6 * i);
+        }
+        out.extend_from_slice(&word.to_be_bytes()[1..chunk.len()]);
+    }
+    Ok(out)
+}
+
 fn check_complete<'a>(
     lock: &Lock,
+    skipped: &BTreeMap<String, String>,
     languages: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), String> {
     let found: BTreeSet<&str> = languages.into_iter().collect();
-    let pinned: BTreeSet<&str> = lock.keys().map(String::as_str).collect();
+    let pinned: BTreeSet<&str> = lock
+        .keys()
+        .map(String::as_str)
+        .filter(|language| lock.is_core(language) || !skipped.contains_key(*language))
+        .collect();
     let missing: Vec<&str> = pinned.difference(&found).copied().collect();
     let extra: Vec<&str> = found.difference(&pinned).copied().collect();
     if !missing.is_empty() || !extra.is_empty() {
@@ -897,7 +1079,11 @@ fn write_index(lock: &Lock, options: &Options, seed: &[u8; 32]) -> Result<(), St
         }
         packs.push(manifest);
     }
-    check_complete(lock, packs.iter().map(|p| p.language.as_str()))?;
+    check_complete(
+        lock,
+        &read_skipped(&dir)?,
+        packs.iter().map(|p| p.language.as_str()),
+    )?;
     let payload = json!({
         "schema": pack::SCHEMA,
         "target": target,
@@ -929,7 +1115,11 @@ fn verify(lock: &Lock, options: &Options) -> Result<(), String> {
             path.display()
         ));
     }
-    check_complete(lock, index.packs.iter().map(|p| p.language.as_str()))?;
+    check_complete(
+        lock,
+        &read_skipped(&dir)?,
+        index.packs.iter().map(|p| p.language.as_str()),
+    )?;
     for manifest in &index.packs {
         let pack_dir = dir.join(&manifest.language);
         pack::verify_files(&pack_dir, manifest).map_err(|e| e.to_string())?;
@@ -971,14 +1161,18 @@ fn remote_check(lock: &Lock, options: &Options) -> Result<(), String> {
     let (tx, rx) = mpsc::channel();
     store.subscribe(move || tx.send(()).is_ok());
     for language in &options.languages {
-        let grammar = lock
-            .get(language)
-            .ok_or_else(|| format!("{language} is not in grammars.toml"))?;
+        if lock.get(language).is_none() {
+            return Err(format!("{language} is not pinned"));
+        }
         let id = LanguageId::from_fence(language).ok_or_else(|| format!("bad tag {language}"))?;
         let deadline = Instant::now() + REMOTE_TIMEOUT;
         loop {
             match store.status(&id) {
                 LanguageStatus::Ready => break,
+                LanguageStatus::Unavailable if !lock.is_core(language) => {
+                    eprintln!("warning {language}: not in the index; skipped on this target?");
+                    break;
+                }
                 LanguageStatus::Unavailable => {
                     return Err(format!(
                         "{language}: not available from {}",
@@ -995,7 +1189,13 @@ fn remote_check(lock: &Lock, options: &Options) -> Result<(), String> {
                 }
             }
         }
-        let sample = read_text(&Path::new(env!("CARGO_MANIFEST_DIR")).join(&grammar.sample))?;
+        if store.status(&id) != LanguageStatus::Ready {
+            continue;
+        }
+        let Some(sample) = read_sample(lock, language, options)? else {
+            println!("{language}: downloaded");
+            continue;
+        };
         let spans = diffy_syntax::highlight(&store, &id, &sample);
         if spans.is_empty() {
             return Err(format!(
@@ -1025,7 +1225,7 @@ mod tests {
     fn an_alias_claimed_by_two_languages_is_rejected() {
         let text = entry("c", "\"h\"") + &entry("cpp", "\"h\", \"cc\"");
 
-        let error = parse_lock(&text).unwrap_err();
+        let error = lock::parse(&text, "").err().unwrap();
 
         assert_eq!(error, "\"h\" is claimed by both c and cpp");
     }
@@ -1048,7 +1248,7 @@ mod tests {
     // index that would replace the complete public one.
     #[test]
     fn an_index_missing_a_pinned_language_is_refused() {
-        let lock = parse_lock(&(entry("c", "") + &entry("rust", "\"rs\""))).unwrap();
+        let lock = lock::parse(&(entry("c", "") + &entry("rust", "\"rs\"")), "").unwrap();
         let out = tempfile::tempdir().unwrap();
         let dir = out.path().join(HOST).join("rust");
         fs::create_dir_all(&dir).unwrap();
@@ -1086,5 +1286,72 @@ mod tests {
              not pinned []"
         );
         assert!(!out.path().join(HOST).join("index.json").exists());
+    }
+
+    #[test]
+    fn an_openssh_key_yields_its_ed25519_seed() {
+        let seed = [7u8; 32];
+        let public = parse_hex32(
+            &quark_update::manifest::public_key(&seed).unwrap().to_hex(),
+            "key",
+        )
+        .unwrap();
+        let string = |bytes: &[u8]| [&(bytes.len() as u32).to_be_bytes()[..], bytes].concat();
+        let public_blob = [string(b"ssh-ed25519"), string(&public)].concat();
+        let private = [
+            vec![1, 2, 3, 4, 1, 2, 3, 4],
+            string(b"ssh-ed25519"),
+            string(&public),
+            string(&[&seed[..], &public[..]].concat()),
+            string(b""),
+        ]
+        .concat();
+        let blob = [
+            b"openssh-key-v1\0".to_vec(),
+            string(b"none"),
+            string(b"none"),
+            string(b""),
+            1u32.to_be_bytes().to_vec(),
+            string(&public_blob),
+            string(&private),
+        ]
+        .concat();
+        let key = format!(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----\n",
+            base64_encode(&blob)
+        );
+
+        assert_eq!(openssh_seed(&key).unwrap(), seed);
+    }
+
+    fn base64_encode(bytes: &[u8]) -> String {
+        const DIGITS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let word = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |word, (i, &b)| word | (b as u32) << (16 - 8 * i));
+            for i in 0..=chunk.len() {
+                out.push(DIGITS[(word >> (18 - 6 * i) & 63) as usize] as char);
+            }
+        }
+        while !out.len().is_multiple_of(4) {
+            out.push('=');
+        }
+        out
+    }
+
+    #[test]
+    fn a_skipped_registry_language_may_be_missing_but_a_core_one_may_not() {
+        let mut lock = lock::parse(&entry("c", ""), "").unwrap();
+        lock.grammars
+            .insert("zig".to_owned(), lock.get("c").unwrap().clone());
+        let skipped = BTreeMap::from([("zig".to_owned(), "no parser.c".to_owned())]);
+
+        assert!(check_complete(&lock, &skipped, ["c"]).is_ok());
+        assert!(check_complete(&lock, &BTreeMap::new(), ["c"]).is_err());
+        let core_skipped = BTreeMap::from([("c".to_owned(), "broken".to_owned())]);
+        assert!(check_complete(&lock, &core_skipped, ["zig"]).is_err());
     }
 }

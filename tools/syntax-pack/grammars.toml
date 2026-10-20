@@ -31,8 +31,8 @@
 repo = "https://github.com/tree-sitter/tree-sitter-bash"
 rev = "a06c2e4415e9bc0346c6b86d401879ffb44058f7"
 version = "0.25.1"
-aliases = ["sh", "shell", "zsh", "console"]
-extensions = ["sh", "bash", "zsh"]
+aliases = ["sh", "shell", "console"]
+extensions = ["sh", "bash"]
 highlights = ["queries/highlights.scm"]
 sha256 = "61f293830ad01f986c8675f9ac4d07f6462a2fbd23dd8a978b710d2e3b40da65"
 license = "MIT"

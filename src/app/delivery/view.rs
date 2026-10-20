@@ -14,7 +14,6 @@ use super::state::UpdateState;
 use crate::app::shell::Slot;
 use crate::app::tokens::{self, Ico, Layout, Sp, Sz, TextStyle};
 use crate::contracts::delivery::DeliveryAction;
-use crate::core::syntax::grammar;
 
 const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 pub const LANGUAGES_TOGGLE: FocusId = FocusId::from_key("diffy.delivery.languages");
@@ -37,10 +36,9 @@ pub fn view(delivery: &mut DeliveryController, slot: &Slot, cx: &mut ViewContext
                 .iter()
                 .find(|file| file.key == selected.key)?;
             Some(
-                grammar::language_for_path(&file.paths.display_path()).map_or_else(
-                    || "Plain text".to_owned(),
-                    |language| title_case(language.name),
-                ),
+                delivery
+                    .language_for_path(&file.paths.display_path())
+                    .map_or_else(|| "Plain text".to_owned(), display_name),
             )
         })
         .unwrap_or_else(|| "Languages".to_owned());
@@ -95,13 +93,6 @@ pub fn view(delivery: &mut DeliveryController, slot: &Slot, cx: &mut ViewContext
     }
 }
 
-fn title_case(name: &str) -> String {
-    let mut chars = name.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
-
 pub fn overlay(
     delivery: &mut DeliveryController,
     _slot: &Slot,
@@ -113,16 +104,18 @@ pub fn overlay(
     let theme = cx.theme;
     let scale = tokens::ui_scale(theme);
     let (width, height) = cx.frame.size();
-    let rows: Vec<AnyElement> = grammar::languages()
+    let rows: Vec<AnyElement> = delivery
+        .grammars()
         .iter()
-        .map(|language| {
-            let status = delivery
-                .grammars()
-                .iter()
-                .find(|status| status.language == language.name);
-            language_row(language.name, status, theme)
-        })
+        .map(|status| language_row(status, theme))
         .collect();
+    let has_rows = !rows.is_empty();
+    let available = match delivery.catalog().languages {
+        0 => "Grammars download the first time a file needs them.".to_owned(),
+        count => {
+            format!("{count} languages available. Each downloads the first time a file needs it.")
+        }
+    };
     Some(
         view! {
             <div class="absolute" left={0.0} top={0.0} w={width} h={height} z_index={199}>
@@ -164,12 +157,22 @@ pub fn overlay(
                             "Syntax languages"
                         </text>
                         <text size={TextStyle::Caption.font_size(theme)} color={theme.colors.text_muted}>
-                            "Grammars download the first time a file needs them."
+                            {available}
                         </text>
                     </div>
                     {popover_divider(theme)}
-                    {...rows}
-                    {popover_divider(theme)}
+                    if has_rows {
+                        <div
+                            class="flex-col w-full overflow-y-scroll scrollbar-auto-hide"
+                            max_h={tokens::scaled(Layout::LANGUAGE_LIST_MAX_H, scale)}
+                            gap={tokens::scaled(Sp::XS, scale)}
+                            track_scroll={delivery.languages_scroll()}
+                            test_id="delivery.languages.list"
+                        >
+                            {...rows}
+                        </div>
+                        {popover_divider(theme)}
+                    }
                     {update_row(delivery.update(), theme)}
                 </popover_panel>
                 </div>
@@ -240,21 +243,16 @@ fn check_button(disabled: bool) -> AnyElement {
     .into_any()
 }
 
-fn language_row(
-    language: &'static str,
-    status: Option<&GrammarStatus>,
-    theme: &Theme,
-) -> AnyElement {
-    let state = status.map(|status| &status.state);
-    let (label, color) = match state {
-        Some(GrammarState::Ready) => ("Ready", theme.colors.text),
-        Some(GrammarState::Installed) => ("Installed", theme.colors.text_muted),
-        Some(GrammarState::Downloading) => ("Downloading", theme.colors.text_muted),
-        Some(GrammarState::Failed(_)) => ("Failed", theme.colors.status_error),
-        None => ("Not installed", theme.colors.text_muted),
+fn language_row(status: &GrammarStatus, theme: &Theme) -> AnyElement {
+    let language = status.language.as_str();
+    let (label, color) = match &status.state {
+        GrammarState::Ready => ("Ready", theme.colors.text),
+        GrammarState::Installed => ("Installed", theme.colors.text_muted),
+        GrammarState::Downloading => ("Downloading", theme.colors.text_muted),
+        GrammarState::Failed(_) => ("Failed", theme.colors.status_error),
     };
-    let reason = match state {
-        Some(GrammarState::Failed(reason)) => Some(reason.clone()),
+    let reason = match &status.state {
+        GrammarState::Failed(reason) => Some(reason.clone()),
         _ => None,
     };
     let failed = reason.is_some();
@@ -300,21 +298,32 @@ fn language_row(
     .into_any()
 }
 
-fn display_name(language: &str) -> &str {
-    match language {
-        "bash" => "Bash",
-        "c" => "C",
+fn display_name(language: &str) -> String {
+    let known = match language {
+        "c_sharp" => "C#",
         "cpp" => "C++",
-        "go" => "Go",
+        "css" => "CSS",
+        "html" => "HTML",
         "javascript" => "JavaScript",
         "json" => "JSON",
-        "nix" => "Nix",
-        "python" => "Python",
-        "rust" => "Rust",
+        "objc" => "Objective-C",
+        "php" => "PHP",
+        "sql" => "SQL",
         "toml" => "TOML",
-        "typescript" => "TypeScript",
         "tsx" => "TSX",
-        "zig" => "Zig",
-        other => other,
+        "typescript" => "TypeScript",
+        "xml" => "XML",
+        "yaml" => "YAML",
+        _ => "",
+    };
+    if !known.is_empty() {
+        return known.to_owned();
     }
+    let mut chars = language.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first
+            .to_uppercase()
+            .chain(chars.map(|c| if c == '_' { ' ' } else { c }))
+            .collect()
+    })
 }

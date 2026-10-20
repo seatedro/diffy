@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use diffy_syntax::GrammarStatus;
+use diffy_syntax::Catalog;
 
 use crate::core::update::{AvailableUpdate, StagedUpdate};
 
@@ -26,7 +26,7 @@ pub enum DeliveryEffect {
     ApplyStagedUpdate(Box<StagedUpdate>),
     WatchGrammars,
     EnsureGrammars {
-        languages: Vec<&'static str>,
+        languages: Vec<String>,
     },
     RetryGrammar {
         language: String,
@@ -58,7 +58,7 @@ pub enum DeliveryEvent {
         message: String,
         silent: bool,
     },
-    GrammarsChanged(Arc<[GrammarStatus]>),
+    GrammarsChanged(Arc<Catalog>),
     UpdatePollDue {
         generation: u64,
     },

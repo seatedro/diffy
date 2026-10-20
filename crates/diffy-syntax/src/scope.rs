@@ -68,7 +68,9 @@ fn scope_table_pending(
         }
         match store.grammar(language) {
             crate::store::Tag::Ready(grammar) => {
-                let name = scope_language(language.as_str());
+                let name = grammar
+                    .name()
+                    .unwrap_or_else(|| scope_language(language.as_str()));
                 let table = grammar
                     .scope_query(name)
                     .and_then(|query| {
@@ -91,10 +93,6 @@ fn scope_table_pending(
 
 #[cfg(feature = "engine")]
 fn scope_language(tag: &str) -> &str {
-    #[cfg(feature = "download")]
-    if let Some(language) = crate::legacy_pack::language_for_tag(tag) {
-        return language.name;
-    }
     match tag {
         "rs" => "rust",
         "ts" | "mts" | "cts" => "typescript",

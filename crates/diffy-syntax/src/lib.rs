@@ -61,8 +61,6 @@
 mod download;
 #[cfg(feature = "engine")]
 mod engine;
-#[cfg(feature = "download")]
-pub mod legacy_pack;
 #[cfg(feature = "engine")]
 pub mod pack;
 mod scope;
@@ -77,13 +75,11 @@ use std::sync::Arc;
 #[cfg(feature = "download")]
 pub use download::{Downloads, default_cache_dir};
 #[cfg(feature = "download")]
-pub use legacy_pack::{GrammarState, GrammarStatus, LegacyPacks};
-#[cfg(feature = "download")]
 pub use quark_update::PublicKey;
 pub use scope::{ScopeResult, ScopeSpan, ScopeTable, ScopeWorker, scope_table};
 #[cfg(feature = "engine")]
 pub use store::StoreConfig;
-pub use store::{GrammarStore, LanguageStatus};
+pub use store::{Catalog, GrammarState, GrammarStatus, GrammarStore, LanguageStatus};
 pub use worker::{
     HighlightFocus, HighlightPart, HighlightRequest, HighlightWorker, Highlighted, Priority,
     WorkerGone,
@@ -173,11 +169,14 @@ impl LanguageId {
         valid.then(|| Self(Arc::from(tag.to_ascii_lowercase())))
     }
 
-    /// The language a file path's extension names.
+    /// The language a file path's extension names, or for a file without
+    /// one (`Dockerfile`, `Makefile`), its name.
     pub fn from_path(path: &str) -> Option<Self> {
         let name = path.rsplit(['/', '\\']).next()?;
-        let (_, extension) = name.rsplit_once('.')?;
-        Self::from_fence(extension)
+        match name.rsplit_once('.') {
+            Some((_, extension)) => Self::from_fence(extension),
+            None => Self::from_fence(name),
+        }
     }
 
     pub fn as_str(&self) -> &str {

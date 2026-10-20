@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use diffy_syntax::{GrammarState, GrammarStatus};
+use diffy_syntax::{Catalog, GrammarState, GrammarStatus};
 use quark::view;
 use quark_app::testing::{By, UiTestHarness};
 use quark_app::{UiApp, UiContext, ViewContext};
@@ -41,17 +41,21 @@ fn staged() -> StagedUpdate {
     }
 }
 
-fn grammars(states: &[(&'static str, GrammarState)]) -> DeliveryEvent {
-    DeliveryEvent::GrammarsChanged(
-        states
+fn grammars(states: &[(&str, GrammarState)]) -> DeliveryEvent {
+    DeliveryEvent::GrammarsChanged(Arc::new(Catalog {
+        statuses: states
             .iter()
             .map(|(language, state)| GrammarStatus {
-                language,
+                language: (*language).to_owned(),
                 state: state.clone(),
             })
-            .collect::<Vec<_>>()
-            .into(),
-    )
+            .collect(),
+        tags: states
+            .iter()
+            .map(|(language, _)| ((*language).to_owned(), (*language).to_owned()))
+            .collect(),
+        languages: states.len(),
+    }))
 }
 
 fn delivery_effects(ui: &Harness) -> Vec<DeliveryEffect> {
@@ -94,7 +98,7 @@ fn startup_effects(updates_supported: bool, auto_update: bool) -> Vec<DeliveryEf
 
 #[test]
 fn startup_watches_grammars_and_checks_silently_per_settings() {
-    let common = vec![
+    let common = [
         "bash",
         "c",
         "cpp",
@@ -106,7 +110,9 @@ fn startup_watches_grammars_and_checks_silently_per_settings() {
         "toml",
         "typescript",
         "tsx",
-    ];
+    ]
+    .map(String::from)
+    .to_vec();
     let base = vec![
         DeliveryEffect::WatchGrammars,
         DeliveryEffect::EnsureGrammars { languages: common },
@@ -124,12 +130,13 @@ fn startup_watches_grammars_and_checks_silently_per_settings() {
 }
 
 #[test]
-fn paths_request_highlight_and_semantic_grammars() {
+fn paths_request_their_extension_tags() {
     let cases = [
-        ("src/app.js", vec!["typescript", "javascript"]),
-        ("src/view.jsx", vec!["tsx", "javascript"]),
+        ("src/app.js", vec!["js"]),
+        ("src/View.JSX", vec!["jsx"]),
         ("flake.nix", vec!["nix"]),
-        ("README.md", vec![]),
+        ("Dockerfile", vec!["dockerfile"]),
+        ("src/", vec![]),
     ];
     for (path, expected) in cases {
         assert_eq!(
@@ -514,7 +521,7 @@ fn languages_panel_has_a_title_and_reports_each_state() {
     assert_eq!(state("rust"), "Rust Ready");
     assert_eq!(state("go"), "Go Installed");
     assert_eq!(state("zig"), "Zig Downloading");
-    assert_eq!(state("nix"), "Nix Not installed");
+    assert!(text.contains("3 languages available"));
 }
 
 #[test]

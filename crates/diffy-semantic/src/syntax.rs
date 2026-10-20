@@ -26,7 +26,6 @@ pub(crate) struct Node {
     pub(crate) hash: u64,
     pub(crate) kind: u16,
     pub(crate) class: Class,
-    /// An identifier token, the only kind of token a rename can change.
     pub(crate) name: bool,
     pub(crate) callee: bool,
 }

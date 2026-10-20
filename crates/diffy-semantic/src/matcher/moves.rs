@@ -1,9 +1,6 @@
 use super::*;
 
 impl<'a> Matcher<'_, 'a> {
-    /// Pairs subtrees left unlinked whose correspondence pays for a move
-    /// note: anchors that landed outside their container, equal subtrees
-    /// and same-named items, best first.
     pub(super) fn relocate(&mut self) -> Result<(), Fallback> {
         for (x, y) in self.forced.clone() {
             let (a, b) = (self.unit(0, x), self.unit(1, y));

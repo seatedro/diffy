@@ -361,8 +361,6 @@ impl Comparison {
         }
     }
 
-    /// Hides removed lines that kept all their text: every token lives on
-    /// in the new side, so the line only dissolved into others.
     fn hide_dissolved(&mut self, doc: &DiffDocument, file: u32, start: usize) {
         let old = doc.text(file, Side::Old);
         let dissolved = |o: u32| {
@@ -453,8 +451,6 @@ impl Comparison {
         }
     }
 
-    /// Folds the changed lines of each semantic line group into one merged
-    /// line when they do not pair line by line and their joined text merges.
     fn fold_groups(&mut self, doc: &DiffDocument, file: u32, start: usize) {
         let Some(groups) = doc
             .semantics(file)
@@ -628,8 +624,6 @@ impl Step {
     }
 }
 
-/// Per move, the first of the moves landing close together from the same
-/// item, which notes them all at their new place.
 pub fn move_leaders(moves: &[Move]) -> Vec<u32> {
     let mut order: Vec<usize> = (0..moves.len()).collect();
     order.sort_by_key(|&i| moves[i].new_line);
@@ -681,8 +675,6 @@ fn removes(doc: &DiffDocument, file: u32, line: u32) -> bool {
     })
 }
 
-/// Whether the lines of `run`, each side joined into one, merge into one
-/// readable line.
 fn composes(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
     let mut lines: [Vec<u32>; 2] = [Vec::new(), Vec::new()];
     for &step in run {

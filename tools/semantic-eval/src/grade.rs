@@ -96,8 +96,6 @@ impl<'d> Partners<'d> {
     }
 }
 
-/// What a diff is graded against: true links, tokens that must stay
-/// unlinked on either side, and an edited region on one side.
 pub struct Truth<'a> {
     pub links: &'a [(Span, Span)],
     pub items: &'a HashSet<u32>,

@@ -76,9 +76,7 @@ struct Side<'t, 'a> {
     lines: Lines,
     spans: Vec<Vec<SemanticSpan>>,
     tokens: Vec<Token>,
-    /// Per node, the move whose subtree holds it, or [`NONE`].
     moved: Vec<u32>,
-    /// Per line, whether a moved token starts on it.
     moved_lines: Vec<bool>,
 }
 
@@ -178,7 +176,6 @@ pub(crate) fn rows(old: &Tree<'_>, new: &Tree<'_>, matching: &Matching) -> Outpu
     }
 }
 
-/// Every token's state, as spans, and the matcher's renames.
 fn states(sides: &mut [Side<'_, '_>; 2], matching: &Matching) -> Vec<Rename> {
     let accepted: HashSet<(&str, &str)> = matching
         .renames
@@ -379,8 +376,6 @@ fn place(trees: [&Tree<'_>; 2], lines: [&Lines; 2], o: u32, n: u32) -> Move {
     }
 }
 
-/// Where move notes land: the moves a reader sees, grouped as the
-/// display groups them.
 pub(crate) struct Notes<'t, 'a> {
     trees: [&'t Tree<'a>; 2],
     lines: [Lines; 2],
@@ -444,9 +439,6 @@ fn item_label(tree: &Tree<'_>, item: &crate::syntax::Item, call: bool) -> std::s
     .into()
 }
 
-/// Line groups: lines joined by corresponding tokens outside moves.
-/// Tokens never cross, so each group is a range on each side and the
-/// groups are ordered on both.
 fn groups(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<Group> {
     let (old, new) = (&sides[0], &sides[1]);
     let mut pairs: Vec<(Range<u32>, Range<u32>)> = Vec::new();
@@ -501,8 +493,6 @@ fn align(sides: &[Side<'_, '_>; 2], groups: &[Group]) -> Vec<(Option<u32>, Optio
     rows
 }
 
-/// Rows for the lines between two groups: lines of equal text pair, a
-/// moved line stands alone, and the rest pair in order as replacements.
 fn fill<'a>(
     sides: &[Side<'_, 'a>; 2],
     olds: Range<u32>,

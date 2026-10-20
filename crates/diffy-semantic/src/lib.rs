@@ -28,14 +28,10 @@ pub struct SemanticDiff {
     pub outline: Vec<OutlineItem>,
     pub renames: Vec<Rename>,
     pub moves: Vec<Move>,
-    /// Lines joined by corresponding tokens across more than one line on
-    /// either side: a reflow, possibly with edits.
     pub groups: Vec<Group>,
-    /// Every token of each side, list delimiters included, in source order.
     pub tokens: [Vec<Token>; 2],
 }
 
-/// Old and new lines that hold corresponding tokens, as half-open ranges.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Group {
     pub old: Range<u32>,
@@ -44,13 +40,9 @@ pub struct Group {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenState {
-    /// Corresponds to an equal token on the other side.
     Kept,
-    /// Corresponds to a token renamed consistently throughout.
     Renamed,
-    /// A string or comment corresponding to one with changed words.
     Edited,
-    /// No counterpart.
     Novel,
 }
 
@@ -58,9 +50,7 @@ pub enum TokenState {
 pub struct Token {
     pub span: Range<u32>,
     pub state: TokenState,
-    /// The corresponding token's span on the other side.
     pub partner: Option<Range<u32>>,
-    /// The move holding this token, by index into the moves.
     pub moved: Option<u32>,
 }
 

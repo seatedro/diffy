@@ -100,7 +100,6 @@ pub struct Move {
     pub item: Option<Arc<str>>,
 }
 
-/// Old and new file lines that correspond as one unit.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LineGroupSpan {
     pub old: Range<u32>,

@@ -175,8 +175,6 @@ fn new_piece(range: Range<usize>, changed: bool, renamed: bool) -> MergePiece {
     }
 }
 
-/// Several lines read as one: trimmed and joined with single spaces, with
-/// their spans moved to match.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Joined {
     pub text: String,
@@ -184,7 +182,6 @@ pub struct Joined {
     pub parts: Vec<JoinedPart>,
 }
 
-/// Where one line's trimmed text sits in [`Joined::text`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JoinedPart {
     pub at: u32,
@@ -193,8 +190,6 @@ pub struct JoinedPart {
     pub len: u32,
 }
 
-/// Joins `(line, text, spans)` in order. The first line keeps its indent;
-/// no space goes after an opening bracket or before closing punctuation.
 pub fn join_lines<'a>(
     lines: impl IntoIterator<Item = (u32, &'a str, &'a [SemanticSpan])>,
 ) -> Joined {
@@ -232,9 +227,6 @@ pub fn join_lines<'a>(
     out
 }
 
-/// Whether `joined` reads as one line: each line that keeps nothing is a
-/// list item between kept lines, not a whole added or removed statement,
-/// block or comment.
 pub fn reads_as_one(joined: &Joined) -> bool {
     let kept = kept(
         &joined.text,

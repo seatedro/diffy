@@ -339,7 +339,6 @@ pub(crate) struct DiffColors {
     pub faint: Color,
     pub picked_wash: Color,
     pub picked_gutter: Color,
-    /// Background of moved lines, and of their gutter.
     pub moved_wash: Color,
     pub moved_gutter: Color,
     pub picked_number: Color,

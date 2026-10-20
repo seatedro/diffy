@@ -1,8 +1,6 @@
 use super::*;
 
 impl<'a> Matcher<'_, 'a> {
-    /// Accepts each rename whose linked uses pay for its entry, and
-    /// charges the rejected ones back to the prediction.
     pub(super) fn finalize(&mut self) -> (Vec<(&'a str, &'a str, u32)>, bool) {
         let (old, new) = (self.trees[0], self.trees[1]);
         let mut uses: BTreeMap<(&'a str, &'a str), (Features, u32, i64)> = BTreeMap::new();

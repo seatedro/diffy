@@ -421,10 +421,6 @@ impl<'a> Matcher<'_, 'a> {
         Ok(())
     }
 
-    /// Nodes on the other side, inside `scope`, that `node` may pair
-    /// with: through anchors inside it, its name, or an equal subtree
-    /// nested deeper. Each comes with the index of the scope child that
-    /// holds it.
     pub(super) fn reach(
         &mut self,
         side: usize,

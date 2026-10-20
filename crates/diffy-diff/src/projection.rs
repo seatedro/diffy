@@ -59,9 +59,7 @@ pub enum RowKind {
     Merged,
     Reflowed,
     Moved,
-    /// A moved block's note at its new place, naming where it came from.
     MovedHere,
-    /// A moved block's note at its old place, naming where it went.
     MovedAway,
 }
 
@@ -295,13 +293,10 @@ pub struct Projection {
     /// inverse of `old` and `new` per file.
     old_rows: Vec<u32>,
     new_rows: Vec<u32>,
-    /// Per folded reflow, by file and first new store index: the old store
-    /// indices it replaced.
     folds: Vec<(u32, u32, Range<u32>)>,
 }
 
 impl Projection {
-    /// The old lines a folded reflow at `row` replaced.
     pub fn fold_old(&self, row: u32) -> Option<Range<u32>> {
         let r = row as usize;
         let key = (self.file[r], self.new[r]);

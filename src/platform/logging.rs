@@ -16,8 +16,6 @@ fn stdout_logging_filter(log_debug: bool) -> tracing_subscriber::EnvFilter {
         return EnvFilter::new("debug");
     }
 
-    // Keep semantic diff diagnostics out of stdout during normal runs.
-    // DIFFY_LOG_DEBUG=1 still enables them.
     let base = logging_env_base();
     let filter = format!("{base},diffy::semantic=off");
 
@@ -31,7 +29,6 @@ fn file_logging_filter(log_debug: bool) -> tracing_subscriber::EnvFilter {
         return EnvFilter::new("debug");
     }
 
-    // Log concise semantic diff diagnostics to the file log.
     let base = logging_env_base();
     let filter = format!("{base},diffy::semantic=info");
 

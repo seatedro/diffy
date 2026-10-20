@@ -54,13 +54,9 @@ impl Default for Options {
     }
 }
 
-/// Which old node each new node corresponds to and back. Every link sits
-/// under linked ancestors that correspond to each other, or under the
-/// root of a move; links never cross each other outside a move.
 #[cfg_attr(not(feature = "eval"), allow(dead_code))]
 pub(crate) struct Matching {
     pub(crate) partner: [Vec<u32>; 2],
-    /// Roots of moved subtrees, old and new.
     pub(crate) moves: Vec<(u32, u32)>,
     pub(crate) renames: Vec<Rename>,
     pub(crate) predicted: Features,

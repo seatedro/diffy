@@ -1272,11 +1272,8 @@ fn joined(doc: &DiffDocument, file: u32, side: Side, lines: std::ops::Range<u32>
     }))
 }
 
-/// A line and a byte in it, or `None` for a joining space.
 type Source = Option<(u32, usize)>;
 
-/// The parts of `range` of `joined`'s text, each with the line and byte
-/// in that line it came from, or `None` for a joining space.
 fn pieces_in(
     joined: &Joined,
     range: std::ops::Range<usize>,

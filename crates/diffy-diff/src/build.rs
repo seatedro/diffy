@@ -192,7 +192,6 @@ impl FileBuilder<'_> {
         self
     }
 
-    /// Old and new line ranges that correspond as units, in file order.
     pub fn groups(&mut self, groups: Vec<LineGroupSpan>) -> &mut Self {
         self.groups = groups;
         self

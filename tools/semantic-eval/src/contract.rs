@@ -6,9 +6,6 @@ use diffy_semantic::{Limits, SemanticDiff, TokenState};
 
 use crate::engine;
 
-/// The engine's output contract, checked on its full explanation.
-/// Returns one message per broken rule; empty when the input has no
-/// grammar or falls back to a line diff.
 pub fn check(path: &str, old: &[u8], new: &[u8]) -> Vec<String> {
     let (Ok(old), Ok(new)) = (std::str::from_utf8(old), std::str::from_utf8(new)) else {
         return Vec::new();
@@ -88,8 +85,6 @@ fn ordered(diff: &SemanticDiff, out: &mut Vec<String>) {
     }
 }
 
-/// A line shown as only removed or only added holds no token that
-/// corresponds in place to one on the other side.
 fn placed(diff: &SemanticDiff, lines: &[Lines; 2], out: &mut Vec<String>) {
     let mut kept: [HashMap<u32, u32>; 2] = [HashMap::new(), HashMap::new()];
     for (s, tokens) in diff.tokens.iter().enumerate() {

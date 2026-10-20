@@ -132,9 +132,6 @@ jobs:
     if: inputs.publish && inputs.languages == '' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    concurrency:
-      group: syntax-packs-publish
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:

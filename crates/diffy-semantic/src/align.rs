@@ -216,8 +216,24 @@ fn moves(
             _ => kept.push(m),
         }
     }
-    kept.retain(|m| m.lines > 1 || m.old_lines > 1 || m.item.is_some());
+    kept.retain(|m| {
+        let novel = (m.new_line..m.new_line + m.lines)
+            .filter(|&line| mostly_novel(&sides[1], line))
+            .count() as u32;
+        (m.lines > 1 || m.old_lines > 1 || m.item.is_some()) && novel * 3 <= m.lines
+    });
     kept
+}
+
+fn mostly_novel(side: &Side<'_, '_>, line: u32) -> bool {
+    let text = side.lines.text(side.tree.src, line);
+    let solid = |s: &str| s.bytes().filter(|b| !b.is_ascii_whitespace()).count();
+    let novel: usize = side.spans[line as usize]
+        .iter()
+        .filter(|s| s.intensity == ChangeIntensity::Novel)
+        .map(|s| solid(&text[s.start as usize..s.end as usize]))
+        .sum();
+    novel * 2 > solid(text)
 }
 
 fn refine(

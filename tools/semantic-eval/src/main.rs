@@ -127,6 +127,9 @@ fn show(args: ShowArgs) -> Result<(), String> {
     for violation in &violations {
         println!("! {violation}");
     }
+    if !violations.is_empty() {
+        return Err(format!("{} invariant violations", violations.len()));
+    }
     Ok(())
 }
 

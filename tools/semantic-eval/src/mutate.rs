@@ -222,6 +222,13 @@ pub fn run(args: Args) -> Result<(), String> {
             println!("         {count:5} {reason}");
         }
     }
+    let failed: u32 = tallies
+        .values()
+        .map(|t| t.tried - t.passed - t.fallback)
+        .sum();
+    if failed > 0 {
+        return Err(format!("{failed} generated edits read wrong"));
+    }
     Ok(())
 }
 

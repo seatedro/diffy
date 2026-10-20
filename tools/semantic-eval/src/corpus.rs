@@ -89,6 +89,10 @@ pub fn run(args: Args) -> Result<(), String> {
         write_jsonl(path, &records)?;
     }
     report::print(&records, args.slowest);
+    let broken = records.iter().filter(|r| !r.violations.is_empty()).count();
+    if broken > 0 {
+        return Err(format!("{broken} files break an invariant"));
+    }
     Ok(())
 }
 

@@ -26,6 +26,8 @@ pub(crate) struct Node {
     pub(crate) hash: u64,
     pub(crate) kind: u16,
     pub(crate) class: Class,
+    /// An identifier token, the only kind of token a rename can change.
+    pub(crate) name: bool,
 }
 
 pub(crate) struct Item {
@@ -94,7 +96,9 @@ impl<'a> Tree<'a> {
             } else {
                 Class::Plain
             };
-            self.atom(node.kind_id(), span(node), class);
+            let name =
+                class == Class::Plain && node.is_named() && node.kind().ends_with("identifier");
+            self.atom(node.kind_id(), span(node), class, name);
             return;
         }
         let mut cursor = node.walk();
@@ -173,14 +177,14 @@ impl<'a> Tree<'a> {
         None
     }
 
-    fn atom(&mut self, kind: u16, span: Range<u32>, class: Class) {
+    fn atom(&mut self, kind: u16, span: Range<u32>, class: Class, name: bool) {
         let text = self.text(span.clone());
+        let seed = mix(mix(ATOM_SEED, u64::from(kind)), class as u64);
         let hash = if class == Class::Comment {
-            text.lines().fold(ATOM_SEED, |h, line| {
-                mix(h, hash_bytes(line.trim().as_bytes()))
-            })
+            text.lines()
+                .fold(seed, |h, line| mix(h, hash_bytes(line.trim().as_bytes())))
         } else {
-            mix(ATOM_SEED, hash_bytes(text.as_bytes()))
+            mix(seed, hash_bytes(text.as_bytes()))
         };
         let next = self.nodes.len() as u32 + 1;
         self.nodes.push(Node {
@@ -191,6 +195,7 @@ impl<'a> Tree<'a> {
             hash,
             kind,
             class,
+            name,
         });
     }
 
@@ -210,6 +215,7 @@ impl<'a> Tree<'a> {
             hash: 0,
             kind,
             class: Class::List,
+            name: false,
         });
         at
     }
@@ -217,7 +223,7 @@ impl<'a> Tree<'a> {
     fn close_list(&mut self, at: u32) {
         let node = &self.nodes[at as usize];
         let mut hash = mix(
-            LIST_SEED,
+            mix(LIST_SEED, u64::from(node.kind)),
             hash_bytes(self.text(node.open.clone()).as_bytes()),
         );
         hash = mix(hash, hash_bytes(self.text(node.close.clone()).as_bytes()));

@@ -829,15 +829,7 @@ impl Matcher<'_, '_> {
     }
 
     fn identifier(&self, side: usize, node: u32) -> bool {
-        let tree = self.trees[side];
-        let n = &tree.nodes[node as usize];
-        let text = tree.text(n.span.clone());
-        n.class == Class::Plain
-            && text
-                .bytes()
-                .next()
-                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-            && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        self.trees[side].nodes[node as usize].name
     }
 
     fn significant(&self, side: usize, node: u32) -> bool {

@@ -173,6 +173,10 @@ fn parser_rejects_malformed_hunks() {
             PatchError::MalformedHunkLine { line: 4 },
         ),
         (
+            "--- a/x\n+++ b/x\n@@ -1 +1 @@\n\u{e9}a\n",
+            PatchError::MalformedHunkLine { line: 4 },
+        ),
+        (
             "--- a/x\n+++ b/x\n@@ -5 +5 @@\n-a\n+b\n@@ -1 +1 @@\n-c\n+d\n",
             PatchError::HunkOutOfOrder { line: 6 },
         ),

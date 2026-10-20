@@ -249,7 +249,7 @@ impl FileBuilder {
             // Editors strip the space of empty context lines.
             let (tag, content) = match line.as_bytes().first() {
                 None => (b' ', ""),
-                Some(&tag) => (tag, &line[1..]),
+                Some(&tag) => (tag, line.get(1..).unwrap_or_default()),
             };
             let (old, new) = match tag {
                 b'\\' => {

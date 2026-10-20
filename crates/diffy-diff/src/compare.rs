@@ -151,6 +151,7 @@ impl Comparison {
                             out.merge_pairs(doc, file, start as usize);
                             out.fold_moves(doc, file, start as usize);
                             out.fold_reflows(doc, file, start as usize);
+                            out.hide_dissolved(doc, file, start as usize);
                         } else {
                             let (h, l) = out.align_block(old, new, olds, news, &mut keys);
                             hidden += h;
@@ -357,6 +358,21 @@ impl Comparison {
             );
             if merged.is_some() {
                 *step = Step::Merged(o, n);
+            }
+        }
+    }
+
+    /// Hides removed lines that kept all their text: every token lives on
+    /// in the new side, so the line only dissolved into others.
+    fn hide_dissolved(&mut self, doc: &DiffDocument, file: u32, start: usize) {
+        let old = doc.text(file, Side::Old);
+        for step in &mut self.steps[start..] {
+            let Step::Removed(o) = *step else {
+                continue;
+            };
+            let solid = old.display_line(o).is_some_and(|t| !t.trim().is_empty());
+            if solid && doc.semantic_spans(file, Side::Old, o).is_empty() {
+                *step = Step::Hidden(o);
             }
         }
     }

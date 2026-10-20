@@ -55,10 +55,6 @@ pub fn show(path: &str, old: &[u8], new: &[u8], exhaustive: bool) -> Result<(), 
         fast.work
     );
     println!("  actual    {}", terms(&fast.actual));
-    println!(
-        "  move credit in alignment {}, realized moves {}",
-        fast.credited, fast.realized
-    );
     if !fast.agrees() {
         println!("  predicted {}", terms(&expected));
         println!("! prediction disagrees with the evaluator");

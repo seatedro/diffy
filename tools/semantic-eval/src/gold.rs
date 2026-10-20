@@ -36,7 +36,9 @@ pub fn run(args: Args) -> Result<(), String> {
             ["case", repo, rev, path] => {
                 let mut blobs = Blobs::spawn(std::path::Path::new(repo))?;
                 let read = |blobs: &mut Blobs, rev: &str| -> Result<String, String> {
-                    let bytes = blobs.read(rev, path)?.ok_or(format!("{rev}:{path} missing"))?;
+                    let bytes = blobs
+                        .read(rev, path)?
+                        .ok_or(format!("{rev}:{path} missing"))?;
                     String::from_utf8(bytes).map_err(|e| e.to_string())
                 };
                 let old = read(&mut blobs, &format!("{rev}^"))?;
@@ -70,8 +72,7 @@ pub fn run(args: Args) -> Result<(), String> {
     let (mut held, mut failed, mut cases_failed) = (0, 0, 0);
     for case in &cases {
         let name = semantic_language(&case.path).ok_or("no grammar")?;
-        let (Some(language), Some(config)) =
-            (engine::language(name), diffy_semantic::config(name))
+        let (Some(language), Some(config)) = (engine::language(name), diffy_semantic::config(name))
         else {
             return Err(format!("{}: no grammar", case.path));
         };
@@ -163,12 +164,17 @@ impl View<'_> {
     }
 
     fn find(&self, side: usize, spec: &str) -> Result<&Token, String> {
-        let (line, text) = spec.split_once(':').ok_or(format!("expected LINE:TEXT, got {spec}"))?;
+        let (line, text) = spec
+            .split_once(':')
+            .ok_or(format!("expected LINE:TEXT, got {spec}"))?;
         let line: usize = line.parse().map_err(|_| format!("bad line {line}"))?;
         self.diff.tokens[side]
             .iter()
             .find(|t| self.line(side, t) == line && self.text(side, t).starts_with(text))
-            .ok_or(format!("no token {text} on {} line {line}", ["old", "new"][side]))
+            .ok_or(format!(
+                "no token {text} on {} line {line}",
+                ["old", "new"][side]
+            ))
     }
 
     fn range(&self, side: usize, (a, b): (usize, usize)) -> impl Iterator<Item = &Token> {

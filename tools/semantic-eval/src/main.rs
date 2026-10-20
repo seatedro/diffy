@@ -34,8 +34,6 @@ struct Cli {
     candidates: Option<usize>,
     #[arg(long, global = true)]
     no_floor: bool,
-    #[arg(long, global = true)]
-    no_credit: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -104,7 +102,6 @@ fn main() -> ExitCode {
         legacy: cli.legacy,
         candidates: cli.candidates.unwrap_or(defaults.candidates),
         floor: !cli.no_floor,
-        credit: !cli.no_credit,
         ..defaults
     };
     let result = explain::weights(&cli.weights)
@@ -117,7 +114,7 @@ fn main() -> ExitCode {
             Command::Mutate(args) => mutate::run(args),
             Command::Moves(args) => moves::run(args),
             Command::Gap(args) => gap::run(args),
-        Command::Gold(args) => gold::run(args),
+            Command::Gold(args) => gold::run(args),
             Command::Truth(args) => truth::run(args),
             Command::Audit(args) => audit::run(args),
             Command::Show(args) => show(args),

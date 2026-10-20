@@ -41,8 +41,6 @@ pub(crate) fn run(
         repairs: 0,
         margins: Vec::new(),
         work: 0,
-        credited: 0,
-        realized: 0,
     })
 }
 

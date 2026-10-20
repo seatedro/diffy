@@ -30,7 +30,6 @@ pub(crate) struct Options {
     pub(crate) weights: Weights,
     pub(crate) candidates: usize,
     pub(crate) floor: bool,
-    pub(crate) credit: bool,
     pub(crate) exhaustive: bool,
     pub(crate) margins: bool,
     #[cfg(feature = "eval")]
@@ -43,7 +42,6 @@ impl Default for Options {
             weights: Weights::DEFAULT,
             candidates: CANDIDATES,
             floor: true,
-            credit: true,
             exhaustive: false,
             margins: false,
             #[cfg(feature = "eval")]
@@ -65,8 +63,6 @@ pub(crate) struct Matching {
     pub(crate) repairs: u32,
     pub(crate) margins: Vec<Margin>,
     pub(crate) work: u64,
-    pub(crate) credited: i64,
-    pub(crate) realized: i64,
 }
 
 #[cfg_attr(not(feature = "eval"), allow(dead_code))]
@@ -108,9 +104,6 @@ pub(crate) fn run(
         predicted: Features::default(),
         repairs: 0,
         margins: Vec::new(),
-        kept: Vec::new(),
-        credited: 0,
-        realized: 0,
         work: 0,
         max_work,
         clock_at: CLOCK_STRIDE,
@@ -168,9 +161,6 @@ struct Matcher<'t, 'a> {
     predicted: Features,
     repairs: u32,
     margins: Vec<Margin>,
-    kept: Vec<i64>,
-    credited: i64,
-    realized: i64,
     work: u64,
     max_work: u64,
     clock_at: u64,
@@ -186,7 +176,6 @@ struct Mass {
 struct Entry {
     d: Features,
     hyp: bool,
-    rank: i64,
 }
 
 type Ctx = (bool, bool);
@@ -204,7 +193,6 @@ struct Cell {
     old: (usize, usize),
     new: (usize, usize),
     value: i64,
-    adjust: i64,
     exact: bool,
     act: Act,
 }
@@ -221,8 +209,6 @@ impl<'a> Matcher<'_, 'a> {
             repairs: self.repairs,
             margins: self.margins,
             work: self.work,
-            credited: self.credited,
-            realized: self.realized,
         }
     }
 
@@ -233,7 +219,6 @@ impl<'a> Matcher<'_, 'a> {
         self.moves.clear();
         self.margins.clear();
         self.predicted = Features::default();
-        self.realized = 0;
     }
 
     fn spend(&mut self, units: usize) -> Result<(), Fallback> {
@@ -429,18 +414,6 @@ impl<'a> Matcher<'_, 'a> {
         self.pins.sort_unstable();
         self.pins_new = self.pins.iter().map(|&(o, n)| (n, o)).collect();
         self.pins_new.sort_unstable();
-        self.kept = self
-            .pins
-            .iter()
-            .map(|&(p, q)| {
-                let movable = self.is_list(0, p) && whole_lines(old, p) && whole_lines(new, q);
-                if movable {
-                    Self::scale(4 * (self.total(0, p) + self.total(1, q)))
-                } else {
-                    0
-                }
-            })
-            .collect();
         Ok(())
     }
 
@@ -570,7 +543,6 @@ impl<'a> Matcher<'_, 'a> {
         if self.equal(a, b) {
             e.d[UNMATCHED] = self.total(0, a) + self.total(1, b);
             e.d[SPLIT] = -self.splits(a, b)?;
-            e.rank = self.value(&e.d);
         } else {
             e.d[UNMATCHED] = self.own(0, a) + self.own(1, b);
             e.d[SPLIT] = -self.delimiter_splits(a, b);
@@ -580,21 +552,15 @@ impl<'a> Matcher<'_, 'a> {
                 Some(false) => e.d[IDENTITY] = -1,
                 None => {}
             }
-            e.rank = self.value(&e.d);
             let xs = self.trees[0].children(a);
             let ys = self.trees[1].children(b);
-            let (mut cells, escape) = self.cells(&xs, &ys, a, b, (true, true))?;
+            let mut cells = self.cells(&xs, &ys, a, b, (true, true))?;
             let chosen = self.select(&mut cells)?;
-            let mut kept = escape;
             for &k in &chosen {
                 let c = self.features(&cells[k])?;
                 e.d += c.d;
                 e.hyp |= c.hyp;
-                e.rank += cells[k].value + cells[k].adjust;
-                kept -= cells[k].adjust;
             }
-            let w = self.options.weights;
-            e.rank += (kept - Self::scale((w.mu - w.follow).max(0))).max(0);
             let acts = chosen.iter().map(|&k| cells[k].act).collect();
             self.acts.insert((a, b), acts);
         }
@@ -661,7 +627,7 @@ impl<'a> Matcher<'_, 'a> {
                 cells[k].exact = true;
                 if let Act::Leaf(x, y, ctx) = cells[k].act {
                     cells[k].value = match self.leaf(x, y, ctx, true)? {
-                        Some(e) => self.value(&e.d) - cells[k].adjust,
+                        Some(e) => self.value(&e.d),
                         None => -1,
                     };
                 }
@@ -679,10 +645,10 @@ impl<'a> Matcher<'_, 'a> {
         a: u32,
         b: u32,
         ctx: Ctx,
-    ) -> Result<(Vec<Cell>, i64), Fallback> {
+    ) -> Result<Vec<Cell>, Fallback> {
         let mut out = Vec::new();
         if xs.is_empty() || ys.is_empty() {
-            return Ok((out, 0));
+            return Ok(out);
         }
         self.spend(xs.len() + ys.len())?;
         let (ia, ib) = self.intern(xs, ys);
@@ -778,15 +744,6 @@ impl<'a> Matcher<'_, 'a> {
         keys.sort_unstable();
         keys.dedup();
         self.spend(keys.len())?;
-        let escape = if ctx == (true, true) && self.options.credit {
-            [self.escape(xs)?, vec![0; ys.len()]]
-        } else {
-            [vec![0; xs.len()], vec![0; ys.len()]]
-        };
-        let adjust = |c: &Cell| {
-            escape[0][c.old.0..=c.old.1].iter().sum::<i64>()
-                + escape[1][c.new.0..=c.new.1].iter().sum::<i64>()
-        };
         let mut deep: Vec<(usize, usize, u32, u32)> = Vec::new();
         let mut reached = [vec![false; xs.len()], vec![false; ys.len()]];
         for (i, j, x, y) in keys {
@@ -799,8 +756,7 @@ impl<'a> Matcher<'_, 'a> {
                 Cell {
                     old: (i, i),
                     new: (j, j),
-                    value: e.rank,
-                    adjust: 0,
+                    value: self.value(&e.d),
                     exact: true,
                     act: Act::List(x, y),
                 }
@@ -812,14 +768,10 @@ impl<'a> Matcher<'_, 'a> {
                     old: (i, i),
                     new: (j, j),
                     value: self.value(&e.d),
-                    adjust: 0,
                     exact: !self.inexact(x, y),
                     act: Act::Leaf(x, y, c),
                 }
             };
-            let mut cell = cell;
-            cell.adjust = adjust(&cell);
-            cell.value -= cell.adjust;
             if cell.value <= 0 {
                 continue;
             }
@@ -830,34 +782,7 @@ impl<'a> Matcher<'_, 'a> {
             }
             out.push(cell);
         }
-        let start = out.len();
         self.wraps(xs, ys, a, b, ctx, &deep, &gaps, &reached, &mut out)?;
-        for cell in &mut out[start..] {
-            cell.adjust = adjust(cell);
-            cell.value -= cell.adjust;
-        }
-        out.retain(|c| c.value > 0);
-        let total = escape.iter().flatten().sum();
-        Ok((out, total))
-    }
-
-    fn escape(&mut self, nodes: &[u32]) -> Result<Vec<i64>, Fallback> {
-        let w = self.options.weights;
-        let mut out = vec![0; nodes.len()];
-        let mut steps = 0;
-        for (slot, &node) in out.iter_mut().zip(nodes) {
-            let last = self.next(0, node);
-            let from = self.pins.partition_point(|&(x, _)| x < node);
-            let to = self.pins.partition_point(|&(x, _)| x < last);
-            steps += to - from;
-            let kept = &self.kept[from..to];
-            let count = kept.iter().filter(|&&k| k > 0).count() as i64;
-            if count > 0 {
-                let total: i64 = kept.iter().sum();
-                *slot = (total - count * Self::scale(w.follow)).max(0);
-            }
-        }
-        self.spend(steps)?;
         Ok(out)
     }
 
@@ -947,7 +872,6 @@ impl<'a> Matcher<'_, 'a> {
                 old,
                 new,
                 value: 0,
-                adjust: 0,
                 exact: true,
                 act,
             };
@@ -960,7 +884,7 @@ impl<'a> Matcher<'_, 'a> {
                     } else {
                         self.trees[0].children(host)
                     };
-                    let (mut cells, _) = if wrap {
+                    let mut cells = if wrap {
                         self.cells(&xs[from..=to], &inner, a, host, (ctx.0, false))?
                     } else {
                         self.cells(&inner, &ys[from..=to], host, b, (false, ctx.1))?
@@ -971,7 +895,6 @@ impl<'a> Matcher<'_, 'a> {
                         let c = self.features(&cells[k])?;
                         entry.d += c.d;
                         entry.hyp |= c.hyp;
-                        entry.rank += cells[k].value;
                     }
                     let acts = chosen.iter().map(|&k| cells[k].act).collect();
                     self.wrap_acts.insert(key, acts);
@@ -979,7 +902,7 @@ impl<'a> Matcher<'_, 'a> {
                     entry
                 }
             };
-            cell.value = entry.rank;
+            cell.value = self.value(&entry.d);
             if cell.value > 0 {
                 out.push(cell);
             }
@@ -1191,7 +1114,6 @@ impl<'a> Matcher<'_, 'a> {
     fn solve(&mut self) -> Result<(), Fallback> {
         let root = self.savings(0, 0)?;
         self.predicted = root.d;
-        self.credited = (root.rank - self.value(&root.d)) >> TIE;
         self.apply(0, 0)?;
         self.relocate()
     }
@@ -1220,7 +1142,7 @@ impl<'a> Matcher<'_, 'a> {
         acts: &[Act],
     ) -> Result<(), Fallback> {
         if self.options.margins {
-            let (mut cells, _) = self.cells(xs, ys, a, b, ctx)?;
+            let mut cells = self.cells(xs, ys, a, b, ctx)?;
             let chosen = self.select(&mut cells)?;
             self.margin(&cells, &chosen);
         }
@@ -1349,8 +1271,10 @@ impl<'a> Matcher<'_, 'a> {
             }
         }
         valued.sort_unstable_by_key(|&(v, x, y, _)| (std::cmp::Reverse(v), x, y));
-        let notes_of: Vec<diffy_diff::Move> =
-            valued.iter().map(|&(_, x, y, _)| notes.place(x, y)).collect();
+        let notes_of: Vec<diffy_diff::Move> = valued
+            .iter()
+            .map(|&(_, x, y, _)| notes.place(x, y))
+            .collect();
         let near = |a: &diffy_diff::Move, b: &diffy_diff::Move| {
             a.from.is_some()
                 && a.from == b.from
@@ -1385,7 +1309,6 @@ impl<'a> Matcher<'_, 'a> {
                 self.apply(x, y)?;
                 self.moves.push((x, y));
                 self.predicted += d;
-                self.realized += (value - if joins { w.follow } else { w.mu }) >> TIE;
                 placed.push(k);
                 taken[k] = true;
                 grew = true;

@@ -232,48 +232,30 @@ pub fn join_lines<'a>(
     out
 }
 
-/// Whether `old` and `new` hold the same kept text broken into lines in
-/// different places, so they read best folded into one merged line.
-pub fn refolds(old: &Joined, new: &Joined) -> bool {
-    if merge_pair(&old.text, &new.text, &old.spans, &new.spans).is_none() {
-        return false;
-    }
-    match (breaks(old), breaks(new)) {
-        (Some(a), Some(b)) => a != b && !a.iter().any(|x| b.binary_search(x).is_ok()),
-        _ => false,
-    }
-}
-
-/// Kept characters before each line break, or `None` when a line that
-/// keeps nothing is more than a list item between kept lines: a fully
-/// added or removed statement, block or comment is not part of a reflow.
-fn breaks(joined: &Joined) -> Option<Vec<usize>> {
+/// Whether `joined` reads as one line: each line that keeps nothing is a
+/// list item between kept lines, not a whole added or removed statement,
+/// block or comment.
+pub fn reads_as_one(joined: &Joined) -> bool {
     let kept = kept(
         &joined.text,
         &marked(&joined.spans),
         &renamed(&joined.spans),
     );
-    let total = kept.len();
-    let mut out = Vec::with_capacity(joined.parts.len());
     let mut before = 0;
     let last = joined.parts.len().saturating_sub(1);
-    for (index, part) in joined.parts.iter().enumerate() {
-        let count = kept.partition_point(|&(at, _, _)| at < (part.at + part.len) as usize);
-        if count == before {
-            let text = &joined.text[part.at as usize..(part.at + part.len) as usize];
-            let item = !text.contains([';', '{', '}'])
-                && !text.starts_with(['/', '*', '#'])
-                && !text.starts_with("--");
-            if index == 0 || index == last || !item {
-                return None;
-            }
-        }
+    joined.parts.iter().enumerate().all(|(index, part)| {
+        let end = (part.at + part.len) as usize;
+        let count = kept.partition_point(|&(at, _, _)| at < end);
+        let keeps = count > before;
         before = count;
-        if count < total {
-            out.push(count);
-        }
-    }
-    Some(out)
+        let text = &joined.text[part.at as usize..end];
+        keeps
+            || (index != 0
+                && index != last
+                && !text.contains([';', '{', '}'])
+                && !text.starts_with(['/', '*', '#'])
+                && !text.starts_with("--"))
+    })
 }
 
 #[cfg(test)]

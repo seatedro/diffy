@@ -11,9 +11,9 @@ use crate::core::compare::backends::RENAME_DETECTION_LIMIT;
 use crate::core::compare::output::{CompareEntry, CompareOutput};
 use crate::core::compare::progress::{ComparePhase, ProgressSink};
 use crate::core::compare::spec::CompareSpec;
+use crate::core::compare::spec::RendererKind;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result};
-use crate::core::compare::spec::RendererKind;
 use crate::core::vcs::git::status::status_items_from_entry_with_old_path;
 use crate::core::vcs::git::{GitService, INDEX_REF, StatusItem, StatusScope, WORKDIR_REF};
 use crate::core::vcs::model::ChangeBucket;
@@ -153,7 +153,12 @@ pub fn compare_worktree(
         };
         let doc = match from_patch {
             Some(doc) if renderer == RendererKind::Builtin => Some(doc.clone()),
-            patch => worktree_document(git, item, renderer, patch.map(|doc| doc.files().meta[0].clone()))?,
+            patch => worktree_document(
+                git,
+                item,
+                renderer,
+                patch.map(|doc| doc.files().meta[0].clone()),
+            )?,
         };
         let Some(doc) = doc else {
             output.push_entry(worktree_entry(item));
@@ -257,7 +262,11 @@ fn worktree_document(
             new_content: new,
         };
         let mut doc = crate::core::compare::semantic::document_from_changed(&changed)?;
-        doc.set_identity(0, (meta.old_id.clone(), meta.new_id.clone()), (meta.old_mode.clone(), meta.new_mode.clone()));
+        doc.set_identity(
+            0,
+            (meta.old_id.clone(), meta.new_id.clone()),
+            (meta.old_mode.clone(), meta.new_mode.clone()),
+        );
         return Ok(Some(doc));
     }
     let _ = renderer;

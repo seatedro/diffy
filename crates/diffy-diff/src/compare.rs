@@ -8,8 +8,7 @@
 
 use std::ops::Range;
 
-use crate::merge::merge_pair;
-use crate::merge::{join_lines, refolds};
+use crate::merge::{join_lines, merge_pair, reads_as_one};
 use crate::model::{BlockKind, DiffDocument, Side};
 use crate::myers::{diff, intern};
 use crate::projection::NONE;
@@ -150,7 +149,7 @@ impl Comparison {
                         {
                             out.merge_pairs(doc, file, start as usize);
                             out.fold_moves(doc, file, start as usize);
-                            out.fold_reflows(doc, file, start as usize);
+                            out.fold_groups(doc, file, start as usize);
                             out.hide_dissolved(doc, file, start as usize);
                         } else {
                             let (h, l) = out.align_block(old, new, olds, news, &mut keys);
@@ -454,53 +453,62 @@ impl Comparison {
         }
     }
 
-    fn fold_reflows(&mut self, doc: &DiffDocument, file: u32, start: usize) {
+    /// Folds the changed lines of each semantic line group into one merged
+    /// line when they do not pair line by line and their joined text merges.
+    fn fold_groups(&mut self, doc: &DiffDocument, file: u32, start: usize) {
+        let Some(groups) = doc
+            .semantics(file)
+            .map(|s| s.groups())
+            .filter(|g| !g.is_empty())
+        else {
+            return;
+        };
+        let group_of = |step: Step| {
+            if !matches!(
+                step,
+                Step::Paired(..) | Step::Merged(..) | Step::Removed(_) | Step::Added(_)
+            ) {
+                return None;
+            }
+            let (o, n) = step.lines();
+            let old = groups.partition_point(|g| g.old.end <= o);
+            if groups.get(old).is_some_and(|g| g.old.contains(&o)) {
+                return Some(old);
+            }
+            let new = groups.partition_point(|g| g.new.end <= n);
+            groups
+                .get(new)
+                .is_some_and(|g| g.new.contains(&n))
+                .then_some(new)
+        };
         let block = self.steps.split_off(start);
         let mut at = 0;
         while at < block.len() {
-            let end = block[at..]
-                .iter()
-                .position(|s| matches!(s, Step::Equivalent(..) | Step::Merged(..)))
-                .map_or(block.len(), |p| at + p);
-            self.fold_run(doc, file, &block[at..end]);
-            self.steps.extend(block.get(end).copied());
-            at = end + 1;
-        }
-    }
-
-    fn fold_run(&mut self, doc: &DiffDocument, file: u32, run: &[Step]) {
-        let mut from = 0;
-        while from < run.len() {
-            let rest = &run[from..];
-            let fold = (1..=rest.len().min(MAX_REFLOW_STEPS))
-                .rev()
-                .filter(|_| solid(doc, file, rest[0]))
-                .find(|&k| {
-                    let part = &rest[..k];
-                    k > 1 && solid(doc, file, part[k - 1]) && reflowed(doc, file, part)
-                });
-            let Some(k) = fold else {
-                self.steps.push(rest[0]);
-                from += 1;
+            let Some(g) = group_of(block[at]) else {
+                self.steps.push(block[at]);
+                at += 1;
                 continue;
             };
-            for &step in &rest[..k] {
-                match step {
-                    Step::Hidden(_) | Step::Moved(_) | Step::MovedHere(_) | Step::MovedAway(_) => {
-                        self.steps.push(step)
+            let end = block[at..]
+                .iter()
+                .position(|&s| group_of(s) != Some(g))
+                .map_or(block.len(), |p| at + p);
+            let run = &block[at..end];
+            let uneven = run.iter().any(|s| !matches!(s, Step::Merged(..)));
+            if uneven && run.len() <= MAX_REFLOW_STEPS && composes(doc, file, run) {
+                for &step in run {
+                    let (old, new) = step.lines();
+                    if old != NONE {
+                        self.steps.push(Step::Hidden(old));
                     }
-                    _ => {
-                        let (old, new) = step.lines();
-                        if old != NONE {
-                            self.steps.push(Step::Hidden(old));
-                        }
-                        if new != NONE {
-                            self.steps.push(Step::Reflowed(new));
-                        }
+                    if new != NONE {
+                        self.steps.push(Step::Reflowed(new));
                     }
                 }
+            } else {
+                self.steps.extend_from_slice(run);
             }
-            from += k;
+            at = end;
         }
     }
 
@@ -673,31 +681,11 @@ fn removes(doc: &DiffDocument, file: u32, line: u32) -> bool {
     })
 }
 
-fn solid(doc: &DiffDocument, file: u32, step: Step) -> bool {
-    if !matches!(step, Step::Removed(_) | Step::Added(_) | Step::Paired(..)) {
-        return false;
-    }
-    let (o, n) = step.lines();
-    [(Side::Old, o), (Side::New, n)]
-        .iter()
-        .any(|&(side, line)| {
-            line != NONE
-                && doc
-                    .text(file, side)
-                    .display_line(line)
-                    .is_some_and(|text| !text.trim().is_empty())
-        })
-}
-
-fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
+/// Whether the lines of `run`, each side joined into one, merge into one
+/// readable line.
+fn composes(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
     let mut lines: [Vec<u32>; 2] = [Vec::new(), Vec::new()];
     for &step in run {
-        if matches!(
-            step,
-            Step::Hidden(_) | Step::Moved(_) | Step::MovedHere(_) | Step::MovedAway(_)
-        ) {
-            continue;
-        }
         let (o, n) = step.lines();
         if o != NONE {
             lines[0].push(o);
@@ -716,7 +704,11 @@ fn reflowed(doc: &DiffDocument, file: u32, run: &[Step]) -> bool {
             )
         }))
     });
-    !old.text.trim().is_empty() && refolds(&old, &new)
+    !old.text.trim().is_empty()
+        && !new.text.trim().is_empty()
+        && reads_as_one(&old)
+        && reads_as_one(&new)
+        && merge_pair(&old.text, &new.text, &old.spans, &new.spans).is_some()
 }
 
 /// A broken [`Comparison`] invariant.

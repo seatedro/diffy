@@ -63,7 +63,7 @@ pub use limits::{
 };
 pub use merge::{
     Joined, JoinedPart, MAX_MERGE_BYTES, MIN_MERGE_KEPT, MergePiece, join_lines, merge_pair,
-    refolds,
+    reads_as_one,
 };
 pub use model::{
     BlockKind, BlockTable, ChangeSummary, ContentChange, DiffDocument, DiffStats, FileFacts,
@@ -76,8 +76,8 @@ pub use projection::{
 };
 pub use remap::{LineMap, RemapError, SourceRemap};
 pub use semantic::{
-    AlignedRow, ChangeIntensity, FileSemantics, ItemChange, Move, OutlineItem, Rename,
-    SemanticError, SemanticSpan,
+    AlignedRow, ChangeIntensity, FileSemantics, ItemChange, LineGroupSpan, Move, OutlineItem,
+    Rename, SemanticError, SemanticSpan,
 };
 pub use session::{
     DiffSession, DiffUpdate, FileDiffSnapshot, FileId, Placeholder, Revision,

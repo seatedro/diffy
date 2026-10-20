@@ -100,6 +100,13 @@ pub struct Move {
     pub item: Option<Arc<str>>,
 }
 
+/// Old and new file lines that correspond as one unit.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LineGroupSpan {
+    pub old: Range<u32>,
+    pub new: Range<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Rename {
     pub old: Arc<str>,
@@ -122,6 +129,7 @@ pub struct FileSemantics {
     pub(crate) outline: Vec<OutlineItem>,
     pub(crate) renames: Vec<Rename>,
     pub(crate) moves: Vec<Move>,
+    pub(crate) groups: Vec<LineGroupSpan>,
     pub(crate) rows: Vec<AlignedRow>,
     pub(crate) hunk_rows: Vec<Range<u32>>,
     pub(crate) spans: [LineSpans; 2],
@@ -142,6 +150,10 @@ impl FileSemantics {
 
     pub fn moves(&self) -> &[Move] {
         &self.moves
+    }
+
+    pub fn groups(&self) -> &[LineGroupSpan] {
+        &self.groups
     }
 
     pub fn rows(&self, local_hunk: u32) -> &[AlignedRow] {

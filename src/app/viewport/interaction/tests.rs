@@ -887,8 +887,8 @@ fn a_refresh_keeps_the_shown_diff_until_its_files_arrive() {
 #[test]
 fn a_folded_reformat_exposes_its_toggle_as_a_button() {
     use diffy_diff::{
-        AlignedRow, ChangeIntensity, DocumentBuilder, FileDiffSnapshot, FileMeta, Revision,
-        SemanticSpan, SourceCoverage, TextStore,
+        AlignedRow, ChangeIntensity, DocumentBuilder, FileDiffSnapshot, FileMeta, LineGroupSpan,
+        Revision, SemanticSpan, SourceCoverage, TextStore,
     };
     let old = TextStore::new("a();\ncall(x, y);\nb();\n");
     let new = TextStore::new("a();\ncall(\n    x,\n    y,\n);\nb();\n");
@@ -921,6 +921,10 @@ fn a_folded_reformat_exposes_its_toggle_as_a_button() {
         intensity: ChangeIntensity::Novel,
     };
     file.spans(Side::New, 3, &[comma]);
+    file.groups(vec![LineGroupSpan {
+        old: 1..2,
+        new: 1..5,
+    }]);
     file.finish().unwrap();
     let key = FileKey(1);
     let snapshot = FileDiffSnapshot::new(key, Revision(1), Arc::new(builder.build())).unwrap();

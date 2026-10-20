@@ -447,7 +447,7 @@ fn item_label(tree: &Tree<'_>, item: &crate::syntax::Item, call: bool) -> std::s
 /// groups are ordered on both.
 fn groups(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<Group> {
     let (old, new) = (&sides[0], &sides[1]);
-    let mut pairs: Vec<(u32, u32)> = Vec::new();
+    let mut pairs: Vec<(Range<u32>, Range<u32>)> = Vec::new();
     for (k, node) in old.tree.nodes.iter().enumerate() {
         let partner = matching.partner[0][k];
         if partner == NONE || old.moved[k] != NONE || new.moved[partner as usize] != NONE {
@@ -457,30 +457,26 @@ fn groups(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<Group> {
         if node.class == Class::List {
             for (a, b) in [(&node.open, &other.open), (&node.close, &other.close)] {
                 if !a.is_empty() && !b.is_empty() {
-                    pairs.push((old.lines.of(a.start), new.lines.of(b.start)));
+                    let (a, b) = (old.lines.of(a.start), new.lines.of(b.start));
+                    pairs.push((a..a + 1, b..b + 1));
                 }
             }
         } else {
             pairs.push((
-                old.lines.of(node.span.start),
-                new.lines.of(other.span.start),
+                old.lines.of(node.span.start)..old.lines.last(&node.span) + 1,
+                new.lines.of(other.span.start)..new.lines.last(&other.span) + 1,
             ));
-            pairs.push((old.lines.last(&node.span), new.lines.last(&other.span)));
         }
     }
-    pairs.sort_unstable();
-    pairs.dedup();
+    pairs.sort_unstable_by_key(|(a, b)| (a.start, b.start, a.end, b.end));
     let mut out: Vec<Group> = Vec::new();
     for (a, b) in pairs {
         match out.last_mut() {
-            Some(g) if a < g.old.end || b < g.new.end => {
-                g.old.end = g.old.end.max(a + 1);
-                g.new.end = g.new.end.max(b + 1);
+            Some(g) if a.start < g.old.end || b.start < g.new.end => {
+                g.old.end = g.old.end.max(a.end);
+                g.new.end = g.new.end.max(b.end);
             }
-            _ => out.push(Group {
-                old: a..a + 1,
-                new: b..b + 1,
-            }),
+            _ => out.push(Group { old: a, new: b }),
         }
     }
     out
@@ -491,14 +487,8 @@ fn align(sides: &[Side<'_, '_>; 2], groups: &[Group]) -> Vec<(Option<u32>, Optio
     let (mut o, mut n) = (0, 0);
     for group in groups {
         fill(sides, o..group.old.start, n..group.new.start, &mut rows);
-        let (olds, news) = (group.old.clone(), group.new.clone());
-        let paired = olds.len().min(news.len()) as u32;
-        for k in 0..paired {
-            rows.push((Some(olds.start + k), Some(news.start + k)));
-        }
-        rows.extend((olds.start + paired..olds.end).map(|x| (Some(x), None)));
-        rows.extend((news.start + paired..news.end).map(|y| (None, Some(y))));
-        (o, n) = (olds.end, news.end);
+        fill(sides, group.old.clone(), group.new.clone(), &mut rows);
+        (o, n) = (group.old.end, group.new.end);
     }
     fill(
         sides,

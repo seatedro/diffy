@@ -392,7 +392,15 @@ pub fn document_from_native_with(
     match diffy_semantic::diff(&grammar, config, old.as_str(), new.as_str(), &limits) {
         Ok(diff) => {
             let chunks = clean_rows(diff.chunks, &old, &new);
-            let semantics = (diff.outline, diff.renames, diff.moves);
+            let groups = diff
+                .groups
+                .into_iter()
+                .map(|g| diffy_diff::LineGroupSpan {
+                    old: g.old,
+                    new: g.new,
+                })
+                .collect();
+            let semantics = (diff.outline, diff.renames, diff.moves, groups);
             let doc = document_from_rows(meta, old, new, chunks, true, semantics)?;
             Ok((doc, None))
         }
@@ -435,7 +443,12 @@ fn document_from_rows(
     new: TextStore,
     chunks: Vec<Vec<Row>>,
     structural: bool,
-    (outline, renames, moves): (Vec<OutlineItem>, Vec<Rename>, Vec<Move>),
+    (outline, renames, moves, groups): (
+        Vec<OutlineItem>,
+        Vec<Rename>,
+        Vec<Move>,
+        Vec<diffy_diff::LineGroupSpan>,
+    ),
 ) -> Result<DiffDocument> {
     let segments = canonical_segments(&chunks, &old, &new);
     let hunks = hunk_ranges(&segments);
@@ -476,6 +489,7 @@ fn document_from_rows(
         file.outline(outline);
         file.renames(renames);
         file.moves(moves);
+        file.groups(groups);
         for (hunk, hunk_rows) in hunks.iter().zip(rows) {
             file.hunk(hunk.old.start, hunk.new.start);
             for segment in &segments[hunk.segments.clone()] {

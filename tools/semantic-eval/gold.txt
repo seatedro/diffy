@@ -1,0 +1,112 @@
+# Partial hand labels for the wrong-pairing cases in the matcher review,
+# the scheduler split and one control case. Lines are 1-based; a claim
+# holds when any of its | alternatives holds.
+
+case /Users/ro/personal/linux 0af87a0a3166 fs/smb/server/transport_rdma.c
+link 871:smb_direct_post_send_data 805
+notlink 767:smb_direct_create_header 805
+inplace old 833-869
+kept 833-836 767-770
+
+case /Users/ro/personal/linux 53c1c822908d fs/xfs/xfs_zone_gc.c
+link 609:xfs_zone_gc_alloc_blocks 608
+notlink 586:xfs_zone_gc_ensure_target 608
+inplace old 609-651
+
+case /Users/ro/personal/linux 772d5920c3d4 fs/smb/client/smb1maperror.c
+link 157:map_smb_to_linux_error 135
+inplace old 157-170
+
+case /Users/ro/personal/linux 497560b9ef42 fs/xfs/xfs_buf.c
+link 1696:xfs_init_buftarg 1667
+inplace old 1696-1700
+
+case /Users/ro/personal/linux d1d564ec4992 drivers/gpio/gpiolib-of.c
+link 1152:of_gpiochip_add 1040
+inplace old 1152-1180
+
+case /Users/ro/personal/quark 249c7f2 crates/quark-ui/src/element/layout.rs
+link 605:fn 535
+link 277:fn 224
+inplace old 605-610
+unlinked old 779:measure_node
+
+case /Users/ro/personal/quark ae6b2d4 crates/quark-ui/src/document/syntax.rs
+link 480:mod 200
+notlink 425:mod 200
+inplace old 488-488
+
+case /Users/ro/code/opentui 94a2426 packages/core/src/renderables/Text.test.ts
+link 70:describe 39
+link 71:describe 40
+nomoves
+
+case /Users/ro/personal/linux b789acc0695c drivers/net/netkit.c
+rename netkit_init netkit_mod_init | link 1028:static 1130
+kept 1029-1034 1131-1136
+unlinked new 239:netkit_init
+rename netkit_exit netkit_mod_exit
+
+case /Users/ro/personal/linux 7be3163c49b2 net/devlink/resource.c
+kept90 42-61 42-63
+link 49:list_for_each_entry 49
+
+case /Users/ro/personal/diffy 23624c8dc34 src/core/compare/backends/git_diff.rs
+link 15:fn 15
+inplace old 16-49
+kept90 16-49 16-52
+
+case /Users/ro/personal/quark f01f849 crates/quark-syntax/src/worker.rs
+kept 187-187 161-161
+
+case /Users/ro/code/opentui c925dec packages/core/src/console.ts
+inplace old 108-118
+link 120:deactivate 123
+link 128:private 73
+
+case /Users/ro/personal/linux 3e4bb2706817 mm/util.c
+kept 1203-1203 1166-1166
+
+case /Users/ro/code/opentui c3c70dc packages/core/src/renderer.ts
+link 1216:hasSelection 1229
+
+case /Users/ro/code/opentui 95075c3 packages/core/src/renderables/LineNumberRenderable.ts
+link 126:renderSelf 196
+kept90 127-205 209-295
+norename _lineColors _lineColorsContent
+
+case /Users/ro/personal/quark 40aff0a crates/quark-components/src/palette.rs
+kept90 265-302 271-305
+
+case /Users/ro/personal/diffy 5e60ef21dce src/actions.rs
+link 19:SetLeftRef 27
+link 12:OpenRepository 21
+link 149:ToggleSidebar 89
+
+case /Users/ro/code/opentui 9d06e8e packages/core/src/lib/KeyHandler.ts
+link 7:KeyHandlerEventMap 67
+
+case /Users/ro/personal/quark 6c3b78d tools/quark-fmt/src/printer/rust.rs
+link 65:/// 67
+link 66:/// 68
+unlinked new 69:///
+notlink 63:/// 67
+
+case /Users/ro/code/opentui b6d68bc packages/core/src/renderables/Slider.ts
+norename _thumbSize _max
+norename relativeStartPos dragOffsetVirtual
+
+case /Users/ro/personal/linux 4d9b262031ff fs/tracefs/event_inode.c
+norename mutex_lock scoped_guard
+
+case /Users/ro/personal/linux e5361d25e241 io_uring/zcrx.c
+kept 629-632 629-632
+link 633:io_put_zcrx_ifq 638
+
+case /tmp/semeval/complex f657e766f829bc315043b2fb92bd5e3407bc472b src/scheduler.rs
+link 33:run 40
+link 34:while 44
+notlink 33:run 63
+unlinked new 54:next_due
+kept 39-41 45-47
+inplace old 39-41

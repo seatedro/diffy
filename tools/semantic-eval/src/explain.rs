@@ -55,6 +55,10 @@ pub fn show(path: &str, old: &[u8], new: &[u8], exhaustive: bool) -> Result<(), 
         fast.work
     );
     println!("  actual    {}", terms(&fast.actual));
+    println!(
+        "  move credit in alignment {}, realized moves {}",
+        fast.credited, fast.realized
+    );
     if !fast.agrees() {
         println!("  predicted {}", terms(&expected));
         println!("! prediction disagrees with the evaluator");
@@ -100,6 +104,7 @@ pub fn weights(pairs: &[String]) -> Result<Weights, String> {
             "rho0" => &mut w.rho0,
             "iota" => &mut w.iota,
             "mu" => &mut w.mu,
+            "follow" => &mut w.follow,
             "beta" => &mut w.beta,
             "phi" => &mut w.phi,
             _ => return Err(format!("unknown weight {key}")),

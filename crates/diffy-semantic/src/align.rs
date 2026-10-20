@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use diffy_diff::{
     ChangeIntensity, InlineDetail, InlineOptions, ItemChange, Move, OutlineItem, Rename,
-    SemanticSpan, Side as DiffSide, myers, paired_inline_diff,
+    SemanticSpan, Side as DiffSide, move_leaders, myers, paired_inline_diff,
 };
 
 use crate::cost::same_text;
@@ -350,29 +350,64 @@ fn join_touching(spans: &mut Vec<SemanticSpan>) {
 }
 
 fn moves(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<Move> {
+    let trees = [sides[0].tree, sides[1].tree];
+    let lines = [&sides[0].lines, &sides[1].lines];
     let mut out: Vec<Move> = matching
         .moves
         .iter()
-        .map(|&(o, n)| {
-            let (a, b) = (
-                sides[0].tree.nodes[o as usize].span.clone(),
-                sides[1].tree.nodes[n as usize].span.clone(),
-            );
-            let old_line = sides[0].lines.of(a.start);
-            let new_line = sides[1].lines.of(b.start);
-            Move {
-                old_line,
-                old_lines: sides[0].lines.last(&a) + 1 - old_line,
-                new_line,
-                lines: sides[1].lines.last(&b) + 1 - new_line,
-                from: enclosing(sides[0].tree, o),
-                into: enclosing(sides[1].tree, n),
-                item: own_item(sides[0].tree, o),
-            }
-        })
+        .map(|&(o, n)| place(trees, lines, o, n))
         .collect();
     out.sort_by_key(|m| (m.new_line, m.old_line));
     out
+}
+
+fn place(trees: [&Tree<'_>; 2], lines: [&Lines; 2], o: u32, n: u32) -> Move {
+    let (a, b) = (
+        trees[0].nodes[o as usize].span.clone(),
+        trees[1].nodes[n as usize].span.clone(),
+    );
+    let old_line = lines[0].of(a.start);
+    let new_line = lines[1].of(b.start);
+    Move {
+        old_line,
+        old_lines: lines[0].last(&a) + 1 - old_line,
+        new_line,
+        lines: lines[1].last(&b) + 1 - new_line,
+        from: enclosing(trees[0], o),
+        into: enclosing(trees[1], n),
+        item: own_item(trees[0], o),
+    }
+}
+
+/// Where move notes land: the moves a reader sees, grouped as the
+/// display groups them.
+pub(crate) struct Notes<'t, 'a> {
+    trees: [&'t Tree<'a>; 2],
+    lines: [Lines; 2],
+}
+
+impl<'t, 'a> Notes<'t, 'a> {
+    pub(crate) fn new(old: &'t Tree<'a>, new: &'t Tree<'a>) -> Self {
+        Self {
+            trees: [old, new],
+            lines: [Lines::new(old.src), Lines::new(new.src)],
+        }
+    }
+
+    pub(crate) fn place(&self, o: u32, n: u32) -> Move {
+        place(self.trees, [&self.lines[0], &self.lines[1]], o, n)
+    }
+
+    pub(crate) fn count(&self, moves: &[(u32, u32)]) -> (i64, i64) {
+        let list: Vec<Move> = moves.iter().map(|&(o, n)| self.place(o, n)).collect();
+        let leaders = move_leaders(&list);
+        let lead = leaders
+            .iter()
+            .enumerate()
+            .filter(|&(i, &l)| l as usize == i)
+            .count() as i64;
+        (lead, list.len() as i64 - lead)
+    }
 }
 
 fn enclosing(tree: &Tree<'_>, node: u32) -> Option<std::sync::Arc<str>> {

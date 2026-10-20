@@ -14,9 +14,11 @@ pub(crate) const IDENTITY: usize = 4;
 pub(crate) const MOVES: usize = 5;
 pub(crate) const MOVED: usize = 6;
 pub(crate) const ISOLATED: usize = 7;
+pub(crate) const FOLLOWS: usize = 8;
+pub(crate) const SPLIT: usize = 9;
 
 #[cfg(feature = "eval")]
-pub const TERMS: [&str; 8] = [
+pub const TERMS: [&str; 10] = [
     "unmatched",
     "inside",
     "renamed",
@@ -25,10 +27,12 @@ pub const TERMS: [&str; 8] = [
     "moves",
     "moved",
     "isolated",
+    "follows",
+    "split",
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Features(pub [i64; 8]);
+pub struct Features(pub [i64; 10]);
 
 impl Index<usize> for Features {
     type Output = i64;
@@ -67,6 +71,7 @@ pub struct Weights {
     pub rho0: i64,
     pub iota: i64,
     pub mu: i64,
+    pub follow: i64,
     pub beta: i64,
     pub phi: i64,
 }
@@ -78,6 +83,7 @@ impl Weights {
         rho0: 64,
         iota: 64,
         mu: 320,
+        follow: 64,
         beta: 6,
         phi: 0,
     };
@@ -89,6 +95,7 @@ impl Weights {
             + self.rho0 * f[ENTRIES]
             + self.iota * f[IDENTITY]
             + self.mu * f[MOVES]
+            + self.follow * f[FOLLOWS]
             + self.beta * f[MOVED]
             + self.phi * f[ISOLATED]
     }
@@ -129,6 +136,21 @@ pub(crate) fn edited(text: &str, ranges: &[Range<u32>]) -> i64 {
         .sum()
 }
 
+pub(crate) fn line_keys(src: &str) -> (Vec<u32>, Vec<u64>) {
+    let mut starts = vec![0u32];
+    let mut keys = Vec::new();
+    for line in src.split_inclusive('\n') {
+        keys.push(crate::syntax::hash_bytes(line.trim().as_bytes()));
+        starts.push(starts.last().copied().unwrap_or(0) + line.len() as u32);
+    }
+    keys.push(0);
+    (starts, keys)
+}
+
+pub(crate) fn line_key(lines: &(Vec<u32>, Vec<u64>), byte: u32) -> u64 {
+    lines.1[lines.0.partition_point(|&s| s <= byte).saturating_sub(1)]
+}
+
 pub(crate) fn same_text(class: Class, a: &str, b: &str) -> bool {
     if class == Class::Comment {
         a.lines().map(str::trim).eq(b.lines().map(str::trim))
@@ -141,7 +163,7 @@ pub(crate) fn same_text(class: Class, a: &str, b: &str) -> bool {
 pub(crate) fn evaluate(
     trees: [&Tree<'_>; 2],
     partner: &[Vec<u32>; 2],
-    moves: usize,
+    moves: &[diffy_diff::Move],
     tokens: &[Vec<crate::Token>; 2],
     renames: &[diffy_diff::Rename],
 ) -> Features {
@@ -157,6 +179,7 @@ pub(crate) fn evaluate(
         crate::matcher::parents(trees[1]),
     ];
     let linked = |side: usize, node: u32| node != NONE && partner[side][node as usize] != NONE;
+    let lines = [line_keys(trees[0].src), line_keys(trees[1].src)];
     let accepted: HashSet<(&str, &str)> = renames.iter().map(|r| (&*r.old, &*r.new)).collect();
     let mut f = Features::default();
     for side in 0..2 {
@@ -205,6 +228,12 @@ pub(crate) fn evaluate(
                 if token.moved.is_some() {
                     f[MOVED] += u;
                 }
+                if let (0, Some(peer)) = (side, &token.partner)
+                    && token.state != TokenState::Novel
+                    && line_key(&lines[0], range.start) != line_key(&lines[1], peer.start)
+                {
+                    f[SPLIT] += 1;
+                }
                 let peer = partner[side][k];
                 if side == 0
                     && leaf
@@ -219,7 +248,14 @@ pub(crate) fn evaluate(
         }
     }
     f[ENTRIES] = renames.len() as i64;
-    f[MOVES] = moves as i64;
+    let leaders = diffy_diff::move_leaders(moves);
+    let lead = leaders
+        .iter()
+        .enumerate()
+        .filter(|&(i, &l)| l as usize == i)
+        .count() as i64;
+    f[MOVES] = lead;
+    f[FOLLOWS] = moves.len() as i64 - lead;
     for item in &trees[0].items {
         let peer = partner[0][item.node as usize];
         if peer == NONE {

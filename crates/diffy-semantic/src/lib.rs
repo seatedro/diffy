@@ -196,6 +196,7 @@ pub mod eval {
         pub weights: Weights,
         pub candidates: usize,
         pub floor: bool,
+        pub credit: bool,
         pub exhaustive: bool,
         pub margins: bool,
         pub legacy: bool,
@@ -205,6 +206,7 @@ pub mod eval {
         weights: Weights::DEFAULT,
         candidates: 4,
         floor: true,
+        credit: true,
         exhaustive: false,
         margins: false,
         legacy: false,
@@ -237,6 +239,7 @@ pub mod eval {
             weights: options.weights,
             candidates: options.candidates,
             floor: options.floor,
+            credit: options.credit,
             exhaustive: options.exhaustive,
             margins: options.margins,
             legacy: options.legacy,
@@ -261,6 +264,8 @@ pub mod eval {
         pub repairs: u32,
         pub margins: Vec<Margin>,
         pub work: u64,
+        pub credited: i64,
+        pub realized: i64,
     }
 
     impl Explained {
@@ -302,7 +307,7 @@ pub mod eval {
                 let actual = cost::evaluate(
                     [old, new],
                     &m.partner,
-                    m.moves.len(),
+                    &diff.moves,
                     &diff.tokens,
                     &diff.renames,
                 );
@@ -333,6 +338,8 @@ pub mod eval {
                         })
                         .collect(),
                     work: m.work,
+                    credited: m.credited,
+                    realized: m.realized,
                 }
             },
         )

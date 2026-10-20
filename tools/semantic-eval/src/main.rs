@@ -7,6 +7,7 @@ mod engine;
 mod explain;
 mod fixtures;
 mod gap;
+mod gold;
 mod grade;
 mod moves;
 mod mutate;
@@ -33,6 +34,8 @@ struct Cli {
     candidates: Option<usize>,
     #[arg(long, global = true)]
     no_floor: bool,
+    #[arg(long, global = true)]
+    no_credit: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -55,6 +58,8 @@ enum Command {
         about = "Grades token links on real history against unique lines and same-named items."
     )]
     Audit(audit::Args),
+    #[command(about = "Checks partial hand labels on real cases, with accepted alternatives.")]
+    Gold(gold::Args),
     #[command(about = "Compares production search against exhaustive search on small files.")]
     Gap(gap::Args),
     #[command(about = "Scores how noisy move notes are on a list of commit and path pairs.")]
@@ -99,6 +104,7 @@ fn main() -> ExitCode {
         legacy: cli.legacy,
         candidates: cli.candidates.unwrap_or(defaults.candidates),
         floor: !cli.no_floor,
+        credit: !cli.no_credit,
         ..defaults
     };
     let result = explain::weights(&cli.weights)
@@ -111,6 +117,7 @@ fn main() -> ExitCode {
             Command::Mutate(args) => mutate::run(args),
             Command::Moves(args) => moves::run(args),
             Command::Gap(args) => gap::run(args),
+        Command::Gold(args) => gold::run(args),
             Command::Truth(args) => truth::run(args),
             Command::Audit(args) => audit::run(args),
             Command::Show(args) => show(args),

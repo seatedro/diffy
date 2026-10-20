@@ -7,9 +7,10 @@ use diffy_diff::myers::{self, FastHash};
 use diffy_diff::{InlineDetail, InlineOptions, Rename, paired_inline_diff};
 
 use crate::Fallback;
+use crate::align::Notes;
 use crate::cost::{
-    self, ENTRIES, Features, IDENTITY, INSIDE, ISOLATED, MOVED, MOVES, RENAMED, UNMATCHED, WORD,
-    Weights,
+    self, ENTRIES, FOLLOWS, Features, IDENTITY, INSIDE, ISOLATED, MOVED, MOVES, RENAMED, SPLIT,
+    UNMATCHED, WORD, Weights,
 };
 use crate::syntax::{Class, NONE, Tree};
 
@@ -21,12 +22,15 @@ const SIGNATURE_LEAVES: usize = 64;
 const MAX_PAIR_CELLS: usize = 1 << 16;
 const MAX_HASH_HITS: usize = 64;
 const CLOCK_STRIDE: u64 = 1 << 16;
+const MOVE_GROUP_GAP: u32 = diffy_diff::MOVE_GROUP_GAP;
+const TIE: u32 = 20;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Options {
     pub(crate) weights: Weights,
     pub(crate) candidates: usize,
     pub(crate) floor: bool,
+    pub(crate) credit: bool,
     pub(crate) exhaustive: bool,
     pub(crate) margins: bool,
     #[cfg(feature = "eval")]
@@ -39,6 +43,7 @@ impl Default for Options {
             weights: Weights::DEFAULT,
             candidates: CANDIDATES,
             floor: true,
+            credit: true,
             exhaustive: false,
             margins: false,
             #[cfg(feature = "eval")]
@@ -60,6 +65,8 @@ pub(crate) struct Matching {
     pub(crate) repairs: u32,
     pub(crate) margins: Vec<Margin>,
     pub(crate) work: u64,
+    pub(crate) credited: i64,
+    pub(crate) realized: i64,
 }
 
 #[cfg_attr(not(feature = "eval"), allow(dead_code))]
@@ -86,6 +93,7 @@ pub(crate) fn run(
         parents: [parents(old), parents(new)],
         mass: [mass(old), mass(new)],
         plain: [plain(old), plain(new)],
+        lines: [cost::line_keys(old.src), cost::line_keys(new.src)],
         allowed: None,
         hashes: [Default::default(), Default::default()],
         pins: Vec::new(),
@@ -100,6 +108,9 @@ pub(crate) fn run(
         predicted: Features::default(),
         repairs: 0,
         margins: Vec::new(),
+        kept: Vec::new(),
+        credited: 0,
+        realized: 0,
         work: 0,
         max_work,
         clock_at: CLOCK_STRIDE,
@@ -142,6 +153,7 @@ struct Matcher<'t, 'a> {
     parents: [Vec<u32>; 2],
     mass: [Mass; 2],
     plain: [HashSet<&'a str>; 2],
+    lines: [(Vec<u32>, Vec<u64>); 2],
     allowed: Option<HashSet<(&'a str, &'a str)>>,
     hashes: [HashMap<u64, Vec<u32>>; 2],
     pins: Vec<(u32, u32)>,
@@ -156,6 +168,9 @@ struct Matcher<'t, 'a> {
     predicted: Features,
     repairs: u32,
     margins: Vec<Margin>,
+    kept: Vec<i64>,
+    credited: i64,
+    realized: i64,
     work: u64,
     max_work: u64,
     clock_at: u64,
@@ -171,6 +186,7 @@ struct Mass {
 struct Entry {
     d: Features,
     hyp: bool,
+    rank: i64,
 }
 
 type Ctx = (bool, bool);
@@ -188,6 +204,7 @@ struct Cell {
     old: (usize, usize),
     new: (usize, usize),
     value: i64,
+    adjust: i64,
     exact: bool,
     act: Act,
 }
@@ -204,6 +221,8 @@ impl<'a> Matcher<'_, 'a> {
             repairs: self.repairs,
             margins: self.margins,
             work: self.work,
+            credited: self.credited,
+            realized: self.realized,
         }
     }
 
@@ -214,6 +233,7 @@ impl<'a> Matcher<'_, 'a> {
         self.moves.clear();
         self.margins.clear();
         self.predicted = Features::default();
+        self.realized = 0;
     }
 
     fn spend(&mut self, units: usize) -> Result<(), Fallback> {
@@ -243,7 +263,15 @@ impl<'a> Matcher<'_, 'a> {
     }
 
     fn value(&self, d: &Features) -> i64 {
-        self.options.weights.cost(d)
+        (self.options.weights.cost(d) << TIE) + d[SPLIT]
+    }
+
+    fn scale(x: i64) -> i64 {
+        x << TIE
+    }
+
+    fn split(&self, x: u32, y: u32) -> bool {
+        cost::line_key(&self.lines[0], x) != cost::line_key(&self.lines[1], y)
     }
 
     fn next(&self, side: usize, node: u32) -> u32 {
@@ -401,6 +429,18 @@ impl<'a> Matcher<'_, 'a> {
         self.pins.sort_unstable();
         self.pins_new = self.pins.iter().map(|&(o, n)| (n, o)).collect();
         self.pins_new.sort_unstable();
+        self.kept = self
+            .pins
+            .iter()
+            .map(|&(p, q)| {
+                let movable = self.is_list(0, p) && whole_lines(old, p) && whole_lines(new, q);
+                if movable {
+                    Self::scale(4 * (self.total(0, p) + self.total(1, q)))
+                } else {
+                    0
+                }
+            })
+            .collect();
         Ok(())
     }
 
@@ -451,6 +491,9 @@ impl<'a> Matcher<'_, 'a> {
         e.d[INSIDE] = if ctx.0 { wa - ua } else { 0 } + if ctx.1 { wb - ub } else { 0 };
         if !ctx.0 && !ctx.1 {
             e.d[ISOLATED] = -1;
+        }
+        if self.split(na.span.start, nb.span.start) {
+            e.d[SPLIT] = -1;
         }
         Ok((self.value(&e.d) > 0).then_some(e))
     }
@@ -526,28 +569,67 @@ impl<'a> Matcher<'_, 'a> {
         let mut e = Entry::default();
         if self.equal(a, b) {
             e.d[UNMATCHED] = self.total(0, a) + self.total(1, b);
+            e.d[SPLIT] = -self.splits(a, b)?;
+            e.rank = self.value(&e.d);
         } else {
             e.d[UNMATCHED] = self.own(0, a) + self.own(1, b);
+            e.d[SPLIT] = -self.delimiter_splits(a, b);
             e.d[INSIDE] = -(self.direct(0, a)? + self.direct(1, b)?);
             match self.identity(a, b) {
                 Some(true) => e.hyp = true,
                 Some(false) => e.d[IDENTITY] = -1,
                 None => {}
             }
+            e.rank = self.value(&e.d);
             let xs = self.trees[0].children(a);
             let ys = self.trees[1].children(b);
-            let mut cells = self.cells(&xs, &ys, a, b, (true, true))?;
+            let (mut cells, escape) = self.cells(&xs, &ys, a, b, (true, true))?;
             let chosen = self.select(&mut cells)?;
+            let mut kept = escape;
             for &k in &chosen {
                 let c = self.features(&cells[k])?;
                 e.d += c.d;
                 e.hyp |= c.hyp;
+                e.rank += cells[k].value + cells[k].adjust;
+                kept -= cells[k].adjust;
             }
+            let w = self.options.weights;
+            e.rank += (kept - Self::scale((w.mu - w.follow).max(0))).max(0);
             let acts = chosen.iter().map(|&k| cells[k].act).collect();
             self.acts.insert((a, b), acts);
         }
         self.memo.insert((a, b), e);
         Ok(e)
+    }
+
+    fn delimiter_splits(&self, a: u32, b: u32) -> i64 {
+        let (na, nb) = (
+            &self.trees[0].nodes[a as usize],
+            &self.trees[1].nodes[b as usize],
+        );
+        let mut count = 0;
+        for (x, y) in [(&na.open, &nb.open), (&na.close, &nb.close)] {
+            if !x.is_empty() && !y.is_empty() && self.split(x.start, y.start) {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    fn splits(&mut self, a: u32, b: u32) -> Result<i64, Fallback> {
+        let len = self.next(0, a) - a;
+        self.spend(len as usize)?;
+        let mut count = 0;
+        for k in 0..len {
+            let (x, y) = (a + k, b + k);
+            if self.is_list(0, x) {
+                count += self.delimiter_splits(x, y);
+            } else {
+                let start = |side: usize, n: u32| self.trees[side].nodes[n as usize].span.start;
+                count += i64::from(self.split(start(0, x), start(1, y)));
+            }
+        }
+        Ok(count)
     }
 
     fn features(&mut self, cell: &Cell) -> Result<Entry, Fallback> {
@@ -579,7 +661,7 @@ impl<'a> Matcher<'_, 'a> {
                 cells[k].exact = true;
                 if let Act::Leaf(x, y, ctx) = cells[k].act {
                     cells[k].value = match self.leaf(x, y, ctx, true)? {
-                        Some(e) => self.value(&e.d),
+                        Some(e) => self.value(&e.d) - cells[k].adjust,
                         None => -1,
                     };
                 }
@@ -597,10 +679,10 @@ impl<'a> Matcher<'_, 'a> {
         a: u32,
         b: u32,
         ctx: Ctx,
-    ) -> Result<Vec<Cell>, Fallback> {
+    ) -> Result<(Vec<Cell>, i64), Fallback> {
         let mut out = Vec::new();
         if xs.is_empty() || ys.is_empty() {
-            return Ok(out);
+            return Ok((out, 0));
         }
         self.spend(xs.len() + ys.len())?;
         let (ia, ib) = self.intern(xs, ys);
@@ -696,6 +778,15 @@ impl<'a> Matcher<'_, 'a> {
         keys.sort_unstable();
         keys.dedup();
         self.spend(keys.len())?;
+        let escape = if ctx == (true, true) && self.options.credit {
+            [self.escape(xs)?, vec![0; ys.len()]]
+        } else {
+            [vec![0; xs.len()], vec![0; ys.len()]]
+        };
+        let adjust = |c: &Cell| {
+            escape[0][c.old.0..=c.old.1].iter().sum::<i64>()
+                + escape[1][c.new.0..=c.new.1].iter().sum::<i64>()
+        };
         let mut deep: Vec<(usize, usize, u32, u32)> = Vec::new();
         let mut reached = [vec![false; xs.len()], vec![false; ys.len()]];
         for (i, j, x, y) in keys {
@@ -708,7 +799,8 @@ impl<'a> Matcher<'_, 'a> {
                 Cell {
                     old: (i, i),
                     new: (j, j),
-                    value: self.value(&e.d),
+                    value: e.rank,
+                    adjust: 0,
                     exact: true,
                     act: Act::List(x, y),
                 }
@@ -720,10 +812,14 @@ impl<'a> Matcher<'_, 'a> {
                     old: (i, i),
                     new: (j, j),
                     value: self.value(&e.d),
+                    adjust: 0,
                     exact: !self.inexact(x, y),
                     act: Act::Leaf(x, y, c),
                 }
             };
+            let mut cell = cell;
+            cell.adjust = adjust(&cell);
+            cell.value -= cell.adjust;
             if cell.value <= 0 {
                 continue;
             }
@@ -734,7 +830,34 @@ impl<'a> Matcher<'_, 'a> {
             }
             out.push(cell);
         }
+        let start = out.len();
         self.wraps(xs, ys, a, b, ctx, &deep, &gaps, &reached, &mut out)?;
+        for cell in &mut out[start..] {
+            cell.adjust = adjust(cell);
+            cell.value -= cell.adjust;
+        }
+        out.retain(|c| c.value > 0);
+        let total = escape.iter().flatten().sum();
+        Ok((out, total))
+    }
+
+    fn escape(&mut self, nodes: &[u32]) -> Result<Vec<i64>, Fallback> {
+        let w = self.options.weights;
+        let mut out = vec![0; nodes.len()];
+        let mut steps = 0;
+        for (slot, &node) in out.iter_mut().zip(nodes) {
+            let last = self.next(0, node);
+            let from = self.pins.partition_point(|&(x, _)| x < node);
+            let to = self.pins.partition_point(|&(x, _)| x < last);
+            steps += to - from;
+            let kept = &self.kept[from..to];
+            let count = kept.iter().filter(|&&k| k > 0).count() as i64;
+            if count > 0 {
+                let total: i64 = kept.iter().sum();
+                *slot = (total - count * Self::scale(w.follow)).max(0);
+            }
+        }
+        self.spend(steps)?;
         Ok(out)
     }
 
@@ -824,6 +947,7 @@ impl<'a> Matcher<'_, 'a> {
                 old,
                 new,
                 value: 0,
+                adjust: 0,
                 exact: true,
                 act,
             };
@@ -836,7 +960,7 @@ impl<'a> Matcher<'_, 'a> {
                     } else {
                         self.trees[0].children(host)
                     };
-                    let mut cells = if wrap {
+                    let (mut cells, _) = if wrap {
                         self.cells(&xs[from..=to], &inner, a, host, (ctx.0, false))?
                     } else {
                         self.cells(&inner, &ys[from..=to], host, b, (false, ctx.1))?
@@ -847,6 +971,7 @@ impl<'a> Matcher<'_, 'a> {
                         let c = self.features(&cells[k])?;
                         entry.d += c.d;
                         entry.hyp |= c.hyp;
+                        entry.rank += cells[k].value;
                     }
                     let acts = chosen.iter().map(|&k| cells[k].act).collect();
                     self.wrap_acts.insert(key, acts);
@@ -854,7 +979,7 @@ impl<'a> Matcher<'_, 'a> {
                     entry
                 }
             };
-            cell.value = self.value(&entry.d);
+            cell.value = entry.rank;
             if cell.value > 0 {
                 out.push(cell);
             }
@@ -1064,7 +1189,9 @@ impl<'a> Matcher<'_, 'a> {
     }
 
     fn solve(&mut self) -> Result<(), Fallback> {
-        self.predicted = self.savings(0, 0)?.d;
+        let root = self.savings(0, 0)?;
+        self.predicted = root.d;
+        self.credited = (root.rank - self.value(&root.d)) >> TIE;
         self.apply(0, 0)?;
         self.relocate()
     }
@@ -1093,7 +1220,7 @@ impl<'a> Matcher<'_, 'a> {
         acts: &[Act],
     ) -> Result<(), Fallback> {
         if self.options.margins {
-            let mut cells = self.cells(xs, ys, a, b, ctx)?;
+            let (mut cells, _) = self.cells(xs, ys, a, b, ctx)?;
             let chosen = self.select(&mut cells)?;
             self.margin(&cells, &chosen);
         }
@@ -1141,8 +1268,8 @@ impl<'a> Matcher<'_, 'a> {
                 kind: "item",
                 old: self.trees[0].nodes[x as usize].span.start,
                 new: self.trees[1].nodes[y as usize].span.start,
-                best: cells[k].value,
-                runner,
+                best: cells[k].value >> TIE,
+                runner: runner >> TIE,
             });
         }
     }
@@ -1189,6 +1316,13 @@ impl<'a> Matcher<'_, 'a> {
         candidates.extend(self.duplicates()?);
         candidates.sort_unstable();
         candidates.dedup();
+        let notes = Notes::new(self.trees[0], self.trees[1]);
+        let weights = self.options.weights;
+        let w = Weights {
+            mu: Self::scale(weights.mu),
+            follow: Self::scale(weights.follow),
+            ..weights
+        };
         let mut valued = Vec::new();
         for (x, y) in candidates {
             if !self.feasible(x, y)
@@ -1206,30 +1340,69 @@ impl<'a> Matcher<'_, 'a> {
                     kind: "move",
                     old: self.trees[0].nodes[x as usize].span.start,
                     new: self.trees[1].nodes[y as usize].span.start,
-                    best: value,
+                    best: (value - w.mu) >> TIE,
                     runner: 0,
                 });
             }
-            if value > 0 {
+            if value > w.follow.min(w.mu) {
                 valued.push((value, x, y, e.d));
             }
         }
         valued.sort_unstable_by_key(|&(v, x, y, _)| (std::cmp::Reverse(v), x, y));
-        for (_, x, y, d) in valued {
-            if !self.free(0, x)? || !self.free(1, y)? || !self.disjoint(x, y) {
-                continue;
+        let notes_of: Vec<diffy_diff::Move> =
+            valued.iter().map(|&(_, x, y, _)| notes.place(x, y)).collect();
+        let near = |a: &diffy_diff::Move, b: &diffy_diff::Move| {
+            a.from.is_some()
+                && a.from == b.from
+                && a.from != a.into
+                && b.from != b.into
+                && a.new_line + a.lines + MOVE_GROUP_GAP >= b.new_line
+                && b.new_line + b.lines + MOVE_GROUP_GAP >= a.new_line
+        };
+        self.spend(valued.len() * valued.len())?;
+        let mut placed: Vec<usize> = Vec::new();
+        let mut taken = vec![false; valued.len()];
+        loop {
+            let mut grew = false;
+            for k in 0..valued.len() {
+                let (value, x, y, d) = valued[k];
+                if taken[k] || !self.free(0, x)? || !self.free(1, y)? || !self.disjoint(x, y) {
+                    continue;
+                }
+                let joins = placed.iter().any(|&p| near(&notes_of[p], &notes_of[k]));
+                let pays = if joins {
+                    value > w.follow
+                } else {
+                    let rest: i64 = (0..valued.len())
+                        .filter(|&j| j != k && !taken[j] && near(&notes_of[k], &notes_of[j]))
+                        .map(|j| (valued[j].0 - w.follow).max(0))
+                        .sum();
+                    value - w.mu + rest > 0
+                };
+                if !pays {
+                    continue;
+                }
+                self.apply(x, y)?;
+                self.moves.push((x, y));
+                self.predicted += d;
+                self.realized += (value - if joins { w.follow } else { w.mu }) >> TIE;
+                placed.push(k);
+                taken[k] = true;
+                grew = true;
             }
-            self.apply(x, y)?;
-            self.moves.push((x, y));
-            self.predicted += d;
+            if !grew {
+                break;
+            }
         }
+        let (leaders, followers) = notes.count(&self.moves);
+        self.predicted[MOVES] -= leaders;
+        self.predicted[FOLLOWS] -= followers;
         Ok(())
     }
 
     fn moved(&mut self, x: u32, y: u32) -> Result<Entry, Fallback> {
         let mut e = self.savings(x, y)?;
         let unmatched = self.total(0, x) + self.total(1, y) - e.d[UNMATCHED];
-        e.d[MOVES] -= 1;
         e.d[MOVED] -= unmatched;
         Ok(e)
     }
@@ -1309,6 +1482,9 @@ impl<'a> Matcher<'_, 'a> {
             if !ctx.0 && !ctx.1 {
                 entry.0[ISOLATED] -= 1;
             }
+            if self.split(na.span.start, nb.span.start) {
+                entry.0[SPLIT] -= 1;
+            }
             entry.1 += 1;
         }
         for item in &old.items {
@@ -1331,8 +1507,9 @@ impl<'a> Matcher<'_, 'a> {
         let mut accepted = Vec::new();
         let mut rejected = false;
         for ((p, q), (d, count, items)) in uses {
-            let gain = self.value(&d) + self.options.weights.iota * items;
-            if count > 0 && targets[p] == 1 && gain > self.options.weights.rho0 {
+            let w = self.options.weights;
+            let gain = self.value(&d) + Self::scale(w.iota * items);
+            if count > 0 && targets[p] == 1 && gain > Self::scale(w.rho0) {
                 self.predicted[ENTRIES] -= 1;
                 accepted.push((p, q, count));
             } else {

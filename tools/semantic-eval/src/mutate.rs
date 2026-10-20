@@ -29,6 +29,8 @@ pub struct Args {
     out: Option<PathBuf>,
     #[arg(long, default_value_t = 20)]
     show: usize,
+    #[arg(long)]
+    rev: Option<String>,
     filter: Option<String>,
 }
 
@@ -135,7 +137,14 @@ struct Tally {
 }
 
 pub fn run(args: Args) -> Result<(), String> {
-    let files = list(&args.repo, &args.ext, args.filter.as_deref())?;
+    let files = match &args.rev {
+        Some(rev) => list_at(&args.repo, rev, &args.ext, args.filter.as_deref())?,
+        None => list(&args.repo, &args.ext, args.filter.as_deref())?,
+    };
+    let mut blobs = match &args.rev {
+        Some(_) => Some(crate::corpus::Blobs::spawn(&args.repo)?),
+        None => None,
+    };
     let files = match args.max_files {
         Some(max) => spread(files, max),
         None => files,
@@ -146,7 +155,13 @@ pub fn run(args: Args) -> Result<(), String> {
     let mut tallies: BTreeMap<&'static str, Tally> = BTreeMap::new();
     let mut shown = 0;
     for path in &files {
-        let Ok(text) = std::fs::read_to_string(args.repo.join(path)) else {
+        let text = match (&mut blobs, &args.rev) {
+            (Some(blobs), Some(rev)) => blobs
+                .read(rev, path)?
+                .and_then(|bytes| String::from_utf8(bytes).ok()),
+            _ => std::fs::read_to_string(args.repo.join(path)).ok(),
+        };
+        let Some(text) = text else {
             continue;
         };
         let Some(language) = semantic_language(path) else {

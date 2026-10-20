@@ -174,7 +174,7 @@ fn moves(
     });
     let mut pairs = Vec::new();
     for &(o, n) in displaced.iter().chain(stranded) {
-        refine(sides, matching, o, n, &mut pairs);
+        refine(sides, matching, o, n, true, &mut pairs);
     }
     for (o, n) in pairs {
         let (a, b) = (
@@ -241,6 +241,7 @@ fn refine(
     matching: &Matching,
     o: u32,
     n: u32,
+    top: bool,
     out: &mut Vec<(u32, u32)>,
 ) {
     let (old, new) = (sides[0].tree, sides[1].tree);
@@ -249,7 +250,9 @@ fn refine(
         .filter(|&k| (n..en).contains(&matching.partner[0][k as usize]))
         .count();
     if inside as f32 >= MOVE_KEPT * (eo - o).max(en - n) as f32 {
-        out.push((o, n));
+        if top || whole_line(&sides[0], o) && whole_line(&sides[1], n) {
+            out.push((o, n));
+        }
         return;
     }
     for child in old.children(o) {
@@ -260,9 +263,19 @@ fn refine(
             && (n..en).contains(&partner)
             && new.is_list(partner)
         {
-            refine(sides, matching, child, partner, out);
+            refine(sides, matching, child, partner, false, out);
         }
     }
+}
+
+/// Whether `node` fills its lines: nothing but space before it on its
+/// first line, and nothing but space or a separator after it on its last.
+fn whole_line(side: &Side<'_, '_>, node: u32) -> bool {
+    let span = &side.tree.nodes[node as usize].span;
+    let src = side.tree.src;
+    let after = &src[span.end as usize..];
+    let rest = &after[..after.find('\n').unwrap_or(after.len())];
+    side.lines.leads(src, span.start) && rest.trim().trim_matches([';', ',']).is_empty()
 }
 
 fn blank_between(side: &Side<'_, '_>, from: u32, to: u32) -> bool {

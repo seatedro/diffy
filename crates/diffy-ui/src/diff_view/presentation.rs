@@ -339,6 +339,9 @@ pub(crate) struct DiffColors {
     pub faint: Color,
     pub picked_wash: Color,
     pub picked_gutter: Color,
+    /// Background of moved lines, and of their gutter.
+    pub moved_wash: Color,
+    pub moved_gutter: Color,
     pub picked_number: Color,
     pub syntax: [Color; HIGHLIGHT_KINDS],
     /// `syntax` lifted where needed to stay legible on `add_line` and
@@ -415,6 +418,8 @@ impl DiffColors {
             faint: c.text_disabled,
             picked_wash: surface.lerp(c.accent, PICKED_WASH),
             picked_gutter: gutter.lerp(c.accent, PICKED_GUTTER),
+            moved_wash: surface.lerp(syntax[HighlightKind::Keyword as usize], MOVED_WASH),
+            moved_gutter: gutter.lerp(syntax[HighlightKind::Keyword as usize], MOVED_GUTTER),
             picked_number: gutter_text.lerp(c.accent, PICKED_NUMBER),
             syntax,
             syntax_on_add,
@@ -459,6 +464,8 @@ impl DiffColors {
             self.picked_wash,
             self.picked_gutter,
             self.picked_number,
+            self.moved_wash,
+            self.moved_gutter,
         ];
         for c in colors.iter().chain(&self.syntax) {
             [c.r, c.g, c.b, c.a].hash(&mut h);
@@ -514,6 +521,8 @@ const SEPARATOR_LIFT: f32 = 0.035;
 const NUMBER_TINT: f32 = 0.45;
 const PICKED_GUTTER: f32 = 0.16;
 const PICKED_NUMBER: f32 = 0.6;
+const MOVED_WASH: f32 = 0.07;
+const MOVED_GUTTER: f32 = 0.12;
 
 const ALL_KINDS: [HighlightKind; HIGHLIGHT_KINDS] = [
     HighlightKind::Normal,

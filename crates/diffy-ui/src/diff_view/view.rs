@@ -527,6 +527,8 @@ fn gutter_cell(
     let build = move || {
         let bg = if pick.on {
             Some(colors.picked_gutter)
+        } else if kind == RowKind::Moved {
+            Some(colors.moved_gutter)
         } else if quiet {
             None
         } else {
@@ -722,7 +724,9 @@ fn text_cell(
             Side::Old => RowKind::Removed,
             Side::New => RowKind::Added,
         });
-        let line_bg = if paint.quiet {
+        let line_bg = if kind == RowKind::Moved {
+            Some(colors.moved_wash)
+        } else if paint.quiet {
             None
         } else {
             colors.line(whole.unwrap_or(kind), shown)

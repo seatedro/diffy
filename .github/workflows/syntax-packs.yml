@@ -61,15 +61,17 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y lld
 
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
       - name: Install tree-sitter CLI
-        run: npm install --global "tree-sitter-cli@${TREE_SITTER_CLI}"
+        run: |
+          npm install --global "tree-sitter-cli@${TREE_SITTER_CLI}"
+          cli="$(npm root -g)/tree-sitter-cli/tree-sitter"
+          if [ "${{ runner.os }}" = Windows ]; then cli="$cli.exe"; fi
+          "$cli" --version
+          echo "TREE_SITTER=$cli" >> "$GITHUB_ENV"
 
       - name: Build and check packs
         run: |
@@ -193,9 +195,6 @@ jobs:
       - name: Install lld (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y lld
-
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
 
       - name: Download and highlight every pack
         run: cargo run --locked --release -p syntax-pack -- remote-check --index "$PACK_BASE_URL/{target}/index.json" --key "$PACK_INDEX_KEY"

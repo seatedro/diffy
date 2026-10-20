@@ -9,3 +9,6 @@ publish = false
 [dependencies]
 diffy-diff = { path = "../diffy-diff" }
 tree-sitter = "0.26"
+
+[features]
+eval = []

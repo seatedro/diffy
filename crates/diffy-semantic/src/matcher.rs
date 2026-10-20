@@ -1,37 +1,75 @@
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::ops::Range;
+use std::rc::Rc;
 use std::time::Instant;
 
 use diffy_diff::myers::{self, FastHash};
+use diffy_diff::{InlineDetail, InlineOptions, Rename, paired_inline_diff};
 
 use crate::Fallback;
+use crate::cost::{
+    self, ENTRIES, Features, IDENTITY, INSIDE, ISOLATED, MOVED, MOVES, RENAMED, UNMATCHED, WORD,
+    Weights,
+};
 use crate::syntax::{Class, NONE, Tree};
 
 type HashMap<K, V> = std::collections::HashMap<K, V, FastHash>;
+type HashSet<K> = std::collections::HashSet<K, FastHash>;
 
-const WORD: i64 = 4;
-const PUNCT: i64 = 1;
-const DELIMITER: i64 = 1;
-const GAMMA: i64 = 1;
-const DETACHED: i64 = 2;
-const LINE_SPLIT: i64 = 1;
-const RENAME_SHARE: i64 = 4;
-const MOVE: i64 = 64;
-const MOVE_ITEM: i64 = 8;
-const MOVE_LOSS: (i64, i64) = (3, 2);
 const CANDIDATES: usize = 4;
 const SIGNATURE_LEAVES: usize = 64;
 const MAX_PAIR_CELLS: usize = 1 << 16;
 const MAX_HASH_HITS: usize = 64;
 const CLOCK_STRIDE: u64 = 1 << 16;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Options {
+    pub(crate) weights: Weights,
+    pub(crate) candidates: usize,
+    pub(crate) floor: bool,
+    pub(crate) exhaustive: bool,
+    pub(crate) margins: bool,
+    #[cfg(feature = "eval")]
+    pub(crate) legacy: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            weights: Weights::DEFAULT,
+            candidates: CANDIDATES,
+            floor: true,
+            exhaustive: false,
+            margins: false,
+            #[cfg(feature = "eval")]
+            legacy: false,
+        }
+    }
+}
+
 /// Which old node each new node corresponds to and back. Every link sits
 /// under linked ancestors that correspond to each other, or under the
 /// root of a move; links never cross each other outside a move.
+#[cfg_attr(not(feature = "eval"), allow(dead_code))]
 pub(crate) struct Matching {
     pub(crate) partner: [Vec<u32>; 2],
     /// Roots of moved subtrees, old and new.
     pub(crate) moves: Vec<(u32, u32)>,
+    pub(crate) renames: Vec<Rename>,
+    pub(crate) predicted: Features,
+    pub(crate) repairs: u32,
+    pub(crate) margins: Vec<Margin>,
+    pub(crate) work: u64,
+}
+
+#[cfg_attr(not(feature = "eval"), allow(dead_code))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Margin {
+    pub(crate) kind: &'static str,
+    pub(crate) old: u32,
+    pub(crate) new: u32,
+    pub(crate) best: i64,
+    pub(crate) runner: i64,
 }
 
 pub(crate) fn run(
@@ -39,77 +77,110 @@ pub(crate) fn run(
     new: &Tree<'_>,
     max_work: u64,
     deadline: Instant,
+    options: &Options,
 ) -> Result<Matching, Fallback> {
     let mut m = Matcher {
         trees: [old, new],
+        options,
         partner: [vec![NONE; old.nodes.len()], vec![NONE; new.nodes.len()]],
         parents: [parents(old), parents(new)],
-        weights: [weights(old), weights(new)],
-        lines: [lines(old), lines(new)],
-        names: [names(old), names(new)],
-        items: [items(old), items(new)],
+        mass: [mass(old), mass(new)],
+        plain: [plain(old), plain(new)],
+        allowed: None,
         hashes: [Default::default(), Default::default()],
         pins: Vec::new(),
         pins_new: Vec::new(),
         memo: HashMap::default(),
         wrapped: HashMap::default(),
+        acts: HashMap::default(),
+        wrap_acts: HashMap::default(),
         signatures: Default::default(),
+        edits: HashMap::default(),
         moves: Vec::new(),
+        predicted: Features::default(),
+        repairs: 0,
+        margins: Vec::new(),
         work: 0,
         max_work,
         clock_at: CLOCK_STRIDE,
         deadline,
     };
     if old.nodes.is_empty() || new.nodes.is_empty() {
-        return Ok(m.finish());
+        return Ok(m.finish(Vec::new()));
     }
     m.index()?;
-    m.apply(0, 0, GAMMA)?;
-    m.relocate()?;
+    m.solve()?;
+    let (mut renames, rejected) = m.finalize();
+    if rejected {
+        m.allowed = Some(renames.iter().map(|r| (r.0, r.1)).collect());
+        m.memo.retain(|_, e| !e.hyp);
+        m.wrapped.retain(|_, e| !e.hyp);
+        let (memo, wrapped) = (&m.memo, &m.wrapped);
+        m.acts.retain(|k, _| memo.contains_key(k));
+        m.wrap_acts.retain(|k, _| wrapped.contains_key(k));
+        m.reset();
+        m.solve()?;
+        renames = m.finalize().0;
+    }
     m.scope()?;
     m.monotone()?;
-    Ok(m.finish())
+    let renames = renames
+        .into_iter()
+        .map(|(old, new, uses)| Rename {
+            old: old.into(),
+            new: new.into(),
+            uses,
+        })
+        .collect();
+    Ok(m.finish(renames))
 }
 
 struct Matcher<'t, 'a> {
     trees: [&'t Tree<'a>; 2],
+    options: &'t Options,
     partner: [Vec<u32>; 2],
     parents: [Vec<u32>; 2],
-    weights: [Weights; 2],
-    lines: [Lines; 2],
-    names: [HashSet<&'a str>; 2],
-    items: [HashSet<(&'static str, &'a str)>; 2],
+    mass: [Mass; 2],
+    plain: [HashSet<&'a str>; 2],
+    allowed: Option<HashSet<(&'a str, &'a str)>>,
     hashes: [HashMap<u64, Vec<u32>>; 2],
     pins: Vec<(u32, u32)>,
     pins_new: Vec<(u32, u32)>,
-    memo: HashMap<(u32, u32, i64), i64>,
-    wrapped: HashMap<(u32, u32, u32, i64), i64>,
+    memo: HashMap<(u32, u32), Entry>,
+    wrapped: HashMap<(u32, u32, u32, bool), Entry>,
+    acts: HashMap<(u32, u32), Rc<[Act]>>,
+    wrap_acts: HashMap<(u32, u32, u32, bool), Rc<[Act]>>,
     signatures: [HashMap<u32, Vec<u64>>; 2],
+    edits: HashMap<(u32, u32), Option<(i64, i64)>>,
     moves: Vec<(u32, u32)>,
+    predicted: Features,
+    repairs: u32,
+    margins: Vec<Margin>,
     work: u64,
     max_work: u64,
     clock_at: u64,
     deadline: Instant,
 }
 
-struct Lines {
-    starts: Vec<u32>,
-    hashes: Vec<u64>,
-}
-
-struct Weights {
+struct Mass {
     own: Vec<i64>,
     sum: Vec<i64>,
 }
 
-type Charge = (i64, i64);
+#[derive(Clone, Copy, Default)]
+struct Entry {
+    d: Features,
+    hyp: bool,
+}
+
+type Ctx = (bool, bool);
 
 #[derive(Clone, Copy)]
 enum Act {
-    Equal(u32, u32),
-    Pair(u32, u32, i64),
-    Wrap(usize, usize, u32),
-    Unwrap(usize, usize, u32),
+    Leaf(u32, u32, Ctx),
+    List(u32, u32),
+    Wrap(u32, u32, u32, (u32, u32)),
+    Unwrap(u32, u32, u32, (u32, u32)),
 }
 
 #[derive(Clone, Copy)]
@@ -117,17 +188,32 @@ struct Cell {
     old: (usize, usize),
     new: (usize, usize),
     value: i64,
+    exact: bool,
     act: Act,
 }
 
-impl Matcher<'_, '_> {
-    fn finish(self) -> Matching {
+impl<'a> Matcher<'_, 'a> {
+    fn finish(self, renames: Vec<Rename>) -> Matching {
         let mut moves = self.moves;
         moves.sort_unstable();
         Matching {
             partner: self.partner,
             moves,
+            renames,
+            predicted: self.predicted,
+            repairs: self.repairs,
+            margins: self.margins,
+            work: self.work,
         }
+    }
+
+    fn reset(&mut self) {
+        for side in &mut self.partner {
+            side.fill(NONE);
+        }
+        self.moves.clear();
+        self.margins.clear();
+        self.predicted = Features::default();
     }
 
     fn spend(&mut self, units: usize) -> Result<(), Fallback> {
@@ -142,6 +228,22 @@ impl Matcher<'_, '_> {
             }
         }
         Ok(())
+    }
+
+    fn degraded(&self) -> bool {
+        !self.options.exhaustive && self.work * 2 > self.max_work
+    }
+
+    fn candidates(&self) -> usize {
+        match (self.options.exhaustive, self.degraded()) {
+            (true, _) => usize::MAX,
+            (false, true) => 1,
+            (false, false) => self.options.candidates,
+        }
+    }
+
+    fn value(&self, d: &Features) -> i64 {
+        self.options.weights.cost(d)
     }
 
     fn next(&self, side: usize, node: u32) -> u32 {
@@ -161,12 +263,21 @@ impl Matcher<'_, '_> {
     }
 
     fn total(&self, side: usize, node: u32) -> i64 {
-        let sum = &self.weights[side].sum;
+        let sum = &self.mass[side].sum;
         sum[self.next(side, node) as usize] - sum[node as usize]
     }
 
     fn own(&self, side: usize, node: u32) -> i64 {
-        self.weights[side].own[node as usize]
+        self.mass[side].own[node as usize]
+    }
+
+    fn text(&self, side: usize, node: u32) -> &'a str {
+        let tree = self.trees[side];
+        tree.text(tree.nodes[node as usize].span.clone())
+    }
+
+    fn linked(&self, side: usize, node: u32) -> bool {
+        node != NONE && self.partner[side][node as usize] != NONE
     }
 
     fn link(&mut self, a: u32, b: u32) {
@@ -187,12 +298,14 @@ impl Matcher<'_, '_> {
         if b != NONE {
             self.partner[1][b as usize] = NONE;
             self.partner[0][a as usize] = NONE;
+            self.repairs += 1;
         }
     }
 
-    fn free(&self, side: usize, node: u32) -> bool {
+    fn free(&mut self, side: usize, node: u32) -> Result<bool, Fallback> {
         let end = self.next(side, node);
-        (node..end).all(|k| self.partner[side][k as usize] == NONE)
+        self.spend((end - node) as usize)?;
+        Ok((node..end).all(|k| self.partner[side][k as usize] == NONE))
     }
 
     fn equal(&self, a: u32, b: u32) -> bool {
@@ -218,14 +331,17 @@ impl Matcher<'_, '_> {
         true
     }
 
-    fn pairable(&self, a: u32, b: u32) -> bool {
+    fn feasible(&self, a: u32, b: u32) -> bool {
         let (ta, tb) = (self.trees[0], self.trees[1]);
         let (na, nb) = (&ta.nodes[a as usize], &tb.nodes[b as usize]);
-        na.class == Class::List
-            && nb.class == Class::List
-            && na.kind == nb.kind
-            && ta.text(na.open.clone()) == tb.text(nb.open.clone())
-            && ta.text(na.close.clone()) == tb.text(nb.close.clone())
+        match (na.class, nb.class) {
+            (Class::List, Class::List) => {
+                na.kind == nb.kind
+                    && ta.text(na.open.clone()) == tb.text(nb.open.clone())
+                    && ta.text(na.close.clone()) == tb.text(nb.close.clone())
+            }
+            (x, y) => x == y && (x == Class::Plain || na.kind == nb.kind),
+        }
     }
 
     fn significant(&self, side: usize, node: u32) -> bool {
@@ -288,126 +404,189 @@ impl Matcher<'_, '_> {
         Ok(())
     }
 
-    fn pins_in(&self, side: usize, node: u32) -> &[(u32, u32)] {
-        let pins = if side == 0 {
-            &self.pins
-        } else {
-            &self.pins_new
-        };
-        let end = self.next(side, node);
-        let from = pins.partition_point(|&(x, _)| x < node);
-        let to = pins.partition_point(|&(x, _)| x < end);
-        &pins[from..to]
+    fn rename_ok(&self, p: &'a str, q: &'a str) -> bool {
+        p != q
+            && !self.plain[1].contains(p)
+            && !self.plain[0].contains(q)
+            && self.allowed.as_ref().is_none_or(|r| r.contains(&(p, q)))
     }
 
-    fn split(&self, x: u32, y: u32) -> i64 {
-        let line = |side: usize, at: u32| {
-            let lines = &self.lines[side];
-            lines.hashes[lines.starts.partition_point(|&s| s <= at).saturating_sub(1)]
-        };
-        if line(0, x) == line(1, y) {
-            0
-        } else {
-            LINE_SPLIT
-        }
+    fn identity(&self, a: u32, b: u32) -> Option<bool> {
+        let (ta, tb) = (self.trees[0], self.trees[1]);
+        let (p, q) = (ta.text(item_at(ta, a)?), tb.text(item_at(tb, b)?));
+        (p != q).then(|| self.rename_ok(p, q))
     }
 
-    fn detached(&self, x: u32, y: u32) -> i64 {
-        let brackets = if self.bracketed(0, x) || self.bracketed(1, y) {
-            self.own(0, x) + self.own(1, y)
-        } else {
-            0
-        };
-        DETACHED + brackets
-    }
-
-    fn renamable(&self, a: u32, b: u32) -> bool {
+    fn leaf(&mut self, a: u32, b: u32, ctx: Ctx, exact: bool) -> Result<Option<Entry>, Fallback> {
         let (ta, tb) = (self.trees[0], self.trees[1]);
         let (na, nb) = (&ta.nodes[a as usize], &tb.nodes[b as usize]);
-        let (p, q) = (ta.text(na.span.clone()), tb.text(nb.span.clone()));
-        na.name && nb.name && p != q && !self.names[1].contains(p) && !self.names[0].contains(q)
-    }
-
-    fn leaf_value(&self, a: u32, b: u32, charge: Charge) -> i64 {
-        let (ta, tb) = (self.trees[0], self.trees[1]);
-        let (na, nb) = (&ta.nodes[a as usize], &tb.nodes[b as usize]);
-        if na.class != nb.class || na.class == Class::List {
-            return 0;
+        if na.class == Class::List || !self.feasible(a, b) {
+            return Ok(None);
         }
-        let both = self.own(0, a) + self.own(1, b);
-        let full = (1 + charge.0) * self.own(0, a) + (1 + charge.1) * self.own(1, b)
-            - self.split(na.span.start, nb.span.start);
-        let (p, q) = (ta.text(na.span.clone()), tb.text(nb.span.clone()));
-        match na.class {
-            Class::Plain if p == q => full,
-            Class::Plain if self.renamable(a, b) => full - both / RENAME_SHARE,
-            Class::Text | Class::Comment if na.kind == nb.kind => {
-                if p == q {
-                    return full;
+        let (wa, wb) = (self.own(0, a), self.own(1, b));
+        let (p, q) = (self.text(0, a), self.text(1, b));
+        let mut e = Entry::default();
+        let (ua, ub) = match na.class {
+            Class::Plain if p == q => (0, 0),
+            Class::Plain if na.name && nb.name && self.rename_ok(p, q) => {
+                e.hyp = true;
+                e.d[RENAMED] = -(wa + wb);
+                (0, 0)
+            }
+            Class::Text | Class::Comment if cost::same_text(na.class, p, q) => (0, 0),
+            Class::Text | Class::Comment => {
+                let found = if exact {
+                    self.edit(a, b)?
+                } else {
+                    self.guess(a, b)?
+                };
+                match found {
+                    Some(u) => u,
+                    None => return Ok(None),
                 }
-                let common = common_words(p, q);
-                ((2 + charge.0 + charge.1) * WORD * common).min(full)
             }
-            _ => 0,
+            _ => return Ok(None),
+        };
+        e.d[UNMATCHED] = wa + wb - ua - ub;
+        e.d[INSIDE] = if ctx.0 { wa - ua } else { 0 } + if ctx.1 { wb - ub } else { 0 };
+        if !ctx.0 && !ctx.1 {
+            e.d[ISOLATED] = -1;
         }
+        Ok((self.value(&e.d) > 0).then_some(e))
     }
 
-    fn compatible(&self, a: u32, b: u32) -> bool {
-        let (ta, tb) = (self.trees[0], self.trees[1]);
-        match (item_entry(ta, a), item_entry(tb, b)) {
-            (Some((kind, p)), Some((_, q))) => {
-                p == q || !self.items[1].contains(&(kind, p)) && !self.items[0].contains(&(kind, q))
-            }
-            _ => true,
-        }
+    fn inexact(&self, a: u32, b: u32) -> bool {
+        let class = self.trees[0].nodes[a as usize].class;
+        matches!(class, Class::Text | Class::Comment)
+            && !cost::same_text(class, self.text(0, a), self.text(1, b))
     }
 
-    fn direct(&self, side: usize, list: u32) -> i64 {
+    fn guess(&mut self, a: u32, b: u32) -> Result<Option<(i64, i64)>, Fallback> {
+        let (p, q) = (self.text(0, a), self.text(1, b));
+        let mut wa: Vec<&str> = cost::words(p).collect();
+        let mut wb: Vec<&str> = cost::words(q).collect();
+        self.spend(wa.len() + wb.len())?;
+        wa.sort_unstable();
+        wb.sort_unstable();
+        let (mut i, mut j, mut common) = (0, 0, 0);
+        while i < wa.len() && j < wb.len() {
+            match wa[i].cmp(wb[j]) {
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Equal => {
+                    common += 1;
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        if common == 0 {
+            return Ok(None);
+        }
+        let left = |words: usize| WORD * (words - common) as i64;
+        Ok(Some((left(wa.len()), left(wb.len()))))
+    }
+
+    fn edit(&mut self, a: u32, b: u32) -> Result<Option<(i64, i64)>, Fallback> {
+        if let Some(&found) = self.edits.get(&(a, b)) {
+            return Ok(found);
+        }
+        let (p, q) = (self.text(0, a), self.text(1, b));
+        self.spend((p.len() + q.len()) / 8 + 1)?;
+        let diff = paired_inline_diff(p, q, &InlineOptions::default());
+        let found = (diff.detail == InlineDetail::Exact
+            && (!diff.old.is_empty() || !diff.new.is_empty()))
+        .then(|| (cost::edited(p, &diff.old), cost::edited(q, &diff.new)));
+        self.edits.insert((a, b), found);
+        Ok(found)
+    }
+
+    fn direct(&mut self, side: usize, list: u32) -> Result<i64, Fallback> {
         let tree = self.trees[side];
         let end = self.next(side, list);
         let mut at = list + 1;
         let mut sum = 0;
+        let mut steps = 0;
         while at < end {
             if !tree.is_list(at) {
                 sum += self.own(side, at);
             }
             at = self.next(side, at);
+            steps += 1;
         }
-        sum
+        self.spend(steps)?;
+        Ok(sum)
     }
 
-    fn savings(&mut self, a: u32, b: u32, gamma: i64) -> Result<i64, Fallback> {
-        if let Some(&value) = self.memo.get(&(a, b, gamma)) {
-            return Ok(value);
+    fn savings(&mut self, a: u32, b: u32) -> Result<Entry, Fallback> {
+        if let Some(&e) = self.memo.get(&(a, b)) {
+            return Ok(e);
         }
-        let value = if self.equal(a, b) {
-            self.total(0, a) + self.total(1, b)
+        self.spend(1)?;
+        let mut e = Entry::default();
+        if self.equal(a, b) {
+            e.d[UNMATCHED] = self.total(0, a) + self.total(1, b);
         } else {
-            let (na, nb) = (
-                &self.trees[0].nodes[a as usize],
-                &self.trees[1].nodes[b as usize],
-            );
-            let mut base =
-                self.own(0, a) + self.own(1, b) - gamma * (self.direct(0, a) + self.direct(1, b));
-            if !na.open.is_empty() && !nb.open.is_empty() {
-                base -= self.split(na.open.start, nb.open.start)
-                    + self.split(na.close.start, nb.close.start);
+            e.d[UNMATCHED] = self.own(0, a) + self.own(1, b);
+            e.d[INSIDE] = -(self.direct(0, a)? + self.direct(1, b)?);
+            match self.identity(a, b) {
+                Some(true) => e.hyp = true,
+                Some(false) => e.d[IDENTITY] = -1,
+                None => {}
             }
             let xs = self.trees[0].children(a);
             let ys = self.trees[1].children(b);
-            let cells = self.cells(&xs, &ys, a, b, (gamma, gamma))?;
-            base + chain(&cells).0
-        };
-        self.memo.insert((a, b, gamma), value);
-        Ok(value)
+            let mut cells = self.cells(&xs, &ys, a, b, (true, true))?;
+            let chosen = self.select(&mut cells)?;
+            for &k in &chosen {
+                let c = self.features(&cells[k])?;
+                e.d += c.d;
+                e.hyp |= c.hyp;
+            }
+            let acts = chosen.iter().map(|&k| cells[k].act).collect();
+            self.acts.insert((a, b), acts);
+        }
+        self.memo.insert((a, b), e);
+        Ok(e)
     }
 
-    fn pair_value(&mut self, a: u32, b: u32, charge: Charge) -> Result<i64, Fallback> {
-        match (self.is_list(0, a), self.is_list(1, b)) {
-            (true, true) if !self.compatible(a, b) => Ok(0),
-            (true, true) if self.equal(a, b) || self.pairable(a, b) => self.savings(a, b, GAMMA),
-            (false, false) => Ok(self.leaf_value(a, b, charge)),
-            _ => Ok(0),
+    fn features(&mut self, cell: &Cell) -> Result<Entry, Fallback> {
+        Ok(match cell.act {
+            Act::Leaf(x, y, ctx) => self.leaf(x, y, ctx, cell.exact)?.unwrap_or_default(),
+            Act::List(x, y) => self.savings(x, y)?,
+            Act::Wrap(..) | Act::Unwrap(..) => self.wrapped[&self.wrap_key(cell)],
+        })
+    }
+
+    fn wrap_key(&self, cell: &Cell) -> (u32, u32, u32, bool) {
+        match cell.act {
+            Act::Wrap(_, _, host, ends) => (ends.0, ends.1, host, true),
+            Act::Unwrap(_, _, host, ends) => (ends.0, ends.1, host, false),
+            _ => (NONE, NONE, NONE, false),
+        }
+    }
+
+    fn select(&mut self, cells: &mut [Cell]) -> Result<Vec<usize>, Fallback> {
+        loop {
+            self.spend(cells.len())?;
+            let chosen = chain(cells).1;
+            let mut refined = false;
+            for &k in &chosen {
+                if cells[k].exact {
+                    continue;
+                }
+                refined = true;
+                cells[k].exact = true;
+                if let Act::Leaf(x, y, ctx) = cells[k].act {
+                    cells[k].value = match self.leaf(x, y, ctx, true)? {
+                        Some(e) => self.value(&e.d),
+                        None => -1,
+                    };
+                }
+            }
+            if !refined {
+                return Ok(chosen);
+            }
         }
     }
 
@@ -417,7 +596,7 @@ impl Matcher<'_, '_> {
         ys: &[u32],
         a: u32,
         b: u32,
-        charge: Charge,
+        ctx: Ctx,
     ) -> Result<Vec<Cell>, Fallback> {
         let mut out = Vec::new();
         if xs.is_empty() || ys.is_empty() {
@@ -429,6 +608,7 @@ impl Matcher<'_, '_> {
         let lead_b = |i: usize| self.leads(1, ys[i]);
         let changes = slide(myers::diff(&ia, &ib), &ia, &ib, [&lead_a, &lead_b]);
         let mut matched = [vec![false; xs.len()], vec![false; ys.len()]];
+        let mut keys: Vec<(usize, usize, u32, u32)> = Vec::new();
         let mut gaps = Vec::new();
         let (mut i, mut j) = (0, 0);
         for change in changes
@@ -442,13 +622,7 @@ impl Matcher<'_, '_> {
             .chain([(xs.len()..xs.len(), ys.len()..ys.len())])
         {
             while i < change.0.start {
-                let value = self.pair_value(xs[i], ys[j], charge)?;
-                out.push(Cell {
-                    old: (i, i),
-                    new: (j, j),
-                    value,
-                    act: Act::Equal(xs[i], ys[j]),
-                });
+                keys.push((i, j, xs[i], ys[j]));
                 matched[0][i] = true;
                 matched[1][j] = true;
                 (i, j) = (i + 1, j + 1);
@@ -458,134 +632,138 @@ impl Matcher<'_, '_> {
             }
             (i, j) = (change.0.end, change.1.end);
         }
-        let mut found: HashMap<(usize, usize, u32, u32), i64> = HashMap::default();
-        let mut slots: Vec<(usize, usize)> = Vec::new();
-        for (olds, news) in &gaps {
-            if olds.len() * news.len() > MAX_PAIR_CELLS {
-                continue;
-            }
+        let exhaustive = self.options.exhaustive;
+        let dense: Vec<(Range<usize>, Range<usize>)> = if exhaustive {
+            vec![(0..xs.len(), 0..ys.len())]
+        } else if self.degraded() {
+            Vec::new()
+        } else {
+            gaps.iter()
+                .filter(|(o, n)| o.len() * n.len() <= MAX_PAIR_CELLS)
+                .cloned()
+                .collect()
+        };
+        for (olds, news) in &dense {
             self.spend(olds.len() * news.len())?;
             for i in olds.clone() {
                 let mut ranked: Vec<(i64, usize)> = Vec::new();
                 for j in news.clone() {
                     let (x, y) = (xs[i], ys[j]);
-                    match (self.is_list(0, x), self.is_list(1, y)) {
-                        (false, false) => {
-                            let value = self.leaf_value(x, y, charge);
-                            if value > 0 {
-                                found.insert((i, j, x, y), value);
-                            }
+                    if !self.feasible(x, y) {
+                        continue;
+                    }
+                    if !self.is_list(0, x) {
+                        if self.candidate_leaf(x, y) {
+                            keys.push((i, j, x, y));
                         }
-                        (true, true) if self.pairable(x, y) => {
-                            ranked.push((self.estimate(x, y), j));
-                        }
-                        _ => {}
+                    } else if exhaustive {
+                        keys.push((i, j, x, y));
+                    } else {
+                        ranked.push((self.estimate(x, y)?, j));
                     }
                 }
                 ranked.sort_unstable_by_key(|&(e, j)| (std::cmp::Reverse(e), j));
-                let floor = ranked.first().map_or(0, |&(e, _)| e / 2);
-                for &(_, j) in ranked.iter().take(CANDIDATES).filter(|&&(e, _)| e > floor) {
-                    found.entry((i, j, xs[i], ys[j])).or_insert(0);
+                let best = ranked.first().map_or(0, |&(e, _)| e);
+                for &(_, j) in ranked
+                    .iter()
+                    .take(self.candidates())
+                    .filter(|&&(e, _)| !self.options.floor || 2 * e >= best)
+                {
+                    keys.push((i, j, xs[i], ys[j]));
                 }
             }
         }
-        let gap_old: Vec<usize> = (0..xs.len()).filter(|&i| !matched[0][i]).collect();
-        let gap_new: Vec<usize> = (0..ys.len()).filter(|&j| !matched[1][j]).collect();
-        let at_new: HashMap<u32, usize> = gap_new.iter().map(|&j| (ys[j], j)).collect();
-        let at_old: HashMap<u32, usize> = gap_old.iter().map(|&i| (xs[i], i)).collect();
-        for &i in &gap_old {
-            for (j, y) in self.reach(0, xs[i], b, &at_new)? {
-                found.entry((i, j, xs[i], y)).or_insert(0);
-            }
-        }
-        for &j in &gap_new {
-            for (i, x) in self.reach(1, ys[j], a, &at_old)? {
-                if x != xs[i] {
-                    found.entry((i, j, x, ys[j])).or_insert(0);
+        let open = [0, 1].map(|side| {
+            matched[side]
+                .iter()
+                .map(|&m| exhaustive || !m)
+                .collect::<Vec<bool>>()
+        });
+        for i in 0..xs.len() {
+            if open[0][i] {
+                for (j, y) in self.reach(0, xs[i], b, ys, &open[1])? {
+                    keys.push((i, j, xs[i], y));
                 }
             }
         }
-        for (olds, news) in &gaps {
-            let trees = self.trees;
-            let kind = |side: usize, n: u32| trees[side].nodes[n as usize].kind;
-            for i in olds.clone() {
-                let x = xs[i];
-                let Some(j) = news.clone().find(|&j| kind(1, ys[j]) == kind(0, x)) else {
+        for j in 0..ys.len() {
+            if open[1][j] {
+                for (i, x) in self.reach(1, ys[j], a, xs, &open[0])? {
+                    keys.push((i, j, x, ys[j]));
+                }
+            }
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        self.spend(keys.len())?;
+        let mut deep: Vec<(usize, usize, u32, u32)> = Vec::new();
+        let mut reached = [vec![false; xs.len()], vec![false; ys.len()]];
+        for (i, j, x, y) in keys {
+            let c = (x == xs[i] && ctx.0, y == ys[j] && ctx.1);
+            let cell = if self.is_list(0, x) {
+                if !self.feasible(x, y) {
+                    continue;
+                }
+                let e = self.savings(x, y)?;
+                Cell {
+                    old: (i, i),
+                    new: (j, j),
+                    value: self.value(&e.d),
+                    exact: true,
+                    act: Act::List(x, y),
+                }
+            } else {
+                let Some(e) = self.leaf(x, y, c, false)? else {
                     continue;
                 };
-                let y = ys[j];
-                let unique = olds
-                    .clone()
-                    .filter(|&k| kind(0, xs[k]) == kind(0, x))
-                    .count()
-                    == 1
-                    && news
-                        .clone()
-                        .filter(|&k| kind(1, ys[k]) == kind(1, y))
-                        .count()
-                        == 1;
-                let alone = found
-                    .keys()
-                    .all(|k| (k.0 != i && k.1 != j) || (k.2, k.3) == (x, y));
-                if unique && alone && self.pairable(x, y) && self.compatible(x, y) {
-                    let value = self.savings(x, y, 0)?;
-                    if value > 0 {
-                        found.insert((i, j, x, y), value);
-                        slots.push((i, j));
-                    }
+                Cell {
+                    old: (i, i),
+                    new: (j, j),
+                    value: self.value(&e.d),
+                    exact: !self.inexact(x, y),
+                    act: Act::Leaf(x, y, c),
                 }
-            }
-        }
-        let mut keys: Vec<(usize, usize, u32, u32)> = found.keys().copied().collect();
-        keys.sort_unstable();
-        let mut detached: Vec<(usize, usize, u32, u32, i64)> = Vec::new();
-        for (i, j, x, y) in keys {
-            let deep = x != xs[i] || y != ys[j];
-            let value = match found[&(i, j, x, y)] {
-                0 => {
-                    let charge = (
-                        if x == xs[i] { charge.0 } else { 0 },
-                        if y == ys[j] { charge.1 } else { 0 },
-                    );
-                    self.pair_value(x, y, charge)?
-                }
-                value => value,
-            } - if deep { self.detached(x, y) } else { 0 };
-            if value <= 0 {
+            };
+            if cell.value <= 0 {
                 continue;
             }
-            out.push(Cell {
-                old: (i, i),
-                new: (j, j),
-                value,
-                act: Act::Pair(x, y, slot_gamma(&slots, i, j)),
-            });
-            if deep {
-                detached.push((i, j, x, y, value));
+            reached[0][i] = true;
+            reached[1][j] = true;
+            if x != xs[i] || y != ys[j] {
+                deep.push((i, j, x, y));
             }
+            out.push(cell);
         }
-        let reached: HashSet<(bool, usize)> = found
-            .keys()
-            .flat_map(|&(i, j, _, _)| [(true, i), (false, j)])
-            .collect();
-        self.wraps(xs, ys, a, b, charge, &detached, &gaps, &reached, &mut out)?;
+        self.wraps(xs, ys, a, b, ctx, &deep, &gaps, &reached, &mut out)?;
         Ok(out)
     }
 
+    fn candidate_leaf(&self, x: u32, y: u32) -> bool {
+        let (na, nb) = (
+            &self.trees[0].nodes[x as usize],
+            &self.trees[1].nodes[y as usize],
+        );
+        match na.class {
+            Class::Plain => na.name && nb.name || self.text(0, x) == self.text(1, y),
+            _ => true,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn wraps(
         &mut self,
         xs: &[u32],
         ys: &[u32],
         a: u32,
         b: u32,
-        charge: Charge,
-        deep: &[(usize, usize, u32, u32, i64)],
+        ctx: Ctx,
+        deep: &[(usize, usize, u32, u32)],
         gaps: &[(Range<usize>, Range<usize>)],
-        reached: &HashSet<(bool, usize)>,
+        reached: &[Vec<bool>; 2],
         out: &mut Vec<Cell>,
     ) -> Result<(), Fallback> {
         let mut runs: Vec<(usize, usize, usize, u32, bool)> = Vec::new();
-        for &(i, j, x, y, _) in deep {
+        for &(i, j, x, y) in deep {
             let (wrap, host) = if y != ys[j] {
                 (true, self.parents[1][y as usize])
             } else {
@@ -610,7 +788,7 @@ impl Matcher<'_, '_> {
             else {
                 continue;
             };
-            let bare = |k: usize| !reached.contains(&(wrap, k));
+            let bare = |k: usize| !reached[usize::from(!wrap)][k];
             let (mut start, mut end) = (from, to);
             while start > gap.start && bare(start - 1) {
                 start -= 1;
@@ -626,41 +804,60 @@ impl Matcher<'_, '_> {
             if from == to {
                 continue;
             }
-            let key = if wrap {
-                (xs[from], xs[to], host, charge.0)
-            } else {
-                (ys[from], ys[to], host, charge.1 + 2)
-            };
-            let value = match self.wrapped.get(&key) {
-                Some(&value) => value,
-                None => {
-                    let value = if wrap {
-                        let inner = self.trees[1].children(host);
-                        let cells = self.cells(&xs[from..=to], &inner, a, host, (charge.0, 0))?;
-                        chain(&cells).0 - DETACHED
-                    } else {
-                        let inner = self.trees[0].children(host);
-                        let cells = self.cells(&inner, &ys[from..=to], host, b, (0, charge.1))?;
-                        chain(&cells).0 - DETACHED
-                    };
-                    self.wrapped.insert(key, value);
-                    value
-                }
-            };
-            if value <= 0 {
-                continue;
-            }
+            let span = (from as u32, to as u32);
             let (old, new, act) = if wrap {
-                ((from, to), (other, other), Act::Wrap(from, to, host))
+                let ends = (xs[from], xs[to]);
+                (
+                    (from, to),
+                    (other, other),
+                    Act::Wrap(span.0, span.1, host, ends),
+                )
             } else {
-                ((other, other), (from, to), Act::Unwrap(from, to, host))
+                let ends = (ys[from], ys[to]);
+                (
+                    (other, other),
+                    (from, to),
+                    Act::Unwrap(span.0, span.1, host, ends),
+                )
             };
-            out.push(Cell {
+            let mut cell = Cell {
                 old,
                 new,
-                value,
+                value: 0,
+                exact: true,
                 act,
-            });
+            };
+            let key = self.wrap_key(&cell);
+            let entry = match self.wrapped.get(&key) {
+                Some(&entry) => entry,
+                None => {
+                    let inner = if wrap {
+                        self.trees[1].children(host)
+                    } else {
+                        self.trees[0].children(host)
+                    };
+                    let mut cells = if wrap {
+                        self.cells(&xs[from..=to], &inner, a, host, (ctx.0, false))?
+                    } else {
+                        self.cells(&inner, &ys[from..=to], host, b, (false, ctx.1))?
+                    };
+                    let mut entry = Entry::default();
+                    let chosen = self.select(&mut cells)?;
+                    for &k in &chosen {
+                        let c = self.features(&cells[k])?;
+                        entry.d += c.d;
+                        entry.hyp |= c.hyp;
+                    }
+                    let acts = chosen.iter().map(|&k| cells[k].act).collect();
+                    self.wrap_acts.insert(key, acts);
+                    self.wrapped.insert(key, entry);
+                    entry
+                }
+            };
+            cell.value = self.value(&entry.d);
+            if cell.value > 0 {
+                out.push(cell);
+            }
         }
         Ok(())
     }
@@ -674,21 +871,35 @@ impl Matcher<'_, '_> {
         side: usize,
         node: u32,
         scope: u32,
-        children: &HashMap<u32, usize>,
+        nodes: &[u32],
+        open: &[bool],
     ) -> Result<Vec<(usize, u32)>, Fallback> {
         let other = 1 - side;
-        let mut votes: HashMap<u32, i64> = HashMap::default();
-        let pins = self.pins_in(side, node).to_vec();
-        self.spend(pins.len())?;
+        let exhaustive = self.options.exhaustive;
+        let index = |n: u32| nodes.binary_search(&n).ok().filter(|&i| open[i]);
         let fits = |m: &Self, target: u32| {
-            let (x, y) = if side == 0 {
-                (node, target)
+            if side == 0 {
+                m.feasible(node, target)
             } else {
-                (target, node)
-            };
-            m.pairable(x, y) || m.equal(x, y)
+                m.feasible(target, node)
+            }
         };
-        for &(p, q) in &pins {
+        let pins = if side == 0 {
+            &self.pins
+        } else {
+            &self.pins_new
+        };
+        let end = self.next(side, node);
+        let from = pins.partition_point(|&(x, _)| x < node);
+        let to = pins.partition_point(|&(x, _)| x < end);
+        let mut votes: Vec<(u32, i64)> = Vec::new();
+        let mut steps = to - from;
+        for k in from..to {
+            let (p, q) = if side == 0 {
+                self.pins[k]
+            } else {
+                self.pins_new[k]
+            };
             if !self.inside(other, q, scope) {
                 continue;
             }
@@ -700,81 +911,101 @@ impl Matcher<'_, '_> {
             };
             while at != NONE && at != scope {
                 if fits(self, at) {
-                    *votes.entry(at).or_default() += mass;
+                    votes.push((at, mass));
                 }
                 at = self.parents[other][at as usize];
+                steps += 1;
             }
         }
+        self.spend(steps)?;
+        votes.sort_unstable_by_key(|&(t, _)| t);
+        votes.dedup_by(|b, a| {
+            let same = a.0 == b.0;
+            if same {
+                a.1 += b.1;
+            }
+            same
+        });
         if votes.is_empty() && self.significant(side, node) {
             let end = self.next(other, scope);
-            let hits = self.hashes[other]
-                .get(&self.hash(side, node))
-                .map(|hits| {
+            let limit = if exhaustive {
+                usize::MAX
+            } else {
+                MAX_HASH_HITS
+            };
+            let parent = self.parents[side][node as usize];
+            let lone = self.is_list(side, node)
+                || node == parent + 1 && self.next(side, node) == self.next(side, parent);
+            let hits: Vec<u32> = match self.hashes[other].get(&self.hash(side, node)) {
+                Some(hits) if lone => {
                     let from = hits.partition_point(|&h| h <= scope);
                     hits[from..]
                         .iter()
                         .copied()
                         .take_while(|&h| h < end)
-                        .filter(|h| !children.contains_key(h))
-                        .take(MAX_HASH_HITS)
-                        .collect::<Vec<u32>>()
-                })
-                .unwrap_or_default();
-            let lone = self.trees[side].is_list(node) || {
-                let parent = self.parents[side][node as usize];
-                self.trees[side].children(parent).len() == 1
+                        .filter(|&h| index(h).is_none())
+                        .take(limit)
+                        .collect()
+                }
+                _ => Vec::new(),
             };
-            for hit in hits.into_iter().filter(|_| lone) {
-                if fits(self, hit) || !self.is_list(side, node) {
-                    votes.insert(hit, self.total(side, node));
+            self.spend(hits.len())?;
+            for hit in hits {
+                if fits(self, hit) {
+                    votes.push((hit, self.total(side, node)));
                 }
             }
         }
         if let Some(name) = item_at(self.trees[side], node) {
             let name = self.trees[side].text(name);
-            for (&target, _) in children.iter() {
-                if item_at(self.trees[other], target)
-                    .is_some_and(|n| self.trees[other].text(n) == name)
+            self.spend(nodes.len())?;
+            for (i, &target) in nodes.iter().enumerate() {
+                if open[i]
+                    && item_at(self.trees[other], target)
+                        .is_some_and(|n| self.trees[other].text(n) == name)
                     && fits(self, target)
                 {
-                    votes.insert(target, i64::MAX);
+                    votes.retain(|&(t, _)| t != target);
+                    votes.push((target, i64::MAX));
                 }
             }
         }
-        let mut ranked: Vec<(i64, u32)> = votes.into_iter().map(|(t, v)| (v, t)).collect();
-        ranked.sort_unstable_by_key(|&(v, t)| (std::cmp::Reverse(v), t));
-        let floor = ranked
+        votes.sort_unstable_by_key(|&(t, v)| (std::cmp::Reverse(v), t));
+        let best = votes
             .iter()
-            .map(|&(v, _)| v)
+            .map(|&(_, v)| v)
             .find(|&v| v != i64::MAX)
-            .map_or(0, |v| v / 2);
+            .unwrap_or(0);
         let mut out = Vec::new();
-        for (_, target) in ranked
-            .into_iter()
-            .filter(|&(v, _)| v > floor)
-            .take(CANDIDATES)
+        let mut steps = 0;
+        for &(target, _) in votes
+            .iter()
+            .take(self.candidates())
+            .filter(|&&(_, v)| exhaustive || !self.options.floor || 2 * v.min(i64::MAX / 2) >= best)
         {
             let mut top = target;
-            while top != NONE && !children.contains_key(&top) {
+            while top != NONE && index(top).is_none() {
                 top = self.parents[other][top as usize];
+                steps += 1;
             }
-            if let Some(&index) = children.get(&top) {
-                out.push((index, target));
+            if let Some(i) = index(top) {
+                out.push((i, target));
             }
         }
+        self.spend(steps)?;
         Ok(out)
     }
 
-    fn estimate(&mut self, a: u32, b: u32) -> i64 {
+    fn estimate(&mut self, a: u32, b: u32) -> Result<i64, Fallback> {
         for (side, node) in [(0, a), (1, b)] {
             if !self.signatures[side].contains_key(&node) {
-                let signature = self.signature(side, node);
+                let signature = self.signature(side, node)?;
                 self.signatures[side].insert(node, signature);
             }
         }
         let (sa, sb) = (&self.signatures[0][&a], &self.signatures[1][&b]);
         if sa.is_empty() && sb.is_empty() {
-            return 1;
+            return Ok(1);
         }
         let (mut i, mut j, mut common) = (0, 0, 0);
         while i < sa.len() && j < sb.len() {
@@ -788,10 +1019,10 @@ impl Matcher<'_, '_> {
                 }
             }
         }
-        common
+        Ok(common)
     }
 
-    fn signature(&self, side: usize, node: u32) -> Vec<u64> {
+    fn signature(&mut self, side: usize, node: u32) -> Result<Vec<u64>, Fallback> {
         let tree = self.trees[side];
         let end = self.next(side, node);
         let mut out = Vec::new();
@@ -803,9 +1034,10 @@ impl Matcher<'_, '_> {
             }
             at += 1;
         }
+        self.spend((at - node) as usize)?;
         out.sort_unstable();
         out.dedup();
-        out
+        Ok(out)
     }
 
     fn intern(&self, a: &[u32], b: &[u32]) -> (Vec<u32>, Vec<u32>) {
@@ -831,48 +1063,88 @@ impl Matcher<'_, '_> {
             .all(u8::is_ascii_whitespace)
     }
 
-    fn apply(&mut self, a: u32, b: u32, gamma: i64) -> Result<(), Fallback> {
+    fn solve(&mut self) -> Result<(), Fallback> {
+        self.predicted = self.savings(0, 0)?.d;
+        self.apply(0, 0)?;
+        self.relocate()
+    }
+
+    fn apply(&mut self, a: u32, b: u32) -> Result<(), Fallback> {
         self.link(a, b);
         if self.same(a, b) || !self.is_list(0, a) {
             return Ok(());
         }
         let xs = self.trees[0].children(a);
         let ys = self.trees[1].children(b);
-        self.apply_chain(&xs, &ys, a, b, (gamma, gamma))
+        if !self.acts.contains_key(&(a, b)) {
+            self.savings(a, b)?;
+        }
+        let acts = self.acts.get(&(a, b)).cloned().unwrap_or_default();
+        self.apply_acts(&xs, &ys, a, b, (true, true), &acts)
     }
 
-    fn apply_chain(
+    fn apply_acts(
         &mut self,
         xs: &[u32],
         ys: &[u32],
         a: u32,
         b: u32,
-        charge: Charge,
+        ctx: Ctx,
+        acts: &[Act],
     ) -> Result<(), Fallback> {
-        let cells = self.cells(xs, ys, a, b, charge)?;
-        let (_, chosen) = chain(&cells);
-        for k in chosen {
-            match cells[k].act {
-                Act::Equal(x, y) | Act::Pair(x, y, _) => {
-                    let gamma = match cells[k].act {
-                        Act::Pair(_, _, 0) => 0,
-                        _ => GAMMA,
-                    };
-                    if !self.same(x, y) {
-                        self.apply(x, y, gamma)?;
-                    }
-                }
-                Act::Wrap(from, to, host) => {
+        if self.options.margins {
+            let mut cells = self.cells(xs, ys, a, b, ctx)?;
+            let chosen = self.select(&mut cells)?;
+            self.margin(&cells, &chosen);
+        }
+        for &act in acts {
+            match act {
+                Act::Leaf(x, y, _) => self.link(x, y),
+                Act::List(x, y) => self.apply(x, y)?,
+                Act::Wrap(from, to, host, ends) => {
                     let inner = self.trees[1].children(host);
-                    self.apply_chain(&xs[from..=to], &inner, a, host, (charge.0, 0))?;
+                    let run = &xs[from as usize..=to as usize];
+                    let acts = self.wrap_acts[&(ends.0, ends.1, host, true)].clone();
+                    self.apply_acts(run, &inner, a, host, (ctx.0, false), &acts)?;
                 }
-                Act::Unwrap(from, to, host) => {
+                Act::Unwrap(from, to, host, ends) => {
                     let inner = self.trees[0].children(host);
-                    self.apply_chain(&inner, &ys[from..=to], host, b, (0, charge.1))?;
+                    let run = &ys[from as usize..=to as usize];
+                    let acts = self.wrap_acts[&(ends.0, ends.1, host, false)].clone();
+                    self.apply_acts(&inner, run, host, b, (false, ctx.1), &acts)?;
                 }
             }
         }
         Ok(())
+    }
+
+    fn margin(&mut self, cells: &[Cell], chosen: &[usize]) {
+        let overlap = |p: (usize, usize), q: (usize, usize)| p.0 <= q.1 && q.0 <= p.1;
+        for &k in chosen {
+            let Act::List(x, y) = cells[k].act else {
+                continue;
+            };
+            if item_at(self.trees[0], x).is_none() && item_at(self.trees[1], y).is_none() {
+                continue;
+            }
+            let runner = cells
+                .iter()
+                .enumerate()
+                .filter(|&(c, cell)| {
+                    !chosen.contains(&c)
+                        && (overlap(cell.old, cells[k].old) || overlap(cell.new, cells[k].new))
+                })
+                .map(|(_, cell)| cell.value)
+                .max()
+                .unwrap_or(0);
+            self.margins.push(Margin {
+                kind: "item",
+                old: self.trees[0].nodes[x as usize].span.start,
+                new: self.trees[1].nodes[y as usize].span.start,
+                best: cells[k].value,
+                runner,
+            });
+        }
     }
 
     /// Pairs subtrees left unlinked whose correspondence pays for a move
@@ -888,31 +1160,30 @@ impl Matcher<'_, '_> {
             }
             let olds = self.open_chain(0, p);
             let news = self.open_chain(1, q);
+            self.spend(olds.len() * news.len())?;
             for &x in &olds {
-                if let Some(&y) = news
-                    .iter()
-                    .find(|&&y| self.pairable(x, y) || self.equal(x, y))
-                {
+                if let Some(&y) = news.iter().find(|&&y| self.feasible(x, y)) {
                     candidates.push((x, y));
                 }
             }
         }
         let (old, new) = (self.trees[0], self.trees[1]);
+        let mut named: HashMap<&str, Vec<u32>> = HashMap::default();
+        self.spend(old.items.len() + new.items.len())?;
+        for item in &new.items {
+            if self.partner[1][item.node as usize] == NONE {
+                named
+                    .entry(new.text(item.name.clone()))
+                    .or_default()
+                    .push(item.node);
+            }
+        }
         for item in &old.items {
             if self.partner[0][item.node as usize] != NONE {
                 continue;
             }
-            let name = old.text(item.name.clone());
-            let same: Vec<u32> = new
-                .items
-                .iter()
-                .filter(|i| {
-                    self.partner[1][i.node as usize] == NONE && new.text(i.name.clone()) == name
-                })
-                .map(|i| i.node)
-                .collect();
-            if let [y] = same[..] {
-                candidates.push((item.node, y));
+            if let Some([y]) = named.get(old.text(item.name.clone())).map(Vec::as_slice) {
+                candidates.push((item.node, *y));
             }
         }
         candidates.extend(self.duplicates()?);
@@ -920,39 +1191,47 @@ impl Matcher<'_, '_> {
         candidates.dedup();
         let mut valued = Vec::new();
         for (x, y) in candidates {
-            if !self.compatible(x, y)
+            if !self.feasible(x, y)
                 || !whole_lines(self.trees[0], x)
                 || !whole_lines(self.trees[1], y)
-                || !self.free(0, x)
-                || !self.free(1, y)
+                || !self.free(0, x)?
+                || !self.free(1, y)?
             {
                 continue;
             }
-            let value = self.move_value(x, y)?;
+            let e = self.moved(x, y)?;
+            let value = self.value(&e.d);
+            if self.options.margins {
+                self.margins.push(Margin {
+                    kind: "move",
+                    old: self.trees[0].nodes[x as usize].span.start,
+                    new: self.trees[1].nodes[y as usize].span.start,
+                    best: value,
+                    runner: 0,
+                });
+            }
             if value > 0 {
-                valued.push((value, x, y));
+                valued.push((value, x, y, e.d));
             }
         }
-        valued.sort_unstable_by_key(|&(v, x, y)| (std::cmp::Reverse(v), x, y));
-        for (_, x, y) in valued {
-            if !self.free(0, x) || !self.free(1, y) || !self.disjoint(x, y) {
+        valued.sort_unstable_by_key(|&(v, x, y, _)| (std::cmp::Reverse(v), x, y));
+        for (_, x, y, d) in valued {
+            if !self.free(0, x)? || !self.free(1, y)? || !self.disjoint(x, y) {
                 continue;
             }
-            self.apply(x, y, GAMMA)?;
+            self.apply(x, y)?;
             self.moves.push((x, y));
+            self.predicted += d;
         }
         Ok(())
     }
 
-    fn move_value(&mut self, x: u32, y: u32) -> Result<i64, Fallback> {
-        let kept = self.savings(x, y, GAMMA)?;
-        let lost = (self.total(0, x) + self.total(1, y) - kept).max(0);
-        let note = if item_at(self.trees[0], x).is_some() {
-            MOVE_ITEM
-        } else {
-            MOVE
-        };
-        Ok(kept - note - lost * MOVE_LOSS.0 / MOVE_LOSS.1)
+    fn moved(&mut self, x: u32, y: u32) -> Result<Entry, Fallback> {
+        let mut e = self.savings(x, y)?;
+        let unmatched = self.total(0, x) + self.total(1, y) - e.d[UNMATCHED];
+        e.d[MOVES] -= 1;
+        e.d[MOVED] -= unmatched;
+        Ok(e)
     }
 
     fn disjoint(&self, x: u32, y: u32) -> bool {
@@ -975,14 +1254,17 @@ impl Matcher<'_, '_> {
     }
 
     fn duplicates(&mut self) -> Result<Vec<(u32, u32)>, Fallback> {
-        let mut found: [HashMap<u64, Vec<u32>>; 2] = [HashMap::default(), HashMap::default()];
+        let mut found: [BTreeMap<u64, Vec<u32>>; 2] = Default::default();
         for side in [0, 1] {
             let tree = self.trees[side];
             self.spend(tree.nodes.len())?;
             let mut at = 1;
             while at < tree.nodes.len() as u32 {
                 let end = tree.nodes[at as usize].next;
-                if tree.is_list(at) && whole_lines(tree, at) && self.free(side, at) {
+                if tree.is_list(at)
+                    && whole_lines(tree, at)
+                    && (at..end).all(|k| self.partner[side][k as usize] == NONE)
+                {
                     found[side].entry(self.hash(side, at)).or_default().push(at);
                     at = end;
                     continue;
@@ -993,13 +1275,73 @@ impl Matcher<'_, '_> {
         let [olds, news] = found;
         let mut out = Vec::new();
         for (hash, olds) in &olds {
-            if let Some(targets) = news.get(hash)
-                && olds.len() == targets.len()
-            {
+            if let Some(targets) = news.get(hash) {
                 out.extend(olds.iter().copied().zip(targets.iter().copied()));
             }
         }
         Ok(out)
+    }
+
+    /// Accepts each rename whose linked uses pay for its entry, and
+    /// charges the rejected ones back to the prediction.
+    fn finalize(&mut self) -> (Vec<(&'a str, &'a str, u32)>, bool) {
+        let (old, new) = (self.trees[0], self.trees[1]);
+        let mut uses: BTreeMap<(&'a str, &'a str), (Features, u32, i64)> = BTreeMap::new();
+        for k in 0..old.nodes.len() as u32 {
+            let b = self.partner[0][k as usize];
+            if b == NONE {
+                continue;
+            }
+            let (na, nb) = (&old.nodes[k as usize], &new.nodes[b as usize]);
+            let (p, q) = (self.text(0, k), self.text(1, b));
+            if na.class != Class::Plain || !na.name || !nb.name || !self.rename_ok(p, q) {
+                continue;
+            }
+            let (wa, wb) = (self.own(0, k), self.own(1, b));
+            let ctx = (
+                self.linked(0, self.parents[0][k as usize]),
+                self.linked(1, self.parents[1][b as usize]),
+            );
+            let entry = uses.entry((p, q)).or_default();
+            entry.0[UNMATCHED] += wa + wb;
+            entry.0[INSIDE] += if ctx.0 { wa } else { 0 } + if ctx.1 { wb } else { 0 };
+            entry.0[RENAMED] -= wa + wb;
+            if !ctx.0 && !ctx.1 {
+                entry.0[ISOLATED] -= 1;
+            }
+            entry.1 += 1;
+        }
+        for item in &old.items {
+            let b = self.partner[0][item.node as usize];
+            if b == NONE {
+                continue;
+            }
+            let Some(name) = item_at(new, b) else {
+                continue;
+            };
+            let (p, q) = (old.text(item.name.clone()), new.text(name));
+            if self.rename_ok(p, q) {
+                uses.entry((p, q)).or_default().2 += 1;
+            }
+        }
+        let mut targets: HashMap<&str, u32> = HashMap::default();
+        for &(p, _) in uses.keys() {
+            *targets.entry(p).or_default() += 1;
+        }
+        let mut accepted = Vec::new();
+        let mut rejected = false;
+        for ((p, q), (d, count, items)) in uses {
+            let gain = self.value(&d) + self.options.weights.iota * items;
+            if count > 0 && targets[p] == 1 && gain > self.options.weights.rho0 {
+                self.predicted[ENTRIES] -= 1;
+                accepted.push((p, q, count));
+            } else {
+                self.predicted -= d;
+                self.predicted[IDENTITY] -= items;
+                rejected = true;
+            }
+        }
+        (accepted, rejected)
     }
 
     fn scope(&mut self) -> Result<(), Fallback> {
@@ -1050,7 +1392,7 @@ impl Matcher<'_, '_> {
         let old_roots: Vec<u32> = self.moves.iter().map(|&(o, _)| o).collect();
         let new_roots: Vec<u32> = self.moves.iter().map(|&(_, n)| n).collect();
         let (old_owner, new_owner) = (owner(old, &old_roots), owner(new, &new_roots));
-        let mut groups: HashMap<u32, Vec<(u32, u32, u32)>> = HashMap::default();
+        let mut groups: BTreeMap<u32, Vec<(u32, u32, u32, u64)>> = BTreeMap::new();
         for a in 0..old.nodes.len() as u32 {
             let b = self.partner[0][a as usize];
             if b == NONE {
@@ -1065,26 +1407,23 @@ impl Matcher<'_, '_> {
             let entries = groups.entry(group).or_default();
             if x.class == Class::List {
                 if !x.open.is_empty() && !y.open.is_empty() {
-                    entries.push((x.open.start, y.open.start, a));
-                    entries.push((x.close.start, y.close.start, a));
+                    entries.push((x.open.start, y.open.start, a, cost::DELIMITER as u64));
+                    entries.push((x.close.start, y.close.start, a, cost::DELIMITER as u64));
                 }
             } else {
-                entries.push((x.span.start, y.span.start, a));
+                entries.push((x.span.start, y.span.start, a, self.own(0, a) as u64));
             }
         }
-        let mut keys: Vec<u32> = groups.keys().copied().collect();
-        keys.sort_unstable();
-        for key in keys {
-            let mut entries = groups.remove(&key).unwrap_or_default();
+        for (_, mut entries) in groups {
             entries.sort_unstable();
             let keyed: Vec<(u32, u32, u64)> = entries
                 .iter()
                 .enumerate()
-                .map(|(k, &(_, y, _))| (k as u32, y, 1))
+                .map(|(k, &(_, y, _, w))| (k as u32, y, w))
                 .collect();
             let kept = heaviest_increasing(&keyed);
-            for (k, &(_, _, node)) in entries.iter().enumerate() {
-                if !kept[k] {
+            for (k, &(_, _, node, _)) in entries.iter().enumerate() {
+                if !kept[k] && self.partner[0][node as usize] != NONE {
                     self.unlink(node);
                 }
             }
@@ -1093,7 +1432,6 @@ impl Matcher<'_, '_> {
     }
 }
 
-/// The heaviest set of cells increasing on both sides, with its value.
 fn chain(cells: &[Cell]) -> (i64, Vec<usize>) {
     if cells.is_empty() {
         return (0, Vec::new());
@@ -1146,35 +1484,6 @@ fn chain(cells: &[Cell]) -> (i64, Vec<usize>) {
     }
     chosen.reverse();
     (top.0, chosen)
-}
-
-fn slot_gamma(slots: &[(usize, usize)], i: usize, j: usize) -> i64 {
-    if slots.contains(&(i, j)) { 0 } else { GAMMA }
-}
-
-fn common_words(a: &str, b: &str) -> i64 {
-    fn words(s: &str) -> Vec<&str> {
-        let mut out: Vec<&str> = s
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|w| !w.is_empty())
-            .collect();
-        out.sort_unstable();
-        out
-    }
-    let (wa, wb) = (words(a), words(b));
-    let (mut i, mut j, mut common) = (0, 0, 0);
-    while i < wa.len() && j < wb.len() {
-        match wa[i].cmp(wb[j]) {
-            std::cmp::Ordering::Less => i += 1,
-            std::cmp::Ordering::Greater => j += 1,
-            std::cmp::Ordering::Equal => {
-                common += 1;
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-    common
 }
 
 fn heaviest_increasing(items: &[(u32, u32, u64)]) -> Vec<bool> {
@@ -1324,51 +1633,6 @@ pub(crate) fn parents(tree: &Tree<'_>) -> Vec<u32> {
     out
 }
 
-fn weights(tree: &Tree<'_>) -> Weights {
-    let mut own = Vec::with_capacity(tree.nodes.len());
-    let mut sum = Vec::with_capacity(tree.nodes.len() + 1);
-    sum.push(0);
-    for node in &tree.nodes {
-        let text = tree.text(node.span.clone());
-        let w = match node.class {
-            Class::List => {
-                DELIMITER * (i64::from(!node.open.is_empty()) + i64::from(!node.close.is_empty()))
-            }
-            Class::Text | Class::Comment => {
-                let words = text
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .filter(|w| !w.is_empty())
-                    .count() as i64;
-                WORD * words.max(1)
-            }
-            Class::Plain if text.bytes().any(|b| b.is_ascii_alphanumeric() || b >= 0x80) => WORD,
-            Class::Plain => PUNCT,
-        };
-        own.push(w);
-        sum.push(sum.last().copied().unwrap_or(0) + w);
-    }
-    Weights { own, sum }
-}
-
-fn lines(tree: &Tree<'_>) -> Lines {
-    let mut starts = vec![0u32];
-    let mut hashes = Vec::new();
-    for line in tree.src.split_inclusive('\n') {
-        hashes.push(crate::syntax::hash_bytes(line.trim().as_bytes()));
-        starts.push(starts.last().copied().unwrap_or(0) + line.len() as u32);
-    }
-    hashes.push(0);
-    Lines { starts, hashes }
-}
-
-fn names<'a>(tree: &Tree<'a>) -> HashSet<&'a str> {
-    tree.nodes
-        .iter()
-        .filter(|n| n.name)
-        .map(|n| tree.text(n.span.clone()))
-        .collect()
-}
-
 pub(crate) fn whole_lines(tree: &Tree<'_>, node: u32) -> bool {
     let span = &tree.nodes[node as usize].span;
     let src = tree.src.as_bytes();
@@ -1384,26 +1648,30 @@ pub(crate) fn whole_lines(tree: &Tree<'_>, node: u32) -> bool {
     before && after
 }
 
-fn items<'a>(tree: &Tree<'a>) -> HashSet<(&'static str, &'a str)> {
-    tree.items
-        .iter()
-        .map(|item| (item.kind, tree.text(item.name.clone())))
-        .collect()
-}
-
-fn item_entry<'a>(tree: &Tree<'a>, node: u32) -> Option<(&'static str, &'a str)> {
-    let at = tree
-        .items
-        .binary_search_by_key(&node, |item| item.node)
-        .ok()?;
-    let item = &tree.items[at];
-    Some((item.kind, tree.text(item.name.clone())))
-}
-
 fn item_at(tree: &Tree<'_>, node: u32) -> Option<Range<u32>> {
     let at = tree
         .items
         .binary_search_by_key(&node, |item| item.node)
         .ok()?;
     Some(tree.items[at].name.clone())
+}
+
+fn mass(tree: &Tree<'_>) -> Mass {
+    let mut own = Vec::with_capacity(tree.nodes.len());
+    let mut sum = Vec::with_capacity(tree.nodes.len() + 1);
+    sum.push(0);
+    for node in &tree.nodes {
+        let w = cost::weight(tree, node);
+        own.push(w);
+        sum.push(sum.last().copied().unwrap_or(0) + w);
+    }
+    Mass { own, sum }
+}
+
+fn plain<'a>(tree: &Tree<'a>) -> HashSet<&'a str> {
+    tree.nodes
+        .iter()
+        .filter(|node| node.class == Class::Plain)
+        .map(|node| tree.text(node.span.clone()))
+        .collect()
 }

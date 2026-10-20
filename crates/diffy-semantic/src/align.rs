@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use diffy_diff::{
@@ -6,12 +6,12 @@ use diffy_diff::{
     SemanticSpan, Side as DiffSide, myers, paired_inline_diff,
 };
 
+use crate::cost::same_text;
 use crate::matcher::Matching;
 use crate::syntax::{Class, NONE, Tree};
 use crate::{Group, Row, Token, TokenState};
 
 const CONTEXT: usize = 3;
-const MIN_RENAME_USES: u32 = 2;
 
 struct Lines {
     starts: Vec<u32>,
@@ -178,59 +178,38 @@ pub(crate) fn rows(old: &Tree<'_>, new: &Tree<'_>, matching: &Matching) -> Outpu
     }
 }
 
-/// Every token's state, as spans, and the consistent renames.
+/// Every token's state, as spans, and the matcher's renames.
 fn states(sides: &mut [Side<'_, '_>; 2], matching: &Matching) -> Vec<Rename> {
-    let mut renamed: BTreeMap<(String, String), Vec<(u32, u32)>> = BTreeMap::new();
+    let accepted: HashSet<(&str, &str)> = matching
+        .renames
+        .iter()
+        .map(|r| (&*r.old, &*r.new))
+        .collect();
     let mut replaced: Vec<(u32, u32)> = Vec::new();
-    for s in 0..2 {
-        let side = &sides[s];
-        for (k, node) in side.tree.nodes.iter().enumerate() {
-            if s == 1 || node.class == Class::List {
-                continue;
-            }
-            let partner = matching.partner[0][k];
-            if partner == NONE {
-                continue;
-            }
-            let other = &sides[1].tree.nodes[partner as usize];
-            let (a, b) = (side.text(k as u32), sides[1].text(partner));
-            if same_text(node.class, a, b) {
-                continue;
-            }
-            if node.name && other.name {
-                renamed
-                    .entry((a.to_owned(), b.to_owned()))
-                    .or_default()
-                    .push((k as u32, partner));
-            } else if matches!(node.class, Class::Text | Class::Comment) {
-                replaced.push((k as u32, partner));
-            }
-        }
-    }
-    let counts = [plain_counts(sides[0].tree), plain_counts(sides[1].tree)];
-    let mut targets: HashMap<&str, u32> = HashMap::new();
-    for (old, _) in renamed.keys() {
-        *targets.entry(old.as_str()).or_default() += 1;
-    }
-    let mut renames = Vec::new();
     let mut rename_of: HashMap<u32, bool> = HashMap::new();
-    for ((old, new), uses) in &renamed {
-        let consistent = uses.len() as u32 >= MIN_RENAME_USES
-            && targets.get(old.as_str()) == Some(&1)
-            && !counts[0].contains(new.as_str())
-            && !counts[1].contains(old.as_str());
-        if consistent {
-            renames.push(Rename {
-                old: old.as_str().into(),
-                new: new.as_str().into(),
-                uses: uses.len() as u32,
-            });
+    let side = &sides[0];
+    for (k, node) in side.tree.nodes.iter().enumerate() {
+        if node.class == Class::List {
+            continue;
         }
-        for &(a, _) in uses {
-            rename_of.insert(a, consistent);
+        let partner = matching.partner[0][k];
+        if partner == NONE {
+            continue;
+        }
+        let other = &sides[1].tree.nodes[partner as usize];
+        let (a, b) = (side.text(k as u32), sides[1].text(partner));
+        if same_text(node.class, a, b) {
+            continue;
+        }
+        if node.name && other.name {
+            rename_of.insert(k as u32, accepted.contains(&(a, b)));
+        } else if matches!(node.class, Class::Text | Class::Comment) {
+            replaced.push((k as u32, partner));
         }
     }
+    let mut renames = matching.renames.clone();
     let mut words: Vec<[Vec<Range<u32>>; 2]> = Vec::new();
+    let mut edited: HashSet<u32> = HashSet::new();
     for &(a, b) in &replaced {
         let (ra, rb) = (
             sides[0].tree.nodes[a as usize].span.clone(),
@@ -249,12 +228,9 @@ fn states(sides: &mut [Side<'_, '_>; 2], matching: &Matching) -> Vec<Rename> {
                     .collect()
             };
             words.push([shift(ra.start, &found.old), shift(rb.start, &found.new)]);
-        } else {
-            sides[0].mark(ra, ChangeIntensity::Novel);
-            sides[1].mark(rb, ChangeIntensity::Novel);
+            edited.insert(a);
         }
     }
-    let replaced_set: HashSet<u32> = replaced.iter().map(|&(a, _)| a).collect();
     for s in 0..2 {
         let len = sides[s].tree.nodes.len();
         for k in 0..len {
@@ -300,7 +276,7 @@ fn states(sides: &mut [Side<'_, '_>; 2], matching: &Matching) -> Vec<Rename> {
                         Some(_) => match rename_of.get(&old_node) {
                             Some(true) => TokenState::Renamed,
                             Some(false) => TokenState::Novel,
-                            None if replaced_set.contains(&old_node) => TokenState::Edited,
+                            None if edited.contains(&old_node) => TokenState::Edited,
                             None => TokenState::Novel,
                         },
                     };
@@ -325,24 +301,6 @@ fn states(sides: &mut [Side<'_, '_>; 2], matching: &Matching) -> Vec<Rename> {
     mark_words(sides, words, &renames);
     renames.sort_by(|a, b| b.uses.cmp(&a.uses).then(a.old.cmp(&b.old)));
     renames
-}
-
-/// Whether two corresponding tokens read the same: a comment ignores the
-/// indentation of its lines, as its hash does.
-fn same_text(class: Class, a: &str, b: &str) -> bool {
-    if class == Class::Comment {
-        a.lines().map(str::trim).eq(b.lines().map(str::trim))
-    } else {
-        a == b
-    }
-}
-
-fn plain_counts<'a>(tree: &Tree<'a>) -> HashSet<&'a str> {
-    tree.nodes
-        .iter()
-        .filter(|node| node.class == Class::Plain)
-        .map(|node| tree.text(node.span.clone()))
-        .collect()
 }
 
 fn mark_words(sides: &mut [Side<'_, '_>; 2], words: Vec<[Vec<Range<u32>>; 2]>, renames: &[Rename]) {

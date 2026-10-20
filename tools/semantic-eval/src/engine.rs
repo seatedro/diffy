@@ -4,9 +4,9 @@ use std::time::Instant;
 use diffy::core::compare::semantic::{
     ChangedPath, document_from_difftastic, document_from_native_with,
 };
-use diffy::core::syntax::grammar::{legacy_storage_dir, trusted_keys};
+use diffy::core::syntax::grammar::GrammarConfig;
 use diffy_diff::{DEFAULT_CONTEXT, DiffDocument, FileStatus, diff_texts};
-use diffy_syntax::{GrammarStore, LanguageId, LegacyPacks, StoreConfig};
+use diffy_syntax::{GrammarStore, LanguageId};
 use serde::{Deserialize, Serialize};
 
 use crate::capture;
@@ -92,11 +92,5 @@ pub fn language(name: &str) -> Option<diffy_semantic::Language> {
 
 fn grammars() -> &'static GrammarStore {
     static STORE: OnceLock<GrammarStore> = OnceLock::new();
-    STORE.get_or_init(|| {
-        let mut config = StoreConfig::new();
-        if let Some(dir) = legacy_storage_dir() {
-            config = config.legacy_packs(LegacyPacks::new(dir, &trusted_keys()));
-        }
-        GrammarStore::new(config)
-    })
+    STORE.get_or_init(|| GrammarStore::new(GrammarConfig::product().store_config()))
 }

@@ -473,6 +473,10 @@ impl DiffColors {
         h.finish()
     }
 
+    pub fn tone(&self, kind: HighlightKind) -> Color {
+        self.syntax[kind as usize]
+    }
+
     /// Syntax colors for text on `bg`, a line's background.
     pub fn tones_on(&self, bg: Option<Color>) -> &[Color; HIGHLIGHT_KINDS] {
         match bg {

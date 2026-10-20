@@ -7,7 +7,7 @@ use diffy_diff::{
     Side, SourceCoverage, TextStore,
 };
 use diffy_semantic::{Limits, Move, OutlineItem, Rename, Row};
-use diffy_syntax::{GrammarStore, LanguageId, legacy_pack};
+use diffy_syntax::{GrammarStore, LanguageId};
 #[cfg(feature = "difftastic")]
 use vendored_difftastic::{
     ChangeIntensity as DftIntensity, ChangeSpan, DiffRequest, DiffStatus, SemanticDiffResult,
@@ -350,9 +350,21 @@ pub fn document_from_native(
 }
 
 pub fn semantic_language(path: &str) -> Option<&'static str> {
-    legacy_pack::language_for_path(path)
-        .map(|language| language.name)
-        .filter(|name| diffy_semantic::config(name).is_some())
+    let id = LanguageId::from_path(path)?;
+    Some(match id.as_str() {
+        "bash" | "sh" | "zsh" => "bash",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => "cpp",
+        "go" => "go",
+        "js" | "mjs" | "cjs" | "ts" | "mts" | "cts" => "typescript",
+        "jsx" | "tsx" => "tsx",
+        "json" => "json",
+        "nix" => "nix",
+        "py" | "pyi" => "python",
+        "rs" => "rust",
+        "toml" => "toml",
+        _ => return None,
+    })
 }
 
 pub fn document_from_native_with(

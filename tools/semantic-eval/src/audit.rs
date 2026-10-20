@@ -7,7 +7,9 @@ use tree_sitter as ts;
 
 use crate::corpus::{self, Blobs};
 use crate::engine;
-use crate::grade::{self, Partners, Score, Span};
+use crate::explain::{self, Checks};
+use crate::grade::{self, Grade, Partners, Span, Truth};
+use crate::truth::Record;
 
 const MIN_ANCHOR_WORD_CHARS: usize = 8;
 
@@ -27,20 +29,24 @@ pub struct Args {
     worst: usize,
     #[arg(long)]
     jsonl: Option<PathBuf>,
+    #[arg(long)]
+    records: Option<PathBuf>,
+    #[arg(long)]
+    compare: Option<PathBuf>,
 }
 
 #[derive(Default, serde::Serialize)]
 struct Audit {
     file: String,
-    anchors: Score,
-    names: Score,
+    anchors: Grade,
+    names: Grade,
     asymmetric: u32,
     first: Option<String>,
 }
 
 impl Audit {
     fn wrong(&self) -> u32 {
-        self.anchors.wrong + self.names.wrong
+        self.anchors.all.wrong + self.names.all.wrong
     }
 }
 
@@ -70,6 +76,9 @@ pub fn run(args: Args) -> Result<(), String> {
     }
     let limits = Limits::default();
     let mut audits = Vec::new();
+    let mut checks = Checks::default();
+    let mut fallbacks: Vec<String> = Vec::new();
+    let mut records: Vec<Record> = Vec::new();
     for (parent, commit, path) in &pairs {
         let (Some(old), Some(new)) = (blobs.read(parent, path)?, blobs.read(commit, path)?) else {
             continue;
@@ -87,12 +96,22 @@ pub fn run(args: Args) -> Result<(), String> {
         else {
             continue;
         };
+        let file = format!("{commit} {path}");
         let (Ok(forward), Ok(backward)) = (
-            diffy_semantic::diff(&language, config, &old, &new, &limits),
-            diffy_semantic::diff(&language, config, &new, &old, &limits),
+            explain::run(&language, config, &old, &new, &limits),
+            explain::run(&language, config, &new, &old, &limits),
         ) else {
+            records.push(Record {
+                id: file.clone(),
+                kind: "audit".to_owned(),
+                fallback: true,
+                grade: Grade::default(),
+            });
+            fallbacks.push(file);
             continue;
         };
+        checks.note(&file, &forward);
+        checks.note(&format!("{file} (reversed)"), &backward);
         let mut parser = ts::Parser::new();
         if parser.set_language(&language).is_err() {
             continue;
@@ -103,37 +122,55 @@ pub fn run(args: Args) -> Result<(), String> {
         };
         let old_items = grade::items(old_tree.root_node(), &old);
         let new_items = grade::items(new_tree.root_node(), &new);
-        let mut anchors = Score::default();
-        let mut names = Score::default();
+        let mut anchors = Grade::default();
+        let mut names = Grade::default();
         let mut first = None;
+        let region = changed(&old, &new);
         let directions = [
             (
                 &forward,
                 [old.as_str(), new.as_str()],
                 [&old_items, &new_items],
+                1,
             ),
             (
                 &backward,
                 [new.as_str(), old.as_str()],
                 [&new_items, &old_items],
+                0,
             ),
         ];
-        for (diff, texts, [from, to]) in directions {
-            let partners = Partners::new(diff);
+        for (explained, texts, [from, to], side) in directions {
+            let partners = Partners::new(&explained.diff);
             let item_names: HashSet<u32> = to.iter().map(|i| i.name.start).collect();
+            let truth = |links| Truth {
+                links,
+                items: &item_names,
+                delimiters: &explained.delimiters,
+                unlinked: [&[], &[]],
+                region: Some((side, &region)),
+            };
             let named = grade::same_named(from, to);
-            let (n, named_first) = grade::grade(texts, &partners, &named, &item_names);
+            let (n, named_first) = grade::grade(texts, &partners, &truth(&named));
             let anchored = anchor_links(texts, &partners);
-            let (a, anchor_first) = grade::grade(texts, &partners, &anchored, &item_names);
+            let (a, anchor_first) = grade::grade(texts, &partners, &truth(&anchored));
             names.add(&n);
             anchors.add(&a);
             first = first.or(named_first).or(anchor_first);
         }
+        let mut both = anchors;
+        both.add(&names);
+        records.push(Record {
+            id: file.clone(),
+            kind: "audit".to_owned(),
+            fallback: false,
+            grade: both,
+        });
         let audit = Audit {
-            file: format!("{commit} {path}"),
+            file,
             anchors,
             names,
-            asymmetric: asymmetry(&forward, &backward),
+            asymmetric: asymmetry(&forward.diff, &backward.diff),
             first,
         };
         audits.push(audit);
@@ -146,13 +183,50 @@ pub fn run(args: Args) -> Result<(), String> {
         }
         std::fs::write(path, out).map_err(|e| e.to_string())?;
     }
+    if let Some(path) = &args.records {
+        let mut out = String::new();
+        for record in &records {
+            out.push_str(&serde_json::to_string(record).map_err(|e| e.to_string())?);
+            out.push('\n');
+        }
+        std::fs::write(path, out).map_err(|e| e.to_string())?;
+    }
     report(&audits, args.worst);
-    Ok(())
+    println!("{} fallbacks", fallbacks.len());
+    for file in fallbacks.iter().take(args.worst) {
+        println!("  fallback {file}");
+    }
+    if let Some(path) = &args.compare {
+        crate::truth::compare(path, &records, args.worst)?;
+    }
+    checks.report()
+}
+
+fn changed<'a>(old: &'a str, new: &'a str) -> Vec<Span> {
+    let mut ids: HashMap<&'a str, u32> = HashMap::new();
+    let mut id = |line: &'a str| {
+        let next = ids.len() as u32;
+        *ids.entry(line.trim()).or_insert(next)
+    };
+    let a: Vec<u32> = old.split_inclusive('\n').map(&mut id).collect();
+    let b: Vec<u32> = new.split_inclusive('\n').map(&mut id).collect();
+    let mut starts = vec![0usize];
+    starts.extend(new.match_indices('\n').map(|(i, _)| i + 1));
+    let lines = starts.len();
+    diffy_diff::myers::diff(&a, &b)
+        .into_iter()
+        .map(|c| {
+            let first = (c.new.start as usize).saturating_sub(3);
+            let last = (c.new.end as usize + 3).min(lines);
+            let end = starts.get(last).copied().unwrap_or(new.len());
+            starts[first.min(lines - 1)] as u32..end as u32
+        })
+        .collect()
 }
 
 fn report(audits: &[Audit], worst: usize) {
-    let mut anchors = Score::default();
-    let mut names = Score::default();
+    let mut anchors = Grade::default();
+    let mut names = Grade::default();
     for audit in audits {
         anchors.add(&audit.anchors);
         names.add(&audit.names);
@@ -160,7 +234,7 @@ fn report(audits: &[Audit], worst: usize) {
     let mut ranked: Vec<&Audit> = audits.iter().filter(|a| a.wrong() > 0).collect();
     ranked.sort_by_key(|a| {
         (
-            std::cmp::Reverse(a.names.wrong),
+            std::cmp::Reverse(a.names.all.wrong),
             std::cmp::Reverse(a.wrong()),
         )
     });
@@ -168,9 +242,9 @@ fn report(audits: &[Audit], worst: usize) {
     for audit in ranked.iter().take(worst) {
         println!(
             "{:11} {:14} {:7} {:5}  {}\n      {}",
-            audit.names.wrong,
-            audit.anchors.wrong,
-            audit.anchors.missed,
+            audit.names.all.wrong,
+            audit.anchors.all.wrong,
+            audit.anchors.all.missed,
             audit.asymmetric,
             audit.file,
             audit.first.as_deref().unwrap_or("")
@@ -178,15 +252,20 @@ fn report(audits: &[Audit], worst: usize) {
     }
     let asym = audits.iter().filter(|a| a.asymmetric > 0).count();
     let per_k = |part: u32, whole: u32| f64::from(part) * 1000.0 / f64::from(whole.max(1));
+    let (a, r) = (&anchors.all, &anchors.region);
     println!(
-        "{} files: anchors {} links, {:.2} wrong and {:.2} missed per 1k; same-named items {}, {} wrong, {} missed; {} files wrong; {} asymmetric files",
+        "{} files: anchors {} links, {:.2} wrong and {:.2} missed per 1k; in edited regions {} links, {:.2} wrong, {:.2} missed, {:.2} lists wrong per 1k; same-named items {}, {} wrong, {} missed; {} files wrong; {} asymmetric files",
         audits.len(),
-        anchors.truth(),
-        per_k(anchors.wrong, anchors.truth()),
-        per_k(anchors.missed, anchors.truth()),
-        names.truth(),
-        names.wrong,
-        names.missed,
+        a.truth(),
+        per_k(a.wrong, a.truth()),
+        per_k(a.missed, a.truth()),
+        r.truth(),
+        per_k(r.wrong, r.truth()),
+        per_k(r.missed, r.truth()),
+        per_k(r.lists_wrong, r.lists),
+        names.all.truth(),
+        names.all.wrong,
+        names.all.missed,
         ranked.len(),
         asym
     );

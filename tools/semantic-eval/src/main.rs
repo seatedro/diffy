@@ -4,7 +4,9 @@ mod check;
 mod contract;
 mod corpus;
 mod engine;
+mod explain;
 mod fixtures;
+mod gap;
 mod grade;
 mod moves;
 mod mutate;
@@ -23,6 +25,14 @@ use crate::engine::Engine;
 #[derive(Parser)]
 #[command(about = "Measures Diffy's semantic diff engines on real commits and fixtures.")]
 struct Cli {
+    #[arg(long, global = true, value_delimiter = ',')]
+    weights: Vec<String>,
+    #[arg(long, global = true)]
+    legacy: bool,
+    #[arg(long, global = true)]
+    candidates: Option<usize>,
+    #[arg(long, global = true)]
+    no_floor: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -45,12 +55,21 @@ enum Command {
         about = "Grades token links on real history against unique lines and same-named items."
     )]
     Audit(audit::Args),
+    #[command(about = "Compares production search against exhaustive search on small files.")]
+    Gap(gap::Args),
     #[command(about = "Scores how noisy move notes are on a list of commit and path pairs.")]
     Moves(moves::Args),
     #[command(about = "Renders one file's diff, from two files or from a commit.")]
     Show(ShowArgs),
     #[command(hide = true)]
     Tree { path: PathBuf },
+    #[command(hide = true)]
+    Bench {
+        old: PathBuf,
+        new: PathBuf,
+        #[arg(long, default_value_t = 20)]
+        times: u32,
+    },
 }
 
 #[derive(clap::Args)]
@@ -65,21 +84,39 @@ struct ShowArgs {
     old: Option<PathBuf>,
     #[arg(long, requires = "old")]
     new: Option<PathBuf>,
+    #[arg(long)]
+    explain: bool,
+    #[arg(long)]
+    exhaustive: bool,
     path: Option<String>,
 }
 
 fn main() -> ExitCode {
     capture::install();
-    let result = match Cli::parse().command {
-        Command::Corpus(args) => corpus::run(args),
-        Command::Fixtures(args) => fixtures::run(args),
-        Command::Mutate(args) => mutate::run(args),
-        Command::Moves(args) => moves::run(args),
-        Command::Truth(args) => truth::run(args),
-        Command::Audit(args) => audit::run(args),
-        Command::Show(args) => show(args),
-        Command::Tree { path } => tree(&path),
+    let cli = Cli::parse();
+    let defaults = diffy_semantic::eval::Options::default();
+    let options = diffy_semantic::eval::Options {
+        legacy: cli.legacy,
+        candidates: cli.candidates.unwrap_or(defaults.candidates),
+        floor: !cli.no_floor,
+        ..defaults
     };
+    let result = explain::weights(&cli.weights)
+        .map(|weights| {
+            diffy_semantic::eval::set(diffy_semantic::eval::Options { weights, ..options })
+        })
+        .and_then(|()| match cli.command {
+            Command::Corpus(args) => corpus::run(args),
+            Command::Fixtures(args) => fixtures::run(args),
+            Command::Mutate(args) => mutate::run(args),
+            Command::Moves(args) => moves::run(args),
+            Command::Gap(args) => gap::run(args),
+            Command::Truth(args) => truth::run(args),
+            Command::Audit(args) => audit::run(args),
+            Command::Show(args) => show(args),
+            Command::Tree { path } => tree(&path),
+            Command::Bench { old, new, times } => bench(&old, &new, times),
+        });
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -134,6 +171,9 @@ fn show(args: ShowArgs) -> Result<(), String> {
             );
         }
     }
+    if args.explain || args.exhaustive {
+        explain::show(&path, &old, &new, args.exhaustive)?;
+    }
     let (_, mut violations) = check::check(&run.doc);
     if args.engine == Engine::Native {
         violations.extend(contract::check(&path, &old, &new));
@@ -181,4 +221,30 @@ fn tree(path: &std::path::Path) -> Result<(), String> {
             depth -= 1;
         }
     }
+}
+
+fn bench(old: &std::path::Path, new: &std::path::Path, times: u32) -> Result<(), String> {
+    let read = |p: &std::path::Path| std::fs::read_to_string(p).map_err(|e| e.to_string());
+    let (a, b) = (read(old)?, read(new)?);
+    let name = new.to_string_lossy();
+    let language = diffy::core::compare::semantic::semantic_language(&name).ok_or("no grammar")?;
+    let grammar = engine::language(language).ok_or("no grammar")?;
+    let config = diffy_semantic::config(language).ok_or("no config")?;
+    let limits = diffy_semantic::Limits::default();
+    let mut times_ms = Vec::new();
+    for _ in 0..times {
+        let start = std::time::Instant::now();
+        let out = diffy_semantic::diff(&grammar, config, &a, &b, &limits);
+        times_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        if let Err(e) = out {
+            return Err(e.to_string());
+        }
+    }
+    times_ms.sort_by(f64::total_cmp);
+    println!(
+        "min {:.2} ms, median {:.2} ms",
+        times_ms[0],
+        times_ms[times_ms.len() / 2]
+    );
+    Ok(())
 }

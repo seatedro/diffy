@@ -259,6 +259,34 @@ pub(crate) fn list(
         .collect())
 }
 
+pub(crate) fn list_at(
+    repo: &Path,
+    rev: &str,
+    exts: &[String],
+    filter: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["ls-tree", "-r", "--name-only", rev])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|path| {
+            Path::new(path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| exts.iter().any(|e| e == ext))
+        })
+        .filter(|path| filter.is_none_or(|f| path.contains(f)))
+        .map(str::to_owned)
+        .collect())
+}
+
 pub(crate) fn spread<T>(items: Vec<T>, max: usize) -> Vec<T> {
     let len = items.len();
     if len <= max {

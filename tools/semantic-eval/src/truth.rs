@@ -1,14 +1,18 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use diffy::core::compare::semantic::semantic_language;
-use diffy_semantic::{Limits, SemanticDiff};
+use diffy_semantic::Limits;
 use tree_sitter as ts;
 
+use crate::corpus::Blobs;
 use crate::engine;
-use crate::grade::{self, Partners, Score, Span};
+use crate::explain::{self, Checks};
+use crate::grade::{self, Grade, Partners, Span, Truth};
 use crate::mutate::{self, LineIndex, Syntax};
+
+const REGION_LINES: usize = 3;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -26,7 +30,33 @@ pub struct Args {
     out: Option<PathBuf>,
     #[arg(long, default_value_t = 20)]
     show: usize,
+    #[arg(long)]
+    rev: Option<String>,
+    #[arg(long)]
+    jsonl: Option<PathBuf>,
+    #[arg(long)]
+    compare: Option<PathBuf>,
+    #[arg(long)]
+    strict: bool,
     filter: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Record {
+    pub id: String,
+    pub kind: String,
+    pub fallback: bool,
+    pub grade: Grade,
+}
+
+impl Record {
+    pub fn misleads(&self) -> bool {
+        !self.fallback && self.grade.misleads()
+    }
+
+    pub fn incomplete(&self) -> bool {
+        !self.fallback && self.grade.region.incomplete()
+    }
 }
 
 enum Piece {
@@ -79,6 +109,72 @@ impl Case {
         }
     }
 
+    fn region(&self) -> Vec<Span> {
+        let mut points: Vec<(usize, usize)> = Vec::new();
+        let mut previous: Option<usize> = None;
+        for (range, from) in &self.origins {
+            match from {
+                Some(from) => {
+                    if previous.is_some_and(|end| end != *from) {
+                        points.push((range.start, range.start));
+                    }
+                    previous = Some(from + range.len());
+                }
+                None => {
+                    points.push((range.start, range.end));
+                    previous = None;
+                }
+            }
+        }
+        let lines = LineIndex::new(&self.new);
+        let row = |byte: usize| {
+            lines
+                .starts
+                .partition_point(|&s| s <= byte)
+                .saturating_sub(1)
+        };
+        points
+            .into_iter()
+            .map(|(a, b)| {
+                let first = row(a).saturating_sub(REGION_LINES);
+                let last = (row(b) + REGION_LINES + 1).min(lines.starts.len());
+                let end = lines.starts.get(last).copied().unwrap_or(self.new.len());
+                lines.starts[first] as u32..end as u32
+            })
+            .collect()
+    }
+
+    fn unlinked(&self, old: &str, partners: &Partners<'_>) -> [Vec<Span>; 2] {
+        let mut fresh: Vec<Span> = Vec::new();
+        for token in partners.tokens(1) {
+            let start = token.span.start as usize;
+            let at = self
+                .origins
+                .partition_point(|(range, _)| range.end <= start);
+            if let Some((range, None)) = self.origins.get(at)
+                && token.span.end as usize <= range.end
+            {
+                fresh.push(token.span.clone());
+            }
+        }
+        let mut kept: Vec<Range<usize>> = self
+            .origins
+            .iter()
+            .filter_map(|(range, from)| from.map(|f| f..f + range.len()))
+            .collect();
+        kept.sort_by_key(|r| r.start);
+        let mut gone: Vec<Span> = Vec::new();
+        for token in partners.tokens(0) {
+            let (start, end) = (token.span.start as usize, token.span.end as usize);
+            let at = kept.partition_point(|r| r.start <= start);
+            let inside = at > 0 && kept[at - 1].end >= end;
+            if !inside && end <= old.len() {
+                gone.push(token.span.clone());
+            }
+        }
+        [gone, fresh]
+    }
+
     fn truth(&self, partners: &Partners<'_>) -> Vec<(Span, Span)> {
         let mut out = Vec::new();
         for token in partners.tokens(1) {
@@ -106,13 +202,23 @@ impl Case {
 struct Tally {
     tried: u32,
     misled: u32,
+    incomplete: u32,
     fallback: u32,
     invalid: u32,
-    score: Score,
+    grade: Grade,
 }
 
 pub fn run(args: Args) -> Result<(), String> {
-    let files = mutate::list(&args.repo, &args.ext, args.filter.as_deref())?;
+    let files = match &args.rev {
+        Some(rev) => mutate::list_at(&args.repo, rev, &args.ext, args.filter.as_deref())?,
+        None => mutate::list(&args.repo, &args.ext, args.filter.as_deref())?,
+    };
+    let mut blobs = match &args.rev {
+        Some(_) => Some(Blobs::spawn(&args.repo)?),
+        None => None,
+    };
+    let mut checks = Checks::default();
+    let mut records: Vec<Record> = Vec::new();
     let files = match args.max_files {
         Some(max) => mutate::spread(files, max),
         None => files,
@@ -124,7 +230,13 @@ pub fn run(args: Args) -> Result<(), String> {
     let mut tallies: BTreeMap<&'static str, Tally> = BTreeMap::new();
     let mut shown = 0;
     for path in &files {
-        let Ok(text) = std::fs::read_to_string(args.repo.join(path)) else {
+        let text = match (&mut blobs, &args.rev) {
+            (Some(blobs), Some(rev)) => blobs
+                .read(rev, path)?
+                .and_then(|bytes| String::from_utf8(bytes).ok()),
+            _ => std::fs::read_to_string(args.repo.join(path)).ok(),
+        };
+        let Some(text) = text else {
             continue;
         };
         let Some(name) = semantic_language(path) else {
@@ -159,55 +271,80 @@ pub fn run(args: Args) -> Result<(), String> {
                 continue;
             }
             let new_items = grade::items(new_tree.root_node(), &case.new);
-            let forward = diffy_semantic::diff(&language, config, &text, &case.new, &limits);
-            let backward = diffy_semantic::diff(&language, config, &case.new, &text, &limits);
+            let id = |kind: &str| format!("{kind} {path}:{}", case.line + 1);
+            let forward = explain::run(&language, config, &text, &case.new, &limits);
+            let backward = explain::run(&language, config, &case.new, &text, &limits);
             let (Ok(forward), Ok(backward)) = (forward, backward) else {
                 for kind in [case.kind, case.back] {
                     let tally = tallies.entry(kind).or_default();
                     tally.tried += 1;
                     tally.fallback += 1;
+                    records.push(Record {
+                        id: id(kind),
+                        kind: kind.to_owned(),
+                        fallback: true,
+                        grade: Grade::default(),
+                    });
                 }
                 continue;
             };
-            let partners = Partners::new(&forward);
+            checks.note(&id(case.kind), &forward);
+            checks.note(&id(case.back), &backward);
+            let partners = Partners::new(&forward.diff);
             let truth = case.truth(&partners);
+            let [gone, fresh] = case.unlinked(&text, &partners);
+            let region = case.region();
             let names = |items: &[grade::Item]| -> HashSet<u32> {
                 items.iter().map(|item| item.name.start).collect()
             };
             let swapped: Vec<(Span, Span)> =
                 truth.iter().map(|(o, n)| (n.clone(), o.clone())).collect();
-            let runs: [(
-                &'static str,
-                &SemanticDiff,
-                [&str; 2],
-                &[(Span, Span)],
-                HashSet<u32>,
-            ); 2] = [
+            let (new_names, old_names) = (names(&new_items), names(&old_items));
+            let runs = [
                 (
                     case.kind,
                     &forward,
-                    [&text, &case.new],
-                    &truth,
-                    names(&new_items),
+                    [text.as_str(), case.new.as_str()],
+                    Truth {
+                        links: &truth,
+                        items: &new_names,
+                        delimiters: &forward.delimiters,
+                        unlinked: [&gone, &fresh],
+                        region: Some((1, &region)),
+                    },
                 ),
                 (
                     case.back,
                     &backward,
-                    [&case.new, &text],
-                    &swapped,
-                    names(&old_items),
+                    [case.new.as_str(), text.as_str()],
+                    Truth {
+                        links: &swapped,
+                        items: &old_names,
+                        delimiters: &backward.delimiters,
+                        unlinked: [&fresh, &gone],
+                        region: Some((0, &region)),
+                    },
                 ),
             ];
-            for (kind, diff, texts, truth, items) in runs {
+            for (kind, explained, texts, truth) in runs {
                 if !wanted(kind) {
                     continue;
                 }
-                let partners = Partners::new(diff);
-                let (score, first) = grade::grade(texts, &partners, truth, &items);
+                let partners = Partners::new(&explained.diff);
+                let (grade, first) = grade::grade(texts, &partners, &truth);
+                let record = Record {
+                    id: id(kind),
+                    kind: kind.to_owned(),
+                    fallback: false,
+                    grade,
+                };
                 let tally = tallies.entry(kind).or_default();
                 tally.tried += 1;
-                tally.score.add(&score);
-                if !score.misleads() {
+                tally.grade.add(&grade);
+                tally.incomplete += u32::from(record.incomplete());
+                let misleads = record.misleads();
+                records.push(record);
+                if !misleads {
                     continue;
                 }
                 tally.misled += 1;
@@ -227,32 +364,105 @@ pub fn run(args: Args) -> Result<(), String> {
     }
     println!("{} files", files.len());
     println!(
-        "{:14} {:>6} {:>7} {:>6} {:>9} {:>8} {:>7} {:>11}",
-        "kind", "tried", "misled", "fall", "precision", "recall", "items", "items wrong"
+        "{:14} {:>6} {:>6} {:>6} {:>5} {:>9} {:>8} {:>9} {:>8} {:>8} {:>6} {:>6}",
+        "kind",
+        "tried",
+        "misled",
+        "incomp",
+        "fall",
+        "precision",
+        "recall",
+        "edit prec",
+        "edit rec",
+        "spurious",
+        "items✗",
+        "lists✗"
     );
     let mut misled = 0;
+    let mut incomplete = 0;
     for (kind, tally) in &tallies {
-        let s = &tally.score;
-        let linked = s.right + s.equivalent + s.wrong;
+        let (a, r) = (&tally.grade.all, &tally.grade.region);
         println!(
-            "{kind:14} {:6} {:7} {:6} {:9.4} {:8.4} {:7} {:11}",
+            "{kind:14} {:6} {:6} {:6} {:5} {:9.4} {:8.4} {:9.4} {:8.4} {:8} {:6} {:6}",
             tally.tried,
             tally.misled,
+            tally.incomplete,
             tally.fallback,
-            ratio(s.right + s.equivalent, linked),
-            ratio(s.right + s.equivalent, s.truth()),
-            s.items,
-            s.items_wrong
+            ratio(a.right + a.equivalent, a.linked()),
+            ratio(a.right + a.equivalent, a.truth()),
+            ratio(r.right + r.equivalent, r.linked()),
+            ratio(r.right + r.equivalent, r.truth()),
+            a.spurious,
+            a.items_wrong,
+            a.lists_wrong
         );
         if tally.invalid > 0 {
             println!("{:14} {} invalid", "", tally.invalid);
         }
         misled += tally.misled;
+        incomplete += tally.incomplete;
     }
+    if let Some(path) = &args.jsonl {
+        let mut out = String::new();
+        for record in &records {
+            out.push_str(&serde_json::to_string(record).map_err(|e| e.to_string())?);
+            out.push('\n');
+        }
+        std::fs::write(path, out).map_err(|e| e.to_string())?;
+    }
+    let regressed = match &args.compare {
+        Some(path) => compare(path, &records, args.show)?,
+        None => 0,
+    };
+    let checked = checks.report();
     if misled > 0 {
         return Err(format!("{misled} generated edits mislead"));
     }
-    Ok(())
+    if args.strict && incomplete > 0 {
+        return Err(format!("{incomplete} generated edits are incomplete"));
+    }
+    if regressed > 0 {
+        return Err(format!("{regressed} cases regressed against the baseline"));
+    }
+    checked
+}
+
+pub fn compare(path: &Path, records: &[Record], show: usize) -> Result<u32, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut base: HashMap<String, Record> = HashMap::new();
+    for line in text.lines() {
+        let record: Record = serde_json::from_str(line).map_err(|e| e.to_string())?;
+        base.insert(record.id.clone(), record);
+    }
+    let (mut same, mut missing, mut worse, mut better) = (0, 0, Vec::new(), Vec::new());
+    for record in records {
+        let Some(old) = base.get(&record.id) else {
+            missing += 1;
+            continue;
+        };
+        same += 1;
+        let verdict = |r: &Record| (r.fallback, r.misleads(), r.incomplete());
+        let (was, now) = (verdict(old), verdict(record));
+        let rank = |v: (bool, bool, bool)| u8::from(v.0) * 4 + u8::from(v.1) * 2 + u8::from(v.2);
+        if rank(now) > rank(was) {
+            worse.push(&record.id);
+        } else if rank(now) < rank(was) {
+            better.push(&record.id);
+        }
+    }
+    println!(
+        "against {}: {same} shared cases, {missing} new, {} worse, {} better",
+        path.display(),
+        worse.len(),
+        better.len()
+    );
+    for id in worse.iter().take(show) {
+        println!("  worse {id}");
+    }
+    for id in better.iter().take(show) {
+        println!("  better {id}");
+    }
+    Ok(worse.len() as u32)
 }
 
 fn ratio(part: u32, whole: u32) -> f64 {

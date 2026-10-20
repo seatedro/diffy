@@ -1,5 +1,6 @@
 mod capture;
 mod check;
+mod contract;
 mod corpus;
 mod engine;
 mod fixtures;
@@ -122,7 +123,10 @@ fn show(args: ShowArgs) -> Result<(), String> {
             );
         }
     }
-    let (_, violations) = check::check(&run.doc);
+    let (_, mut violations) = check::check(&run.doc);
+    if args.engine == Engine::Native {
+        violations.extend(contract::check(&path, &old, &new));
+    }
     println!("\n{:.2} ms", run.micros as f64 / 1000.0);
     for violation in &violations {
         println!("! {violation}");

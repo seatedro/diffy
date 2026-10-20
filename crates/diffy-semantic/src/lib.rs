@@ -4,6 +4,7 @@ mod matcher;
 mod syntax;
 
 use std::fmt;
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use diffy_diff::SemanticSpan;
@@ -26,6 +27,40 @@ pub struct SemanticDiff {
     pub outline: Vec<OutlineItem>,
     pub renames: Vec<Rename>,
     pub moves: Vec<Move>,
+    /// Lines joined by corresponding tokens across more than one line on
+    /// either side: a reflow, possibly with edits.
+    pub groups: Vec<Group>,
+    /// Every token of each side, list delimiters included, in source order.
+    pub tokens: [Vec<Token>; 2],
+}
+
+/// Old and new lines that hold corresponding tokens, as half-open ranges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    pub old: Range<u32>,
+    pub new: Range<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenState {
+    /// Corresponds to an equal token on the other side.
+    Kept,
+    /// Corresponds to a token renamed consistently throughout.
+    Renamed,
+    /// A string or comment corresponding to one with changed words.
+    Edited,
+    /// No counterpart.
+    Novel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token {
+    pub span: Range<u32>,
+    pub state: TokenState,
+    /// The corresponding token's span on the other side.
+    pub partner: Option<Range<u32>>,
+    /// The move holding this token, by index into the moves.
+    pub moved: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -105,12 +140,14 @@ pub fn diff(
         return Err(Fallback::ParseErrors(errors));
     }
     let matching = matcher::run(&old, &new, limits.max_work, deadline)?;
-    let (chunks, outline, renames, moves) = align::rows(&old, &new, &matching);
+    let out = align::rows(&old, &new, &matching);
     Ok(SemanticDiff {
-        chunks,
-        outline,
-        renames,
-        moves,
+        chunks: out.chunks,
+        outline: out.outline,
+        renames: out.renames,
+        moves: out.moves,
+        groups: out.groups,
+        tokens: out.tokens,
     })
 }
 

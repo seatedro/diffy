@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::capture::{self, RECORD_PREFIX};
 use crate::check::{self, Metrics};
+use crate::contract;
 use crate::engine::{self, Engine};
 use crate::report;
 
@@ -170,6 +171,9 @@ fn measure(
             record.fallback = run.fallback;
             record.metrics = metrics;
             record.violations = violations;
+            if engine == Engine::Native {
+                record.violations.extend(contract::check(path, old, new));
+            }
             if let Some(semantics) = run.doc.semantics(0) {
                 record.renames = semantics.renames().len() as u32;
                 record.moves = semantics.moves().len() as u32;

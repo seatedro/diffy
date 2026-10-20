@@ -16,14 +16,14 @@ fn first() {
 }
 <<<< expect
 @@ -1,7 +1,7 @@
--    1      |fn first() {
--    2      |    one();
--    3      |}
--    4      |
-     5    1 |fn second() {
-     6    2 |    two();
-     7    3 |}
++         1 |fn second() {
++         2 |    two();
++         3 |}
 +         4 |
-+         5 |fn first() {
-+         6 |    one();
-+         7 |}
+     1    5 |fn first() {
+     2    6 |    one();
+     3    7 |}
+-    4      |
+-    5      |fn second() {
+-    6      |    two();
+-    7      |}

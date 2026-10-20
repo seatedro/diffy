@@ -1560,7 +1560,8 @@ impl<'a> Matcher<'_, 'a> {
                 if taken[k] || !self.free(0, x)? || !self.free(1, y)? || !self.disjoint(x, y) {
                     continue;
                 }
-                let joins = placed.iter().any(|&p| near(&notes_of[p], &notes_of[k]));
+                let joins =
+                    placed.iter().any(|&p| near(&notes_of[p], &notes_of[k])) || notes.cheap(x, y);
                 let pays = if joins {
                     value > w.follow
                 } else {

@@ -302,7 +302,7 @@ pub mod eval {
                 let actual = cost::evaluate(
                     [old, new],
                     &m.partner,
-                    &diff.moves,
+                    &m.moves,
                     &diff.tokens,
                     &diff.renames,
                 );

@@ -404,9 +404,18 @@ impl<'t, 'a> Notes<'t, 'a> {
         let lead = leaders
             .iter()
             .enumerate()
-            .filter(|&(i, &l)| l as usize == i)
+            .filter(|&(i, &l)| l as usize == i && !self.cheap(moves[i].0, moves[i].1))
             .count() as i64;
         (lead, list.len() as i64 - lead)
+    }
+
+    pub(crate) fn cheap(&self, o: u32, n: u32) -> bool {
+        let [old, new] = self.trees;
+        let (a, b) = (&old.nodes[o as usize], &new.nodes[n as usize]);
+        old.units.binary_search(&o).is_ok()
+            && new.units.binary_search(&n).is_ok()
+            && a.hash == b.hash
+            && a.next - o == b.next - n
     }
 }
 

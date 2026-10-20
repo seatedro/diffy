@@ -43,6 +43,7 @@ pub(crate) struct Tree<'a> {
     pub(crate) src: &'a str,
     pub(crate) nodes: Vec<Node>,
     pub(crate) items: Vec<Item>,
+    pub(crate) units: Vec<u32>,
     pub(crate) errors: usize,
 }
 
@@ -52,6 +53,7 @@ impl<'a> Tree<'a> {
             src,
             nodes: Vec::new(),
             items: Vec::new(),
+            units: Vec::new(),
             errors: 0,
         };
         let root = tree.root_node();
@@ -63,6 +65,16 @@ impl<'a> Tree<'a> {
             out.node(child, config, 1);
         }
         out.close_list(at);
+        for item in &out.items {
+            out.units.extend([item.node, item.unit]);
+            let mut at = item.lead;
+            while at < item.unit {
+                out.units.push(at);
+                at = out.nodes[at as usize].next;
+            }
+        }
+        out.units.sort_unstable();
+        out.units.dedup();
         out
     }
 

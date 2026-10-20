@@ -163,7 +163,7 @@ pub(crate) fn same_text(class: Class, a: &str, b: &str) -> bool {
 pub(crate) fn evaluate(
     trees: [&Tree<'_>; 2],
     partner: &[Vec<u32>; 2],
-    moves: &[diffy_diff::Move],
+    moves: &[(u32, u32)],
     tokens: &[Vec<crate::Token>; 2],
     renames: &[diffy_diff::Rename],
 ) -> Features {
@@ -248,14 +248,9 @@ pub(crate) fn evaluate(
         }
     }
     f[ENTRIES] = renames.len() as i64;
-    let leaders = diffy_diff::move_leaders(moves);
-    let lead = leaders
-        .iter()
-        .enumerate()
-        .filter(|&(i, &l)| l as usize == i)
-        .count() as i64;
+    let (lead, follow) = crate::align::Notes::new(trees[0], trees[1]).count(moves);
     f[MOVES] = lead;
-    f[FOLLOWS] = moves.len() as i64 - lead;
+    f[FOLLOWS] = follow;
     for item in &trees[0].items {
         let peer = partner[0][item.node as usize];
         if peer == NONE {

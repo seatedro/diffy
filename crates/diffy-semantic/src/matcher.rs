@@ -32,8 +32,6 @@ pub(crate) struct Options {
     pub(crate) floor: bool,
     pub(crate) exhaustive: bool,
     pub(crate) margins: bool,
-    #[cfg(feature = "eval")]
-    pub(crate) legacy: bool,
 }
 
 impl Default for Options {
@@ -44,8 +42,6 @@ impl Default for Options {
             floor: true,
             exhaustive: false,
             margins: false,
-            #[cfg(feature = "eval")]
-            legacy: false,
         }
     }
 }

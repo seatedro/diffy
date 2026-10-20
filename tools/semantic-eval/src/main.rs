@@ -29,8 +29,6 @@ struct Cli {
     #[arg(long, global = true, value_delimiter = ',')]
     weights: Vec<String>,
     #[arg(long, global = true)]
-    legacy: bool,
-    #[arg(long, global = true)]
     candidates: Option<usize>,
     #[arg(long, global = true)]
     no_floor: bool,
@@ -99,7 +97,6 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let defaults = diffy_semantic::eval::Options::default();
     let options = diffy_semantic::eval::Options {
-        legacy: cli.legacy,
         candidates: cli.candidates.unwrap_or(defaults.candidates),
         floor: !cli.no_floor,
         ..defaults

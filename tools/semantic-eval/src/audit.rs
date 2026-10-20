@@ -110,16 +110,8 @@ pub fn run(args: Args) -> Result<(), String> {
             fallbacks.push(file);
             continue;
         };
-        checks.note(
-            &file,
-            &forward,
-            explain::legacy_cost(&language, config, &old, &new, &limits),
-        );
-        checks.note(
-            &format!("{file} (reversed)"),
-            &backward,
-            explain::legacy_cost(&language, config, &new, &old, &limits),
-        );
+        checks.note(&file, &forward);
+        checks.note(&format!("{file} (reversed)"), &backward);
         let mut parser = ts::Parser::new();
         if parser.set_language(&language).is_err() {
             continue;

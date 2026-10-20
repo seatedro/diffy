@@ -1,8 +1,6 @@
 mod align;
 mod config;
 mod cost;
-#[cfg(feature = "eval")]
-mod legacy;
 mod matcher;
 mod syntax;
 
@@ -194,13 +192,6 @@ fn run<T>(
     if errors > limits.max_errors {
         return Err(Fallback::ParseErrors(errors));
     }
-    #[cfg(feature = "eval")]
-    let matching = if options.legacy {
-        legacy::run(&old, &new, limits.max_work, deadline)?
-    } else {
-        matcher::run(&old, &new, limits.max_work, deadline, options, vet)?
-    };
-    #[cfg(not(feature = "eval"))]
     let matching = matcher::run(&old, &new, limits.max_work, deadline, options, vet)?;
     let out = align::rows(&old, &new, &matching);
     let diff = SemanticDiff {
@@ -226,7 +217,6 @@ pub mod eval {
         pub floor: bool,
         pub exhaustive: bool,
         pub margins: bool,
-        pub legacy: bool,
     }
 
     const DEFAULT: Options = Options {
@@ -235,7 +225,6 @@ pub mod eval {
         floor: true,
         exhaustive: false,
         margins: false,
-        legacy: false,
     };
 
     impl Default for Options {
@@ -267,7 +256,6 @@ pub mod eval {
             floor: options.floor,
             exhaustive: options.exhaustive,
             margins: options.margins,
-            legacy: options.legacy,
         }
     }
 

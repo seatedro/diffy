@@ -288,16 +288,8 @@ pub fn run(args: Args) -> Result<(), String> {
                 }
                 continue;
             };
-            checks.note(
-                &id(case.kind),
-                &forward,
-                explain::legacy_cost(&language, config, &text, &case.new, &limits),
-            );
-            checks.note(
-                &id(case.back),
-                &backward,
-                explain::legacy_cost(&language, config, &case.new, &text, &limits),
-            );
+            checks.note(&id(case.kind), &forward);
+            checks.note(&id(case.back), &backward);
             let partners = Partners::new(&forward.diff);
             let truth = case.truth(&partners);
             let [gone, fresh] = case.unlinked(&text, &partners);

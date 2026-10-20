@@ -73,7 +73,7 @@ pub fn run(args: Args) -> Result<(), String> {
                 let start = std::time::Instant::now();
                 match eval::explain(&language, config, &old, &new, &limits, &options) {
                     Ok(e) => {
-                        checks.note(&label, &e, None);
+                        checks.note(&label, &e);
                         costs[k] = e.cost(&weights);
                     }
                     Err(_) => ok = false,

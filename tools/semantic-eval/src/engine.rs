@@ -6,7 +6,7 @@ use diffy::core::compare::semantic::{
 };
 use diffy::core::syntax::grammar::GrammarConfig;
 use diffy_diff::{DEFAULT_CONTEXT, DiffDocument, FileStatus, diff_texts};
-use diffy_syntax::{GrammarStore, LanguageId};
+use diffy_syntax::{GrammarStore, LanguageId, LanguageStatus};
 use serde::{Deserialize, Serialize};
 
 use crate::capture;
@@ -87,7 +87,13 @@ pub fn run(engine: Engine, path: &str, old: &[u8], new: &[u8]) -> Result<Run, St
 }
 
 pub fn language(name: &str) -> Option<diffy_semantic::Language> {
-    grammars().tree_sitter_language(&LanguageId::from_fence(name)?)
+    let id = LanguageId::from_fence(name)?;
+    let store = grammars();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while store.status(&id) == LanguageStatus::Pending && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    store.tree_sitter_language(&id)
 }
 
 fn grammars() -> &'static GrammarStore {

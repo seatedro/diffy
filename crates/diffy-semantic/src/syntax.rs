@@ -28,6 +28,7 @@ pub(crate) struct Node {
     pub(crate) class: Class,
     /// An identifier token, the only kind of token a rename can change.
     pub(crate) name: bool,
+    pub(crate) callee: bool,
 }
 
 pub(crate) struct Item {
@@ -114,6 +115,11 @@ impl<'a> Tree<'a> {
             let name =
                 class == Class::Plain && node.is_named() && node.kind().ends_with("identifier");
             self.atom(node.kind_id(), span(node), class, name);
+            if name && callee(node) {
+                if let Some(last) = self.nodes.last_mut() {
+                    last.callee = true;
+                }
+            }
             return;
         }
         let mut cursor = node.walk();
@@ -245,6 +251,7 @@ impl<'a> Tree<'a> {
             kind,
             class,
             name,
+            callee: false,
         });
     }
 
@@ -265,6 +272,7 @@ impl<'a> Tree<'a> {
             kind,
             class: Class::List,
             name: false,
+            callee: false,
         });
         at
     }
@@ -346,4 +354,33 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut tail = [0; 8];
     tail[..rest.len()].copy_from_slice(rest);
     mix(hash, u64::from_le_bytes(tail))
+}
+
+fn callee(node: ts::Node<'_>) -> bool {
+    let mut child = node;
+    for _ in 0..2 {
+        let Some(parent) = child.parent() else {
+            return false;
+        };
+        if parent
+            .child_by_field_name("function")
+            .is_some_and(|f| f.id() == child.id())
+        {
+            return true;
+        }
+        let kind = parent.kind();
+        let path = kind.ends_with("field_expression")
+            || kind.ends_with("member_expression")
+            || kind == "scoped_identifier"
+            || kind == "selector_expression"
+            || kind == "attribute";
+        let last = parent
+            .named_child(parent.named_child_count().saturating_sub(1) as u32)
+            .is_some_and(|n| n.id() == child.id());
+        if !path || !last {
+            return false;
+        }
+        child = parent;
+    }
+    false
 }

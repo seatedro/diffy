@@ -81,10 +81,13 @@ pub(crate) fn run(
     max_work: u64,
     deadline: Instant,
     options: &Options,
+    vet: Option<&crate::Vet<'_>>,
 ) -> Result<Matching, Fallback> {
     let mut m = Matcher {
         trees: [old, new],
         options,
+        vet,
+        vetoed: None,
         partner: [vec![NONE; old.nodes.len()], vec![NONE; new.nodes.len()]],
         parents: [parents(old), parents(new)],
         mass: [mass(old), mass(new)],
@@ -147,6 +150,8 @@ pub(crate) fn run(
 struct Matcher<'t, 'a> {
     trees: [&'t Tree<'a>; 2],
     options: &'t Options,
+    vet: Option<&'t crate::Vet<'t>>,
+    vetoed: Option<HashSet<(&'a str, &'a str)>>,
     partner: [Vec<u32>; 2],
     parents: [Vec<u32>; 2],
     mass: [Mass; 2],
@@ -1738,12 +1743,17 @@ impl<'a> Matcher<'_, 'a> {
         for &(p, _) in uses.keys() {
             *targets.entry(p).or_default() += 1;
         }
+        let vetoed = self.vetoed(uses.keys().copied());
         let mut accepted = Vec::new();
         let mut rejected = false;
         for ((p, q), (d, count, items)) in uses {
             let w = self.options.weights;
             let gain = self.value(&d) + Self::scale(w.iota * items);
-            if count > 0 && targets[p] == 1 && gain > Self::scale(w.rho0) {
+            if count > 0
+                && targets[p] == 1
+                && gain > Self::scale(w.rho0)
+                && !vetoed.contains(&(p, q))
+            {
                 self.predicted[ENTRIES] -= 1;
                 accepted.push((p, q, count));
             } else {
@@ -1753,6 +1763,44 @@ impl<'a> Matcher<'_, 'a> {
             }
         }
         (accepted, rejected)
+    }
+
+    fn vetoed(
+        &mut self,
+        pairs: impl Iterator<Item = (&'a str, &'a str)>,
+    ) -> HashSet<(&'a str, &'a str)> {
+        if let Some(done) = &self.vetoed {
+            return done.clone();
+        }
+        let Some(vet) = self.vet else {
+            return HashSet::default();
+        };
+        let called = |tree: &Tree<'a>| {
+            let mut out: HashMap<&'a str, bool> = HashMap::default();
+            for n in tree.nodes.iter().filter(|n| n.name) {
+                *out.entry(tree.text(n.span.clone())).or_insert(true) &= n.callee;
+            }
+            out
+        };
+        let (old, new) = (called(self.trees[0]), called(self.trees[1]));
+        let candidates: Vec<(&'a str, &'a str)> = pairs
+            .filter(|(p, q)| old.get(p) == Some(&true) && new.get(q) == Some(&true))
+            .collect();
+        let started = Instant::now();
+        let keep = if candidates.is_empty() {
+            Vec::new()
+        } else {
+            vet(&candidates)
+        };
+        self.deadline += started.elapsed();
+        let done: HashSet<(&'a str, &'a str)> = candidates
+            .into_iter()
+            .zip(keep.into_iter().chain(std::iter::repeat(false)))
+            .filter(|&(_, keep)| !keep)
+            .map(|(pair, _)| pair)
+            .collect();
+        self.vetoed = Some(done.clone());
+        done
     }
 
     fn scope(&mut self) -> Result<(), Fallback> {

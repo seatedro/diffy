@@ -22,7 +22,9 @@ use crate::core::compare::spec::CompareSpec;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result};
 use crate::core::syntax::grammar::Grammars;
-use crate::core::vcs::git::{GitService, INDEX_REF, StatusItem, StatusScope, WORKDIR_REF};
+use crate::core::vcs::git::{
+    GitService, INDEX_REF, StatusItem, StatusScope, WORKDIR_REF, mentions,
+};
 
 const LOADING_FILE_EMIT_STRIDE: u32 = 16;
 const MAX_WORKERS: usize = 4;
@@ -92,14 +94,16 @@ pub fn compare(
         ));
     }
     let changed = read_changed_paths(git, &left, &right, entries);
-    compare_changed_paths(changed, reporter)
+    let vet = rename_vet(git, &left, &right);
+    compare_changed_paths(changed, reporter, Some(&vet))
 }
 
 pub fn compare_path(spec: &CompareSpec, path: &str, git: &GitService) -> Result<CompareOutput> {
     let (left, right) = resolve_compare_refs(spec, git)?;
     let entries = git.diff_name_status(&left, &right, Some(path))?;
     let changed = read_changed_paths(git, &left, &right, entries);
-    compare_changed_paths(changed, None)
+    let vet = rename_vet(git, &left, &right);
+    compare_changed_paths(changed, None, Some(&vet))
 }
 
 pub fn compare_status_item(item: &StatusItem, git: &GitService) -> Result<CompareOutput> {
@@ -127,7 +131,8 @@ pub fn compare_status_item(item: &StatusItem, git: &GitService) -> Result<Compar
         old_content: old_content.unwrap_or_default(),
         new_content: new_content.unwrap_or_default(),
     };
-    compare_changed_paths(vec![changed], None)
+    let vet = rename_vet(git, old_ref.unwrap_or(new_ref), new_ref);
+    compare_changed_paths(vec![changed], None, Some(&vet))
 }
 
 pub fn compare_text(left: &str, right: &str, display_path: &str) -> Result<CompareOutput> {
@@ -148,12 +153,38 @@ pub fn compare_text(left: &str, right: &str, display_path: &str) -> Result<Compa
         old_content: left.as_bytes().to_vec(),
         new_content: right.as_bytes().to_vec(),
     };
-    compare_changed_paths(vec![changed], None)
+    compare_changed_paths(vec![changed], None, None)
+}
+
+fn rename_vet<'g>(
+    git: &GitService,
+    left: &'g str,
+    right: &'g str,
+) -> impl Fn(&[(&str, &str)]) -> Vec<bool> + Sync + 'g {
+    let repo = std::path::PathBuf::from(git.repo_path());
+    move |pairs| {
+        std::thread::scope(|scope| {
+            let lookups: Vec<_> = pairs
+                .iter()
+                .map(|&(old, new)| {
+                    let repo = &repo;
+                    let gone = scope.spawn(move || mentions(repo, right, old) == Some(false));
+                    let fresh = scope.spawn(move || mentions(repo, left, new) == Some(false));
+                    (gone, fresh)
+                })
+                .collect();
+            lookups
+                .into_iter()
+                .map(|(gone, fresh)| gone.join().unwrap_or(false) && fresh.join().unwrap_or(false))
+                .collect()
+        })
+    }
 }
 
 pub fn compare_changed_paths(
     changed: Vec<ChangedPath>,
     reporter: Option<&dyn ProgressSink>,
+    vet: Option<&diffy_semantic::Vet<'_>>,
 ) -> Result<CompareOutput> {
     let files_total = changed.len() as u32;
     if let Some(r) = reporter {
@@ -164,7 +195,7 @@ pub fn compare_changed_paths(
     }
     let progress = AtomicU32::new(0);
     let load = |changed: &ChangedPath| {
-        let doc = document_from_changed(changed)?;
+        let doc = document_from_changed_vetted(changed, vet)?;
         let seen = progress.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         if let Some(r) = reporter
             && (seen.is_multiple_of(LOADING_FILE_EMIT_STRIDE) || seen == files_total)
@@ -225,7 +256,19 @@ fn load_parallel(
 }
 
 pub fn document_from_changed(changed: &ChangedPath) -> Result<DiffDocument> {
-    let (doc, fallback) = document_from_native(changed, &Grammars::shared().store())?;
+    document_from_changed_vetted(changed, None)
+}
+
+fn document_from_changed_vetted(
+    changed: &ChangedPath,
+    vet: Option<&diffy_semantic::Vet<'_>>,
+) -> Result<DiffDocument> {
+    let store = Grammars::shared().store();
+    let (doc, fallback) = document_from_native_with(
+        changed,
+        |name| LanguageId::from_fence(name).and_then(|id| store.tree_sitter_language(&id)),
+        vet,
+    )?;
     if let Some(reason) = fallback {
         tracing::info!(
             target: "diffy::semantic",
@@ -344,9 +387,11 @@ pub fn document_from_native(
     changed: &ChangedPath,
     grammars: &GrammarStore,
 ) -> Result<(DiffDocument, Option<String>)> {
-    document_from_native_with(changed, |name| {
-        LanguageId::from_fence(name).and_then(|id| grammars.tree_sitter_language(&id))
-    })
+    document_from_native_with(
+        changed,
+        |name| LanguageId::from_fence(name).and_then(|id| grammars.tree_sitter_language(&id)),
+        None,
+    )
 }
 
 pub fn semantic_language(path: &str) -> Option<&'static str> {
@@ -370,6 +415,7 @@ pub fn semantic_language(path: &str) -> Option<&'static str> {
 pub fn document_from_native_with(
     changed: &ChangedPath,
     grammar: impl FnOnce(&str) -> Option<diffy_semantic::Language>,
+    vet: Option<&diffy_semantic::Vet<'_>>,
 ) -> Result<(DiffDocument, Option<String>)> {
     let meta = changed.meta();
     if is_binary_bytes(&changed.old_content) || is_binary_bytes(&changed.new_content) {
@@ -401,7 +447,13 @@ pub fn document_from_native_with(
         max_time: FILE_TIME_BUDGET,
         ..Limits::default()
     };
-    match diffy_semantic::diff(&grammar, config, old.as_str(), new.as_str(), &limits) {
+    let diff = match vet {
+        Some(vet) => {
+            diffy_semantic::diff_vetted(&grammar, config, old.as_str(), new.as_str(), &limits, vet)
+        }
+        None => diffy_semantic::diff(&grammar, config, old.as_str(), new.as_str(), &limits),
+    };
+    match diff {
         Ok(diff) => {
             let chunks = clean_rows(diff.chunks, &old, &new);
             let groups = diff

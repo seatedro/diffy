@@ -177,7 +177,7 @@ impl JjRepository {
                     .iter()
                     .map(|change| self.changed_path(change, &old_rev, &new_rev))
                     .collect::<Result<Vec<_>>>()?;
-                return semantic::compare_changed_paths(changed, reporter);
+                return semantic::compare_changed_paths(changed, reporter, None);
             }
         }
         let raw_diff = self

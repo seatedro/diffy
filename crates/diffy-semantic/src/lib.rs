@@ -130,6 +130,33 @@ pub fn diff(
         new,
         limits,
         &options,
+        None,
+        |_, _, _, diff| diff,
+    )
+}
+
+pub type Vet<'v> = dyn Fn(&[(&str, &str)]) -> Vec<bool> + Sync + 'v;
+
+pub fn diff_vetted(
+    language: &ts::Language,
+    config: &Config,
+    old: &str,
+    new: &str,
+    limits: &Limits,
+    vet: &Vet<'_>,
+) -> Result<SemanticDiff, Fallback> {
+    #[cfg(feature = "eval")]
+    let options = eval::current();
+    #[cfg(not(feature = "eval"))]
+    let options = matcher::Options::default();
+    run(
+        language,
+        config,
+        old,
+        new,
+        limits,
+        &options,
+        Some(vet),
         |_, _, _, diff| diff,
     )
 }
@@ -141,6 +168,7 @@ fn run<T>(
     new: &str,
     limits: &Limits,
     options: &matcher::Options,
+    vet: Option<&Vet<'_>>,
     finish: impl FnOnce(&syntax::Tree<'_>, &syntax::Tree<'_>, matcher::Matching, SemanticDiff) -> T,
 ) -> Result<T, Fallback> {
     let deadline = Instant::now() + limits.max_time;
@@ -170,10 +198,10 @@ fn run<T>(
     let matching = if options.legacy {
         legacy::run(&old, &new, limits.max_work, deadline)?
     } else {
-        matcher::run(&old, &new, limits.max_work, deadline, options)?
+        matcher::run(&old, &new, limits.max_work, deadline, options, vet)?
     };
     #[cfg(not(feature = "eval"))]
-    let matching = matcher::run(&old, &new, limits.max_work, deadline, options)?;
+    let matching = matcher::run(&old, &new, limits.max_work, deadline, options, vet)?;
     let out = align::rows(&old, &new, &matching);
     let diff = SemanticDiff {
         chunks: out.chunks,
@@ -290,6 +318,7 @@ pub mod eval {
             new,
             limits,
             &inner(options),
+            None,
             |old, new, m, diff| {
                 let mut baseline = Features::default();
                 for tree in [old, new] {

@@ -47,8 +47,8 @@ pub fn run(engine: Engine, path: &str, old: &[u8], new: &[u8]) -> Result<Run, St
         Engine::Native => {
             let changed = changed();
             let start = Instant::now();
-            let (doc, fallback) =
-                document_from_native_with(&changed, language).map_err(|error| error.to_string())?;
+            let (doc, fallback) = document_from_native_with(&changed, language, None)
+                .map_err(|error| error.to_string())?;
             Ok(Run {
                 doc,
                 micros: start.elapsed().as_micros() as u64,

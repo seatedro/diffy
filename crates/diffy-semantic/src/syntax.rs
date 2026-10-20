@@ -112,7 +112,8 @@ impl<'a> Tree<'a> {
             return;
         }
         let comment = node.is_extra() || node.kind().contains("comment");
-        let text = lowering.rules.text(node.kind_id());
+        let text = lowering.rules.text(node.kind_id())
+            || node.child_count() > 0 && depth < MAX_DEPTH && self.uncovered(node);
         if node.child_count() == 0 || comment || text || depth >= MAX_DEPTH {
             let class = if comment {
                 Class::Comment
@@ -193,6 +194,25 @@ impl<'a> Tree<'a> {
             unit,
             lead,
         });
+    }
+
+    fn uncovered(&self, node: ts::Node<'_>) -> bool {
+        let blank = |from: usize, to: usize| {
+            let gap = &self.src.as_bytes()[from..to.max(from)];
+            gap.iter().enumerate().all(|(i, &b)| {
+                b.is_ascii_whitespace()
+                    || b == b'\\' && matches!(gap.get(i + 1), Some(b'\n' | b'\r'))
+            })
+        };
+        let mut at = node.start_byte();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if !blank(at, child.start_byte()) {
+                return true;
+            }
+            at = at.max(child.end_byte());
+        }
+        !blank(at, node.end_byte())
     }
 
     fn lowered(&self, range: Range<u32>) -> Option<u32> {

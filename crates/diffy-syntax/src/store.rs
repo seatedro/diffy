@@ -27,6 +27,15 @@ pub struct GrammarStatus {
     pub state: GrammarState,
 }
 
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone)]
+pub struct GrammarQueries {
+    pub language: Arc<str>,
+    pub highlights: Arc<str>,
+    pub locals: Option<Arc<str>>,
+    pub semantic: Option<Arc<str>>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Catalog {
     pub statuses: Vec<GrammarStatus>,
@@ -126,9 +135,17 @@ impl GrammarStore {
     }
 
     #[cfg(feature = "engine")]
-    pub fn parser(&self, tag: &str) -> Option<(tree_sitter::Language, Arc<str>)> {
+    pub fn parser(&self, tag: &str) -> Option<(tree_sitter::Language, GrammarQueries)> {
         match self.grammar(&LanguageId::from_fence(tag)?) {
-            Tag::Ready(grammar) => Some((grammar.language().clone(), grammar.highlights().clone())),
+            Tag::Ready(grammar) => Some((
+                grammar.language().clone(),
+                GrammarQueries {
+                    language: Arc::from(grammar.name().unwrap_or(tag)),
+                    highlights: grammar.highlights().clone(),
+                    locals: grammar.locals().cloned(),
+                    semantic: grammar.semantic().cloned(),
+                },
+            )),
             Tag::Pending | Tag::Unavailable => None,
         }
     }

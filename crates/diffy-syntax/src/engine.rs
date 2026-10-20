@@ -37,6 +37,8 @@ pub(crate) struct Grammar {
     /// uses it so a fenced block's content is not all `@text.literal`).
     none: Option<u32>,
     injections: Option<Injections>,
+    locals: Option<Arc<str>>,
+    semantic: Option<Arc<str>>,
     scopes: std::sync::OnceLock<Option<Arc<crate::scope::ScopeQuery>>>,
 }
 
@@ -56,10 +58,11 @@ impl Grammar {
     pub(crate) fn load(dir: &Path, manifest: &PackManifest) -> Result<Self, PackError> {
         verify_files(dir, manifest)?;
         let highlights = std::fs::read_to_string(dir.join(&manifest.highlights.path))?;
-        let injections = match &manifest.injections {
-            Some(file) => Some(std::fs::read_to_string(dir.join(&file.path))?),
-            None => None,
+        let read = |file: &Option<crate::pack::PackFile>| match file {
+            Some(file) => std::fs::read_to_string(dir.join(&file.path)).map(Some),
+            None => Ok(None),
         };
+        let injections = read(&manifest.injections)?;
         let grammar = Self::compile(
             &dir.join(&manifest.library.path),
             &manifest.symbol,
@@ -69,6 +72,8 @@ impl Grammar {
         )?;
         Ok(Self {
             name: Some(Arc::from(manifest.language.as_str())),
+            locals: read(&manifest.locals)?.map(Arc::from),
+            semantic: read(&manifest.semantic)?.map(Arc::from),
             ..grammar
         })
     }
@@ -83,6 +88,14 @@ impl Grammar {
 
     pub(crate) fn highlights(&self) -> &Arc<str> {
         &self.highlights
+    }
+
+    pub(crate) fn locals(&self) -> Option<&Arc<str>> {
+        self.locals.as_ref()
+    }
+
+    pub(crate) fn semantic(&self) -> Option<&Arc<str>> {
+        self.semantic.as_ref()
     }
 
     pub(crate) fn compile(
@@ -138,6 +151,8 @@ impl Grammar {
             none,
             capture_kinds,
             injections,
+            locals: None,
+            semantic: None,
             scopes: std::sync::OnceLock::new(),
         })
     }

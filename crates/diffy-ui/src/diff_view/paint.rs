@@ -36,6 +36,7 @@ pub(super) fn whole_pixels(points: f32, scale: f32) -> f32 {
 pub(super) enum Cue {
     Added,
     Removed,
+    Moved,
 }
 
 /// Diagonal hatch lines over `rect`, clipped to it. `phase` is the
@@ -120,6 +121,8 @@ pub(super) fn vertical_hairline(
 pub(super) struct LineColors {
     pub text: Color,
     pub word: Color,
+    pub strike: Color,
+    pub rename: Color,
     pub search: Color,
     pub search_active: Color,
     pub search_outline: Color,
@@ -138,6 +141,8 @@ pub(super) fn line(
     layout: &Arc<TextLayout>,
     span_colors: Arc<[Color]>,
     words: &[Range<usize>],
+    struck: &[Range<usize>],
+    renamed: &[Range<usize>],
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
     colors: LineColors,
@@ -153,9 +158,35 @@ pub(super) fn line(
             height: r.height,
         })
     };
+    let text = layout.text();
+    let solid = text.len() - text.trim_start().len()..text.trim_end().len();
+    let whole = matches!(words, [only] if !solid.is_empty() && only.start <= solid.start && only.end >= solid.end);
+    let (top, bottom) = (origin.1, origin.1 + row_height.max(layout.size().1));
     for range in words {
-        for rect in rects(range.clone()) {
-            scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.word));
+        let spans: Vec<Rect> = rects(range.clone()).collect();
+        if !whole {
+            for rect in spans {
+                scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.word));
+            }
+            continue;
+        }
+        let first = spans.iter().map(|r| r.y).fold(f32::INFINITY, f32::min);
+        let last = spans.iter().map(|r| r.y).fold(f32::NEG_INFINITY, f32::max);
+        for rect in spans {
+            let y = if rect.y == first { top } else { rect.y };
+            let end = if rect.y == last {
+                bottom
+            } else {
+                rect.y + rect.height
+            };
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    y,
+                    height: end - y,
+                    ..rect
+                },
+                color: colors.word,
+            });
         }
     }
     for mark in search {
@@ -227,6 +258,37 @@ pub(super) fn line(
         default_color: colors.text,
         span_colors,
     });
+    let thickness = whole_pixels(1.0, scale);
+    let dot = whole_pixels(1.5, scale);
+    for range in renamed {
+        for rect in rects(range.clone()) {
+            let mut x = rect.x;
+            while x < rect.x + rect.width {
+                scene.rect(RectPrimitive {
+                    rect: Rect {
+                        x,
+                        y: rect.y + rect.height - dot * 2.0,
+                        width: dot,
+                        height: dot,
+                    },
+                    color: colors.rename,
+                });
+                x += dot * 2.0;
+            }
+        }
+    }
+    for range in struck {
+        for rect in rects(range.clone()) {
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    y: rect.y + (rect.height - thickness) / 2.0,
+                    height: thickness,
+                    ..rect
+                },
+                color: colors.strike,
+            });
+        }
+    }
 }
 
 /// The keyboard focus outline of a row, inset so neighbors do not cover
@@ -269,6 +331,8 @@ mod tests {
         let colors = LineColors {
             text: color(1),
             word: color(2),
+            strike: color(8),
+            rename: color(9),
             search: color(3),
             search_active: color(4),
             search_outline: color(5),
@@ -282,6 +346,8 @@ mod tests {
             &layout,
             Arc::from([]),
             &words,
+            &[],
+            &[],
             &[SearchMark {
                 range: 4..9,
                 active: true,

@@ -5,16 +5,18 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use diffy_diff::{
-    ChangeIntensity, DiffDocument, FileStatus, InlineDetail, InlineMode, InlineOptions, Mode,
-    RowKind, Side, line_detail,
+    ChangeIntensity, DiffDocument, FileStatus, InlineDetail, InlineMode, InlineOptions, ItemChange,
+    Joined, Mode, Move, RowKind, Side, join_lines, line_detail, merge_pair, move_leaders,
+    moved_from,
 };
+use diffy_syntax::HighlightKind;
 use quark_render::FontKind;
-use quark_text::{LayoutCache, TextParams, TextStyle, TextSystem};
+use quark_text::{LayoutCache, TextParams, TextSpan, TextStyle, TextSystem};
 use quark_ui::virtual_list::VariableList;
 
 use super::prepared::{
-    Columns, FileFact, FrameRow, LineDetail, LinePaint, LineWindow, Metrics, PreparedKind,
-    RowPaint, ViewFrame, WordDetail,
+    Columns, FileFact, FrameRow, LineDetail, LineMerge, LinePaint, LineWindow, Metrics, MoveNote,
+    PreparedKind, RowPaint, ViewFrame, WordDetail,
 };
 use super::prepared_update::file_facts;
 use super::state::{RowRef, Segment, source_line};
@@ -54,6 +56,57 @@ pub(crate) fn floor_boundary(text: &str, byte: usize) -> usize {
         at -= 1;
     }
     at
+}
+
+fn split_at_marks(
+    spans: Vec<TextSpan>,
+    tones: &[HighlightKind],
+    marks: &[Range<usize>],
+) -> (Vec<TextSpan>, Arc<[HighlightKind]>, Arc<[bool]>) {
+    let mut cuts: Vec<usize> = spans
+        .iter()
+        .flat_map(|s| [s.range.start, s.range.end])
+        .chain(marks.iter().flat_map(|m| [m.start, m.end]))
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let (mut out, mut kinds, mut removed) = (Vec::new(), Vec::new(), Vec::new());
+    for pair in cuts.windows(2) {
+        let piece = pair[0]..pair[1];
+        let marked = marks
+            .iter()
+            .any(|m| m.start <= piece.start && piece.end <= m.end);
+        let covering = spans
+            .iter()
+            .position(|s| s.range.start <= piece.start && piece.end <= s.range.end);
+        let (span, kind) = match covering {
+            Some(i) => (
+                TextSpan {
+                    range: piece,
+                    ..spans[i].clone()
+                },
+                tones.get(i).copied().unwrap_or(HighlightKind::Normal),
+            ),
+            None if marked => (plain_span(piece), HighlightKind::Normal),
+            None => continue,
+        };
+        out.push(span);
+        kinds.push(kind);
+        removed.push(marked);
+    }
+    (out, kinds.into(), removed.into())
+}
+
+fn plain_span(range: Range<usize>) -> TextSpan {
+    TextSpan {
+        range,
+        weight: None,
+        style: None,
+        kind: None,
+        size: None,
+        letter_spacing: None,
+        keep_together: false,
+    }
 }
 
 /// `@@ -a,b +c,d @@ section` of a hunk.
@@ -229,6 +282,13 @@ impl DiffViewState {
                 RowRef::Line { seg, row } => {
                     let selected = [Side::Old, Side::New].map(|side| {
                         let line = paint.sides[side as usize].as_ref()?;
+                        if let Some(merge) = &line.merge {
+                            let (lo, hi) =
+                                self.row_selection(ordered, (seg, row), side, merge.source_len())?;
+                            let lo = merge.to_layout(Side::New, lo)?;
+                            let hi = merge.to_layout(Side::New, hi)?;
+                            return (lo < hi).then_some((lo, hi));
+                        }
                         // In line bytes, then in the bytes of a window's text.
                         let start = line.window.map_or(0, |w| w.start);
                         let len = line.layout.text().len();
@@ -478,6 +538,10 @@ impl DiffViewState {
                 ) {
                     self.long_lines.generation().hash(&mut h);
                 }
+                if let Some(count) = p.reflow(row) {
+                    let open = segment.expansion.reflow_open(file, p.new[row as usize]);
+                    (count, open).hash(&mut h);
+                }
                 if p.kind[row as usize] == RowKind::FileHeader {
                     let unit = segment.unit(file);
                     (self.collapsed.contains(&unit), self.file_annotations(unit)).hash(&mut h);
@@ -564,6 +628,11 @@ impl DiffViewState {
             syntax: None,
             collapsed: false,
             annotations: 0,
+            quiet: false,
+            fold: None,
+            hint: None,
+            note: None,
+            summary: None,
         };
         match r {
             RowRef::Line { seg, row } => {
@@ -638,6 +707,7 @@ impl DiffViewState {
         let r = row as usize;
         let (kind, file) = (p.kind[r], p.file[r]);
         let meta = &doc.files().meta[file as usize];
+        let quiet = p.mode == Mode::Unified && doc.prefers_structural(file);
         let mut paint = RowPaint {
             stamp,
             kind: PreparedKind::Diff(kind),
@@ -656,6 +726,13 @@ impl DiffViewState {
             syntax: None,
             collapsed: false,
             annotations: 0,
+            quiet,
+            fold: p
+                .reflow(row)
+                .map(|count| (count, segment.expansion.reflow_open(file, p.new[r]))),
+            hint: None,
+            note: None,
+            summary: None,
         };
         match kind {
             RowKind::FileHeader => {
@@ -669,8 +746,34 @@ impl DiffViewState {
                     (Some(old), Some(new)) if old != new => format!("{old} \u{2192} {new}").into(),
                     _ => doc.path(file).into(),
                 };
+                paint.summary = semantic_summary(doc, file);
             }
             RowKind::HunkHeader => paint.title = hunk_title(doc, p.hunk[r]).into(),
+            RowKind::MovedHere | RowKind::MovedAway => {
+                let here = kind == RowKind::MovedHere;
+                let other = if here {
+                    RowKind::MovedAway
+                } else {
+                    RowKind::MovedHere
+                };
+                let index = p.pair[r];
+                let target = if here {
+                    index
+                } else {
+                    lead_move(doc, file, index)
+                };
+                let partner = (0..p.len()).find(|&k| {
+                    p.kind[k as usize] == other
+                        && p.file[k as usize] == file
+                        && (p.pair[k as usize] == target
+                            || here && lead_move(doc, file, p.pair[k as usize]) == index)
+                });
+                let up = partner.map(|k| k < row);
+                paint.note = Some(MoveNote { index, here, up });
+                paint.title = move_note(doc, file, index, here, up)
+                    .unwrap_or_default()
+                    .into();
+            }
             RowKind::Gap => {
                 let gap = p.gap(row).expect("gap row");
                 paint.hidden = gap.hidden;
@@ -690,6 +793,38 @@ impl DiffViewState {
                     title.push_str(&hunk_title(doc, h));
                 }
                 paint.title = title.into();
+            }
+            RowKind::Reflowed
+                if let Some((count, false)) = paint.fold
+                    && let Some(line) =
+                        self.folded_line(seg, row, count, text, layouts, scale, columns) =>
+            {
+                paint.source_lines[Side::New as usize] = p
+                    .line(row, Side::New)
+                    .map(|i| source_line(doc, file, Side::New, i));
+                paint.sides[Side::New as usize] = Some(line);
+            }
+            RowKind::Merged
+                if let (Some(old), Some(new)) =
+                    (p.line(row, Side::Old), p.line(row, Side::New))
+                    && let Some(line) =
+                        self.merged_line(seg, file, [old, new], text, layouts, scale, columns) =>
+            {
+                for side in [Side::Old, Side::New] {
+                    paint.source_lines[side as usize] =
+                        p.line(row, side).map(|i| source_line(doc, file, side, i));
+                }
+                paint.sides[Side::New as usize] = Some(line);
+            }
+            RowKind::Moved
+                if let Some(new) = p.line(row, Side::New)
+                    && let Some(old) = moved_from(doc, file, new)
+                    && let Some(line) =
+                        self.merged_line(seg, file, [old, new], text, layouts, scale, columns) =>
+            {
+                paint.source_lines[Side::New as usize] =
+                    Some(source_line(doc, file, Side::New, new));
+                paint.sides[Side::New as usize] = Some(line);
             }
             _ => {
                 let m = self.metrics();
@@ -725,6 +860,27 @@ impl DiffViewState {
                         Some((syntax, file)) => syntax.spans(file, side, range),
                         None => (Vec::new(), Arc::from([])),
                     };
+                    let mut words = super::paint::join_whitespace_gaps(
+                        match &window {
+                            Some(w) => super::long_lines::clip_to_window(&words[side as usize], w),
+                            None => clip_ranges(&words[side as usize], shown),
+                        },
+                        line,
+                    );
+                    let whole = !quiet && super::paint::covers_text(&words, line);
+                    if whole {
+                        words.clear();
+                    }
+                    let (words, struck) = if quiet && kind == RowKind::Removed {
+                        (Vec::new(), words)
+                    } else {
+                        (words, Vec::new())
+                    };
+                    let (spans, tones, removed_spans) = if struck.is_empty() {
+                        (spans, tones, Arc::from([]))
+                    } else {
+                        split_at_marks(spans, &tones, &struck)
+                    };
                     let params = TextParams::new(line, self.text_style())
                         .spans(spans)
                         .scale_factor(scale)
@@ -734,17 +890,12 @@ impl DiffViewState {
                     let Ok(layout) = layouts.layout(text, &params) else {
                         continue;
                     };
-                    let mut words = super::paint::join_whitespace_gaps(
-                        match &window {
-                            Some(w) => super::long_lines::clip_to_window(&words[side as usize], w),
-                            None => clip_ranges(&words[side as usize], shown),
-                        },
-                        line,
-                    );
-                    let whole = super::paint::covers_text(&words, line);
-                    if whole {
-                        words.clear();
-                    }
+                    let renamed = if quiet && window.is_none() {
+                        let source = source_line(doc, file, side, index);
+                        clip_ranges(&renamed_ranges(doc, file, side, source), shown)
+                    } else {
+                        Vec::new()
+                    };
                     paint.sides[side as usize] = Some(LinePaint {
                         layout,
                         tones,
@@ -753,11 +904,190 @@ impl DiffViewState {
                         detail,
                         word_detail,
                         window,
+                        unspoken: Vec::new(),
+                        renamed,
+                        struck,
+                        removed_spans,
+                        merge: None,
                     });
                 }
             }
         }
+        if let Some(line) = &paint.sides[Side::New as usize]
+            && !line.renamed.is_empty()
+        {
+            let text = line.layout.text();
+            let names: Vec<&str> = line
+                .renamed
+                .iter()
+                .filter_map(|r| text.get(r.clone()))
+                .collect();
+            paint.hint = rename_hint(doc, file, &names);
+        }
         paint
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn folded_line(
+        &self,
+        seg: usize,
+        row: u32,
+        count: u32,
+        text: &mut TextSystem,
+        layouts: &mut LayoutCache,
+        scale: f32,
+        columns: &Columns,
+    ) -> Option<LinePaint> {
+        let segment = &self.segments[seg];
+        let (doc, p) = (&segment.doc, &segment.projection);
+        let file = p.file[row as usize];
+        let first = p.line(row, Side::New)?;
+        let old = p.fold_old(row).unwrap_or(0..0);
+        let [old, new] = [(Side::Old, old), (Side::New, first..first + count)]
+            .map(|(side, lines)| joined(doc, file, side, lines));
+        self.compose(seg, file, &old, &new, text, layouts, scale, columns)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn merged_line(
+        &self,
+        seg: usize,
+        file: u32,
+        index: [u32; 2],
+        text: &mut TextSystem,
+        layouts: &mut LayoutCache,
+        scale: f32,
+        columns: &Columns,
+    ) -> Option<LinePaint> {
+        let doc = &self.segments[seg].doc;
+        let [old, new] = [Side::Old, Side::New].map(|side| {
+            joined(
+                doc,
+                file,
+                side,
+                index[side as usize]..index[side as usize] + 1,
+            )
+        });
+        self.compose(seg, file, &old, &new, text, layouts, scale, columns)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compose(
+        &self,
+        seg: usize,
+        file: u32,
+        old: &Joined,
+        new: &Joined,
+        text: &mut TextSystem,
+        layouts: &mut LayoutCache,
+        scale: f32,
+        columns: &Columns,
+    ) -> Option<LinePaint> {
+        let doc = &self.segments[seg].doc;
+        let lines = [old.text.as_str(), new.text.as_str()];
+        let pieces = merge_pair(lines[0], lines[1], &old.spans, &new.spans)?;
+        let syntax = self.syntax_of(seg, file);
+        let mut composed = String::new();
+        let mut text_spans = Vec::new();
+        let mut tones = Vec::new();
+        let mut removed = Vec::new();
+        let mut words = Vec::new();
+        let mut struck = Vec::new();
+        let mut unspoken = Vec::new();
+        let mut renamed = Vec::new();
+        let mut merge = LineMerge::default();
+        let mut previous_old: Option<usize> = None;
+        for piece in pieces {
+            if let Some(end) = previous_old.take()
+                && piece.side == Side::New
+                && piece.changed
+                && !composed.ends_with(char::is_whitespace)
+            {
+                let at = composed.len();
+                composed.push(' ');
+                unspoken.push(at..composed.len());
+                merge.push(at..composed.len(), Side::Old, end..end);
+            }
+            let side = piece.side as usize;
+            let range = piece.range.start as usize..piece.range.end as usize;
+            let start = composed.len();
+            composed.push_str(&lines[side][range.clone()]);
+            let shown = start..composed.len();
+            if piece.side == Side::Old {
+                text_spans.push(plain_span(shown.clone()));
+                tones.push(HighlightKind::Normal);
+                removed.push(true);
+            } else {
+                for (sub, source) in pieces_in(new, range.clone()) {
+                    let at = start + sub.start - range.start;
+                    let shifted = at..at + sub.len();
+                    let toned =
+                        source
+                            .zip(syntax.as_ref())
+                            .map(|((line, from), (syntax, file))| {
+                                let base = doc
+                                    .text(*file, Side::New)
+                                    .display_range(line)
+                                    .map_or(0, |r| r.start);
+                                syntax.spans(*file, Side::New, base + from..base + from + sub.len())
+                            });
+                    match toned {
+                        Some((piece_spans, piece_tones)) => {
+                            for (span, tone) in piece_spans.into_iter().zip(piece_tones.iter()) {
+                                text_spans.push(TextSpan {
+                                    range: span.range.start + at..span.range.end + at,
+                                    ..span
+                                });
+                                tones.push(*tone);
+                                removed.push(false);
+                            }
+                        }
+                        None => {
+                            text_spans.push(plain_span(shifted));
+                            tones.push(HighlightKind::Normal);
+                            removed.push(false);
+                        }
+                    }
+                }
+            }
+            if piece.side == Side::Old {
+                previous_old = Some(range.end);
+            }
+            match (piece.side, piece.changed, piece.renamed) {
+                (Side::Old, true, _) => {
+                    unspoken.push(shown.clone());
+                    struck.push(shown.clone());
+                }
+                (Side::Old, false, _) => unspoken.push(shown.clone()),
+                (Side::New, true, true) => renamed.push(shown.clone()),
+                (Side::New, true, false) => words.push(shown.clone()),
+                (Side::New, false, _) => {}
+            }
+            merge.push(shown, piece.side, range);
+        }
+        let words = super::paint::join_whitespace_gaps(words, &composed);
+        let m = self.metrics();
+        let params = TextParams::new(composed, self.text_style())
+            .spans(text_spans)
+            .scale_factor(scale)
+            .wrap_width(self.style.wrap.then(|| {
+                super::presentation::wrap_width(columns, Side::New, &m, &self.presentation)
+            }));
+        let layout = layouts.layout(text, &params).ok()?;
+        Some(LinePaint {
+            layout,
+            tones: tones.into(),
+            words,
+            detail: LineDetail::Complete,
+            word_detail: WordDetail::Done(InlineDetail::Exact),
+            window: None,
+            struck,
+            unspoken,
+            renamed,
+            removed_spans: removed.into(),
+            merge: Some(Arc::new(merge)),
+            whole: false,
+        })
     }
 
     /// Changed words of `row`'s lines, by side, and how complete they are:
@@ -882,10 +1212,182 @@ fn semantic_words(segment: &Segment, row: u32, file: u32) -> [Vec<Range<usize>>;
         let line = source_line(doc, file, side, index);
         doc.semantic_spans(file, side, line)
             .iter()
-            .filter(|span| span.intensity != ChangeIntensity::UnchangedContext)
+            .filter(|span| {
+                !matches!(
+                    span.intensity,
+                    ChangeIntensity::UnchangedContext | ChangeIntensity::Renamed
+                )
+            })
             .map(|span| span.start as usize..span.end as usize)
             .collect()
     })
+}
+
+fn renamed_ranges(doc: &DiffDocument, file: u32, side: Side, line: u32) -> Vec<Range<usize>> {
+    doc.semantic_spans(file, side, line)
+        .iter()
+        .filter(|span| span.intensity == ChangeIntensity::Renamed)
+        .map(|span| span.start as usize..span.end as usize)
+        .collect()
+}
+
+fn semantic_summary(doc: &DiffDocument, file: u32) -> Option<Arc<str>> {
+    let semantics = doc.semantics(file)?;
+    let (mut added, mut removed, mut edits) = (0, 0, 0);
+    for item in semantics.outline() {
+        match item.change {
+            ItemChange::Added => added += 1,
+            ItemChange::Removed => removed += 1,
+            ItemChange::Edited(n) => edits += n,
+            ItemChange::Renamed | ItemChange::Moved => {}
+        }
+    }
+    let counts = [
+        (semantics.renames().len() as u32, "rename", "renames"),
+        (semantics.moves().len() as u32, "move", "moves"),
+        (added, "added", "added"),
+        (removed, "removed", "removed"),
+        (edits, "edit", "edits"),
+    ];
+    let parts: Vec<String> = counts
+        .into_iter()
+        .filter(|&(n, _, _)| n > 0)
+        .map(|(n, one, many)| format!("{n} {}", if n == 1 { one } else { many }))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" \u{00b7} ").into())
+}
+
+pub(crate) fn lead_move(doc: &DiffDocument, file: u32, index: u32) -> u32 {
+    doc.semantics(file)
+        .and_then(|s| move_leaders(s.moves()).get(index as usize).copied())
+        .unwrap_or(index)
+}
+
+fn joined(doc: &DiffDocument, file: u32, side: Side, lines: std::ops::Range<u32>) -> Joined {
+    let store = doc.text(file, side);
+    join_lines(lines.map(|line| {
+        (
+            line,
+            store.display_line(line).unwrap_or(""),
+            doc.semantic_spans(file, side, source_line(doc, file, side, line)),
+        )
+    }))
+}
+
+type Source = Option<(u32, usize)>;
+
+fn pieces_in(
+    joined: &Joined,
+    range: std::ops::Range<usize>,
+) -> Vec<(std::ops::Range<usize>, Source)> {
+    let mut out = Vec::new();
+    let mut at = range.start;
+    for part in &joined.parts {
+        let (start, end) = (part.at as usize, (part.at + part.len) as usize);
+        if end <= at || start >= range.end {
+            continue;
+        }
+        if at < start {
+            out.push((at..start.min(range.end), None));
+            at = start.min(range.end);
+        }
+        let stop = end.min(range.end);
+        if at < stop {
+            out.push((
+                at..stop,
+                Some((part.line, part.offset as usize + at - start)),
+            ));
+            at = stop;
+        }
+    }
+    if at < range.end {
+        out.push((at..range.end, None));
+    }
+    out
+}
+
+fn move_note(
+    doc: &DiffDocument,
+    file: u32,
+    index: u32,
+    here: bool,
+    up: Option<bool>,
+) -> Option<String> {
+    let m = doc.semantics(file)?.moves().get(index as usize)?;
+    let elsewhere = m.from.is_some() && m.from != m.into;
+    let toward = match up {
+        Some(true) => " up",
+        Some(false) => " down",
+        None => "",
+    };
+    let away = match up {
+        Some(true) => " down",
+        Some(false) => " up",
+        None => "",
+    };
+    let lines = |n: u32| {
+        if n == 1 {
+            "1 line".to_owned()
+        } else {
+            format!("{n} lines")
+        }
+    };
+    let moves = doc.semantics(file)?.moves();
+    let pieces: Vec<&Move> = move_leaders(moves)
+        .iter()
+        .zip(moves)
+        .filter(|&(&leader, _)| leader == index)
+        .map(|(_, m)| m)
+        .collect();
+    if here && elsewhere && pieces.len() > 1 {
+        let first = pieces
+            .iter()
+            .map(|m| m.old_line)
+            .min()
+            .unwrap_or(m.old_line);
+        let last = pieces
+            .iter()
+            .map(|m| m.old_line + m.old_lines)
+            .max()
+            .unwrap_or(m.old_line + m.old_lines);
+        return Some(format!(
+            "{} pieces moved from {} \u{00b7} lines {}\u{2013}{}",
+            pieces.len(),
+            m.from.as_deref().unwrap_or(""),
+            first + 1,
+            last
+        ));
+    }
+    Some(match (here, elsewhere) {
+        (true, true) => format!(
+            "moved from {} \u{00b7} line {}",
+            m.from.as_deref().unwrap_or(""),
+            m.old_line + 1
+        ),
+        (true, false) => format!("moved{away} from line {}", m.old_line + 1),
+        (false, _) if m.item.is_some() && !elsewhere => format!(
+            "{} moved{toward} to line {}",
+            m.item.as_deref().unwrap_or(""),
+            m.new_line + 1
+        ),
+        (false, true) => format!(
+            "{} moved into {} \u{00b7} line {}",
+            lines(m.old_lines),
+            m.into.as_deref().unwrap_or("another item"),
+            m.new_line + 1
+        ),
+        (false, false) => format!(
+            "{} moved{toward} to line {}",
+            lines(m.old_lines),
+            m.new_line + 1
+        ),
+    })
+}
+
+fn rename_hint(doc: &DiffDocument, file: u32, names: &[&str]) -> Option<Arc<str>> {
+    let renames = doc.semantics(file)?.renames();
+    let rename = renames.iter().find(|r| names.contains(&r.new.as_ref()))?;
+    Some(format!("Renamed from {} \u{00b7} {} uses", rename.old, rename.uses).into())
 }
 
 #[cfg(test)]

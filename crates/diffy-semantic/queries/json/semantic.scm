@@ -1,0 +1,3 @@
+["[" "]" "{" "}"] @delimiter
+
+(string) @text

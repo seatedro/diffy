@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 pub use diffy_diff::DiffStats as FileStats;
 use diffy_diff::{
-    ChangeSummary, ContentChange, DiffDocument, FileDiffSnapshot, FileStatus, ObjectId,
-    Placeholder, SourcePurpose,
+    ChangeSummary, Comparison, ComparisonOptions, ContentChange, DiffDocument, FileDiffSnapshot,
+    FileStatus, LineGroup, ObjectId, OutlineItem, Placeholder, SourcePurpose,
 };
 pub use diffy_ui::diff_view::{Preparation, PreparedSegment};
 
@@ -58,6 +58,8 @@ pub struct ManifestFile {
     pub old_id: Option<ObjectId>,
     pub new_id: Option<ObjectId>,
     pub buckets: Vec<ChangeBucket>,
+    pub outline: Arc<[OutlineItem]>,
+    pub line_groups: Arc<[LineGroup]>,
 }
 
 impl ManifestFile {
@@ -79,6 +81,8 @@ impl ManifestFile {
             old_id: None,
             new_id: None,
             buckets: Vec::new(),
+            outline: Arc::from([]),
+            line_groups: Arc::from([]),
         }
     }
 
@@ -95,6 +99,8 @@ impl ManifestFile {
             old_id: entry.old_id.clone(),
             new_id: entry.new_id.clone(),
             buckets: Vec::new(),
+            outline: Arc::from([]),
+            line_groups: Arc::from([]),
         }
     }
 
@@ -135,6 +141,7 @@ pub struct PreparedDiff {
     revision: FileRevision,
     snapshot: FileDiffSnapshot,
     segment: Option<Arc<PreparedSegment>>,
+    line_groups: Arc<[LineGroup]>,
 }
 
 impl PreparedDiff {
@@ -150,6 +157,7 @@ impl PreparedDiff {
             revision,
             snapshot,
             segment: None,
+            line_groups: Arc::from([]),
         }
     }
 
@@ -157,7 +165,19 @@ impl PreparedDiff {
         self.segment = preparation.map(|preparation| {
             Arc::new(PreparedSegment::prepare(self.snapshot.clone(), preparation))
         });
+        let doc = &self.snapshot.diff;
+        self.line_groups = match &self.segment {
+            Some(segment) => segment.comparison().line_groups(doc, 0).into(),
+            None if doc.prefers_structural(0) => Comparison::new(doc, ComparisonOptions::default())
+                .line_groups(doc, 0)
+                .into(),
+            None => Arc::from([]),
+        };
         self
+    }
+
+    pub fn line_groups(&self) -> &Arc<[LineGroup]> {
+        &self.line_groups
     }
 
     pub fn segment(&self) -> Option<&Arc<PreparedSegment>> {

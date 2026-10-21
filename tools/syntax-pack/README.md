@@ -37,6 +37,10 @@ subcommand.
   are dropped.
 - A registry language that fails on some target is left out of that
   target's index and listed in its `skipped.json`.
+- A pack carries the `locals` query files its entry lists (`registry`
+  pins a language's `locals.scm` when it has one) and
+  `crates/diffy-semantic/queries/<language>/semantic.scm` when that
+  exists; a `semantic.scm` that does not compile fails the build.
 
 Regenerate after a registry update:
 

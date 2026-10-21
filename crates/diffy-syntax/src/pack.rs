@@ -78,6 +78,10 @@ pub struct PackManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub injections: Option<PackFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locals: Option<PackFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<PackFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<PackSource>,
 }
 
@@ -175,8 +179,14 @@ impl PackManifest {
             return Err(unsafe_field("library.path", &self.library.path));
         }
         check_file("highlights", &self.highlights)?;
-        if let Some(injections) = &self.injections {
-            check_file("injections", injections)?;
+        for (field, file) in [
+            ("injections", &self.injections),
+            ("locals", &self.locals),
+            ("semantic", &self.semantic),
+        ] {
+            if let Some(file) = file {
+                check_file(field, file)?;
+            }
         }
         Ok(())
     }
@@ -188,11 +198,13 @@ impl PackManifest {
             .chain(self.extensions.iter().map(String::as_str))
     }
 
-    /// The files of the pack: library, highlights, and injections.
+    /// The files of the pack: library, highlights, and the optional queries.
     pub fn files(&self) -> impl Iterator<Item = &PackFile> {
         [&self.library, &self.highlights]
             .into_iter()
             .chain(self.injections.as_ref())
+            .chain(self.locals.as_ref())
+            .chain(self.semantic.as_ref())
     }
 }
 

@@ -24,6 +24,10 @@ pub enum Row {
         bucket: ChangeBucket,
         files: u32,
     },
+    Item {
+        file: u32,
+        item: u32,
+    },
 }
 
 const SECTION_ORDER: [ChangeBucket; 5] = [
@@ -41,6 +45,7 @@ struct RowKey {
     mode: SidebarMode,
     filter: String,
     expanded: u64,
+    selected: Option<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -74,6 +79,7 @@ impl RowCache {
         filter: &str,
         expanded: &HashSet<String>,
         expanded_revision: u64,
+        selected: Option<u32>,
     ) {
         let filter = filter.trim();
         let key = RowKey {
@@ -82,6 +88,7 @@ impl RowCache {
             mode,
             filter: filter.to_owned(),
             expanded: expanded_revision,
+            selected,
         };
         if self.key.as_ref() == Some(&key) {
             return;
@@ -97,6 +104,20 @@ impl RowCache {
         } else {
             self.rows
                 .extend((0..files.len() as u32).map(|file| Row::File { file, depth: 0 }));
+        }
+        if let Some(file) = selected
+            && let Some(at) = self
+                .rows
+                .iter()
+                .position(|row| matches!(row, Row::File { file: f, .. } if *f == file))
+        {
+            let count = files
+                .get(file as usize)
+                .map_or(0, |f| f.outline.len() as u32);
+            self.rows.splice(
+                at + 1..at + 1,
+                (0..count).map(|item| Row::Item { file, item }),
+            );
         }
         self.file_rows.clear();
         self.file_rows.extend(
@@ -310,6 +331,7 @@ mod tests {
                     "  ".repeat(*depth as usize),
                     files[*file as usize].paths.display_path()
                 ),
+                Row::Item { item, .. } => format!("item {item}"),
                 Row::Section { bucket, files } => {
                     format!("# {} {files}", section_label(*bucket))
                 }
@@ -328,18 +350,18 @@ mod tests {
         ]);
         let mut cache = RowCache::default();
         let mut expanded = HashSet::new();
-        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 0);
+        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 0, None);
         assert_eq!(labels(&cache, &files), ["README", "docs/+", "src/+"]);
 
         expanded.insert("src".to_owned());
-        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 1);
+        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 1, None);
         assert_eq!(
             labels(&cache, &files),
             ["README", "docs/+", "src/", "  src/a/+", "  src/b.rs"]
         );
 
         expanded.insert("src/a".to_owned());
-        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 2);
+        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 2, None);
         assert_eq!(
             labels(&cache, &files),
             [
@@ -359,9 +381,9 @@ mod tests {
     fn filter_ranks_matches_in_a_flat_list() {
         let files = manifest(&["src/main.rs", "src/lib.rs", "docs/main.md"]);
         let mut cache = RowCache::default();
-        cache.ensure(&files, SidebarMode::Tree, "lib", &HashSet::new(), 0);
+        cache.ensure(&files, SidebarMode::Tree, "lib", &HashSet::new(), 0, None);
         assert_eq!(labels(&cache, &files), ["src/lib.rs"]);
-        cache.ensure(&files, SidebarMode::Tree, "zzz", &HashSet::new(), 0);
+        cache.ensure(&files, SidebarMode::Tree, "zzz", &HashSet::new(), 0, None);
         assert!(cache.rows().is_empty());
     }
 
@@ -383,7 +405,7 @@ mod tests {
             })
             .collect();
         let mut cache = RowCache::default();
-        cache.ensure(&files, SidebarMode::List, "", &HashSet::new(), 0);
+        cache.ensure(&files, SidebarMode::List, "", &HashSet::new(), 0, None);
         assert_eq!(
             labels(&cache, &files),
             [
@@ -397,7 +419,7 @@ mod tests {
             ]
         );
         assert_eq!(cache.file_rows(), [1, 2, 4, 6]);
-        cache.ensure(&plain, SidebarMode::List, "", &HashSet::new(), 0);
+        cache.ensure(&plain, SidebarMode::List, "", &HashSet::new(), 0, None);
         assert_eq!(labels(&cache, &plain), ["a.rs", "b.rs", "c.rs", "d.rs"]);
     }
 }

@@ -134,8 +134,16 @@ impl DiffViewState {
             RowRef::Line { seg, row } => {
                 let p = &state.segments[seg as usize].projection;
                 let kind = p.kind[row as usize];
-                matches!(kind, RowKind::Added | RowKind::Removed | RowKind::Modified)
-                    .then_some((seg, row, kind))
+                matches!(
+                    kind,
+                    RowKind::Added
+                        | RowKind::Removed
+                        | RowKind::Modified
+                        | RowKind::Merged
+                        | RowKind::Reflowed
+                        | RowKind::Moved
+                )
+                .then_some((seg, row, kind))
             }
             _ => None,
         };
@@ -338,6 +346,37 @@ impl DiffViewState {
                 self.list_index_of_line(unit, point.side, index)
             }
         }
+    }
+
+    pub(crate) fn jump_move(&mut self, unit: u32, index: u32, here: bool) -> bool {
+        let Some((seg, file)) = self.locate(unit) else {
+            return false;
+        };
+        let target = if here {
+            RowKind::MovedAway
+        } else {
+            RowKind::MovedHere
+        };
+        let segment = &self.segments[seg];
+        let p = &segment.projection;
+        let index = if here {
+            index
+        } else {
+            super::frame::lead_move(&segment.doc, file, index)
+        };
+        let row = (0..p.len()).find(|&k| {
+            let r = k as usize;
+            p.kind[r] == target
+                && p.file[r] == file
+                && (p.pair[r] == index
+                    || here && super::frame::lead_move(&segment.doc, file, p.pair[r]) == index)
+        });
+        let Some(list) = row.and_then(|row| segment.list_rows.index(row)) else {
+            return false;
+        };
+        self.scroll_to_index(list, RevealAlign::Center);
+        self.set_focus(Some(list));
+        true
     }
 
     /// Unfolds a collapsed file, so a target inside it has rows.

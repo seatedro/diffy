@@ -48,3 +48,10 @@ pub fn store_with_all(languages: &[&str]) -> Option<GrammarStore> {
     }
     Some(GrammarStore::new(StoreConfig::new().local_packs(root)))
 }
+
+pub fn store_deferring(languages: &[&str], deferred: &[&str]) -> Option<GrammarStore> {
+    store_with_all(languages)?;
+    Some(GrammarStore::new(
+        StoreConfig::new().local_packs(pack_root()).defer(deferred),
+    ))
+}

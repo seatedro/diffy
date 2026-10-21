@@ -5,6 +5,8 @@
 //! mode or the [`Expansion`] changes. Rows refer to lines by store index,
 //! so an app reads the text from the document.
 
+use std::ops::Range;
+
 use crate::compare::{Comparison, LinePair, Step};
 use crate::model::{BlockKind, DiffDocument, Side, lines_before};
 
@@ -54,6 +56,11 @@ pub enum RowKind {
     Added,
     /// Side by side only: a removed line beside the added line it became.
     Modified,
+    Merged,
+    Reflowed,
+    Moved,
+    MovedHere,
+    MovedAway,
 }
 
 impl RowKind {
@@ -61,7 +68,13 @@ impl RowKind {
     pub const fn is_line(self) -> bool {
         matches!(
             self,
-            Self::Context | Self::Removed | Self::Added | Self::Modified
+            Self::Context
+                | Self::Removed
+                | Self::Added
+                | Self::Modified
+                | Self::Merged
+                | Self::Reflowed
+                | Self::Moved
         )
     }
 
@@ -74,7 +87,10 @@ impl RowKind {
             Self::Context => "unchanged",
             Self::Removed => "removed",
             Self::Added => "added",
-            Self::Modified => "changed",
+            Self::Modified | Self::Merged => "changed",
+            Self::Reflowed => "reformatted",
+            Self::Moved => "moved",
+            Self::MovedHere | Self::MovedAway => "move",
         }
     }
 }
@@ -105,6 +121,7 @@ pub struct Expansion {
     /// Per file: lines shown from the top of the gap after its last hunk.
     after: Vec<u32>,
     policy: ContextPolicy,
+    reflows: Vec<(u32, u32)>,
 }
 
 impl Expansion {
@@ -117,7 +134,21 @@ impl Expansion {
             above: vec![(0, 0); doc.hunk_count() as usize],
             after: vec![0; doc.file_count() as usize],
             policy,
+            reflows: Vec::new(),
         }
+    }
+
+    pub fn toggle_reflow(&mut self, file: u32, line: u32) {
+        match self.reflows.binary_search(&(file, line)) {
+            Ok(at) => {
+                self.reflows.remove(at);
+            }
+            Err(at) => self.reflows.insert(at, (file, line)),
+        }
+    }
+
+    pub fn reflow_open(&self, file: u32, line: u32) -> bool {
+        self.reflows.binary_search(&(file, line)).is_ok()
     }
 
     pub fn policy(&self) -> ContextPolicy {
@@ -262,9 +293,20 @@ pub struct Projection {
     /// inverse of `old` and `new` per file.
     old_rows: Vec<u32>,
     new_rows: Vec<u32>,
+    folds: Vec<(u32, u32, Range<u32>)>,
 }
 
 impl Projection {
+    pub fn fold_old(&self, row: u32) -> Option<Range<u32>> {
+        let r = row as usize;
+        let key = (self.file[r], self.new[r]);
+        let at = self
+            .folds
+            .binary_search_by_key(&key, |(file, new, _)| (*file, *new))
+            .ok()?;
+        Some(self.folds[at].2.clone())
+    }
+
     pub fn new(doc: &DiffDocument, mode: Mode, expansion: &Expansion) -> Self {
         let mut p = Self {
             mode,
@@ -299,7 +341,7 @@ impl Projection {
     pub fn line_pair(&self, row: u32) -> Option<LinePair> {
         let r = row as usize;
         let (old, new) = match *self.kind.get(r)? {
-            RowKind::Modified => (self.old[r], self.new[r]),
+            RowKind::Modified | RowKind::Merged => (self.old[r], self.new[r]),
             RowKind::Removed => (self.old[r], self.pair[r]),
             RowKind::Added => (self.pair[r], self.new[r]),
             _ => return None,
@@ -357,7 +399,12 @@ impl Projection {
                 gap.id.hunk.map_or(u64::from(u32::MAX), u64::from)
             }
             RowKind::Removed | RowKind::Modified => u64::from(self.old[r]),
-            RowKind::Context | RowKind::Added => u64::from(self.new[r]),
+            RowKind::Context
+            | RowKind::Added
+            | RowKind::Merged
+            | RowKind::Reflowed
+            | RowKind::Moved => u64::from(self.new[r]),
+            RowKind::MovedHere | RowKind::MovedAway => u64::from(self.pair[r]),
         };
         (tag << 60) | (file << 38) | (index & 0x3F_FFFF_FFFF)
     }
@@ -407,6 +454,7 @@ impl Projection {
         }
         self.kind.clear();
         self.gaps.clear();
+        self.folds.clear();
         let (files, h, b) = (doc.files(), doc.hunks(), doc.blocks());
         for file in 0..doc.file_count() {
             let f = file as usize;
@@ -434,7 +482,7 @@ impl Projection {
                     let (os, ns) = (b.old_store[bi], b.new_store[bi]);
                     let (ol, nl) = (b.old_len[bi], b.new_len[bi]);
                     if let (BlockKind::Change, Some(c)) = (b.kind[bi], comparison) {
-                        self.push_steps(c.block(block), file, hunk, mode);
+                        self.push_steps(c.block(block), file, hunk, mode, expansion);
                         continue;
                     }
                     match (b.kind[bi], mode) {
@@ -484,15 +532,36 @@ impl Projection {
     /// Rows of one aligned change block. Unified rows list each run's
     /// removed lines, then its added lines; lines equal under the
     /// whitespace policy split runs and show as context.
-    fn push_steps(&mut self, steps: &[Step], file: u32, hunk: u32, mode: Mode) {
+    pub fn reflow(&self, row: u32) -> Option<u32> {
+        let r = row as usize;
+        (self.kind.get(r) == Some(&RowKind::Reflowed) && self.pair[r] != NONE)
+            .then_some(self.pair[r])
+    }
+
+    fn push_steps(
+        &mut self,
+        steps: &[Step],
+        file: u32,
+        hunk: u32,
+        mode: Mode,
+        expansion: &Expansion,
+    ) {
         if mode == Mode::Split {
             for &step in steps {
                 let (old, new) = step.lines();
                 let kind = match step {
-                    Step::Removed(_) => RowKind::Removed,
-                    Step::Added(_) => RowKind::Added,
-                    Step::Paired(..) => RowKind::Modified,
+                    Step::Removed(_) | Step::Hidden(_) => RowKind::Removed,
+                    Step::Added(_) | Step::Reflowed(_) | Step::Moved(_) => RowKind::Added,
+                    Step::Paired(..) | Step::Merged(..) => RowKind::Modified,
                     Step::Equivalent(..) => RowKind::Context,
+                    Step::MovedHere(i) => {
+                        self.push(RowKind::MovedHere, file, hunk, NONE, NONE, i);
+                        continue;
+                    }
+                    Step::MovedAway(i) => {
+                        self.push(RowKind::MovedAway, file, hunk, NONE, NONE, i);
+                        continue;
+                    }
                 };
                 self.push(kind, file, hunk, old, new, NONE);
             }
@@ -502,7 +571,18 @@ impl Projection {
         while start < steps.len() {
             let end = steps[start..]
                 .iter()
-                .position(|s| matches!(s, Step::Equivalent(..)))
+                .position(|s| {
+                    matches!(
+                        s,
+                        Step::Equivalent(..)
+                            | Step::Merged(..)
+                            | Step::Hidden(_)
+                            | Step::Reflowed(_)
+                            | Step::Moved(_)
+                            | Step::MovedHere(_)
+                            | Step::MovedAway(_)
+                    )
+                })
                 .map_or(steps.len(), |at| start + at);
             let run = &steps[start..end];
             for &step in run {
@@ -517,8 +597,82 @@ impl Projection {
                     self.push(RowKind::Added, file, hunk, NONE, new, pair);
                 }
             }
-            if let Some(&Step::Equivalent(old, new)) = steps.get(end) {
-                self.push(RowKind::Context, file, hunk, old, new, NONE);
+            match steps.get(end) {
+                Some(&Step::Equivalent(old, new)) => {
+                    self.push(RowKind::Context, file, hunk, old, new, NONE);
+                }
+                Some(&Step::Merged(old, new)) => {
+                    self.push(RowKind::Merged, file, hunk, old, new, NONE);
+                }
+                Some(&Step::Moved(new)) => {
+                    self.push(RowKind::Moved, file, hunk, NONE, new, NONE);
+                }
+                Some(&Step::MovedHere(i)) => {
+                    self.push(RowKind::MovedHere, file, hunk, NONE, NONE, i);
+                }
+                Some(&Step::MovedAway(i)) => {
+                    self.push(RowKind::MovedAway, file, hunk, NONE, NONE, i);
+                }
+                Some(Step::Hidden(_) | Step::Reflowed(_)) => {
+                    let run = steps[end..]
+                        .iter()
+                        .take_while(|s| {
+                            matches!(
+                                s,
+                                Step::Hidden(_)
+                                    | Step::Reflowed(_)
+                                    | Step::MovedHere(_)
+                                    | Step::MovedAway(_)
+                            )
+                        })
+                        .count();
+                    let lines: Vec<u32> = steps[end..end + run]
+                        .iter()
+                        .filter_map(|s| match s {
+                            Step::Reflowed(n) => Some(*n),
+                            _ => None,
+                        })
+                        .collect();
+                    if let Some(&first) = lines.first() {
+                        let count = lines.len() as u32;
+                        let hidden = steps[end..end + run].iter().filter_map(|s| match s {
+                            Step::Hidden(o) => Some(*o),
+                            _ => None,
+                        });
+                        let (low, high) =
+                            hidden.fold((NONE, 0), |(lo, hi), o| (lo.min(o), hi.max(o + 1)));
+                        if low < high {
+                            self.folds.push((file, first, low..high));
+                        }
+                        if !expansion.reflow_open(file, first) {
+                            self.push(RowKind::Reflowed, file, hunk, NONE, first, count);
+                        } else {
+                            for step in &steps[end..end + run] {
+                                if let Step::Hidden(old) = *step {
+                                    self.push(RowKind::Removed, file, hunk, old, NONE, NONE);
+                                }
+                            }
+                            for (k, &line) in lines.iter().enumerate() {
+                                let pair = if k == 0 { count } else { NONE };
+                                self.push(RowKind::Reflowed, file, hunk, NONE, line, pair);
+                            }
+                        }
+                    }
+                    for step in &steps[end..end + run] {
+                        match *step {
+                            Step::MovedHere(i) => {
+                                self.push(RowKind::MovedHere, file, hunk, NONE, NONE, i)
+                            }
+                            Step::MovedAway(i) => {
+                                self.push(RowKind::MovedAway, file, hunk, NONE, NONE, i)
+                            }
+                            _ => {}
+                        }
+                    }
+                    start = end + run;
+                    continue;
+                }
+                _ => {}
             }
             start = end + 1;
         }
@@ -616,11 +770,14 @@ impl Projection {
             }
             let lines = (self.old[row] != NONE, self.new[row] != NONE);
             let shape = match self.kind[row] {
-                RowKind::Context | RowKind::Modified => lines == (true, true),
+                RowKind::Context | RowKind::Modified | RowKind::Merged => lines == (true, true),
                 RowKind::Removed => lines == (true, false),
-                RowKind::Added => lines == (false, true),
+                RowKind::Added | RowKind::Reflowed | RowKind::Moved => lines == (false, true),
                 RowKind::Gap => self.hunk[row] < self.gaps.len() as u32,
-                RowKind::FileHeader | RowKind::HunkHeader => lines == (false, false),
+                RowKind::FileHeader
+                | RowKind::HunkHeader
+                | RowKind::MovedHere
+                | RowKind::MovedAway => lines == (false, false),
             };
             if !shape {
                 return Err(ProjectionError::Line { row: row as u32 });

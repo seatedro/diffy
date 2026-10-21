@@ -266,9 +266,9 @@ fn footer(picker: &RefPicker, theme: &Theme) -> AnyElement {
             renderer == RendererKind::Builtin,
         ),
         SegmentedItem::new(
-            "Difftastic",
-            act(RefPickerAction::SetEngine(RendererKind::Difftastic)),
-            renderer == RendererKind::Difftastic,
+            "Semantic",
+            act(RefPickerAction::SetEngine(RendererKind::Semantic)),
+            renderer == RendererKind::Semantic,
         ),
     ])
     .id("ref-picker.engine");

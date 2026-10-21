@@ -1,0 +1,14 @@
+<<<< old
+fn run() {
+    let f = |a| a + 1;
+}
+<<<< new
+fn run() {
+    let f = |a, b| a + b;
+}
+<<<< expect
+@@ -1,3 +1,3 @@
+     1    1 |fn run() {
+<    2      |    let f = |a| a + ⟦1⟧;
+>         2 |    let f = |a⟦,⟧ ⟦b⟧| a + ⟦b⟧;
+     3    3 |}

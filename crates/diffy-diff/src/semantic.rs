@@ -1,5 +1,6 @@
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::model::{DiffDocument, Side, lines_before};
 
@@ -8,6 +9,7 @@ pub enum ChangeIntensity {
     Novel,
     NovelWord,
     UnchangedContext,
+    Renamed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,9 +80,55 @@ impl LineSpans {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ItemChange {
+    Added,
+    Removed,
+    Renamed,
+    Moved,
+    Edited(u32),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Move {
+    pub old_line: u32,
+    pub old_lines: u32,
+    pub new_line: u32,
+    pub lines: u32,
+    pub from: Option<Arc<str>>,
+    pub into: Option<Arc<str>>,
+    pub item: Option<Arc<str>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LineGroupSpan {
+    pub old: Range<u32>,
+    pub new: Range<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Rename {
+    pub old: Arc<str>,
+    pub new: Arc<str>,
+    pub uses: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OutlineItem {
+    pub side: Side,
+    pub line: u32,
+    pub kind: Arc<str>,
+    pub name: Arc<str>,
+    pub change: ItemChange,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileSemantics {
     pub(crate) structural: bool,
+    pub(crate) outline: Vec<OutlineItem>,
+    pub(crate) renames: Vec<Rename>,
+    pub(crate) moves: Vec<Move>,
+    pub(crate) groups: Vec<LineGroupSpan>,
     pub(crate) rows: Vec<AlignedRow>,
     pub(crate) hunk_rows: Vec<Range<u32>>,
     pub(crate) spans: [LineSpans; 2],
@@ -89,6 +137,22 @@ pub struct FileSemantics {
 impl FileSemantics {
     pub fn structural(&self) -> bool {
         self.structural
+    }
+
+    pub fn outline(&self) -> &[OutlineItem] {
+        &self.outline
+    }
+
+    pub fn renames(&self) -> &[Rename] {
+        &self.renames
+    }
+
+    pub fn moves(&self) -> &[Move] {
+        &self.moves
+    }
+
+    pub fn groups(&self) -> &[LineGroupSpan] {
+        &self.groups
     }
 
     pub fn rows(&self, local_hunk: u32) -> &[AlignedRow] {

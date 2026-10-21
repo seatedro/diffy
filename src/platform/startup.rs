@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(args.right.as_deref(), Some("feature"));
         assert_eq!(args.compare_mode, Some(CompareMode::ThreeDot));
         assert_eq!(args.layout, Some(LayoutMode::Split));
-        assert_eq!(args.renderer, Some(RendererKind::Difftastic));
+        assert_eq!(args.renderer, Some(RendererKind::Semantic));
         assert_eq!(args.file_index, Some(3));
     }
 
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(args.right.as_deref(), Some("feature"));
         assert_eq!(args.compare_mode, Some(CompareMode::ThreeDot));
         assert_eq!(args.layout, Some(LayoutMode::Split));
-        assert_eq!(args.renderer, Some(RendererKind::Difftastic));
+        assert_eq!(args.renderer, Some(RendererKind::Semantic));
         assert_eq!(args.file_index, Some(3));
         assert_eq!(args.file_path.as_deref(), Some("src/main.rs"));
         assert_eq!(

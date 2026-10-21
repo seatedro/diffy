@@ -161,6 +161,73 @@ pub struct LinePaint {
     /// For a line too long to shape whole (without wrap), the part of it
     /// around where its column is scrolled, which is all the layout holds.
     pub window: Option<LineWindow>,
+    pub struck: Vec<Range<usize>>,
+    pub unspoken: Vec<Range<usize>>,
+    pub renamed: Vec<Range<usize>>,
+    pub removed_spans: Arc<[bool]>,
+    pub merge: Option<Arc<LineMerge>>,
+}
+
+impl LinePaint {
+    pub(crate) fn label(&self) -> String {
+        let text = self.layout.text();
+        if self.unspoken.is_empty() {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut at = 0;
+        for range in &self.unspoken {
+            out.push_str(&text[at.min(range.start)..range.start]);
+            at = at.max(range.end);
+        }
+        out.push_str(&text[at..]);
+        out
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct LineMerge {
+    pieces: Vec<(Range<usize>, Side, Range<usize>)>,
+}
+
+impl LineMerge {
+    pub(crate) fn push(&mut self, layout: Range<usize>, side: Side, source: Range<usize>) {
+        self.pieces.push((layout, side, source));
+    }
+
+    pub(crate) fn source_len(&self) -> usize {
+        self.pieces
+            .iter()
+            .filter(|(_, side, _)| *side == Side::New)
+            .map(|(_, _, source)| source.end)
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn to_layout(&self, side: Side, byte: usize) -> Option<usize> {
+        self.pieces
+            .iter()
+            .filter(|(_, s, _)| *s == side)
+            .find(|(_, _, source)| source.start <= byte && byte <= source.end)
+            .map(|(layout, _, source)| layout.start + (byte - source.start))
+    }
+
+    pub(crate) fn to_source(&self, layout_byte: usize) -> usize {
+        let mut last = 0;
+        for (layout, side, source) in &self.pieces {
+            if *side != Side::New {
+                if layout_byte < layout.end {
+                    return last;
+                }
+                continue;
+            }
+            if layout_byte <= layout.end {
+                return source.start + layout_byte.saturating_sub(layout.start);
+            }
+            last = source.end;
+        }
+        last
+    }
 }
 
 /// How complete a line's changed-word highlights are.
@@ -228,6 +295,13 @@ pub enum FileFact {
     NoNewlineAtEof(Side),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MoveNote {
+    pub index: u32,
+    pub here: bool,
+    pub up: Option<bool>,
+}
+
 /// What a prepared row shows.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PreparedKind {
@@ -287,6 +361,11 @@ pub struct RowPaint {
     pub collapsed: bool,
     /// File headers: annotations anchored in the file, shown or not.
     pub annotations: u32,
+    pub quiet: bool,
+    pub fold: Option<(u32, bool)>,
+    pub hint: Option<Arc<str>>,
+    pub note: Option<MoveNote>,
+    pub summary: Option<Arc<str>>,
 }
 
 impl RowPaint {

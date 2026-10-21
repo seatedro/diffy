@@ -449,8 +449,7 @@ impl NavigationController {
         let shown = |reference: &str| match reference {
             "" => String::new(),
             r if is_working_copy_ref(r) => WORKING_TREE_LABEL.to_owned(),
-            r if r.len() >= 12 && r.bytes().all(|b| b.is_ascii_hexdigit()) => r[..7].to_owned(),
-            r => r.to_owned(),
+            r => short_revision(r),
         };
         if self.compare.mode == CompareMode::SingleCommit {
             let commit = if self.compare.right.is_empty() {
@@ -587,6 +586,9 @@ impl NavigationController {
                 self.filter.text(),
                 &self.expanded,
                 self.expanded_revision,
+                self.selected_key()
+                    .and_then(|key| manifest.files.iter().position(|f| f.key == key))
+                    .map(|i| i as u32),
             ),
             None => self.rows.invalidate(),
         }
@@ -870,7 +872,7 @@ impl NavigationController {
                 .unwrap_or(settings.viewport.layout),
             renderer: args
                 .renderer
-                .or(persisted.map(|c| c.renderer))
+                .or(settings.last_compare.as_ref().map(|c| c.renderer))
                 .unwrap_or_default(),
             working_copy: false,
         };
@@ -1545,5 +1547,16 @@ impl TextHost for NavigationController {
             selection_changed: true,
             ..TextEditOutcome::default()
         })
+    }
+}
+
+fn short_revision(reference: &str) -> String {
+    let hex = reference.bytes().take_while(u8::is_ascii_hexdigit).count();
+    let rest = &reference[hex..];
+    let suffix = rest.is_empty() || rest.starts_with(['^', '~']);
+    if hex >= 12 && suffix {
+        format!("{}{rest}", &reference[..7])
+    } else {
+        reference.to_owned()
     }
 }

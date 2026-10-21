@@ -81,14 +81,15 @@ impl FromStr for LayoutMode {
 pub enum RendererKind {
     #[default]
     Builtin,
-    Difftastic,
+    #[serde(alias = "difftastic")]
+    Semantic,
 }
 
 impl RendererKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Builtin => "builtin",
-            Self::Difftastic => "difftastic",
+            Self::Semantic => "semantic",
         }
     }
 }
@@ -105,7 +106,7 @@ impl FromStr for RendererKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "builtin" => Ok(Self::Builtin),
-            "difftastic" => Ok(Self::Difftastic),
+            "semantic" | "difftastic" => Ok(Self::Semantic),
             _ => Err("invalid renderer kind"),
         }
     }
@@ -136,6 +137,6 @@ mod tests {
         let layout: LayoutMode = "split".parse().unwrap();
         let renderer: RendererKind = "difftastic".parse().unwrap();
         assert_eq!(layout.to_string(), "split");
-        assert_eq!(renderer.to_string(), "difftastic");
+        assert_eq!(renderer.to_string(), "semantic");
     }
 }

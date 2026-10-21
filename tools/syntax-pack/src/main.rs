@@ -411,6 +411,7 @@ fn inputs(
         .chain(&grammar.include)
         .chain(&grammar.highlights)
         .chain(&grammar.injections)
+        .chain(&grammar.locals)
     {
         inputs.push(resolve_input(lock, language, &root, name, options)?);
     }
@@ -509,6 +510,22 @@ fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
     let highlights = write_query("highlights.scm", &grammar.highlights)?
         .ok_or_else(|| format!("{language}: no highlight query"))?;
     let injections = write_query("injections.scm", &grammar.injections)?;
+    let locals = write_query("locals.scm", &grammar.locals)?;
+    let semantic = workspace()
+        .join("crates/diffy-semantic/queries")
+        .join(language)
+        .join("semantic.scm");
+    let semantic = if semantic.is_file() {
+        let text = read_text(&semantic)?;
+        if let Some(ts_language) = &ts_language {
+            ts::Query::new(ts_language, &text)
+                .map_err(|e| format!("{language}: semantic.scm: {e}"))?;
+        }
+        fs::write(out.join("semantic.scm"), &text).map_err(|e| e.to_string())?;
+        Some(pack_file(&out, "semantic.scm")?)
+    } else {
+        None
+    };
 
     let manifest = PackManifest {
         schema: pack::SCHEMA,
@@ -522,6 +539,8 @@ fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
         library: pack_file(&out, &library_name)?,
         highlights,
         injections,
+        locals,
+        semantic,
         source: Some(PackSource {
             repo: grammar.repo.clone(),
             rev: grammar.rev.clone(),
@@ -734,6 +753,10 @@ fn check_language(lock: &Lock, language: &str, options: &Options) -> Result<(), 
         ),
         None => None,
     };
+    for file in [&manifest.locals, &manifest.semantic].into_iter().flatten() {
+        ts::Query::new(&ts_language, &read_text(&dir.join(&file.path))?)
+            .map_err(|e| fail(&format!("{}: {e}", file.path)))?;
+    }
     let Some(sample) = read_sample(lock, language, options)? else {
         println!("{language}: loads, queries compile");
         return Ok(());
@@ -1073,6 +1096,8 @@ fn write_index(lock: &Lock, options: &Options, seed: &[u8; 32]) -> Result<(), St
             for file in [&mut manifest.library, &mut manifest.highlights]
                 .into_iter()
                 .chain(manifest.injections.as_mut())
+                .chain(manifest.locals.as_mut())
+                .chain(manifest.semantic.as_mut())
             {
                 file.url = Some(file_url(base, target, &language, file));
             }
@@ -1267,6 +1292,8 @@ mod tests {
             library: pack_file(&dir, &library).unwrap(),
             highlights: pack_file(&dir, "highlights.scm").unwrap(),
             injections: None,
+            locals: None,
+            semantic: None,
             source: None,
         };
         fs::write(

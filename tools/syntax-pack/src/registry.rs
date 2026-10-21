@@ -384,6 +384,7 @@ fn grammar_for(
     };
     let highlights_file = own("highlights.scm").ok_or("no highlights.scm")?;
     let injections_file = own("injections.scm");
+    let locals_file = own("locals.scm");
     let mut fragments = BTreeSet::new();
     let read = |input: &str| -> String {
         let path = input.strip_prefix("q:").unwrap_or(input);
@@ -413,6 +414,19 @@ fn grammar_for(
         )?;
         injections.push(file);
     }
+    let mut locals = Vec::new();
+    if let Some(file) = locals_file {
+        inherit(
+            &read(&file),
+            "locals.scm",
+            queries,
+            options,
+            &mut BTreeSet::from([name.clone()]),
+            &mut fragments,
+            &mut locals,
+        )?;
+        locals.push(file);
+    }
 
     let sample = if *self_contained {
         None
@@ -433,6 +447,7 @@ fn grammar_for(
         extensions: Vec::new(),
         highlights,
         injections,
+        locals,
         sha256: String::new(),
         license: license(&root),
         scanner,

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use diffy_diff::{Placeholder, SlotState, SourceCoverage, SourcePurpose};
+use diffy_diff::{OutlineItem, Placeholder, SlotState, SourceCoverage, SourcePurpose};
 
 use crate::contracts::commands::{SettingsSnapshot, ToastKind, ToastUpdate};
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, SharedContext};
@@ -20,7 +20,8 @@ pub use crate::contracts::viewport::pipeline::{
     WORKING_SET_LINES,
 };
 use crate::core::compare::git::bucket_refs;
-use crate::core::compare::{CompareEntry, ComparePhase};
+use crate::core::compare::semantic::semantic_tag;
+use crate::core::compare::{CompareEntry, ComparePhase, RendererKind};
 use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
 use crate::platform::persistence::{PersistedCompare, Settings};
 
@@ -85,6 +86,7 @@ pub struct PipelineController {
     preparation: Option<Preparation>,
     queue: VecDeque<PipelineInstall>,
     resuming: bool,
+    grammars: Arc<[String]>,
 }
 
 impl PipelineController {
@@ -315,6 +317,39 @@ impl PipelineController {
         Reduction::changed().effect(PipelineEffect::LoadFile(Box::new(request)))
     }
 
+    fn grammars_arrived(&mut self, tags: Arc<[String]>) -> Reduction {
+        let previous = std::mem::replace(&mut self.grammars, tags.clone());
+        let Some(active) = self
+            .active
+            .as_mut()
+            .filter(|active| active.intent.request.renderer == RendererKind::Semantic)
+        else {
+            return Reduction::default();
+        };
+        let arrived = |path: &str| {
+            semantic_tag(path).is_some_and(|tag| {
+                let has = |tags: &[String]| tags.iter().any(|t| tag.matches(t));
+                has(&tags) && !has(&previous)
+            })
+        };
+        let stale: Vec<FileKey> = active
+            .loaded
+            .iter()
+            .filter(|(_, prepared)| {
+                !prepared.document().prefers_structural(0) && arrived(prepared.document().path(0))
+            })
+            .map(|(&key, _)| key)
+            .collect();
+        let mut reduction = Reduction::default();
+        for key in stale {
+            if let Some(active) = self.active.as_mut() {
+                active.loaded.remove(&key);
+            }
+            reduction.merge(self.load(key, CompareWorkPriority::VisibleViewportDiff));
+        }
+        reduction
+    }
+
     fn load_stats(&mut self, keys: Vec<FileKey>, priority: CompareWorkPriority) -> Reduction {
         let Some(active) = self.active.as_mut() else {
             return Reduction::default();
@@ -435,6 +470,7 @@ impl PipelineController {
         active.sources_loading.remove(&key);
         active.placeholders.remove(&key);
         let stats = prepared.stats();
+        let semantics = Self::semantics_changed(active, &prepared);
         active.loaded.insert(key, prepared.clone());
         self.touch(key);
         self.push(ViewportInstall::File {
@@ -443,8 +479,36 @@ impl PipelineController {
         });
         self.evict(key);
         let mut reduction = Reduction::changed();
+        if let Some(manifest) = semantics {
+            reduction = reduction.intent(Intent::PublishManifest(manifest));
+        }
         reduction.merge(self.update_stats(generation, &[(key, stats)]));
         reduction
+    }
+
+    fn semantics_changed(
+        active: &mut ActiveCompare,
+        prepared: &PreparedDiff,
+    ) -> Option<Rc<CompareManifestSnapshot>> {
+        let manifest = active.manifest.as_ref()?;
+        let index = *active.positions.get(&prepared.key())?;
+        let file = manifest.files.get(index)?;
+        let outline: Arc<[OutlineItem]> = prepared
+            .document()
+            .semantics(0)
+            .map_or_else(|| Arc::from([]), |s| s.outline().into());
+        if *file.outline == *outline && *file.line_groups == **prepared.line_groups() {
+            return None;
+        }
+        let mut files = manifest.files.to_vec();
+        files[index].outline = outline;
+        files[index].line_groups = prepared.line_groups().clone();
+        let updated = Rc::new(CompareManifestSnapshot {
+            files: files.into(),
+            ..(**manifest).clone()
+        });
+        active.manifest = Some(updated.clone());
+        Some(updated)
     }
 
     fn evict(&mut self, keep: FileKey) {
@@ -814,6 +878,9 @@ impl Controller for PipelineController {
         let reduction = match intent {
             Intent::RequestCompare(intent) => self.start_compare(intent.clone()),
             Intent::SelectFile(selected) => self.select(selected.map(|file| file.key)),
+            Intent::GrammarAvailable(availability) => {
+                self.grammars_arrived(availability.tags.clone())
+            }
             Intent::ActivateWorkspace { .. } => {
                 retire(self.active.take());
                 self.queue.clear();

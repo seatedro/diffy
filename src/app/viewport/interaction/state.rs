@@ -8,7 +8,7 @@ use diffy_diff::{
     UpdateError,
 };
 use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources, LinePointer};
-use diffy_ui::diff_view::presentation::{DiffLayout, DiffMarkers, DiffPresentation};
+use diffy_ui::diff_view::presentation::{DiffLayout, DiffMarkers, DiffNumbers, DiffPresentation};
 use diffy_ui::{
     DiffAnnotation, DiffEvent, DiffKey, DiffOutcome, DiffSessionViewState, DiffStyle, DiffTarget,
     FindOptions, RevealAlign, SearchDirection, SearchSides, SearchSummary, SourcePoint,
@@ -39,7 +39,7 @@ use crate::contracts::viewport::interaction::{
     ViewportInstall,
 };
 use crate::contracts::viewport::pipeline::{PreparedDiff, PreparedSegment, SlotUpdate};
-use crate::core::compare::LayoutMode;
+use crate::core::compare::{LayoutMode, RendererKind};
 use crate::core::keymap::ShortcutCommand;
 use crate::platform::persistence::{PersistedViewport, Settings};
 
@@ -69,6 +69,7 @@ pub struct InteractionController {
     pub(super) failures: HashMap<FileKey, String>,
     pub(super) order_revision: u64,
     pub(super) layout: LayoutMode,
+    pub(super) semantic: bool,
     pub(super) wrap: bool,
     pub(super) wrap_column: u16,
     pub(super) search: SearchBar,
@@ -126,6 +127,7 @@ impl Default for InteractionController {
             failures: HashMap::new(),
             order_revision: 0,
             layout: LayoutMode::Unified,
+            semantic: false,
             wrap: false,
             wrap_column: 0,
             search: SearchBar::default(),
@@ -353,6 +355,11 @@ impl InteractionController {
                 LayoutMode::Split => DiffLayout::Split,
             },
             markers: DiffMarkers::Bars,
+            numbers: if self.semantic && self.layout == LayoutMode::Unified {
+                DiffNumbers::RelevantSide
+            } else {
+                DiffNumbers::Both
+            },
             wrap_column: (self.wrap_column > 0).then_some(self.wrap_column),
             sticky_headers: true,
             ..DiffPresentation::default()
@@ -638,7 +645,12 @@ impl InteractionController {
             .filter(|hit| {
                 matches!(
                     hit.kind,
-                    RowKind::Added | RowKind::Removed | RowKind::Modified
+                    RowKind::Added
+                        | RowKind::Removed
+                        | RowKind::Modified
+                        | RowKind::Merged
+                        | RowKind::Moved
+                        | RowKind::Reflowed
                 )
             })
         else {
@@ -965,6 +977,15 @@ impl InteractionController {
 
     fn apply_settings(&mut self, settings: &Settings, startup: bool, cx: &SharedContext) -> bool {
         let mut changed = self.apply_viewport_settings(&settings.viewport, startup);
+        let semantic = settings
+            .last_compare
+            .as_ref()
+            .is_some_and(|compare| compare.renderer == RendererKind::Semantic);
+        if self.semantic != semantic {
+            self.semantic = semantic;
+            self.sync_presentation();
+            changed = true;
+        }
         if self.continuous != settings.continuous_scroll {
             self.continuous = settings.continuous_scroll;
             changed = true;

@@ -3,6 +3,7 @@
 //! unchanged frame replays without building or allocating and a scrolled
 //! frame builds only the rows entering the window.
 
+use diffy_syntax::HighlightKind;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -312,7 +313,7 @@ fn build(
                     >
                         <div w={laid_w} class="flex-col" translate={(0.0, first_top)}>
                             for (i, row) in frame.rows.iter().enumerate() {
-                                {text_cell(frame, row, side, laid_w, origin, look, picks[slot][i])}
+                                {text_cell(frame, row, side, laid_w, origin, look, picks[slot][i], on_event)}
                             }
                         </div>
                     </div>
@@ -415,7 +416,8 @@ fn shown_side(mode: Mode, kind: RowKind, side: Side) -> Side {
 fn cue(kind: RowKind, side: Side) -> Option<Cue> {
     match (kind, side) {
         (RowKind::Removed, _) | (RowKind::Modified, Side::Old) => Some(Cue::Removed),
-        (RowKind::Added, _) | (RowKind::Modified, Side::New) => Some(Cue::Added),
+        (RowKind::Added | RowKind::Merged, _) | (RowKind::Modified, Side::New) => Some(Cue::Added),
+        (RowKind::Moved, _) => Some(Cue::Moved),
         _ => None,
     }
 }
@@ -521,9 +523,14 @@ fn gutter_cell(
         presentation.markers,
         pick,
     ));
+    let quiet = row.paint.quiet;
     let build = move || {
         let bg = if pick.on {
             Some(colors.picked_gutter)
+        } else if kind == RowKind::Moved {
+            Some(colors.moved_gutter)
+        } else if quiet {
+            None
         } else {
             colors.line(kind, shown)
         };
@@ -541,9 +548,15 @@ fn gutter_cell(
                             scene,
                             cx,
                             &m,
-                            presentation.markers,
+                            if quiet {
+                                DiffMarkers::None
+                            } else {
+                                presentation.markers
+                            },
                             &numbers[..count],
-                            cue(kind, shown),
+                            cue(kind, shown).filter(|_| {
+                                !quiet || matches!(kind, RowKind::Removed | RowKind::Moved)
+                            }),
                             pick.on,
                             colors,
                         );
@@ -582,6 +595,7 @@ fn paint_gutter(
             (true, _) => Some(colors.accent),
             (false, Some(Cue::Added)) => Some(colors.add_marker),
             (false, Some(Cue::Removed)) => Some(colors.del_marker),
+            (false, Some(Cue::Moved)) => Some(colors.tone(HighlightKind::Keyword)),
             (false, None) => None,
         };
         if let Some(color) = color {
@@ -601,6 +615,7 @@ fn paint_gutter(
         _ if picked => colors.picked_number,
         Some(Cue::Added) => colors.add_number,
         Some(Cue::Removed) => colors.del_number,
+        Some(Cue::Moved) => colors.tone(HighlightKind::Keyword),
         None => colors.gutter_text,
     };
     for &number in numbers {
@@ -626,7 +641,7 @@ fn paint_gutter(
     let sign = match cue {
         Some(Cue::Removed) => Some(("-", colors.del_marker)),
         Some(Cue::Added) => Some(("+", colors.add_marker)),
-        None => None,
+        Some(Cue::Moved) | None => None,
     };
     if markers == DiffMarkers::Signs
         && let Some((sign, color)) = sign
@@ -649,6 +664,7 @@ fn paint_gutter(
 
 /// A line's text in a column `width` wide, laid out from content x
 /// `origin`.
+#[allow(clippy::too_many_arguments)]
 fn text_cell(
     frame: &ViewFrame,
     row: &FrameRow,
@@ -657,6 +673,7 @@ fn text_cell(
     origin: f64,
     look: Look,
     pick: Pick,
+    on_event: fn(DiffEvent) -> Action,
 ) -> AnyElement {
     let height = row.height;
     let mode = frame.columns.mode;
@@ -673,6 +690,7 @@ fn text_cell(
     let selected = row.selected[shown as usize];
     let search = row.search[shown as usize].clone();
     let pad = frame.metrics.text_pad;
+    let line_h = frame.metrics.line_h;
     let font_size = frame.metrics.font_size;
     let position = (row.index + 1, frame.row_count);
     let colors = look.colors;
@@ -693,11 +711,33 @@ fn text_cell(
     let build = move || {
         let line = paint.sides[shown as usize].as_ref().expect("shown line");
         let canvas_paint = paint.clone();
-        let whole = line.whole.then(|| match shown {
+        let fold = paint.fold.zip(paint.source_lines[Side::New as usize]).map(
+            |((count, open), line_index)| {
+                let (end, top) = line
+                    .layout
+                    .lines()
+                    .last()
+                    .map_or((line.layout.size().0, 0.0), |last| (last.width, last.top));
+                let x = pad + end + FOLD_GAP - origin as f32;
+                let toggle = DiffEvent::ToggleReflow {
+                    file: paint.file,
+                    line: line_index,
+                };
+                (x, top, count, open, on_event(toggle))
+            },
+        );
+        let whole = line.whole.then_some(match shown {
             Side::Old => RowKind::Removed,
             Side::New => RowKind::Added,
         });
-        let bg = match (pick.on, colors.line(whole.unwrap_or(kind), shown)) {
+        let line_bg = if kind == RowKind::Moved {
+            Some(colors.moved_wash)
+        } else if paint.quiet {
+            None
+        } else {
+            colors.line(whole.unwrap_or(kind), shown)
+        };
+        let bg = match (pick.on, line_bg) {
             (true, Some(bg)) => Some(DiffColors::tint(bg, colors.accent)),
             (true, None) => Some(colors.picked_wash),
             (false, bg) => bg,
@@ -706,11 +746,12 @@ fn text_cell(
             <div
                 w={width}
                 h={height}
-                class="shrink-0"
+                class="shrink-0 relative"
                 @when {let Some(bg) = bg} { bg={bg} }
+                @when {let Some(hint) = paint.hint.clone()} { tooltip={hint.to_string()} }
                 @when {env.accessible} {
                     accessibility_role={Role::ListItem}
-                    aria-label={line.layout.text().to_string()}
+                    aria-label={line.label()}
                     aria-description={kind.description()}
                     aria-valuetext={match (mode, paint.numbers()) {
                         (Mode::Unified, [o, n]) if o != 0 && n != 0 => {
@@ -721,6 +762,37 @@ fn text_cell(
                     }}
                 }
             >
+                if let Some((x, top, count, open, toggle)) = fold.clone() {
+                    <div
+                        class="absolute flex-row items-center"
+                        left={x}
+                        top={top}
+                        h={line_h}
+                    >
+                        <div
+                            h={(line_h - 4.0).max(12.0)}
+                            px={4.0}
+                            rounded={4.0}
+                            class="flex-row items-center cursor-pointer"
+                            hover_bg={colors.hover}
+                            on:click={toggle}
+                            @when {env.accessible} {
+                                accessibility_role={Role::Button}
+                                aria-label={if open {
+                                    "Fold reformatted lines".to_owned()
+                                } else {
+                                    format!("Show {count} reformatted lines")
+                                }}
+                            }
+                        >
+                            <icon
+                                svg={if open { lucide::CHEVRON_UP } else { lucide::MORE_HORIZONTAL }}
+                                size={(line_h * 0.6).round()}
+                                color={colors.muted}
+                            />
+                        </div>
+                    </div>
+                }
                 <canvas(
                     move |bounds, scene, cx| {
                         if let Some(line) = &canvas_paint.sides[shown as usize] {
@@ -730,6 +802,11 @@ fn text_cell(
                                 line,
                                 shown,
                                 bg,
+                                match kind {
+                                    RowKind::Reflowed => TextTone::Dim,
+                                    RowKind::Removed if canvas_paint.quiet => TextTone::Removed,
+                                    _ => TextTone::Normal,
+                                },
                                 &search,
                                 selected,
                                 pad,
@@ -751,6 +828,15 @@ fn text_cell(
     view! { <cached(part_key(row.key, 2 + side as u64), hash, build) w={width} h={height} /> }
 }
 
+const FOLD_GAP: f32 = 8.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextTone {
+    Normal,
+    Dim,
+    Removed,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_text(
     bounds: Bounds,
@@ -758,6 +844,7 @@ fn paint_text(
     line: &LinePaint,
     side: Side,
     bg: Option<Color>,
+    tone: TextTone,
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
     pad: f32,
@@ -774,20 +861,36 @@ fn paint_text(
     // A long line's layout holds only its window, which starts this far in:
     // from the origin the cell is laid out at, in f64 until it is small.
     let window_x = (line.window.map_or(0.0, |w| w.x) - origin) as f32;
+    let removed = |i: usize| line.removed_spans.get(i).copied().unwrap_or(false);
     paint::line(
         scene,
         (bounds.x + pad + window_x, bounds.y),
         &line.layout,
         {
             let tones = colors.tones_on(bg);
-            line.tones.iter().map(|&k| tones[k as usize]).collect()
+            line.tones
+                .iter()
+                .enumerate()
+                .map(|(i, &k)| match tone {
+                    _ if removed(i) => colors.del_text,
+                    TextTone::Removed | TextTone::Dim => colors.muted,
+                    TextTone::Normal => tones[k as usize],
+                })
+                .collect()
         },
         &line.words,
+        &line.struck,
+        &line.renamed,
         search,
         selected,
         LineColors {
-            text: colors.text,
+            text: match tone {
+                TextTone::Normal => colors.text,
+                TextTone::Dim | TextTone::Removed => colors.muted,
+            },
             word,
+            strike: colors.del_marker,
+            rename: colors.accent,
             search: colors.search_match,
             search_active: colors.search_active,
             search_outline: colors.search_outline,
@@ -916,8 +1019,11 @@ fn focus_overlay(
     let (width, height) = (frame.viewport.0, row.height);
     let color = look.colors.focused_row;
     let utility = utility(frame, row, deco);
-    let header = row.paint.kind.diff() == Some(RowKind::FileHeader);
-    let outline = look.env.focused && !header && !picked;
+    let band = matches!(
+        row.paint.kind.diff(),
+        Some(RowKind::FileHeader | RowKind::MovedHere | RowKind::MovedAway)
+    );
+    let outline = look.env.focused && !band && !picked;
     view! {
         <div class="absolute left-0" top={row.top} w={width} h={height}>
             if outline {
@@ -962,8 +1068,10 @@ fn band(
     let columns = frame.columns;
     let deco = deco.clone();
     let key = row.key;
+    let focused = row.focused;
     let hash = inputs_hash(&(
         paint.stamp,
+        focused,
         width.to_bits(),
         height.to_bits(),
         look.env,
@@ -978,6 +1086,12 @@ fn band(
         PreparedKind::Diff(RowKind::FileHeader) => file_header(
             &paint, id, width, height, pad, font_size, look, &deco, on_event,
         ),
+        PreparedKind::Diff(RowKind::MovedHere | RowKind::MovedAway) => {
+            let indent = columns.sides[Side::New as usize].map_or(pad, |c| c.text_x);
+            move_note(
+                &paint, width, height, indent, font_size, focused, look, on_event,
+            )
+        }
         PreparedKind::Pending { state, .. } => {
             let header_h = header_h.min(height);
             let header = file_header(
@@ -1301,6 +1415,9 @@ fn file_header(
             if paint.binary {
                 <text size={small} color={colors.muted}>"binary"</text>
             }
+            if let Some(summary) = &paint.summary {
+                <text size={small} class="truncate" color={colors.muted}>{&**summary}</text>
+            }
             if let Some(metadata) = metadata {
                 {metadata}
             }
@@ -1315,6 +1432,62 @@ fn file_header(
                 <div class="shrink-0" w={1.0} h={(height * 0.45).round()} bg={colors.border} />
                 <div class="shrink-0">{trailing}</div>
             }
+        </div>
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn move_note(
+    paint: &RowPaint,
+    width: f32,
+    height: f32,
+    indent: f32,
+    font_size: f32,
+    focused: bool,
+    look: Look,
+    on_event: fn(DiffEvent) -> Action,
+) -> AnyElement {
+    let colors = look.colors;
+    let env = look.env;
+    let Some(note) = paint.note else {
+        return view! { <div w={width} h={height} /> };
+    };
+    let jump = on_event(DiffEvent::JumpMove {
+        file: paint.file,
+        index: note.index,
+        here: note.here,
+    });
+    let arrow = match note.up {
+        Some(false) => lucide::ARROW_DOWN,
+        _ => lucide::ARROW_UP,
+    };
+    let size = font_size * 0.9;
+    let label = paint.title.to_string();
+    let accent = colors.tone(HighlightKind::Keyword);
+    let (bg, ink) = if focused {
+        (Some(colors.hover), accent)
+    } else {
+        (None, colors.muted)
+    };
+    view! {
+        <div w={width} h={height} class="flex-row items-center" pl={indent}>
+            <div
+                class="flex-row items-center cursor-pointer"
+                gap={size * 0.4}
+                px={size * 0.4}
+                h={(height - 2.0).max(size)}
+                rounded={4.0}
+                @when {let Some(bg) = bg} { bg={bg} }
+                hover_bg={colors.hover}
+                on:click={jump}
+                @when {env.accessible} {
+                    accessibility_role={Role::Button}
+                    aria-label={label.clone()}
+                }
+            >
+                <icon svg={arrow} size={size.round()} color={accent} />
+                <text size={size} color={ink}>{label}</text>
+            </div>
         </div>
     }
 }

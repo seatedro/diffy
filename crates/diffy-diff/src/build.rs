@@ -4,7 +4,10 @@ use std::sync::Arc;
 use crate::compute::hunk_groups;
 use crate::model::{BlockKind, DiffDocument, FileMeta, FileStatus, IntegrityError, Side};
 use crate::myers::Change;
-use crate::semantic::{AlignedRow, FileSemantics, LineSpans, SemanticError, SemanticSpan};
+use crate::semantic::{
+    AlignedRow, FileSemantics, LineGroupSpan, LineSpans, Move, OutlineItem, Rename, SemanticError,
+    SemanticSpan,
+};
 use crate::source::SourceCoverage;
 use crate::text::TextStore;
 
@@ -84,6 +87,10 @@ impl DocumentBuilder {
             new,
             hunks: Vec::new(),
             structural: false,
+            outline: Vec::new(),
+            renames: Vec::new(),
+            moves: Vec::new(),
+            groups: Vec::new(),
             spans: [Vec::new(), Vec::new()],
             error: None,
         }
@@ -114,6 +121,10 @@ pub struct FileBuilder<'a> {
     new: TextStore,
     hunks: Vec<HunkDraft>,
     structural: bool,
+    outline: Vec<OutlineItem>,
+    renames: Vec<Rename>,
+    moves: Vec<Move>,
+    groups: Vec<LineGroupSpan>,
     spans: [Vec<(u32, Vec<SemanticSpan>)>; 2],
     error: Option<BuildError>,
 }
@@ -163,6 +174,26 @@ impl FileBuilder<'_> {
 
     pub fn structural(&mut self, structural: bool) -> &mut Self {
         self.structural = structural;
+        self
+    }
+
+    pub fn outline(&mut self, items: Vec<OutlineItem>) -> &mut Self {
+        self.outline = items;
+        self
+    }
+
+    pub fn renames(&mut self, renames: Vec<Rename>) -> &mut Self {
+        self.renames = renames;
+        self
+    }
+
+    pub fn moves(&mut self, moves: Vec<Move>) -> &mut Self {
+        self.moves = moves;
+        self
+    }
+
+    pub fn groups(&mut self, groups: Vec<LineGroupSpan>) -> &mut Self {
+        self.groups = groups;
         self
     }
 
@@ -310,6 +341,10 @@ impl FileBuilder<'_> {
     fn semantics(&mut self) -> Result<Option<FileSemantics>, BuildError> {
         let mut semantics = FileSemantics {
             structural: self.structural,
+            outline: std::mem::take(&mut self.outline),
+            renames: std::mem::take(&mut self.renames),
+            moves: std::mem::take(&mut self.moves),
+            groups: std::mem::take(&mut self.groups),
             ..FileSemantics::default()
         };
         for hunk in &mut self.hunks {

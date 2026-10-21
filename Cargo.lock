@@ -1206,6 +1206,7 @@ dependencies = [
  "clap",
  "difftastic",
  "diffy-diff",
+ "diffy-semantic",
  "diffy-syntax",
  "diffy-ui",
  "dirs",
@@ -1223,7 +1224,6 @@ dependencies = [
  "quark-components",
  "quark-text",
  "quark-ui",
- "rayon",
  "reqwest",
  "rfd",
  "ring",
@@ -1247,6 +1247,14 @@ version = "0.1.12"
 dependencies = [
  "proptest",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "diffy-semantic"
+version = "0.1.12"
+dependencies = [
+ "diffy-diff",
+ "tree-sitter",
 ]
 
 [[package]]
@@ -5683,6 +5691,22 @@ name = "self_cell"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b12e76d157a900eb52e81bc6e9f3069344290341720e9178cde2407113ac8d89"
+
+[[package]]
+name = "semantic-eval"
+version = "0.1.12"
+dependencies = [
+ "clap",
+ "diffy",
+ "diffy-diff",
+ "diffy-semantic",
+ "diffy-syntax",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+ "tree-sitter",
+]
 
 [[package]]
 name = "semver"

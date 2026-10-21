@@ -1,0 +1,19 @@
+<<<< old
+def show(items):
+    count = len(items)
+    print(f"found {count} items")
+    return count
+<<<< new
+def show(items):
+    total = len(items)
+    print(f"found {total} items")
+    return total
+<<<< expect
+@@ -1,4 +1,4 @@
+     1    1 |def show(items):
+<    2      |    ⟪count⟫ = len(items)
+>         2 |    ⟪total⟫ = len(items)
+<    3      |    print(f"found {⟪count⟫} items")
+>         3 |    print(f"found {⟪total⟫} items")
+<    4      |    return ⟪count⟫
+>         4 |    return ⟪total⟫

@@ -1,0 +1,21 @@
+<<<< old
+fn run() {
+    first();
+    second();
+}
+<<<< new
+fn run() {
+    first();
+    if ready() {
+        second();
+    }
+}
+<<<< expect
+@@ -1,4 +1,6 @@
+     1    1 |fn run() {
+     2    2 |    first();
++         3 |    ⟦if⟧ ⟦ready()⟧ ⟦{⟧
+<    3      |    second();
+>         4 |        second();
++         5 |    ⟦}⟧
+     4    6 |}

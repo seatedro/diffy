@@ -6,8 +6,8 @@ use diffy_diff::{
 };
 
 use crate::core::compare::stats::{CompareFilePaths, compact_paths_by};
-use crate::core::vcs::model::ChangeBucket;
 use crate::core::error::{DiffyError, Result};
+use crate::core::vcs::model::ChangeBucket;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompareEntry {

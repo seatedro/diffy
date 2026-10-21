@@ -97,6 +97,8 @@ pub struct CommitInfo {
 
 pub const WORKDIR_REF: &str = "@workdir";
 pub const INDEX_REF: &str = "@index";
+const MENTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const MENTION_POLL: std::time::Duration = std::time::Duration::from_millis(5);
 pub const PR_REF_PREFIX: &str = "refs/diffy/pr/";
 
 pub fn pr_ref_path(pr_number: i32, branch: &str) -> String {
@@ -337,6 +339,49 @@ fn failure_line<'a>(lines: impl Iterator<Item = &'a str>) -> Option<&'a str> {
         .or_else(|| lines.iter().find(|line| line.starts_with("error:")))
         .or_else(|| lines.last())
         .copied()
+}
+
+pub fn mentions(repo_path: &Path, rev: &str, word: &str) -> Option<bool> {
+    let mut command = Command::new("git");
+    command
+        .current_dir(repo_path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .args(["grep", "-q", "-w", "-F", "-I"]);
+    if rev == INDEX_REF {
+        command.arg("--cached");
+    }
+    command.args(["-e", word]);
+    if rev != INDEX_REF && rev != WORKDIR_REF {
+        command.arg(rev);
+    }
+    let mut child = command
+        .arg("--")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + MENTION_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return match status.code() {
+                    Some(0) => Some(true),
+                    Some(1) => Some(false),
+                    _ => None,
+                };
+            }
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(MENTION_POLL);
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 fn run_system_git_inner(
@@ -761,7 +806,6 @@ impl GitService {
         self.read_file_bytes_from_tree(reference, path)
     }
 
-    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     pub(crate) fn read_file_bytes_batch_at<'a>(
         &self,
         reference: &str,
@@ -801,7 +845,6 @@ impl GitService {
             .clone())
     }
 
-    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     fn read_file_bytes_batch_from_index(&self, paths: &[&str]) -> Vec<Option<Vec<u8>>> {
         let Ok(repo) = self.repo() else {
             return vec![None; paths.len()];
@@ -843,7 +886,6 @@ impl GitService {
             .clone())
     }
 
-    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     fn read_file_bytes_batch_from_tree(
         &self,
         reference: &str,
@@ -1105,7 +1147,6 @@ impl GitService {
         self.diff_between_refs_path(left, right, path, false)
     }
 
-    #[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
     pub(crate) fn diff_name_status(
         &self,
         left: &str,
@@ -1878,7 +1919,6 @@ fn parse_porcelain_status(bytes: &[u8]) -> Vec<(String, Option<String>, StatusBi
     out
 }
 
-#[cfg_attr(not(feature = "difftastic"), allow(dead_code))]
 fn parse_name_status(bytes: &[u8]) -> Vec<(String, Option<String>, Option<String>)> {
     let mut out = Vec::new();
     let mut fields = bytes

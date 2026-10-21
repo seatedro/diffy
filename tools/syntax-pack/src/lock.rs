@@ -33,6 +33,8 @@ pub struct Grammar {
     pub highlights: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub injections: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locals: Vec<String>,
     pub sha256: String,
     /// SPDX expression for the grammar and its queries.
     #[serde(default, skip_serializing_if = "Option::is_none")]

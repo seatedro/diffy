@@ -495,6 +495,17 @@ fn structural_pairing_follows_aligned_rows_that_cover_the_change() {
         for &(old, new) in rows {
             file.row(AlignedRow { old, new });
         }
+        let novel = [SemanticSpan {
+            start: 0,
+            end: 1,
+            intensity: ChangeIntensity::Novel,
+        }];
+        for line in 0..3 {
+            file.spans(Side::Old, line, &novel);
+        }
+        for line in 0..2 {
+            file.spans(Side::New, line, &novel);
+        }
         file.finish().unwrap();
         builder.build()
     };

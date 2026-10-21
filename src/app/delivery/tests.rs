@@ -174,7 +174,7 @@ fn installed_grammars_publish_availability_once_per_change() {
         first,
         vec![GrammarAvailability {
             revision: 1,
-            installed: Arc::from(["rust".to_owned()]),
+            tags: Arc::from(["rust".to_owned()]),
         }]
     );
     assert!(repeat.is_empty() && downloading.is_empty());

@@ -2,8 +2,10 @@
 members = [
   ".",
   "crates/diffy-diff",
+  "crates/diffy-semantic",
   "crates/diffy-syntax",
   "crates/diffy-ui",
+  "tools/semantic-eval",
   "tools/syntax-pack",
 ]
 exclude = ["crates/difftastic"]
@@ -65,9 +67,9 @@ installer-mode = "currentUser"
 appdata-paths = ["$LOCALAPPDATA/$PUBLISHER/$PRODUCTNAME"]
 
 [features]
-default = ["difftastic"]
+default = []
 hot-reload = ["quark-app/hot-reload"]
-difftastic = ["dep:vendored_difftastic", "dep:rayon"]
+difftastic = ["dep:vendored_difftastic"]
 headless-render = []
 
 [dependencies]
@@ -83,10 +85,10 @@ rusqlite = { version = "0.38", default-features = false, features = ["bundled"] 
 sea-query = { version = "1.0", default-features = false, features = ["backend-sqlite", "derive"] }
 sea-query-rusqlite = { version = "0.8", default-features = false }
 parking_lot = "0.12"
-rayon = { version = "1.10", optional = true }
 tempfile = "3.14"
 webbrowser = "1.0"
 diffy-diff = { path = "crates/diffy-diff" }
+diffy-semantic = { path = "crates/diffy-semantic" }
 diffy-syntax = { path = "crates/diffy-syntax", features = ["download"] }
 diffy-ui = { path = "crates/diffy-ui" }
 quark.workspace = true

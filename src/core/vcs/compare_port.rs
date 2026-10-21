@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use diffy_diff::{DiffStats, FileStatus};
 
-use crate::core::compare::service::SEMANTIC_UNAVAILABLE;
 use crate::core::compare::{CompareEntry, CompareOutput};
 use crate::core::error::{DiffyError, Result};
 use crate::core::vcs::model::FileChangeStatus;
@@ -11,12 +10,6 @@ use crate::core::vcs::patch::parse_exact_patch;
 
 pub fn output_from_patch(raw_diff: &[u8]) -> Result<CompareOutput> {
     CompareOutput::from_patch_bytes(raw_diff)
-}
-
-pub fn with_semantic_fallback(mut output: CompareOutput) -> CompareOutput {
-    output.used_fallback = true;
-    output.fallback_message = SEMANTIC_UNAVAILABLE.to_owned();
-    output
 }
 
 pub fn file_status(status: FileChangeStatus) -> FileStatus {

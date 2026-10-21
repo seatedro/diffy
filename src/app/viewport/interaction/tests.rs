@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use diffy_ui::diff_view::decorator::DiffDecorator;
 use quark_app::testing::{By, UiTestHarness};
@@ -881,4 +882,60 @@ fn a_refresh_keeps_the_shown_diff_until_its_files_arrive() {
     assert!(names.iter().any(|n| n == "ten again"));
     assert!(!names.iter().any(|n| n == "changed ten"));
     assert!(!ui.app().interaction.has_text_selection());
+}
+
+#[test]
+fn a_folded_reformat_exposes_its_toggle_as_a_button() {
+    use diffy_diff::{
+        AlignedRow, ChangeIntensity, DocumentBuilder, FileDiffSnapshot, FileMeta, LineGroupSpan,
+        Revision, SemanticSpan, SourceCoverage, TextStore,
+    };
+    let old = TextStore::new("a();\ncall(x, y);\nb();\n");
+    let new = TextStore::new("a();\ncall(\n    x,\n    y,\n);\nb();\n");
+    let mut builder = DocumentBuilder::new();
+    let mut file = builder.file(
+        FileMeta {
+            old_path: Some("f.rs".into()),
+            new_path: Some("f.rs".into()),
+            ..FileMeta::default()
+        },
+        SourceCoverage::Full,
+        old,
+        new,
+    );
+    file.structural(true);
+    file.hunk(0, 0).context(1).change(1, 4).context(1);
+    for (old, new) in [
+        (Some(0), Some(0)),
+        (Some(1), Some(1)),
+        (None, Some(2)),
+        (None, Some(3)),
+        (None, Some(4)),
+        (Some(2), Some(5)),
+    ] {
+        file.row(AlignedRow { old, new });
+    }
+    let comma = SemanticSpan {
+        start: 5,
+        end: 6,
+        intensity: ChangeIntensity::Novel,
+    };
+    file.spans(Side::New, 3, &[comma]);
+    file.groups(vec![LineGroupSpan {
+        old: 1..2,
+        new: 1..5,
+    }]);
+    file.finish().unwrap();
+    let key = FileKey(1);
+    let snapshot = FileDiffSnapshot::new(key, Revision(1), Arc::new(builder.build())).unwrap();
+    let mut ui = harness(Host::new(), SIZE);
+    ui.app_mut().install(ViewportInstall::File {
+        prepared: PreparedDiff::new(key, GENERATION, FileRevision(1), snapshot),
+        remap: None,
+    });
+    ui.frame();
+    let toggle = ui.find(By::role_name(Role::Button, "Show 4 reformatted lines"));
+    ui.click(toggle.center());
+    ui.frame();
+    ui.find(By::role_name(Role::Button, "Fold reformatted lines"));
 }

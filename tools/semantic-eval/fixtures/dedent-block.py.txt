@@ -1,0 +1,20 @@
+<<<< old
+def run(ready):
+    if ready:
+        start()
+        step()
+    finish()
+<<<< new
+def run(ready):
+    start()
+    step()
+    finish()
+<<<< expect
+@@ -1,5 +1,4 @@
+     1    1 |def run(ready):
+-    2      |    ⟦if⟧ ⟦ready:⟧
+<    3      |        start()
+>         2 |    start()
+<    4      |        step()
+>         3 |    step()
+     5    4 |    finish()

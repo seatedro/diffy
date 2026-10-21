@@ -1,0 +1,16 @@
+<<<< old
+const count = items.length
+console.log(`found ${count} items`)
+report(count)
+<<<< new
+const total = items.length
+console.log(`found ${total} items`)
+report(total)
+<<<< expect
+@@ -1,3 +1,3 @@
+<    1      |const ⟪count⟫ = items.length
+>         1 |const ⟪total⟫ = items.length
+<    2      |console.log(`found ${⟪count⟫} items`)
+>         2 |console.log(`found ${⟪total⟫} items`)
+<    3      |report(⟪count⟫)
+>         3 |report(⟪total⟫)

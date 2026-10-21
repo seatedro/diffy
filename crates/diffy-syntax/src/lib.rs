@@ -77,9 +77,9 @@ pub use download::{Downloads, default_cache_dir};
 #[cfg(feature = "download")]
 pub use quark_update::PublicKey;
 pub use scope::{ScopeResult, ScopeSpan, ScopeTable, ScopeWorker, scope_table};
-#[cfg(feature = "engine")]
-pub use store::StoreConfig;
 pub use store::{Catalog, GrammarState, GrammarStatus, GrammarStore, LanguageStatus};
+#[cfg(feature = "engine")]
+pub use store::{GrammarQueries, StoreConfig};
 pub use worker::{
     HighlightFocus, HighlightPart, HighlightRequest, HighlightWorker, Highlighted, Priority,
     WorkerGone,

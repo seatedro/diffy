@@ -1,0 +1,12 @@
+<<<< old
+const label = `hello ${name}`;
+<<<< new
+const label = `hello  ${name}`;
+<<<< expect
+@@ -1,1 +1,1 @@
+<    1      |const label = ⟦`hello ${name}`⟧;
+>         1 |const label = ⟦`hello  ${name}`⟧;
+<<<< expect
+@@ -1,1 +1,1 @@
+<    1      |const label = `hello⟨ ⟩${name}`;
+>         1 |const label = `hello⟨  ⟩${name}`;

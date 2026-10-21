@@ -32,6 +32,7 @@ mod compute;
 pub mod fixtures;
 mod inline;
 mod limits;
+mod merge;
 mod model;
 pub mod myers;
 mod patch;
@@ -47,8 +48,9 @@ mod tests;
 
 pub use build::{BuildError, DocumentBuilder, FileBuilder, diff_from_changes};
 pub use compare::{
-    Comparison, ComparisonError, ComparisonOptions, LinePair, MAX_PAIRING_COMPARISONS,
-    PAIRING_COMPARISONS_PER_LINE, PairingMode, SIMILARITY_SCAN_BYTES, WhitespaceMode,
+    Comparison, ComparisonError, ComparisonOptions, LineGroup, LinePair, MAX_PAIRING_COMPARISONS,
+    MOVE_GROUP_GAP, PAIRING_COMPARISONS_PER_LINE, PairingMode, SIMILARITY_SCAN_BYTES,
+    WhitespaceMode, move_leaders, moved_from,
 };
 pub use compute::{DEFAULT_CONTEXT, diff_texts};
 pub use inline::{
@@ -58,6 +60,10 @@ pub use inline::{
 pub use limits::{
     DETAIL_SIDE_BYTES, DiffError, DiffLimits, LimitKind, LineDetail, MAX_REPRESENTABLE,
     diff_texts_checked, line_detail, parse_unified_checked,
+};
+pub use merge::{
+    Joined, JoinedPart, MAX_MERGE_BYTES, MIN_MERGE_KEPT, MergePiece, join_lines, merge_pair,
+    reads_as_one,
 };
 pub use model::{
     BlockKind, BlockTable, ChangeSummary, ContentChange, DiffDocument, DiffStats, FileFacts,
@@ -69,7 +75,10 @@ pub use projection::{
     REVEAL_STEP, Reveal, RowKind,
 };
 pub use remap::{LineMap, RemapError, SourceRemap};
-pub use semantic::{AlignedRow, ChangeIntensity, FileSemantics, SemanticError, SemanticSpan};
+pub use semantic::{
+    AlignedRow, ChangeIntensity, FileSemantics, ItemChange, LineGroupSpan, Move, OutlineItem,
+    Rename, SemanticError, SemanticSpan,
+};
 pub use session::{
     DiffSession, DiffUpdate, FileDiffSnapshot, FileId, Placeholder, Revision,
     SessionIntegrityError, Slot, SlotState, SourcePurpose, SourceRequest, UpdateError,

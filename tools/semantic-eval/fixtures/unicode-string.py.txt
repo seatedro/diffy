@@ -1,0 +1,8 @@
+<<<< old
+label = "café ✓ ready"
+<<<< new
+label = "café ✗ ready"
+<<<< expect
+@@ -1,1 +1,1 @@
+<    1      |label = "café ⟨✓⟩ ready"
+>         1 |label = "café ⟨✗⟩ ready"

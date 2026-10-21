@@ -1,0 +1,25 @@
+<<<< old
+function run(ready: boolean) {
+  if (ready) {
+    start();
+    step();
+  }
+  finish();
+}
+<<<< new
+function run(ready: boolean) {
+  start();
+  step();
+  finish();
+}
+<<<< expect
+@@ -1,7 +1,5 @@
+     1    1 |function run(ready: boolean) {
+-    2      |  ⟦if⟧ ⟦(ready)⟧ ⟦{⟧
+<    3      |    start();
+>         2 |  start();
+<    4      |    step();
+>         3 |  step();
+-    5      |  ⟦}⟧
+     6    4 |  finish();
+     7    5 |}

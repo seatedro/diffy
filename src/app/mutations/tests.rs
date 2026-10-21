@@ -334,6 +334,55 @@ fn selected_lines_are_separate_from_the_text_selection() {
 }
 
 #[test]
+fn picking_a_semantic_row_selects_every_line_it_stands_for() {
+    use crate::core::compare::{LayoutMode, RendererKind};
+    use crate::platform::persistence::{PersistedCompare, Settings};
+    let mut cx = shared();
+    let mut settings = Settings {
+        last_compare: Some(PersistedCompare {
+            renderer: RendererKind::Semantic,
+            ..PersistedCompare::default()
+        }),
+        ..Settings::default()
+    };
+    settings.viewport.layout = LayoutMode::Unified;
+    cx.settings = Rc::new(crate::contracts::commands::SettingsSnapshot {
+        revision: 1,
+        settings,
+    });
+    let mut file = manifest(REVISION).files[0].clone();
+    file.line_groups = Arc::from([diffy_diff::LineGroup {
+        new: 3..6,
+        old: 2..3,
+    }]);
+    cx.manifest = Some(Rc::new(CompareManifestSnapshot {
+        files: Arc::from([file]),
+        ..(*manifest(REVISION)).clone()
+    }));
+    let mut controller = MutationsController::default();
+    controller.reduce_action(MutationsAction::SelectLines(target(Side::New, 4..5)), &cx);
+    let lines: Vec<_> = controller
+        .selected_lines()
+        .iter()
+        .map(|key| (key.side, key.line))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            (Side::Old, 2),
+            (Side::New, 3),
+            (Side::New, 4),
+            (Side::New, 5)
+        ]
+    );
+    controller.reduce_action(
+        MutationsAction::ToggleLineSelection(target(Side::New, 3..4)),
+        &cx,
+    );
+    assert!(controller.selected_lines().is_empty());
+}
+
+#[test]
 fn manifest_republish_drops_selection_for_old_revisions() {
     let mut cx = shared();
     let mut controller = MutationsController::default();

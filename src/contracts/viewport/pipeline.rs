@@ -276,6 +276,8 @@ pub struct DiffSizeRequest {
     pub left: String,
     pub right: String,
     pub mode: crate::core::compare::CompareMode,
+    /// Where `right` is checked out, to measure its files on disk.
+    pub worktree: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

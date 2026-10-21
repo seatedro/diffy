@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -672,19 +673,24 @@ pub fn git_snapshot_from_parts(
             workspace_root: path,
             store_root: None,
         });
+    let worktrees = checked_out_elsewhere(&location.workspace_root);
     VcsSnapshot {
         location,
         reason,
         change_kind,
         capabilities: git_capabilities(),
-        refs: git_refs(branches, tags),
+        refs: git_refs(branches, tags, &worktrees),
         changes: git_changes(commits, branches),
         operation_log: Vec::new(),
         file_changes: git_file_changes(status_items),
     }
 }
 
-pub fn git_refs(branches: &[BranchInfo], tags: &[TagInfo]) -> Vec<VcsRef> {
+pub fn git_refs(
+    branches: &[BranchInfo],
+    tags: &[TagInfo],
+    worktrees: &HashMap<String, PathBuf>,
+) -> Vec<VcsRef> {
     let mut refs = Vec::with_capacity(branches.len() + tags.len() + 1);
     refs.push(VcsRef {
         name: WORKDIR_REF.to_owned(),
@@ -693,18 +699,24 @@ pub fn git_refs(branches: &[BranchInfo], tags: &[TagInfo]) -> Vec<VcsRef> {
         active: false,
         upstream: None,
         ahead_behind: None,
+        worktree: None,
     });
-    refs.extend(branches.iter().map(|branch| VcsRef {
-        name: branch.name.clone(),
-        kind: if branch.is_remote {
-            RefKind::RemoteBranch
-        } else {
-            RefKind::Branch
-        },
-        target: RevisionId::git(branch.target_oid.clone()),
-        active: branch.is_head,
-        upstream: branch.upstream.clone(),
-        ahead_behind: branch.ahead_behind,
+    refs.extend(branches.iter().map(|branch| {
+        VcsRef {
+            name: branch.name.clone(),
+            kind: if branch.is_remote {
+                RefKind::RemoteBranch
+            } else {
+                RefKind::Branch
+            },
+            target: RevisionId::git(branch.target_oid.clone()),
+            active: branch.is_head,
+            upstream: branch.upstream.clone(),
+            ahead_behind: branch.ahead_behind,
+            worktree: (!branch.is_remote)
+                .then(|| worktrees.get(&branch.name).cloned())
+                .flatten(),
+        }
     }));
     refs.extend(tags.iter().map(|tag| VcsRef {
         name: tag.name.clone(),
@@ -713,8 +725,41 @@ pub fn git_refs(branches: &[BranchInfo], tags: &[TagInfo]) -> Vec<VcsRef> {
         active: false,
         upstream: None,
         ahead_behind: None,
+        worktree: None,
     }));
     refs
+}
+
+/// Branches checked out in a worktree other than `workspace_root`, with
+/// that worktree's directory.
+fn checked_out_elsewhere(workspace_root: &Path) -> HashMap<String, PathBuf> {
+    let mut found = HashMap::new();
+    let Ok(repo) = gix::open(workspace_root) else {
+        return found;
+    };
+    let here = canonical(workspace_root);
+    let mut add = |repo: &gix::Repository| {
+        let (Some(workdir), Ok(Some(head))) = (repo.workdir(), repo.head_name()) else {
+            return;
+        };
+        let workdir = canonical(workdir);
+        if workdir != here {
+            found.insert(head.shorten().to_string(), workdir);
+        }
+    };
+    if let Ok(main) = repo.main_repo() {
+        add(&main);
+    }
+    for proxy in repo.worktrees().unwrap_or_default() {
+        if let Ok(linked) = proxy.into_repo() {
+            add(&linked);
+        }
+    }
+    found
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 pub fn git_changes(commits: &[CommitInfo], branches: &[BranchInfo]) -> Vec<VcsChange> {

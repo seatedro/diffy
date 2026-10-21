@@ -29,6 +29,9 @@ pub(crate) trait VcsEvents: Send + Sync + 'static {
 
 #[derive(Debug, Clone)]
 pub(crate) enum VcsWorkerEvent {
+    CompareWorktreeChanged {
+        path: PathBuf,
+    },
     Progress {
         generation: u64,
         phase: ComparePhase,
@@ -175,6 +178,11 @@ pub(crate) enum VcsWorkerEvent {
 
 #[derive(Debug, Clone)]
 pub(crate) enum VcsCommand {
+    /// The linked worktree a compare reads changed. It needs no resync of
+    /// the open repository, whose snapshot it leaves alone.
+    CompareWorktreeChanged {
+        path: PathBuf,
+    },
     Sync {
         path: PathBuf,
         reason: RepositorySyncReason,
@@ -392,6 +400,10 @@ fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerComma
             });
             continue;
         }
+        if let VcsCommand::CompareWorktreeChanged { path } = command {
+            events.emit(workspace, VcsWorkerEvent::CompareWorktreeChanged { path });
+            continue;
+        }
 
         pending_dirty = None;
         let emitter = Emitter {
@@ -508,7 +520,7 @@ fn run_command(state: &mut VcsWorkerState, emitter: &Emitter, command: VcsComman
             remote,
             branch,
         } => apply_pull_ff(state, emitter, job, path, remote, branch),
-        VcsCommand::Dirty { .. } => {}
+        VcsCommand::Dirty { .. } | VcsCommand::CompareWorktreeChanged { .. } => {}
     }
 }
 

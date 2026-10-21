@@ -32,6 +32,13 @@ pub fn kind_icon(kind: RefEntryKind) -> &'static str {
     }
 }
 
+fn entry_icon(entry: &RefEntry) -> &'static str {
+    match entry.worktree {
+        Some(_) => lucide::FOLDER_GIT,
+        None => kind_icon(entry.kind),
+    }
+}
+
 pub fn ref_picker_panel(
     commands: &mut CommandsController,
     size: (f32, f32),
@@ -194,7 +201,13 @@ fn rows(picker: &RefPicker, theme: &Theme) -> AnyElement {
             }
             RefRow::Entry { index, ranges } => {
                 let entry = &catalog.entries[*index as usize];
-                let age = relative_age(picker.now, entry.timestamp);
+                let age = match &entry.worktree {
+                    Some(worktree) if worktree.dirty => format!(
+                        "uncommitted \u{00B7} {}",
+                        relative_age(picker.now, entry.timestamp)
+                    ),
+                    _ => relative_age(picker.now, entry.timestamp),
+                };
                 let detail = if entry.subject.is_empty() {
                     None
                 } else {
@@ -212,7 +225,7 @@ fn rows(picker: &RefPicker, theme: &Theme) -> AnyElement {
                                 highlights: ranges,
                                 detail,
                                 rhs: Some(&age),
-                                icon: Some(kind_icon(entry.kind)),
+                                icon: Some(entry_icon(entry)),
                                 selected,
                                 current: is_current,
                             },
@@ -308,6 +321,17 @@ fn hover_card(picker: &RefPicker, theme: &Theme) -> Option<AnyElement> {
         (true, false) => format!("{age} ago"),
         (true, true) => String::new(),
     };
+    let worktree = entry.worktree.as_ref().map(|worktree| {
+        let name = worktree.path.file_name().map_or_else(
+            || worktree.path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        if worktree.dirty {
+            format!("Checked out in {name}, with uncommitted changes")
+        } else {
+            format!("Checked out in {name}")
+        }
+    });
     let other = match picker.other_name() {
         "" | crate::core::ref_catalog::WORKING_TREE_LABEL => "HEAD",
         name => name,
@@ -343,7 +367,7 @@ fn hover_card(picker: &RefPicker, theme: &Theme) -> Option<AnyElement> {
             test_id="ref-picker.card"
         >
             <div class="flex-row items-center w-full" gap={tokens::scaled(Sp::SM, scale)}>
-                <icon svg={kind_icon(entry.kind)} size={Ico::SM} color={tc.text_muted} />
+                <icon svg={entry_icon(entry)} size={Ico::SM} color={tc.text_muted} />
                 <text size={mono} class="font-semibold truncate" color={tc.text_strong}>{entry.name.clone()}</text>
                 <text size={mono} color={tc.text_muted}>{entry.short_oid().to_owned()}</text>
                 <div class="flex-1" />
@@ -367,6 +391,9 @@ fn hover_card(picker: &RefPicker, theme: &Theme) -> Option<AnyElement> {
             }
             if !byline.is_empty() {
                 <text size={small} color={tc.text_muted}>{byline}</text>
+            }
+            if let Some(worktree) = worktree {
+                <text size={small} class="truncate" color={tc.text_muted}>{worktree}</text>
             }
             <div class="w-full" h={1.0} bg={tc.border_variant} />
             <div class="flex-row items-center w-full" gap={tokens::scaled(Sp::SM, scale)}>

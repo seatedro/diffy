@@ -132,6 +132,7 @@ pub enum NavigationAction {
     SetRef { field: CompareField, value: String },
     ChooseRef(CompareField),
     SwapRefs,
+    ToggleCommittedOnly,
     ResolveRef { field: CompareField, query: String },
     SetCompareMode(CompareMode),
     CycleCompareMode,
@@ -187,6 +188,7 @@ pub struct ResolveRefRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NavigationEffect {
     WatchRepository { path: Option<PathBuf> },
+    WatchCompareWorktree { path: Option<PathBuf> },
     SyncRepository(SyncRepositoryRequest),
     LoadHistory(HistoryRequest),
     ResolveRef(ResolveRefRequest),
@@ -222,6 +224,9 @@ pub enum NavigationEvent {
         request: JobId,
         field: CompareField,
         query: String,
+    },
+    CompareWorktreeChanged {
+        path: PathBuf,
     },
 }
 

@@ -23,7 +23,7 @@ use crate::core::compare::{
 };
 use crate::core::compare::{CompareMode, LayoutMode};
 use crate::core::error::DiffyError;
-use crate::core::vcs::git::GitService;
+use crate::core::vcs::git::{GitService, WORKDIR_REF};
 use crate::core::vcs::model::RevisionId;
 use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec, VcsKind};
 use crate::core::vcs::source::SourceText;
@@ -267,16 +267,20 @@ impl PipelineServices {
     }
 
     pub fn diff_size(&self, request: &DiffSizeRequest) -> Result<DiffSize, PipelineFailure> {
-        let refs = [request.left.as_str(), request.right.as_str()];
-        let mut repo = open_compare_repository(&request.repo_path, refs).map_err(failed)?;
+        let (repo_path, right) = match &request.worktree {
+            Some(path) => (path, WORKDIR_REF),
+            None => (&request.repo_path, request.right.as_str()),
+        };
+        let refs = [request.left.as_str(), right];
+        let mut repo = open_compare_repository(repo_path, refs).map_err(failed)?;
         let spec = match request.mode {
             CompareMode::ThreeDot => VcsCompareSpec::MergeBaseRange {
                 base: request.left.clone(),
-                head: request.right.clone(),
+                head: right.to_owned(),
             },
             CompareMode::TwoDot | CompareMode::SingleCommit => VcsCompareSpec::Range {
                 from: request.left.clone(),
-                to: request.right.clone(),
+                to: right.to_owned(),
             },
         };
         let compare = VcsCompareRequest {
@@ -284,14 +288,22 @@ impl PipelineServices {
             layout: LayoutMode::Unified,
             renderer: RendererKind::Builtin,
         };
-        let (additions, deletions) = repo.compare_stats(&compare).map_err(failed)?;
+        let (mut additions, deletions) = repo.compare_stats(&compare).map_err(failed)?;
         let history = repo
             .compare_history(&request.left, &request.right, DIFF_SIZE_COMMIT_LIMIT + 1)
             .map_err(failed)?;
         let files = if repo.location().kind == VcsKind::GIT {
             let (left, right) = repo.resolve_compare_request(&compare).map_err(failed)?;
-            let git = open_git(&request.repo_path)?;
+            let git = open_git(repo_path)?;
             let entries = git.diff_name_status(&left, &right, None).map_err(failed)?;
+            if right == WORKDIR_REF {
+                // A shortstat against the working tree leaves untracked files out.
+                for path in git.untracked_paths(None).map_err(failed)? {
+                    let lines = std::fs::read(repo_path.join(&path))
+                        .map_or(0, |bytes| bytes.iter().filter(|b| **b == b'\n').count());
+                    additions = additions.saturating_add(i32::try_from(lines).unwrap_or(i32::MAX));
+                }
+            }
             Some(u32::try_from(entries.len()).unwrap_or(u32::MAX))
         } else {
             None
@@ -734,12 +746,48 @@ mod tests {
                 left: base,
                 right: head,
                 mode: CompareMode::TwoDot,
+                worktree: None,
             })
             .unwrap();
         assert_eq!(size.files, Some(2));
         assert_eq!((size.additions, size.deletions), (3, 0));
         assert_eq!(size.commits, 2);
         assert!(!size.commits_capped);
+    }
+
+    // The ref picker measures a branch checked out in another worktree by
+    // its files on disk, untracked ones included.
+    #[test]
+    fn diff_size_measures_a_linked_worktree_on_disk() {
+        use crate::contracts::viewport::pipeline::DiffSizeRequest;
+        use crate::core::compare::CompareMode;
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let commit = crate::core::compare::service::tests::commit_file;
+        commit(&repo, "a.rs", "one\n", "a");
+        let linked = dir.path().join("linked");
+        let status = std::process::Command::new("git")
+            .args(["worktree", "add", "-q", "-b", "feature"])
+            .arg(&linked)
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::write(linked.join("a.rs"), "one\ntwo\n").unwrap();
+        std::fs::write(linked.join("b.rs"), "x\ny\n").unwrap();
+        let request = |worktree| DiffSizeRequest {
+            token: 1,
+            repo_path: dir.path().to_path_buf(),
+            left: "HEAD".to_owned(),
+            right: "feature".to_owned(),
+            mode: CompareMode::ThreeDot,
+            worktree,
+        };
+        let committed = PipelineServices.diff_size(&request(None)).unwrap();
+        assert_eq!((committed.files, committed.additions), (Some(0), 0));
+        let size = PipelineServices.diff_size(&request(Some(linked))).unwrap();
+        assert_eq!(size.files, Some(2));
+        assert_eq!((size.additions, size.deletions), (3, 0));
     }
 
     #[test]

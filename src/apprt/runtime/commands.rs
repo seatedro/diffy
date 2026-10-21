@@ -12,7 +12,7 @@ use crate::contracts::commands::{CommandsEffect, CommandsEvent, RefCatalogReques
 use crate::contracts::viewport::pipeline::DiffSizeRequest;
 use crate::core::ref_catalog::{RefCatalog, build_catalog, filter};
 use crate::core::repo_discovery;
-use crate::core::vcs::git::ref_metadata;
+use crate::core::vcs::git::{has_uncommitted_changes, ref_metadata};
 use crate::fonts::{FontRole, font_family_entries};
 use crate::platform::persistence::{RepoDiscovery, Settings};
 use crate::platform::startup::app_config_dir;
@@ -148,6 +148,19 @@ fn scan_worker_loop(receiver: Receiver<(ScanJob, ScopedEventSender)>) {
     }
 }
 
+fn mark_dirty_worktrees(catalog: &mut RefCatalog) {
+    let mut dirty: std::collections::HashMap<PathBuf, bool> = std::collections::HashMap::new();
+    for worktree in catalog
+        .entries
+        .iter_mut()
+        .filter_map(|e| e.worktree.as_mut())
+    {
+        worktree.dirty = *dirty
+            .entry(worktree.path.clone())
+            .or_insert_with(|| has_uncommitted_changes(&worktree.path));
+    }
+}
+
 fn ref_worker_loop(receiver: Receiver<(RefJob, ScopedEventSender)>) {
     while let Ok(first) = receiver.recv() {
         let mut jobs = vec![first];
@@ -164,13 +177,16 @@ fn ref_worker_loop(receiver: Receiver<(RefJob, ScopedEventSender)>) {
                         Vec::new()
                     };
                     let snapshot = &request.snapshot;
-                    let catalog = build_catalog(
+                    let mut catalog = build_catalog(
                         &snapshot.refs,
                         &snapshot.changes,
                         &metadata,
                         &request.recent,
                         true,
                     );
+                    if request.git {
+                        mark_dirty_worktrees(&mut catalog);
+                    }
                     events.send(CommandsEvent::RefCatalogReady {
                         generation: request.generation,
                         catalog: Arc::new(catalog),

@@ -1,5 +1,6 @@
 use crate::core::search::fuzzy::match_ranges;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use quark_components::FuzzyMatcher;
 
@@ -45,6 +46,14 @@ pub struct RefEntry {
     pub subject: String,
     pub author: String,
     pub timestamp: i64,
+    pub worktree: Option<RefWorktree>,
+}
+
+/// The worktree a branch is checked out in, other than the open one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefWorktree {
+    pub path: PathBuf,
+    pub dirty: bool,
 }
 
 impl RefEntry {
@@ -96,6 +105,10 @@ pub fn build_catalog(
             subject: m.map(|m| m.subject.clone()).unwrap_or_default(),
             author: m.map(|m| m.author.clone()).unwrap_or_default(),
             timestamp: m.map_or(0, |m| m.timestamp),
+            worktree: r
+                .worktree
+                .clone()
+                .map(|path| RefWorktree { path, dirty: false }),
         }
     };
     let mut tags = Vec::new();
@@ -130,6 +143,7 @@ pub fn build_catalog(
             subject: "Uncommitted changes".to_owned(),
             author: String::new(),
             timestamp: 0,
+            worktree: None,
         });
     }
     let named = tags
@@ -158,6 +172,7 @@ pub fn build_catalog(
         subject: change.summary.clone(),
         author: change.author_name.clone(),
         timestamp: change.timestamp,
+        worktree: None,
     }));
     RefCatalog { entries }
 }
@@ -235,6 +250,7 @@ mod tests {
             active: false,
             upstream: None,
             ahead_behind: None,
+            worktree: None,
         }
     }
 

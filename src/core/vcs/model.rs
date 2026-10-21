@@ -116,6 +116,7 @@ pub struct VcsRef {
     pub active: bool,
     pub upstream: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
+    pub worktree: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

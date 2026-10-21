@@ -898,6 +898,7 @@ fn ref_picker_lays_out_only_visible_rows_for_thousands_of_refs() {
             active: false,
             upstream: None,
             ahead_behind: None,
+            worktree: None,
         }));
     ui.inject(Intent::RepositoryChanged(Rc::new(
         crate::contracts::navigation::RepositoryContext {

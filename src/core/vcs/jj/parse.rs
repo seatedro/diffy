@@ -105,6 +105,7 @@ pub fn parse_bookmark_line(line: &str) -> Option<VcsRef> {
         active: false,
         upstream: None,
         ahead_behind: None,
+        worktree: None,
     })
 }
 

@@ -685,6 +685,11 @@ impl CommandsController {
             return Reduction::default();
         }
         let chosen = entry.name.clone();
+        let worktree = entry
+            .worktree
+            .as_ref()
+            .filter(|w| w.dirty && picker.side() == CompareField::Right)
+            .map(|w| w.path.clone());
         let other = match picker.other_name() {
             name if name.is_empty() || name == WORKING_TREE_LABEL => "HEAD".to_owned(),
             name => name.to_owned(),
@@ -702,6 +707,7 @@ impl CommandsController {
             left,
             right,
             mode: picker.request.mode,
+            worktree,
         })))
     }
 
@@ -1276,6 +1282,11 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
             CommandsAction::OpenRefPicker(CompareField::Right),
         ),
         D::new("compare.swap", "Swap Refs", NavigationAction::SwapRefs),
+        D::new(
+            "compare.uncommitted",
+            "Toggle Uncommitted Changes",
+            NavigationAction::ToggleCommittedOnly,
+        ),
         D::new(
             "compare.start",
             "Start Compare",

@@ -418,6 +418,57 @@ fn run_system_git_inner(
     Err(git_error(command, detail))
 }
 
+/// Whether the checkout at `repo_path` has staged, unstaged or untracked
+/// changes. A failure counts as clean.
+pub fn has_uncommitted_changes(repo_path: &Path) -> bool {
+    run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("status"),
+            OsString::from("--porcelain"),
+            OsString::from("-z"),
+            OsString::from("--untracked-files=normal"),
+        ],
+    )
+    .is_ok_and(|output| !output.stdout.is_empty())
+}
+
+/// Whether git ignores every one of `paths`, which lie inside `repo_path`.
+/// A failure counts as not ignored, so callers err toward refreshing.
+pub fn all_ignored(repo_path: &Path, paths: &[PathBuf]) -> bool {
+    use std::io::Write;
+    use std::process::Stdio;
+    let Ok(mut child) = Command::new("git")
+        .args(["check-ignore", "-z", "--stdin"])
+        .current_dir(repo_path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.as_os_str().as_encoded_bytes());
+        input.push(0);
+    }
+    let Some(mut stdin) = child.stdin.take() else {
+        return false;
+    };
+    // Written on its own thread so a full stdout pipe cannot stall the input.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let Ok(output) = child.wait_with_output() else {
+        return false;
+    };
+    if !matches!(writer.join(), Ok(Ok(()))) || output.status.code() != Some(0) {
+        return false;
+    }
+    output.stdout.iter().filter(|byte| **byte == 0).count() >= paths.len()
+}
+
 /// Heuristic for remote-operation failures (fetch/push/pull) caused by the
 /// network rather than repository state, so the UI can suggest retrying.
 fn failure_is_network(detail: &str) -> bool {
@@ -1183,7 +1234,35 @@ impl GitService {
             args.push(OsString::from(path));
         }
         let output = run_system_git_allow_diff(self.repo_path_ref()?, &args)?;
-        Ok(parse_name_status(&output.stdout))
+        let mut entries = parse_name_status(&output.stdout);
+        entries.extend(
+            self.untracked_paths(only_path)?
+                .into_iter()
+                .map(|path| ("A".to_owned(), None, Some(path))),
+        );
+        Ok(entries)
+    }
+
+    /// Working-tree files git neither tracks nor ignores, which a diff
+    /// against the working tree leaves out.
+    pub fn untracked_paths(&self, only_path: Option<&str>) -> Result<Vec<String>> {
+        let mut args = vec![
+            OsString::from("ls-files"),
+            OsString::from("--others"),
+            OsString::from("--exclude-standard"),
+            OsString::from("-z"),
+        ];
+        if let Some(path) = only_path {
+            args.push(OsString::from("--"));
+            args.push(OsString::from(path));
+        }
+        let output = run_system_git_capture(self.repo_path_ref()?, &args)?;
+        Ok(output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .collect())
     }
 
     pub fn diff_shortstat_find_renames(&self, left: &str, right: &str) -> Result<(i32, i32)> {

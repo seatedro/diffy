@@ -385,6 +385,13 @@ fn grammar_for(
     let highlights_file = own("highlights.scm").ok_or("no highlights.scm")?;
     let injections_file = own("injections.scm");
     let locals_file = own("locals.scm");
+    let tags = location
+        .iter()
+        .map(|location| format!("{}/queries/tags.scm", location.trim_end_matches('/')))
+        .chain(std::iter::once("queries/tags.scm".to_owned()))
+        .find(|path| root.join(path).is_file())
+        .into_iter()
+        .collect();
     let mut fragments = BTreeSet::new();
     let read = |input: &str| -> String {
         let path = input.strip_prefix("q:").unwrap_or(input);
@@ -448,6 +455,7 @@ fn grammar_for(
         highlights,
         injections,
         locals,
+        tags,
         sha256: String::new(),
         license: license(&root),
         scanner,

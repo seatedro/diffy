@@ -15,7 +15,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "71f0a90629fdf765039df752b309e7319bda217eb2bde9b83d3878726b6a35e0"
+locals = ["q:queries/locals.scm"]
+sha256 = "4114f803f6180244b6e00fa30955be212869a2047a74fdeeba957b549f736d1f"
 license = "MIT"
 scanner = "none"
 
@@ -49,7 +50,11 @@ injections = [
     "@html_tags:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "8c81af1d3eef91110ea6bddd3f3914bb93360b257dd5fc3aa137e4126fb66ebd"
+locals = [
+    "@html:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "23c643f42fe35f68e2a120fc10c5c3c1cc791678ead418cc002d7110ae41b932"
 license = "MIT"
 scanner = "c"
 
@@ -68,7 +73,9 @@ highlights = [
     "q:queries/highlights.scm",
 ]
 injections = ["q:queries/injections.scm"]
-sha256 = "db39be1c530c23c8c1174ccf45085bce733827b72f8ede6906ab1a8bff0d67c7"
+locals = ["q:queries/locals.scm"]
+tags = ["apex/queries/tags.scm"]
+sha256 = "b5efbe2651be926e9db0219abd9bcfe87bf50f7f2eb2ed15f58d83dc61708bd3"
 license = "MIT"
 scanner = "none"
 
@@ -91,7 +98,13 @@ injections = [
     "@cpp:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "c15a9a65713a9f3b936dff90f887ba101f2f3c335873b1f6139032de877a8905"
+locals = [
+    "@c:q/queries/locals.scm",
+    "@cpp:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+tags = ["queries/tags.scm"]
+sha256 = "a20f2b6d56e96fb74ab47d9c811193c52674dc3bf94d99c9cc5b1aa40903bc68"
 license = "MIT"
 scanner = "c"
 
@@ -126,7 +139,11 @@ injections = [
     "@html_tags:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "1565cfe113e756d73a76235701fb4dbff68e4cd9c20e20d8bbc3a1e3b71ddfd0"
+locals = [
+    "@html:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "66c7d01cb3ffcf4b8adc6f2c0c3172989e87f9325e62b5fe077d0571c0955709"
 license = "MIT"
 scanner = "c"
 
@@ -173,7 +190,8 @@ rev = "28dc7059722be090d04cd751aed915b2fee2f89a"
 version = "28dc7059722b+a318a417763b"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "336b9c72c846d8935d5e7bad2d2dd6bdb6b9f1c71bd305f4b3c36381454ab4e1"
+locals = ["q:queries/locals.scm"]
+sha256 = "d72b6bfd2db2510eb05213c4876267cfef9df6c588e1bc73537d4313003ac18e"
 license = "MIT"
 scanner = "none"
 
@@ -203,7 +221,8 @@ version = "8d04ed27b3bc+d188c2f30074"
 extensions = ["bib"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "96de58a1cf4b10250ceaae1c24ea5a2b46b64239672312dd26a63ea75f773858"
+tags = ["queries/tags.scm"]
+sha256 = "9d80852c842ef22e0b6fbf0282c04ea78746f8fa5d474c8d68ad0a967d3993be"
 license = "MIT"
 scanner = "none"
 
@@ -218,7 +237,8 @@ version = "bff59884307c+0d3202868cc0"
 extensions = ["bicepparam"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "924ca87178be368875948c48030dfb86ea7a6e5ee721a824c623f61d18698562"
+locals = ["q:queries/locals.scm"]
+sha256 = "dcd5208ff8451cc58c8fc7491b12d995f59972b2b1e600de0c54d7ecb8f363a8"
 license = "MIT"
 scanner = "c"
 
@@ -237,7 +257,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "ad34ab5e3053c16d427b99ff811fdb08e9b7b79a3ac49c4f06839e645b4b2951"
+locals = ["q:queries/locals.scm"]
+sha256 = "38957686810f7191cf161fa822392b92f816c12f2a31bfa249403fc7bc76c65f"
 license = "MIT"
 scanner = "c"
 
@@ -273,7 +294,8 @@ rev = "ee641d15390183d7535777947ce0f2f1fbcee69f"
 version = "ee641d153901+eb83585952b8"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "d78b2cbd97c60c70b0555d47c2fbd8dcc42f9b4783e1cfe0b04e5da861017b2f"
+locals = ["q:queries/locals.scm"]
+sha256 = "a19cab8261c3a4d6308807a05446f59ad8e15136518f39e85fe224d6eff03373"
 license = "MIT"
 scanner = "none"
 
@@ -340,7 +362,9 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "101368f140469dcddb25ac72aceffee73c208a4559e9f036f6b02e2e7ef8ec89"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "a370daaad6ea2eaa70c0d8d34f88801eba083f96b4bf2b1fc4b0c48570e28d87"
 license = "MIT"
 scanner = "c"
 
@@ -368,7 +392,8 @@ rev = "6238f609bea233040fe927858156dee5515a0745"
 version = "6238f609bea2+3f7f3790dc98"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "0abad93ec0cb570eaaf49b5f25ade8a16602fb952a4723ac8c844cb65e4292c5"
+locals = ["q:queries/locals.scm"]
+sha256 = "b09fc0276ed9de6f0866638942eb80661c08221901684c0733cad7b0f8988adf"
 license = "MIT"
 scanner = "c"
 
@@ -382,7 +407,8 @@ rev = "7b0883c03e5edd34ef7bcf703194204299d7099f"
 version = "7b0883c03e5e+141c4a07999c"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "a591e4932d05a2de7fcc330f68f0019835303833f5b7dbc47215e764704bdf70"
+locals = ["q:queries/locals.scm"]
+sha256 = "1206cdec928498385789def1a8faa74476e1ebcb5bd78b9e78d7d662de1c4455"
 license = "MIT"
 scanner = "none"
 sample = "q:tests/highlights/test.capnp"
@@ -397,7 +423,9 @@ rev = "c0ed82c665b732395073f635c74c300f09530a7f"
 version = "c0ed82c665b7+9aa07edd17ca"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "d84017713b9e118f643e127d1ee998cb45188f9ec33c86e0798e44e4f89b5156"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "8af57d0e4fab79ee0e58516ea5e4ea3d16711b1e77ed55a9c2d66d06c4281f00"
 license = "MIT"
 scanner = "none"
 
@@ -411,7 +439,8 @@ rev = "02150524228b1e6afef96949f2d6b7cc0aaf999e"
 version = "02150524228b+ade16954cdf7"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "39566cc690583f41b8e7d69b52e299a836dc105d7d9b29fa4b4a6bdfcfb1a23c"
+locals = ["q:queries/locals.scm"]
+sha256 = "cc4700b4c72832b9a0fcdc4f39e47f57819572f5ea46226544ebe61e4e4bbdc5"
 license = "ISC"
 scanner = "none"
 
@@ -435,7 +464,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "81d5fbb225d5df2a99a42a4998f9ddcf5d558ad5b186dabc1c425eff84967ddd"
+locals = ["q:queries/locals.scm"]
+sha256 = "bfecb4ed3105e2cba0f70c57467f58867223bf18d8c5a668ce26b8685af6eba5"
 scanner = "none"
 sample = "q:tests/highlights/test.clj"
 
@@ -487,7 +517,9 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "bd2483e3199545d027d28d8cffec013170efaa2f8b939431b06853b9822b9d8c"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "aa5e86b969769d1e073426d8b6c820f785fa8f6e8e94586ef9b6414270066eb0"
 license = "MIT"
 scanner = "none"
 
@@ -516,7 +548,8 @@ rev = "464654742cbfd3a3de560aba120998f1d5dfa844"
 version = "464654742cbf+119d66b69cbf"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "550ddaf267f841c7910af344306583496ff970debfd370e4591752af551c9ed8"
+locals = ["q:queries/locals.scm"]
+sha256 = "cdee63aeeb5ce0d85965f4220894c0dff975bf948f80870b02434fba8de0e8ac"
 license = "MIT"
 scanner = "none"
 
@@ -531,7 +564,8 @@ version = "594289eadfec+252f6d79c77e"
 extensions = ["cp"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "52cc23e5a2a90fda1b14d2ea1a290bbc632f0253256dd3f5b6f103b7c5c0084f"
+locals = ["q:queries/locals.scm"]
+sha256 = "a23d92a5d8284020b3d87bcb9392aead3244c0ed405f2de471501b894612d1bd"
 license = "MIT"
 scanner = "none"
 
@@ -574,7 +608,12 @@ injections = [
     "@cpp:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "c92c478dc3b4333c1fefb842627fcc24494c922415cb4be9115991bd9d00771d"
+locals = [
+    "@c:q/queries/locals.scm",
+    "@cpp:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "4b34b01da8fb9bc8464286d73b67872fe7bcf34da2cf34bfdaa997d4dd23932b"
 license = "MIT"
 scanner = "c"
 
@@ -588,7 +627,8 @@ rev = "20bb9195dac00b64c00ee494812abf3bf76f4181"
 version = "20bb9195dac0+0c1398152037"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "d64980e768e656e46668e029b105a802abdfdc1885274a7284d8a91911a58c5d"
+locals = ["q:queries/locals.scm"]
+sha256 = "515467f95c10f63a3e84c76de093473af9924aff380dcfa6f3c6427f6b482799"
 license = "MIT"
 scanner = "c"
 
@@ -617,7 +657,9 @@ version = "fb028c8f14f4+b163e3f4e62d"
 extensions = ["dd"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "710dddd52e31afde92419fc25caf9be529009e69109f2079d44c77e828b93f9c"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "7f22fb67b76d4cf41652cb186f18d6125dc1d1dbf145121aaf3c7cc2aacac7b8"
 license = "MIT"
 scanner = "c"
 
@@ -631,7 +673,9 @@ rev = "0fc19c3a57b1109802af41d2b8f60d8835c5da3a"
 version = "0fc19c3a57b1+0db968dc4403"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "e1adb52b93f50567814e69c44123aa4b8a8cd87b3bd032a0307c53efb10e8b6e"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "48cae46528e8b3d355e36350947bc09cbdb76569f2186843923c5016e24007e4"
 license = "ISC"
 scanner = "c"
 
@@ -663,7 +707,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "841ee0a830b94be63a99676b08c789c6ed7905838d8a6f7ac4cd7cc111e6cce7"
+locals = ["q:queries/locals.scm"]
+sha256 = "786920afbd7a2135960c6170348ad9760bb93509d36b1efc3c1efbe30ac32e5f"
 license = "MIT"
 scanner = "none"
 
@@ -724,7 +769,8 @@ version = "74fac1f53c6d+f3761afa9b9f"
 extensions = ["dj"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "cd3120e69db7fcfb8af68e89184c24e080306b1e5a04b13e94e3484d44a162af"
+locals = ["q:queries/locals.scm"]
+sha256 = "75146d09ca6c4503b12b5fb78169254c60563a8455c638313a4442d55d4b862a"
 license = "MIT"
 scanner = "c"
 
@@ -783,7 +829,8 @@ src = "dtd/src"
 extensions = ["ent"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "e050e8cf8899e1b1e0a3be17b214cf760f709bf7cfb3b5f19b8df8300acae377"
+locals = ["q:queries/locals.scm"]
+sha256 = "e82e5d4e3a090f3036a196411f019f9a0b016699c60d720539a8023ca9225ea2"
 license = "MIT"
 scanner = "c"
 
@@ -870,7 +917,9 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "4ed5dede98310f5682b55d12f558a62fda716ee1c076dcafe4e168e9a7cae743"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "c7ea06517ce4e610b9a439bb2e2aa1a5419aa676867e93b1562f8eb64c9633b8"
 license = "Apache-2.0"
 scanner = "c"
 
@@ -884,7 +933,8 @@ rev = "6d9511c28181db66daee4e883f811f6251220943"
 version = "6d9511c28181+c002a875932a"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "74929aa77d0aa9090503a4b5a0e40b468a295f20516735b7601ee4f3341d9d49"
+tags = ["queries/tags.scm"]
+sha256 = "640ae139c150df8b10e4cca950bd91c06c4c2ce2282d167d44d206f0e5a57c7f"
 license = "MIT"
 scanner = "c"
 
@@ -898,7 +948,8 @@ rev = "0a66b2b3f3c1915e67ad2ef9f7dbd2a84820d9d7"
 version = "0a66b2b3f3c1+793196cb88dd"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "5b9336d74e52abd091643954f0460bb93ed4f9bf32bc419e56049d4d4b4915b2"
+locals = ["q:queries/locals.scm"]
+sha256 = "22e6f7297314de4019d9408ddec6c08214d7adf48e5af0f769ecef19016894d7"
 license = "MIT"
 scanner = "none"
 
@@ -945,7 +996,9 @@ rev = "eb2796871d966264cdb041b797416ef1757c8b4f"
 version = "eb2796871d96+6ccd542cd3c7"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "b85b5f8f7286a736eea2062c5c68d5073b93b30c287b50147f550451a331ff3e"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "a457c093483ddcec81e92b1a67e693af6f044d7d6f4fc1df1f0da633eca1ee9f"
 license = "MIT"
 scanner = "none"
 
@@ -1011,7 +1064,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "5ab135dd7ef9177671f9e44482cc3ac104e605ac5b2e44238887b78f1b143d1f"
+locals = ["q:queries/locals.scm"]
+sha256 = "4d2525f8b3af6a9d70bdbaec7c0c23ca6fc217558038f4fe21d8371005c8381d"
 license = "CC0"
 scanner = "c"
 
@@ -1040,7 +1094,8 @@ version = "8503d3a0fe0f+fc70abb9635c"
 extensions = ["fir"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "c155b3342cc3ca790e6c29e6afc1e889b71f75a8c9c3d680b91cd3680a90483a"
+locals = ["q:queries/locals.scm"]
+sha256 = "1f56f17f3af04753bda9e75cd1c1ec05e95a1a247a93be5b47daefab4b7b8f45"
 license = "Apache-2.0"
 scanner = "c"
 
@@ -1054,7 +1109,8 @@ rev = "fa2143f5d66a9eb6c007ba9173525ea7aaafe788"
 version = "fa2143f5d66a+f0169b456cfa"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "adb9b4df54a8ec4aa527f9da2aa5c72bc89424f6c6516780e851e98f6d148d7f"
+locals = ["q:queries/locals.scm"]
+sha256 = "4cae00f7a9754b0b283d8f8ef32a862103ccf9a5768a2e4396c0c78f9f7f0497"
 license = "MIT"
 scanner = "c"
 
@@ -1068,7 +1124,8 @@ rev = "472c24f11a547820327fb1be565bcfff98ea96a4"
 version = "472c24f11a54+8c03d1b0e0de"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "570c82caf0ba9f264d70e55ea1e20e07b47c68b7aba3a4c0327eb823d9613565"
+locals = ["q:queries/locals.scm"]
+sha256 = "4af913b873afa61c941d6b06001735c7853894fbacedb831b5c99e226ab67d31"
 license = "MIT"
 scanner = "c"
 
@@ -1086,7 +1143,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "15d970d6be6973d6ee0d115afd4d0618bf495b62fbb30993b619e23ed7cf77b3"
+locals = ["q:queries/locals.scm"]
+sha256 = "c2323f824066f5c8b46da3f670d047769634b1ddd520d70acfb1e09803a5aca4"
 license = "MIT"
 scanner = "none"
 
@@ -1142,7 +1200,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "89dfe52b72ef3d51dfd1ea7dd80514b58085f0b7315c178c36e53ad10290cc05"
+tags = ["queries/tags.scm"]
+sha256 = "ce7caba4723f291fabb84d6a35205c118d568caff98fe94a511790a9c2e8bd6a"
 license = "MIT"
 scanner = "c"
 
@@ -1171,7 +1230,9 @@ rev = "ed2480d42281586932920527823b307bc45052b8"
 version = "ed2480d42281+6698425218b0"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "ed464f3dfa7778c5388fe906434e36f08c6525b3db6bb9d8668f367a33d032ed"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "424dbbedc47c69d68adbcad7810338429e5a604f90b4c6ae3e9dd1e18a530300"
 license = "MIT"
 scanner = "c"
 
@@ -1200,7 +1261,8 @@ version = "9686853b696d+1edf1442338b"
 extensions = ["gd"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "2c5afe78316f736aec188146727cea31d3aa5cb12a5e58f54ae8c08202952ed5"
+locals = ["q:queries/locals.scm"]
+sha256 = "aeada60f60f48737057df36f7df2a2a7067ed8909d0fdbc6a7b98b165f6936e3"
 license = "MIT"
 scanner = "c"
 
@@ -1214,7 +1276,8 @@ rev = "68268631c8b6dc093985f1246b099f81b30ea7d1"
 version = "68268631c8b6+b58a07c39168"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "b851692911118eacdb3d5d9af247cb89abe4a50480cbb7b7f2b1bad03a4704ec"
+tags = ["queries/tags.scm"]
+sha256 = "72b87b299c69f17cadd169398fc6328450d65b177755ef0c512afe095eff9236"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/test.gdshader"
@@ -1258,7 +1321,8 @@ rev = "1b7af09d45b579f9f288453b95ad555f1f431645"
 version = "1b7af09d45b5+21a3ae05332c"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "0b1ceda799a976a87f37b368dacf26aa3c84e85b0ada84513c722a54c01cea38"
+locals = ["q:queries/locals.scm"]
+sha256 = "760c4006349f2c9326011d8c2ab0e972f353204b9ade3022f915f0515558c18a"
 license = "MIT"
 scanner = "none"
 sample = "q:tests/highlights/test.gitattributes"
@@ -1301,7 +1365,9 @@ rev = "4e4643c2215c2b2343d9ec179c798818c132c9cc"
 version = "4e4643c2215c+0aee8b4c1af7"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "137a8fa439ce6ae65a164d4b78b6b73c4d1f25a38e22e8866ac6569275dcf6f0"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "70cbd0589cbc885ceb238c00a4daf102d2da72b3cbad40aff5512cade2b72920"
 license = "Apache-2.0"
 scanner = "c"
 sample = "q:tests/highlights/assert.gleam"
@@ -1316,7 +1382,8 @@ rev = "88af85568bde3b91acb5d4c352ed094d0c1f9d84"
 version = "88af85568bde+ad8ae39a9721"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "a7106f85f43a9ab2a03826cbe3b797cb75cc9ef65e9b0b86cd05471513699957"
+locals = ["q:queries/locals.scm"]
+sha256 = "3e2590ffb6427de90040f0cc4a465198c654d509b45f6b0db9103af009365e48"
 license = "MIT"
 scanner = "c"
 
@@ -1337,7 +1404,11 @@ injections = [
     "@ecma:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "02ec1a108bb6696a51ed108fe130288ac04bd316d2586461a87015c67a6883d9"
+locals = [
+    "@ecma:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "2e2a9c79ebe740c5b46a0410826b614f4eb72bcea2f78a8e37d058cd9637207b"
 license = "MIT"
 scanner = "c"
 
@@ -1360,7 +1431,8 @@ injections = [
     "@typescript:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "572ddadb0116201a6ab2dae6f88929c3f51e9c745ba893315ba3e5051e84b5c3"
+tags = ["queries/tags.scm"]
+sha256 = "f1c6dbfce8132a1818a850d39758b00dde08f21134d7777533b20d6d42a2cdcc"
 license = "MIT"
 scanner = "c"
 
@@ -1388,7 +1460,11 @@ injections = [
     "@c:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "196a33b7aedf2b445aa38de01cd22db16be8a040d309dc2a69ad37ebcdcb4108"
+locals = [
+    "@c:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "e06e6973f71c6e610f2031cd1cf8cdc258b08f3d638639b03bf6e3567eb44269"
 license = "MIT"
 scanner = "none"
 
@@ -1403,7 +1479,8 @@ version = "bc06955bc1e3+60654142fd5c"
 extensions = ["gni"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "9c77e2db0fcb3887a63a3726c5e499f9e818697e1f03d7979b6aefeab2f8a324"
+locals = ["q:queries/locals.scm"]
+sha256 = "1f17774cc86b104f51cc37245830960682dbf0d304772c8712280491740b2bb6"
 license = "MIT"
 scanner = "c"
 
@@ -1455,7 +1532,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "4c3bff26a5516f6ab666da607b97db0f9da71c409408d4f96cfa886a21367b41"
+locals = ["q:queries/locals.scm"]
+sha256 = "351849c2ded0653b55dbdbdaa802dd8bc6249caa2b9f131727bc576b001fb9aa"
 license = "MIT"
 scanner = "c"
 
@@ -1496,7 +1574,8 @@ rev = "aa71f63de226c5592dfbfc1f29949522d7c95fac"
 version = "aa71f63de226+7df2b4728b7e"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "eee40d0028379f466265a44382200b58569ac3b3c33800780fc643165097f8a3"
+locals = ["q:queries/locals.scm"]
+sha256 = "3ed3f28fecf7803665b678ca31bdac8f36a43e261e7c6087750d51ca8e4e0d8f"
 license = "MIT"
 scanner = "none"
 
@@ -1556,7 +1635,8 @@ rev = "c36aac51a915fdfcaf178128ba1e9c2205b25930"
 version = "c36aac51a915+6046b76469ba"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "949cecf519d0389b1b26e8da25e2c162b7d506e7737a8e4dd72ee473fb2ed803"
+tags = ["queries/tags.scm"]
+sha256 = "174769af03fbc1427d147cee43bc527f8cf6a4639f74a0a0076372a7aa24770e"
 license = "MIT"
 scanner = "c"
 
@@ -1574,7 +1654,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "716b761e13596ad56f5eb2f1f8ade1acb4ff6014de65fe81705a4e65533743ee"
+locals = ["q:queries/locals.scm"]
+sha256 = "9c0845c0f5f5813cd29e9a8701d26eb76535b0fbbe5b6a0b31a5fab9fa8d78a0"
 license = "MIT"
 scanner = "none"
 
@@ -1631,7 +1712,8 @@ version = "eed7ddf6a66b+38f04fb0b252"
 extensions = ["ha"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "414005c583f8bc187d009b55472f4c980f3831e11b1be5c675c41d88c9d29d8b"
+locals = ["q:queries/locals.scm"]
+sha256 = "9081611707cc88b233457539ec456e9896bfbab5957c119f483c390011204061"
 license = "MIT"
 scanner = "none"
 
@@ -1650,7 +1732,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "c998452422683b89779202cdc59ba0a87fa2dc509defdc36c9781d7b55cc3317"
+locals = ["q:queries/locals.scm"]
+sha256 = "bfe61441668245f17f4646763c4ecbb6bfadb5b0c172e3726683b2457366f5c6"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/test.hs"
@@ -1698,7 +1781,8 @@ rev = "5842537f734d7c12685bf27d6005313e3e5a47a0"
 version = "5842537f734d+8205eeaf2ca0"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "ef2c2b82ffb65c20df030faa8f0c16605012ac41019fe7b8112616e78f81d54c"
+locals = ["q:queries/locals.scm"]
+sha256 = "d6cb573723024a45c336fd859951e268858a6036a4b92c2a461ed2f21a42bd26"
 license = "MIT"
 scanner = "none"
 
@@ -1719,7 +1803,11 @@ injections = [
     "@gotmpl:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "d75245bf8908bf7625cd0198af016eebf6d11246ef0e4c3fae91d21c14fe07a0"
+locals = [
+    "@gotmpl:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "6e7d84ff3e1d832d5ad1f54849c6f94b8ba6dc003aa734e60e1024c60aa0d7cd"
 license = "MIT"
 scanner = "none"
 
@@ -1733,7 +1821,11 @@ rev = "02fa3b79b3ff9a296066da6277adfc3f26cbc9e0"
 version = "02fa3b79b3ff+11bc387298f2"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "8549762fc9660205c3bfb094099b6cde03f53841e0b657e3f6e1c95a3b8ed91a"
+locals = [
+    "@json:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "1fb57f1c1eef61313bb4777be43e9acb4acd8c2482a415f332391877b857b82b"
 license = "MIT"
 scanner = "none"
 
@@ -1756,7 +1848,12 @@ injections = [
     "@cpp:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "7a3702b596909eeb892c80b8ac33221d227762f2ae93ac11e50a0d34ebaeb6d1"
+locals = [
+    "@c:q/queries/locals.scm",
+    "@cpp:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "cb9ff42cf7ee6973a2c6764c1fe136f061859e599065c241180dfe4f19acec31"
 license = "MIT"
 scanner = "c"
 
@@ -1799,7 +1896,8 @@ rev = "1545137aadcc63660c47db9ad98d02fa602655d0"
 version = "1545137aadcc+f2222e8efbaa"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "29794136723563071001823266bf519b4429b78531436a5b730072eff6f07dd2"
+locals = ["q:queries/locals.scm"]
+sha256 = "4d5757b5ebeea9b520b3de1840ed40cb230b302a34f360e2c9f1950766a8ff3f"
 license = "ISC"
 scanner = "c"
 
@@ -1885,7 +1983,8 @@ version = "c56a25cf57c6+d8720268f227"
 extensions = ["idr"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "0e9e4d3a5ee986c0b7f68fc0402a205f2e154346ab41d2dd987b0ed27f462281"
+locals = ["q:queries/locals.scm"]
+sha256 = "4af1e6c37065dca832f755051b15dfa78e47db6f94770385b7d04557ec58f44c"
 license = "MIT"
 scanner = "c"
 
@@ -1935,7 +2034,9 @@ rev = "5c1226a901341f0a6f52924a5c2584b5e2df1119"
 version = "5c1226a90134+b4e125879cb2"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "9687d26901834c64cf7e28c9ae582a0cfb5b3f2e625994f3fc56600681723acb"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "7ce2b034820c1e7f0cb535e36511a36bc9bc545af387f2a30a510d264f2fbe7c"
 license = "MPL-2.0"
 scanner = "none"
 
@@ -1955,7 +2056,11 @@ injections = [
     "@c:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "37361ab41d8f3cdc85823beac17191a1d884a014039e4e36ebfbe7f444ddc58e"
+locals = [
+    "@c:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "a75e5fb327d6f4378aeb3472c18ee40e620325bfd791584f5885ddaf1cee0c9b"
 license = "MIT"
 scanner = "none"
 
@@ -1974,7 +2079,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "56256cd90a1426ec1aa332f00941f9510c5f57edaed5c6291237820473259801"
+locals = ["q:queries/locals.scm"]
+sha256 = "c025f568647d42e12c697449886f137c96d53f2a34a197dcbb68d90f7319de95"
 scanner = "c"
 
 [language.janet_simple.queries]
@@ -1991,7 +2097,9 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "4005f92846863732cefd3b0dfa668dc7e67bb992ba0e7ebd21cad17e2bec8ba2"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "85536c9e694aa404b86175484f41c229f8a9b3f4e55bd3a1532046ba0bc83e05"
 license = "MIT"
 scanner = "none"
 
@@ -2071,7 +2179,8 @@ rev = "c204e36d2c3c6fce1f57950b12cabcc24e5cc4d9"
 version = "c204e36d2c3c+a547225a252e"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "e0bc0faf0e10fac2c58dcc5c5b07cd9b6b84f0fb0ba9a831ddf78eaee69cc239"
+locals = ["q:queries/locals.scm"]
+sha256 = "13fa97e46f65affe41e9d31c2a60a9ea4b45d1ee0745aa227514dfb168258620"
 license = "GPL-3.0-or-later"
 scanner = "none"
 
@@ -2113,7 +2222,8 @@ version = "ddd075f1939a+5e6609a47b95"
 extensions = ["libsonnet"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "b44b833fa272afd33896c99c779fa62344d0a647dd8db17a9675e6c3c2fab12b"
+locals = ["q:queries/locals.scm"]
+sha256 = "c4e43e1a3edcbe096688f6cc98a27ee9dc7bfdc218f21c6dcee689927705d75d"
 license = "MIT"
 scanner = "c"
 
@@ -2128,7 +2238,8 @@ version = "8454f2667172+43ce31f0028c"
 extensions = ["jl"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "d000bea30baa551758f23f2037302418fbd0065a8e1ebe9cf23e7fd9e2676385"
+locals = ["q:queries/locals.scm"]
+sha256 = "7b4e4748be0799f5eb98066126b7dbda139ab397d36249fe4166ea4596f3ca24"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/test.jl"
@@ -2144,7 +2255,8 @@ version = "5685543a6e64+6d8751413e0e"
 extensions = ["justfile"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "6b6aa86675a57c850acce507c0205489580cb8134d486646fc1915f85f069e0a"
+locals = ["q:queries/locals.scm"]
+sha256 = "a3e6e722d4cec868bb1213432ec87203ded0c4c0593e4b560b93b18f58908a0e"
 license = "MIT"
 scanner = "c"
 
@@ -2172,7 +2284,8 @@ rev = "9ac99fe4c0c27a35dc6f757cef534c646e944881"
 version = "9ac99fe4c0c2+19beaa73f2bc"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "ef81dbb1b863c74291871666ca4f9ff94b007e6b12e8d732fb3df56b1b4d75df"
+locals = ["q:queries/locals.scm"]
+sha256 = "68e98038fba59c9021096238e242084c244dd09e92072c4cba44dd0d4f97b546"
 license = "MIT"
 scanner = "c"
 
@@ -2186,7 +2299,8 @@ rev = "b37e3d58e5c5cf8d739b315d6114e02d42e66664"
 version = "b37e3d58e5c5+2f134d7321af"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "86e6a6a11970f9b8e930f885b8e63374ddd935e1b7cc48fe4cfe94f63d040909"
+locals = ["q:queries/locals.scm"]
+sha256 = "59af7d711261cb323591db3a6d66d74b8b32122df327237ae58d5b46dbf4b52b"
 license = "MIT"
 scanner = "c"
 
@@ -2214,7 +2328,8 @@ rev = "03b261c1a78b71c38cf4616497f253c4a4ce118b"
 version = "03b261c1a78b+8113fcddf6fe"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "34f4d1c3b95f043ea1c867ebb351c90608a8a663d148bfde11a15e07af964dfe"
+locals = ["q:queries/locals.scm"]
+sha256 = "c2b9093723d83d43b7a055ad14d782803fe2fe08a4002def513ccd82e5b3bdc6"
 license = "MIT"
 scanner = "none"
 sample = "q:tests/highlights/test.kos"
@@ -2233,7 +2348,9 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "4a69face657a5e1b3a00564e2caf3ad3d149f4bb5e55152990e0d009a7aa946c"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "28c566db74786aa97efac74a28742b810b15b77d9ea504035705c1f3f2e2f027"
 license = "MIT"
 scanner = "c"
 
@@ -2247,7 +2364,8 @@ rev = "f8b3f62c0eed185dca1559789e78759d4bee60e5"
 version = "f8b3f62c0eed+3c4af799cf28"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "79c780106991c2aa27339eedd8847faa68abf865f9f6358970563f2ca96dc1ef"
+locals = ["q:queries/locals.scm"]
+sha256 = "58d9f299c735c983a52c0c1e01ad45637e46c4d7c1b638c3f3dde40a4ecdc949"
 license = "MIT"
 scanner = "c"
 
@@ -2276,7 +2394,8 @@ rev = "27b0f7bb55b4cabd8f01a933d9ee6a49dbfc2192"
 version = "27b0f7bb55b4+8717b9c6bb46"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "f145aa07543f5b2a6182a4daa9b752ed20bb7462413c62b94628f962a9296376"
+locals = ["q:queries/locals.scm"]
+sha256 = "7908ade8ef5cbf4a029a9c0ae4deffeebd6c4f917314fa724e4f38935d368349"
 license = "ISC"
 scanner = "c"
 
@@ -2349,7 +2468,8 @@ version = "f99011a35542+4e20b6536a49"
 extensions = ["ld"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "8f2510279ceabf63641f9479d72b32eafc920d76b25ee1912d2400e50f041c9a"
+locals = ["q:queries/locals.scm"]
+sha256 = "077629d4b5a6fe72aefbda0fb6f0b0c389e85118c6e4d9bf433ecd367817f7df"
 license = "MIT"
 scanner = "none"
 
@@ -2377,7 +2497,8 @@ rev = "0169d92b0a93e9f32289533ef23abdafca579e56"
 version = "0169d92b0a93+235c2a68e633"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "d77b7532f7d8955404b511556fafd898851ef3bd364b1fdd2928050fb73788d9"
+locals = ["q:queries/locals.scm"]
+sha256 = "1b2b9f4ea6dddf29e196abb04b78d2e9685a0b830fa79fe2fbe4aeda40af1c7b"
 license = "MIT"
 scanner = "c"
 
@@ -2407,7 +2528,9 @@ version = "10fe0054734e+8d33f30ed75e"
 extensions = ["rockspec"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "eda253331a477985920990584d8eacc19aeb5449d0d1f320dfe0249db7a315db"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "c5af6920dd9f771fb3f259efdaa534f6e3c08148a7cfdd915f628379d0f5715c"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/test.lua"
@@ -2448,7 +2571,8 @@ rev = "a8914d6c1fc5131f8e1c13f769fa704c9f5eb02f"
 version = "a8914d6c1fc5+475ab96f29e6"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "6ead2224e4466577b1ea5d2665d39d46fd9e02887fb3ca8ae866e148b11fa895"
+locals = ["q:queries/locals.scm"]
+sha256 = "e8b21d0c8105c5a03889f1083b6cc1dfef5d60e493fdf1d93367e1ab4581c4db"
 license = "MIT"
 scanner = "c"
 
@@ -2462,7 +2586,8 @@ rev = "e128454c2210c0e0c10b68fe45ddb8fee80182a3"
 version = "e128454c2210+d7b3319de4cd"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "47b8b9dc8d2d5d7e0f7e6914a669c3cf13ec7212609d8bdaf3c46bcf5a092578"
+locals = ["q:queries/locals.scm"]
+sha256 = "fbd26ec6bf275cf6604ec56f93e0319691aeeec3e89dc50a1bb2fdff6cd4a744"
 license = "MIT"
 scanner = "none"
 
@@ -2496,7 +2621,8 @@ rev = "c2390a59016f74e7d5f75ef09510768b4f30217e"
 version = "c2390a59016f+0b8dea034f89"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "24cd4dfca0bd165c1e2109bd1e65c9535a4bab4499311da6c9a446c75bdd2eb2"
+locals = ["q:queries/locals.scm"]
+sha256 = "3b93ea2f2dd4304d00a2a1514f93d90d1a34dc98f8b7fb031d04786e7253405c"
 license = "MIT"
 scanner = "c"
 
@@ -2554,7 +2680,8 @@ rev = "96fa0adc3028cc6a9d281370c9f213a457c4a2d0"
 version = "96fa0adc3028+72d87b9f2e9c"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "bbb82f79cb248ef86c5267863000108b077afef5e5b1f3e904198f2500731e39"
+locals = ["q:queries/locals.scm"]
+sha256 = "728cc845c0531ed40127d5e6b9943f3f9d09d3c6184aa73c0154c29592e1f3c0"
 license = "Apache-2.0"
 scanner = "none"
 
@@ -2629,7 +2756,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "c5d6815b778fe48d6743e8ad57bc339ec8d1e3f57c365087baa4258c812f94d9"
+locals = ["q:queries/locals.scm"]
+sha256 = "816e83bb07c2d1005c250f15f571f690532b3611649d70ade1c5e0b9b26856dd"
 license = "MPL-2.0"
 scanner = "c"
 
@@ -2671,7 +2799,9 @@ rev = "35b2a51e93625e50e0bbff58b4aad45706cdc299"
 version = "35b2a51e9362+c1dd6241ea2d"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "685f553705196649efe8c4c5bba70cad51e84636f4d08d0b74ccc0c238a985e5"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "1e9db6d6f330dfd7de97cf95ff010736b552a84e0a86e41ca2fc4b2d16e94f7a"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/test.nix"
@@ -2692,7 +2822,11 @@ injections = [
     "@c:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "fb67a5d374f59ff47b65ea6a72e3bfdae66687096a9d664d0b45fa10e532bbec"
+locals = [
+    "@c:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "c248aec7dc46cd9b573975bd64ded61098836576633db875a51b45fadcd35506"
 license = "MIT"
 scanner = "none"
 
@@ -2731,7 +2865,11 @@ injections = [
     "@c:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "40188c7fdf467a50a6bc6dc63b4f6c99a7e4f93c6776299e2f10b074ecff3bcb"
+locals = [
+    "@c:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "38c9c6371b59c133298ec65ae830cf1b668d2e893aefd6c9413f6348f9edf675"
 license = "MIT"
 scanner = "none"
 
@@ -2761,7 +2899,9 @@ src = "grammars/ocaml/src"
 extensions = ["ml"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "d30b52fd13973461f9305d23462662e1f1faea28eed5f8184f6b3ae9b4bf7308"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "9392b7d32c029c30c013839e08d80074333ed52e00da83a771ef5355f5b01d23"
 license = "MIT"
 scanner = "c"
 
@@ -2780,7 +2920,12 @@ injections = [
     "@ocaml:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "afd8acd3a287b13d1af914a8b37b116922fa1cdd0fabc4cb2882492de51e9d9a"
+locals = [
+    "@ocaml:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+tags = ["queries/tags.scm"]
+sha256 = "a054b3fe7077c7b7a36673def5c5b8c0b57c2d27161bc79fa85430ad98544f0e"
 license = "MIT"
 scanner = "c"
 
@@ -2809,7 +2954,8 @@ rev = "d2ca8efb4487e156a60d5bd6db2598b872629403"
 version = "d2ca8efb4487+ea4f85ecaf5b"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "cc6a8a1e93d4e191a14ae390c179eb428c45daaeb4fdaca66f2a146a2ccdfbec"
+locals = ["q:queries/locals.scm"]
+sha256 = "80ac4ad5b7af311351eff1c9d4477ac30a5956f75ba5e6b35fe8261258dbb5c1"
 license = "MIT"
 scanner = "c"
 
@@ -2828,7 +2974,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "a06246b782d5d9d8d79e2d7d7543c89f71220ab87bb78adece84ccf936aa5fcb"
+locals = ["q:queries/locals.scm"]
+sha256 = "4067d05c37db52f4971cf2ac813bb33c74a1a78e8ec4d5bacc4d86d7f5f52d6b"
 license = "MIT"
 scanner = "none"
 sample = "q:tests/highlights/test.pas"
@@ -2916,7 +3063,12 @@ injections = [
     "@php_only:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "05d91274f5861b8b575fa77346368e24940457110c54b78b72f4913bf6dae3e3"
+locals = [
+    "@php_only:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+tags = ["queries/tags.scm"]
+sha256 = "3b9910df79ea471c9ea198de80b55d3db8777ef449800a3aed0b43a0350ca583"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/keywords.php"
@@ -2932,7 +3084,9 @@ version = "3f2465c217d0+8371436710da"
 src = "php_only/src"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "ce081f336bf246432c32ef9fb04453f338d7c1a4d3708b17601c23a2bf4aba69"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "7318abbb23e21f6a5c24255043a38101d5acbeadf9f11476da0568b037d069a9"
 license = "MIT"
 scanner = "c"
 
@@ -3032,7 +3186,9 @@ rev = "73ff874ae4c9e9b45462673cbc0a1e350e2522a7"
 version = "73ff874ae4c9+3f4db004bda1"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "e60eadd17dcdae842c17af553c0361c4d8e19ff2a6cb3ffc7edd01323d3d0d3a"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "446f0cb2367843c7c58b4d2a80ab78b7e72b449a79808f226a0a3483bffab72a"
 license = "MIT"
 scanner = "c"
 
@@ -3053,7 +3209,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "d1630679cb2d6b540a32c2f65659c1bb49cd535a1362a79bda611910a551d2ec"
+locals = ["q:queries/locals.scm"]
+sha256 = "f5153146a7d0f02efb24acac9ef026ba606cf5dbbc58c7354d1d6f95bc0f5b09"
 license = "MIT"
 scanner = "c"
 
@@ -3146,7 +3303,9 @@ version = "6310671b24d4+2d6445d63e57"
 extensions = ["prefs"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "aedc03a4b86d62a5a0b00f41e126a3fecb4b4cc65dc211eb086cbe38b7685140"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "b8229da67d5271653e5aac90724933a2bf5b703a98abcb294aa7f3c5cd8cecd1"
 license = "MIT"
 scanner = "c"
 
@@ -3221,7 +3380,8 @@ version = "15f192929b7d+5ba6853f04b9"
 extensions = ["pp"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "b9df5266c848bbf46d4709682eba3a818d7d9a712d3695d47fc5c5963d18cc90"
+locals = ["q:queries/locals.scm"]
+sha256 = "4aee11541ce128fb3841acb2260cce59500a4324c6067db7ce8d875e10268eb8"
 license = "MIT"
 scanner = "none"
 
@@ -3236,7 +3396,8 @@ version = "f541f95ffd68+594d0026074e"
 extensions = ["purs"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "3536a70b4058939c83e78109b7e4f9ee681a8902684b5f5cc363bd6ece5fdebd"
+locals = ["q:queries/locals.scm"]
+sha256 = "d7194b69da15b2ff4ef2401fc5cf8488464b0872e1664d5c414c259e320e1685"
 license = "MIT"
 scanner = "c"
 
@@ -3265,7 +3426,9 @@ version = "1fd627a4e8bf+0cd388e5c29b"
 extensions = ["qll"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "00995b7fb5987f0f9ab15c7843f31706716ce445ad12f86185a50f380c48a8a8"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "2c936009d6f839016cbb96ec034a8aef2d0ba8ea0d0415b73a9e9be38f74b9c9"
 license = "MIT"
 scanner = "none"
 
@@ -3314,7 +3477,8 @@ rev = "fc5409c6820dd5e02b0b0a309d3da2bfcde2db17"
 version = "fc5409c6820d+4908f63fbc42"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "25bdaf36596a568cb6e74d1879dd2665899a158e9a162112177a68aa920a38a0"
+locals = ["q:queries/locals.scm"]
+sha256 = "b5c616e2d08cee6d76aef25d7a75b9352ec9de1a5f5e19495a60f74d1345d07b"
 license = "Apache-2.0"
 scanner = "none"
 
@@ -3328,7 +3492,9 @@ rev = "0e6ef7741712c09dc3ee6e81c42e919820cc65ef"
 version = "0e6ef7741712+278c4c90ab47"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "d5712f66f40654518cd23e78b9e465f52dfd56df5f7d66ee656d2680ed1de8e8"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "5911a858ccbad1bb32f7ef7f6a302d18cec400484146d74873ec87ab80428881"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/test.r"
@@ -3344,7 +3510,8 @@ version = "54649be8b939+4e85220d2767"
 extensions = ["rkt"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "8d6e7a4225dbf06523c070254e909c2d905fa6dd374648e53b85a324105d79b2"
+tags = ["queries/tags.scm"]
+sha256 = "c3105e2abad38b2921827aee8bd00b02e2b0ad1c478a3505722f65d5e376e3b9"
 license = "MIT"
 scanner = "c"
 
@@ -3372,7 +3539,8 @@ rev = "e735c6881d8b475aaa4ef8f0a2bdfd825b438143"
 version = "e735c6881d8b+35748a3e64a1"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "a7decc09634817682447b3155d7e67b826b70e0b87e03c2a583dcd73bae2f68f"
+locals = ["q:queries/locals.scm"]
+sha256 = "46a9bdf192d255c560470fa09c66c419b0f7681f0ecbb2eb5fc903c251945c95"
 license = "MIT"
 scanner = "none"
 
@@ -3421,7 +3589,8 @@ rev = "c18a3c2f4b6665e35b7e50d6048ea3cff770c572"
 version = "c18a3c2f4b66+5e85837dc3ec"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "871d4b0ac96229ac1d0c5ce6b479192297b363b9e7a02dd581a63e8d701cdd6f"
+locals = ["q:queries/locals.scm"]
+sha256 = "953d47fbbeb9a14f0f22b98d2420955c042b2b7e569ef8a4357d4ef195d4d74c"
 license = "MIT"
 scanner = "none"
 
@@ -3491,7 +3660,8 @@ version = "43c2f1f35024+d4bed80a4e1a"
 extensions = ["res"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "fe1d6f1a827298752ec134c729a29de229ec87f521b29dca3d67a392e35fed5e"
+locals = ["q:queries/locals.scm"]
+sha256 = "ee3d9a986bbd63f97501f402f07adfd8b2bb466b5ecb474d5fd7b9f74c0bf30a"
 license = "MIT"
 scanner = "c"
 
@@ -3562,7 +3732,9 @@ rev = "40e52f343f1b1f270d6ecb2ca898ca9b8cba6936"
 version = "40e52f343f1b+23b419455f51"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "3fbaf6d21bb5cb6491a8eed8c7f71c18a562e04a642d6b7aafad24988c75c4e0"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "c42460a4e4a3eed48f0f75e0c870d0f8d1b93c39e7b1d207d6f9ced09eab19dc"
 license = "ISC"
 scanner = "c"
 
@@ -3576,7 +3748,8 @@ rev = "78938553b93075e638035f624973083451b29055"
 version = "78938553b930+7d98b36af23f"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "69b82d7242f743aaae75d0d0d5b52a80c0860f61da638470e61c17e28bbb4d2d"
+locals = ["q:queries/locals.scm"]
+sha256 = "dfed8c4bf8d02966c813a10770e4584fa6c855cec5bf98e145ac1ad7d3e4be71"
 license = "MIT"
 scanner = "c"
 
@@ -3590,7 +3763,8 @@ rev = "4e562e1598b95b93db4f3f64fe40ddefbc677a15"
 version = "4e562e1598b9+133d7ab85d95"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "0ed56e98473c645a178f103e0357c74ab635c6ab1db28f8de7f6b83a5b1c07c7"
+locals = ["q:queries/locals.scm"]
+sha256 = "6b3f4ea86378c094e010fd258966c58e03ffd1131a2d35973dc1b525e9b685d3"
 license = "MIT"
 scanner = "c"
 
@@ -3618,7 +3792,9 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "05ce475e5f6bba2e76f12786d4d66c2575c89701fb504f3a21bdb1265da99692"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "6b1dab9137cd8608a7aa64517092b54cd01775ef1debcdba50b83ef109b10915"
 license = "MIT"
 scanner = "c"
 
@@ -3650,7 +3826,9 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "25c88c36a5c68ea5671d0f04095b5d46564cd7cf82a5ac43ae254d9e8f5e3dd1"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "54711415e38a797da80fb0afda836b68939a1ee9c1c263e586536226cabdd2dc"
 license = "MIT"
 scanner = "c"
 
@@ -3736,7 +3914,13 @@ highlights = [
     "q:queries/highlights.scm",
 ]
 injections = ["q:queries/injections.scm"]
-sha256 = "ec6365de3cf81fc8767782a973e82245f3e93499d27c1c445a651906062d264c"
+locals = [
+    "@c:q/queries/locals.scm",
+    "@cpp:q/queries/locals.scm",
+    "@hlsl:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "5f2bac2ce8a31af03c218b37ab8ff9743a567fbdef77112a8942fc6fdcec34af"
 license = "MIT"
 scanner = "c"
 
@@ -3750,7 +3934,8 @@ rev = "a06113f5175b805a37d20df0a6f9d722e0ab6cfe"
 version = "a06113f5175b+149cc724c6cd"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "a9646cb839d32a6bbb83ff0fc86dcf01ebe05b23140e44250a5a749433567981"
+locals = ["q:queries/locals.scm"]
+sha256 = "823d7c8c8b564ddf0b72d5b7dd5da0447967e5e0ba7e3b93e032d4eb2768e237"
 license = "MIT"
 scanner = "c"
 
@@ -3764,7 +3949,8 @@ rev = "4d7ad0617c30f865f051bbac04a9826bea29f987"
 version = "4d7ad0617c30+3e9f794e6b8c"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "8e2fd1a2cd894ddd9b662d680c1d460fd4b3fbed55f8eb30de539da54de0930b"
+locals = ["q:queries/locals.scm"]
+sha256 = "8908fb2be782a6e0566dce0b07cbd016bcae1bc0d9a56210a79177eeb2133509"
 license = "MIT"
 scanner = "none"
 
@@ -3778,7 +3964,8 @@ rev = "fdfa6a1febc43c7467aa7e937b87b607956f2346"
 version = "fdfa6a1febc4+a275935779e1"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "150ba88092c1e48334c22ff3c04fc87b06d6f2f807b9b1e0d6ff587b04df3738"
+locals = ["q:queries/locals.scm"]
+sha256 = "95fc6ed1aaba7b668fa35b96099389b790a9449ab9693541705d52f9c95ca6a4"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/baksmali_test_class.smali"
@@ -3814,7 +4001,11 @@ injections = [
     "@python:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "ef71a912470df60612ee83b164421c9bb3cc1bff830e6e4625abdaf788f76d2c"
+locals = [
+    "@python:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "34cc621321a850ad38de00572e785fa34da5b25c0c804566f01324299c7f44d5"
 license = "MIT"
 scanner = "c"
 
@@ -3828,7 +4019,8 @@ rev = "846e2d6809ac5863a15b5494f20fd267c21221c8"
 version = "846e2d6809ac+857aa06131dd"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "9858baa5d7d74e053167e750055b31539b8104cc6244313a2c48a9e044ac961e"
+locals = ["q:queries/locals.scm"]
+sha256 = "1032ab05b7e9eb70e76e6fc9c57f9b408e915fb0233ef801bdd0447e8aa15a5d"
 license = "MIT"
 scanner = "none"
 
@@ -3843,7 +4035,8 @@ version = "048fe686cb1f+8fb3ed0c0a97"
 extensions = ["sol"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "74d01d53fc254cc6e06616f80d5882d41d1953b038411cb320f3c01fe68b7595"
+tags = ["queries/tags.scm"]
+sha256 = "5d03c8c1f6654fd247225f97efff0049900c6bb57f1df499c1aaf41032fc11b0"
 license = "MIT"
 scanner = "none"
 sample = "q:tests/highlights/test.sol"
@@ -3887,7 +4080,9 @@ version = "5a8fdd446b51+ee299dec1f02"
 extensions = ["sp"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "0af051a40c2a707247415ff202fdc858b085f075589077a74b901ed4f810f401"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "35bb5127f88af2c9118908512545665236fb5c64d045e17f0bd9fdd6bce4cbaa"
 license = "MIT"
 scanner = "c"
 
@@ -3901,7 +4096,8 @@ rev = "1ef52d35a73a2a5f2e433ecfd1c751c1360a923b"
 version = "1ef52d35a73a+bb036def509d"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "ff0006d57825ece3aa80d30e2428de7db93c002bd6316a0dde1e03f0fe19b0f5"
+locals = ["q:queries/locals.scm"]
+sha256 = "900db5189be82d2e83d8a413e7746f08e96827d9c2bfccbefafd53bbe9cbd986"
 license = "MIT"
 scanner = "none"
 
@@ -3944,7 +4140,8 @@ rev = "072c969749e66f000dba35a33c387650e203e96e"
 version = "072c969749e6+9a110bbbadf8"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "36869399b83bdeb00c568225d72b6e0af07cd335d3a211e5c8bbe3eef14f409e"
+locals = ["q:queries/locals.scm"]
+sha256 = "9fa682977033f312b454d295955dae50c47793adb3f8d8458846471b7cbd8237"
 license = "MIT"
 scanner = "c"
 
@@ -3958,7 +4155,8 @@ rev = "71d2693deadaca8cdc09e38ba41d2f6042da1616"
 version = "71d2693deada+5bbe8a020f07"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "ba027e0f0efcc22211256bfcb044bd5c71c120984117d923680f472924203540"
+locals = ["q:queries/locals.scm"]
+sha256 = "03961b01c6c3dfc53c994d0391aef3d961754f75af0815582311b78ff3e5a4af"
 license = "MIT"
 scanner = "none"
 
@@ -3972,7 +4170,8 @@ rev = "a453dbf3ba433db0e5ec621a38a7e59d72e4dc69"
 version = "a453dbf3ba43+06d63318cc52"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "539a536bb2ee726dbd838bc632cf586e138cb60ae2df8ba4915682e6d1c6eebe"
+locals = ["q:queries/locals.scm"]
+sha256 = "60e55ed1945c7b80ed65805fe5cae42632bb4cc741d5f5f845295f14c98c47d5"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/test.bzl"
@@ -4025,7 +4224,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "72ab7285b1a40967978459ddbecdeb770d7e68ac3bf30ba9c5d951cf9ddabffc"
+locals = ["q:queries/locals.scm"]
+sha256 = "6795465eff01942b29d0ae986ba6825017d6c64ceb873e7b9e1fdc8039efe12d"
 license = "MIT"
 scanner = "c"
 
@@ -4074,7 +4274,11 @@ injections = [
     "@html_tags:q/queries/injections.scm",
     "q:queries/injections.scm",
 ]
-sha256 = "840cfa8020a5b04cfd7390da8e940f2633c0a194ea2f7ed31074a793975ddf8f"
+locals = [
+    "@html:q/queries/locals.scm",
+    "q:queries/locals.scm",
+]
+sha256 = "3eda6f7699169c0ea47f1c80b8260717644dca604ea66a21b770ddeb509a4b59"
 license = "MIT"
 scanner = "c"
 
@@ -4089,7 +4293,8 @@ version = "9b7845ce06ec+1a6f74fe15a9"
 extensions = ["sw"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "ec03c7fd069fd024284040b0271b82e6d4e089142dc38543581a2f127e4ffb75"
+locals = ["q:queries/locals.scm"]
+sha256 = "3b8cc2480cde4b56980903bba965a6e57a1c5423fae7487cfe3314e84d727665"
 license = "Apache-2.0"
 scanner = "c"
 
@@ -4104,7 +4309,9 @@ version = "8abb3e8b3325+74ca7f050055"
 extensions = ["swiftinterface"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "0f9370c0bcdacd3f576501d6f3f51ac8292fbb8df6dbae6cb691da5dd380b6bb"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "ae8a08535ed2ed5013dfec32859d58932f112d63709d951c066dae071147578f"
 license = "MIT"
 scanner = "c"
 generate = true
@@ -4133,7 +4340,8 @@ rev = "f2b378a9af0b7e1192cff67a5fb45508c927205d"
 version = "f2b378a9af0b+ae143b14ca8c"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "58e36c2abb7c3446aa01a4400bd43bd481926ffe8753ad7f8ca7c5f8277b1c25"
+locals = ["q:queries/locals.scm"]
+sha256 = "f85c3f7434575bbe6374ec7476eef888e4a190efb3f376557c9b567e6712de57"
 license = "MIT"
 scanner = "none"
 
@@ -4166,7 +4374,9 @@ version = "6108fa396760+1eb3e2594cab"
 extensions = ["cmm"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "f720bb2af2d932c00f560f053f1a2783727c4670233956202a90381d029a1271"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "ab877e6d2ed860fbfcfb846429de50621c7c9ca18d50dc60bfd648ce62bab282"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/comments.cmm"
@@ -4182,7 +4392,8 @@ version = "b1170880c613+0348f1083067"
 extensions = ["td"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "f1fd96f9eb9114171817d2f6d84ee579b3d7a158f2650a8bfd3cbd9b59efea42"
+locals = ["q:queries/locals.scm"]
+sha256 = "ab99b4a43bbf4e51129ab7a30a7cfda6845fdbb9bf5687909bbdef629392bdf2"
 license = "MIT"
 scanner = "c"
 
@@ -4196,7 +4407,9 @@ rev = "a6267c2091ed432c248780cec9f8d42c8766d9ad"
 version = "a6267c2091ed+a33026013bb8"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "c6dee4f4d06427a550c830c6e06e3646e027feb05baf47de17eb4efbf6b17663"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "65fb93290df09c195b9b908325e50ed1e2db79c1680cedf11fe421c3d48118b2"
 license = "MIT"
 scanner = "none"
 
@@ -4225,7 +4438,8 @@ version = "05d276e73705+355666627aaf"
 extensions = ["tl"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "5d1f7910e11fe97a8d18efc7fcba33ada6f98145cf2cc1139765778fdb95b49e"
+locals = ["q:queries/locals.scm"]
+sha256 = "ce29171835092f987a257ec5025b78cd5dfa35cecaed070b52884e50d7600786"
 license = "MIT"
 scanner = "c"
 
@@ -4312,7 +4526,8 @@ rev = "68fd0d80943a828d9e6f49c58a74be1e9ca142cf"
 version = "68fd0d80943a+40ee861daf92"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "4141e240ce31419918cd0bb61bb2d85e27fa9cb8483ccc45778b5dbb8cae7c39"
+locals = ["q:queries/locals.scm"]
+sha256 = "2e77e84b0a1c2c751b481bb69746e458120bc3d409123c18d9c58634aaeefcfd"
 license = "MIT"
 scanner = "none"
 
@@ -4326,7 +4541,9 @@ rev = "4a77b2d7a004587646bddc4e854779044b6db459"
 version = "4a77b2d7a004+eba57d14b110"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "b8a6faa10ef074443295b6395945fd64af8a9e4d886c12b29b4d180b30da9137"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "b733235cf1c2b18166e1aa78f6f32ad88f6adcfe31041d76c4aab5e1c0d429e2"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/built-ins.tig"
@@ -4342,7 +4559,8 @@ version = "add40814fda3+7defb15ac577"
 extensions = ["tla"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "d101a5085273429e996cc8ff84a6ee5da1bf1ad10350b5bc463d10de0feab68e"
+locals = ["q:queries/locals.scm"]
+sha256 = "4a76f5b25a5c68c79d9e37542b34c0b3155904930562aaf49addd699c8ee9527"
 license = "MIT"
 scanner = "c"
 
@@ -4397,7 +4615,8 @@ rev = "7f789ea7ef765080f71a298fc96b7c957fa24422"
 version = "7f789ea7ef76+48fda28f4384"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "8fff3a7536f406c0c2598c91580bec8727c8c85fce9b0642ff78af6c393a803a"
+locals = ["q:queries/locals.scm"]
+sha256 = "ed85d2b2f2a2291e0d569322b7e30e0191c062c6c3d99ba0ac9b0970813a3c71"
 license = "MIT"
 scanner = "none"
 
@@ -4469,7 +4688,9 @@ rev = "2fcb563a4d56a6b8e8c129252325fc6335e4acbf"
 version = "2fcb563a4d56+c5acb3e8ab9d"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "366e955d62f87dc96e08ff026799e58398927d9f0d7481b1817d71b6aa7f2024"
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "a1b6cb73517d2ce3b01a1df638743d913f7362cf9949eb82b57c0fe838f07cee"
 license = "MIT"
 scanner = "none"
 
@@ -4484,7 +4705,8 @@ version = "debd26fed283+552f7b01896c"
 extensions = ["ungram"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "3466c05e9f40ed53653b377856512137c6faefe5a9906a9645a4b1a324c3cd0d"
+locals = ["q:queries/locals.scm"]
+sha256 = "cd99c673b6c8b18b633a43a8a1bebf7fc68a03851c002a034a03c710a53bd992"
 license = "MIT"
 scanner = "none"
 
@@ -4513,7 +4735,8 @@ rev = "4e0875f724d94d0c2ff36f9b8cb0b12f8b20d216"
 version = "4e0875f724d9+7fc129293a62"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "c3e5a8d5c69313af1b3ffec25656d76ca68259b3c89304cd1f9d1230152c22bd"
+locals = ["q:queries/locals.scm"]
+sha256 = "dde9c5b07cd89e8fec33b175a03f9df6ed3f34ef5f9e7e58ff431e3d7646fdde"
 license = "MIT"
 scanner = "none"
 sample = "q:tests/highlights/prims.usda"
@@ -4529,7 +4752,8 @@ version = "ad9b638b9140+bd1d2f835621"
 extensions = ["tal"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "b9e28b0b3bb2335eac232db3ec2b4887e1c0307171088e129465bcfc593ef5f2"
+locals = ["q:queries/locals.scm"]
+sha256 = "c7f18e63157cddea1dd06f9d4ea738f147bee9e882fa60dafdab66f3e1393153"
 license = "MIT"
 scanner = "c"
 
@@ -4548,7 +4772,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "70eef5b299c062646bbf8301c2de61e340a5fc52a24c9cb0124071e7f3901f7f"
+locals = ["q:queries/locals.scm"]
+sha256 = "381d25f81001a3655c20237b6d2026a46ca5953f02fbf70d24aa9f7237a18263"
 scanner = "none"
 
 [language.v.queries]
@@ -4621,7 +4846,8 @@ rev = "3092fcd99eb87bbd0fc434aa03650ba58bd5b43b"
 version = "3092fcd99eb8+06bc8fc373b2"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "3507747123cfdbd7b4c9881f74082764c99a58ba2c4be5c208ec5cc31d83251e"
+locals = ["q:queries/locals.scm"]
+sha256 = "f9b7578d6b0a310667afa009ec7bce8b07ea4631e3d5160513649703678f586b"
 license = "MIT"
 scanner = "c"
 
@@ -4649,7 +4875,8 @@ rev = "274b3ce63f72aa8ffea18e7fc280d3062d28f0ba"
 version = "274b3ce63f72+ba485188bb3f"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "739d34250eddfc649049121c3fe6c88323eafccff04fa87bb3af87a06da549d1"
+locals = ["q:queries/locals.scm"]
+sha256 = "1ea36eec421e8a61013bf2cbc540aabee043f68b88516a2eddefb6bfa0b3646e"
 license = "MIT"
 scanner = "none"
 
@@ -4713,7 +4940,8 @@ rev = "76e0c25844a66ebc6e866d690fcc5f4e90698947"
 version = "76e0c25844a6+d5a91b8306ef"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "b0072180f60bd9057c6ca0d5a9d06844e37876e45594e0510d283718ca3f4d9f"
+locals = ["q:queries/locals.scm"]
+sha256 = "d1307a4078fced56b1e2dbe5d96218863675cf7012aab7c672423a78db69ac3c"
 license = "MIT"
 scanner = "c"
 sample = "q:tests/highlights/class.w"
@@ -4756,7 +4984,8 @@ rev = "a51d6366f041dbefec4da39a7eb3168a9b1cbc0e"
 version = "a51d6366f041+91664fe4c64c"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "cce8ff2d13bf52d671aceeacd4bc97e665819fbe8650f650da6c64ed06cf9f2d"
+locals = ["q:queries/locals.scm"]
+sha256 = "b306c8b3bf130c5e159c1ab72d8b2447499b0d0908b695899bb94fcd6ad293ba"
 license = "MIT"
 scanner = "none"
 
@@ -4854,7 +5083,8 @@ extensions = [
 ]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "1a0864171da04ed0622406bb8355cca0d1374e9a531a65fd79ae78b5de684aa7"
+locals = ["q:queries/locals.scm"]
+sha256 = "6bab939fccba802b3a1ab6ac4525ed4cb9c8bfb0814c6f3b686d2ea7ef318d89"
 license = "MIT"
 scanner = "c"
 
@@ -4868,7 +5098,8 @@ rev = "47ae227de250d225015908586eb37d0722599deb"
 version = "47ae227de250+27d0faf99260"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "270b7735e063a26af11b5ade66c6920944d8a4b38066e1abb51904f479756fd3"
+locals = ["q:queries/locals.scm"]
+sha256 = "6d52fd13790df64f558743abc5e1c74d35452340e6b66efa3dc9249df5fa05d6"
 license = "MIT"
 scanner = "none"
 
@@ -4896,7 +5127,8 @@ rev = "6c60112b3b3e739fb1ca4a8ea4bea2b6ffe11318"
 version = "6c60112b3b3e+f141bd0c1028"
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "30a6ae33ddf6a9b30749e7bec7a7fbcb10add10f67f87b99edf3aeee87424534"
+locals = ["q:queries/locals.scm"]
+sha256 = "ace8831bd194aa265b8297058fe190fa32fa235712be6e01e73e5ab0c5b15ba1"
 license = "MIT"
 scanner = "c"
 
@@ -4925,7 +5157,8 @@ version = "6479aa13f32f+5f21013ec728"
 extensions = ["zon"]
 highlights = ["q:queries/highlights.scm"]
 injections = ["q:queries/injections.scm"]
-sha256 = "5829f8bd86c852b49f88f0729870ff4749737a0bc7e6e007abe267bfdaa5f86c"
+locals = ["q:queries/locals.scm"]
+sha256 = "612455d5d4948bb82f20e92781bce74a4a4caf021294ceedc933c683437f14e3"
 license = "MIT"
 scanner = "none"
 
@@ -4965,7 +5198,8 @@ rev = "7a593401efb5418ffdedbe3c0e4c61c6d240166d"
 version = "7a593401efb5+7a593401efb5"
 highlights = ["queries/highlights.scm"]
 injections = ["nvim-queries/zsh/injections.scm"]
-sha256 = "8e5f512f15ee41e6761d0af8f0483131a16a0db639f20d9aa95b5c6ea7fadb7a"
+locals = ["nvim-queries/zsh/locals.scm"]
+sha256 = "56e6065d1a93195e2bd10468f66034632f55ad5823bc5abfdfee0a3effad2208"
 license = "MIT"
 scanner = "c"
 
@@ -5001,6 +5235,10 @@ rev = "7df2b4728b7ed49838216aa8b318c53613530589"
 repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-hcl"
 rev = "378d8e85d3f4e2f392ac40244a12138380929a3d"
 
+[fragment.hlsl]
+repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-hlsl"
+rev = "da920f61fcb1c7d80bc37ea68b7a5ba49ba0f033"
+
 [fragment.html]
 repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-html"
 rev = "9d72f6d2983e4d523156f21e927d2c92adcaf003"
@@ -5012,6 +5250,10 @@ rev = "402a2b822ccb6fcd1b0ad71fdcc5ef35b92ac7df"
 [fragment.jinja_inline]
 repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-jinja_inline"
 rev = "596241b844d58dfeca0ed931ac80a9d57bba9025"
+
+[fragment.json]
+repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-json"
+rev = "26578bdf15e56b4e565c92edcc021665d41c6ca4"
 
 [fragment.ocaml]
 repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-ocaml"

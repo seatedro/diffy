@@ -136,12 +136,14 @@ Maintainer details (pinning, cross-target checks, publishing) are in
 - `manifest.json` fields: `schema` (1), `language`, `aliases`, `extensions`,
   `version`, `target`, `abi` (the grammar's tree-sitter `LANGUAGE_VERSION`),
   `symbol`, `source` (repository, commit, hash).
-- `library`, `highlights`, and optional `injections`, `locals` and
-  `semantic` each hold `path`, `sha256`, `size`.
+- `library`, `highlights`, and optional `injections`, `locals`,
+  `semantic` and `tags` each hold `path`, `sha256`, `size`.
 - `locals` is the grammar's `locals.scm`; `semantic` is Diffy's own
   `semantic.scm` from
   [crates/diffy-semantic/queries](../diffy-semantic/queries/README.md).
-  `GrammarStore::parser` returns both with the grammar.
+  `tags` is the grammar repository's `tags.scm` (definitions and
+  references by name, the format GitHub's code navigation uses).
+  `GrammarStore::parser` returns all three with the grammar.
 - Index:
   `{"payload": {"schema": 1, "target": ..., "packs": [manifest, ...]}, "signature": "<hex>"}`.
 - The signature is Ed25519 over the payload's canonical JSON, as for

@@ -67,7 +67,7 @@ fn fixture_packs(fixtures: &[(&str, &str, &str)]) -> tempfile::TempDir {
         std::fs::create_dir_all(&to).unwrap();
         let mut manifest: pack::PackManifest =
             serde_json::from_slice(&std::fs::read(from.join(pack::MANIFEST)).unwrap()).unwrap();
-        for file in [&manifest.library, &manifest.highlights] {
+        for file in manifest.files() {
             std::fs::copy(from.join(&file.path), to.join(&file.path)).unwrap();
         }
         std::fs::write(to.join("injections.scm"), injections).unwrap();

@@ -34,6 +34,7 @@ pub struct GrammarQueries {
     pub highlights: Arc<str>,
     pub locals: Option<Arc<str>>,
     pub semantic: Option<Arc<str>>,
+    pub tags: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -144,6 +145,7 @@ impl GrammarStore {
                     highlights: grammar.highlights().clone(),
                     locals: grammar.locals().cloned(),
                     semantic: grammar.semantic().cloned(),
+                    tags: grammar.tags().cloned(),
                 },
             )),
             Tag::Pending | Tag::Unavailable => None,

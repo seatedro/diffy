@@ -82,6 +82,8 @@ pub struct PackManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic: Option<PackFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<PackFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<PackSource>,
 }
 
@@ -183,6 +185,7 @@ impl PackManifest {
             ("injections", &self.injections),
             ("locals", &self.locals),
             ("semantic", &self.semantic),
+            ("tags", &self.tags),
         ] {
             if let Some(file) = file {
                 check_file(field, file)?;
@@ -205,6 +208,7 @@ impl PackManifest {
             .chain(self.injections.as_ref())
             .chain(self.locals.as_ref())
             .chain(self.semantic.as_ref())
+            .chain(self.tags.as_ref())
     }
 }
 

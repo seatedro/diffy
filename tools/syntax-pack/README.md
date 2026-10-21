@@ -37,8 +37,9 @@ subcommand.
   are dropped.
 - A registry language that fails on some target is left out of that
   target's index and listed in its `skipped.json`.
-- A pack carries the `locals` query files its entry lists (`registry`
-  pins a language's `locals.scm` when it has one) and
+- A pack carries the `locals` and `tags` query files its entry lists
+  (`registry` pins a language's `locals.scm` from its query repository and
+  `tags.scm` from its grammar repository when they exist) and
   `crates/diffy-semantic/queries/<language>/semantic.scm` when that
   exists; a `semantic.scm` that does not compile fails the build.
 

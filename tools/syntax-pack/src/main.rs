@@ -412,6 +412,7 @@ fn inputs(
         .chain(&grammar.highlights)
         .chain(&grammar.injections)
         .chain(&grammar.locals)
+        .chain(&grammar.tags)
     {
         inputs.push(resolve_input(lock, language, &root, name, options)?);
     }
@@ -511,6 +512,7 @@ fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
         .ok_or_else(|| format!("{language}: no highlight query"))?;
     let injections = write_query("injections.scm", &grammar.injections)?;
     let locals = write_query("locals.scm", &grammar.locals)?;
+    let tags = write_query("tags.scm", &grammar.tags)?;
     let semantic = workspace()
         .join("crates/diffy-semantic/queries")
         .join(language)
@@ -541,6 +543,7 @@ fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
         injections,
         locals,
         semantic,
+        tags,
         source: Some(PackSource {
             repo: grammar.repo.clone(),
             rev: grammar.rev.clone(),
@@ -753,7 +756,10 @@ fn check_language(lock: &Lock, language: &str, options: &Options) -> Result<(), 
         ),
         None => None,
     };
-    for file in [&manifest.locals, &manifest.semantic].into_iter().flatten() {
+    for file in [&manifest.locals, &manifest.semantic, &manifest.tags]
+        .into_iter()
+        .flatten()
+    {
         ts::Query::new(&ts_language, &read_text(&dir.join(&file.path))?)
             .map_err(|e| fail(&format!("{}: {e}", file.path)))?;
     }
@@ -1098,6 +1104,7 @@ fn write_index(lock: &Lock, options: &Options, seed: &[u8; 32]) -> Result<(), St
                 .chain(manifest.injections.as_mut())
                 .chain(manifest.locals.as_mut())
                 .chain(manifest.semantic.as_mut())
+                .chain(manifest.tags.as_mut())
             {
                 file.url = Some(file_url(base, target, &language, file));
             }
@@ -1294,6 +1301,7 @@ mod tests {
             injections: None,
             locals: None,
             semantic: None,
+            tags: None,
             source: None,
         };
         fs::write(

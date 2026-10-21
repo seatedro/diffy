@@ -39,6 +39,7 @@ pub(crate) struct Grammar {
     injections: Option<Injections>,
     locals: Option<Arc<str>>,
     semantic: Option<Arc<str>>,
+    tags: Option<Arc<str>>,
     scopes: std::sync::OnceLock<Option<Arc<crate::scope::ScopeQuery>>>,
 }
 
@@ -74,6 +75,7 @@ impl Grammar {
             name: Some(Arc::from(manifest.language.as_str())),
             locals: read(&manifest.locals)?.map(Arc::from),
             semantic: read(&manifest.semantic)?.map(Arc::from),
+            tags: read(&manifest.tags)?.map(Arc::from),
             ..grammar
         })
     }
@@ -96,6 +98,10 @@ impl Grammar {
 
     pub(crate) fn semantic(&self) -> Option<&Arc<str>> {
         self.semantic.as_ref()
+    }
+
+    pub(crate) fn tags(&self) -> Option<&Arc<str>> {
+        self.tags.as_ref()
     }
 
     pub(crate) fn compile(
@@ -153,6 +159,7 @@ impl Grammar {
             injections,
             locals: None,
             semantic: None,
+            tags: None,
             scopes: std::sync::OnceLock::new(),
         })
     }

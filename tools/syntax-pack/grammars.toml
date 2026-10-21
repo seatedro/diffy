@@ -9,7 +9,10 @@
 #
 # Query paths are relative to the repository; `@<language>/<path>` reads
 # from another entry's checkout, for grammars whose queries layer over
-# another's. Several highlight files are concatenated in order.
+# another's. Several highlight files are concatenated in order. `queries`
+# pins a separate query repository, read with `q:<path>` (`@<language>:q/`
+# for another entry's). `locals` and `tags` feed code navigation: scopes
+# and definitions within a file, and definitions by name across files.
 #
 # Every name, alias, and extension must belong to one language. `scanner`
 # is `"c"` (src/scanner.c, compiled with parser.c) or `"none"`; C++
@@ -34,7 +37,9 @@ version = "0.25.1"
 aliases = ["sh", "shell", "console"]
 extensions = ["sh", "bash"]
 highlights = ["queries/highlights.scm"]
-sha256 = "61f293830ad01f986c8675f9ac4d07f6462a2fbd23dd8a978b710d2e3b40da65"
+queries = { repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-bash", rev = "6e198671f2e8de504c2099f92d52cc2a68f13410" }
+locals = ["q:queries/locals.scm"]
+sha256 = "4233c54847fb19d8573e4936f607cc8a5fbc7c7a5b019f34642ef6b37535eae2"
 license = "MIT"
 scanner = "c"
 sample = "samples/bash.sh"
@@ -47,7 +52,10 @@ version = "0.25.0"
 aliases = ["golang"]
 extensions = ["go"]
 highlights = ["queries/highlights.scm"]
-sha256 = "eb1fdb0fed6670a635197752ebb1befe8da21b8dfed8b31715f22eb4941ecc4b"
+queries = { repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-go", rev = "90ad6c7104390f9373a4a6fabe2da9e90f891252" }
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "8bb43dd96bb08c9f6ef3a79f192c9df8e51356691448d0ae6c34bca7ee11a2ef"
 license = "MIT"
 scanner = "none"
 sample = "samples/go.go"
@@ -61,7 +69,9 @@ aliases = ["js", "jsx", "mjs", "cjs"]
 extensions = ["js", "jsx", "mjs", "cjs"]
 highlights = ["queries/highlights.scm", "queries/highlights-jsx.scm"]
 injections = ["queries/injections.scm"]
-sha256 = "00af6bfe573134e8080d11b0a5a4612765d23573616abfd56b48a989526ac63e"
+locals = ["queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "672e7b5ff7107dd60c10f2773b4dd5d1a1357df55550a1b39e9e56c658338cbf"
 license = "MIT"
 scanner = "c"
 sample = "samples/javascript.js"
@@ -87,7 +97,10 @@ version = "0.25.0"
 aliases = ["py", "python3"]
 extensions = ["py", "pyi"]
 highlights = ["queries/highlights.scm"]
-sha256 = "6cf4880802ad351ac72c6edd02c362c8b2d7e012c82948cdc5ce7cbfe1a53cb3"
+queries = { repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-python", rev = "c0cde822ca01632f282eefcd5a1103aa2017e01a" }
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "524c930094504f5b6cc2c0267cc9c2bcdc99a9da05e4d8cd4946646cea2c87cb"
 license = "MIT"
 scanner = "c"
 sample = "samples/python.py"
@@ -101,7 +114,10 @@ aliases = ["rs"]
 extensions = ["rs"]
 highlights = ["queries/highlights.scm"]
 injections = ["queries/injections.scm"]
-sha256 = "9ca0e726a8d8befee951e16baa429f772fe4d24b11c34024f5c301cece11e720"
+queries = { repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-rust", rev = "8c2310323793ca2c70fd256095d867c40b928e44" }
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "8eb741d3c23c8b9ac49057cdb855caac5a90789e29868b11711e1ec88e0d0089"
 license = "MIT"
 scanner = "c"
 sample = "samples/rust.rs"
@@ -118,7 +134,9 @@ include = ["common/scanner.h"]
 aliases = ["ts", "mts", "cts"]
 extensions = ["ts", "mts", "cts"]
 highlights = ["@javascript/queries/highlights.scm", "queries/highlights.scm"]
-sha256 = "4b557b121fed86ca65226e3359924e202d7f354702a00bc8454700f962370e34"
+locals = ["@javascript/queries/locals.scm", "queries/locals.scm"]
+tags = ["@javascript/queries/tags.scm", "queries/tags.scm"]
+sha256 = "9bf9b109d9bd5c738486b061f5112384fcf5d108dd1ab8c7fede1e76d124baaa"
 license = "MIT"
 scanner = "c"
 sample = "samples/typescript.ts"
@@ -136,7 +154,9 @@ include = ["common/scanner.h"]
 extensions = ["tsx"]
 highlights = ["@javascript/queries/highlights.scm", "@javascript/queries/highlights-jsx.scm", "queries/highlights.scm"]
 injections = ["@javascript/queries/injections.scm"]
-sha256 = "78cbf2adfcb33eff59e324cf0e0ec9d7cd4b04723b844b48452dd92947e079a8"
+locals = ["@javascript/queries/locals.scm", "queries/locals.scm"]
+tags = ["@javascript/queries/tags.scm", "queries/tags.scm"]
+sha256 = "4789bf8bdce033392b26f421d42d5c84ad46507c835593348044813c176ba255"
 license = "MIT"
 scanner = "c"
 sample = "samples/tsx.tsx"
@@ -233,7 +253,10 @@ rev = "b780e47fc780ddc8da13afa35a3f4ed5c157823d"
 version = "0.24.2"
 extensions = ["c", "h"]
 highlights = ["queries/highlights.scm"]
-sha256 = "c31fb1ed0df774e85063ebff8af6e4d1fb5eab476ae9e93aa16ea2fa0ae0e7d0"
+queries = { repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-c", rev = "f00581fe0c41d9b5814f3cccbc3e042a68ae94d2" }
+locals = ["q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "deaed4909d36de023a9481336843ef9fc1f735f0d98b7607e39e6b6551fe4107"
 license = "MIT"
 scanner = "none"
 sample = "samples/c.c"
@@ -249,7 +272,10 @@ aliases = ["c++", "cxx"]
 extensions = ["cpp", "cc", "cxx", "hpp", "hxx", "hh"]
 highlights = ["@c/queries/highlights.scm", "queries/highlights.scm"]
 injections = ["queries/injections.scm"]
-sha256 = "b4dcb780a28f975450a78dfb2c15949c624829f2d84defd0f872be0b51334017"
+queries = { repo = "https://github.com/neovim-treesitter/nvim-treesitter-queries-cpp", rev = "c6f6501320c5ecbcb4e08805e711027fc00fc365" }
+locals = ["@c:q/queries/locals.scm", "q:queries/locals.scm"]
+tags = ["queries/tags.scm"]
+sha256 = "d621017a7c8cb3f23d013d9ba6319d0b56bdcc6c9aaab45326e4b15f41888fcf"
 license = "MIT"
 scanner = "c"
 sample = "samples/cpp.cpp"

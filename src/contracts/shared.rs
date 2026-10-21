@@ -1,5 +1,6 @@
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub use diffy_diff::{FileId as FileKey, Side};
 
@@ -7,6 +8,7 @@ use crate::contracts::commands::SettingsSnapshot;
 use crate::contracts::navigation::RepositoryContext;
 use crate::contracts::review::ReviewContext;
 use crate::contracts::viewport::CompareManifestSnapshot;
+use crate::core::symbols::SymbolIndex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct WorkspaceEpoch(pub u64);
@@ -49,4 +51,5 @@ pub struct SharedContext {
     pub selection: Option<SourceTarget>,
     pub review: Option<Rc<ReviewContext>>,
     pub copied: Option<Rc<str>>,
+    pub symbols: Option<Arc<SymbolIndex>>,
 }

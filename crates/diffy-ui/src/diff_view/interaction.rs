@@ -236,6 +236,12 @@ impl DiffViewState {
             }
             DiffKey::NextMatch => self.next_match(SearchDirection::Forward).is_some(),
             DiffKey::PrevMatch => self.next_match(SearchDirection::Backward).is_some(),
+            DiffKey::Definition => {
+                return match self.caret() {
+                    Some((point, line)) => DiffOutcome::Definition { point, line },
+                    None => DiffOutcome::Unchanged,
+                };
+            }
             DiffKey::Annotate => {
                 return match self.annotate_selection_or_focus() {
                     Some(anchor) => DiffOutcome::Annotate { anchor },

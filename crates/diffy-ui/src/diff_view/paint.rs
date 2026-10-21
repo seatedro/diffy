@@ -127,6 +127,7 @@ pub(super) struct LineColors {
     pub search_active: Color,
     pub search_outline: Color,
     pub selection: Color,
+    pub link: Color,
 }
 
 /// A shaped line and its decorations, painted in the fixed order: changed
@@ -145,6 +146,7 @@ pub(super) fn line(
     renamed: &[Range<usize>],
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
+    link: Option<(usize, usize)>,
     colors: LineColors,
     row_height: f32,
     font_size: f32,
@@ -258,6 +260,19 @@ pub(super) fn line(
         default_color: colors.text,
         span_colors,
     });
+    if let Some((lo, hi)) = link {
+        let thickness = whole_pixels(1.0, scale);
+        for rect in rects(lo..hi.min(layout.text().len())) {
+            scene.rect(RectPrimitive {
+                rect: Rect {
+                    y: rect.y + rect.height - thickness,
+                    height: thickness,
+                    ..rect
+                },
+                color: colors.link,
+            });
+        }
+    }
     let thickness = whole_pixels(1.0, scale);
     let dot = whole_pixels(1.5, scale);
     for range in renamed {
@@ -319,7 +334,7 @@ mod tests {
     // then the search match and its outline, then the selection, then
     // the glyphs.
     #[test]
-    fn a_line_paints_words_then_search_then_selection_then_text() {
+    fn a_line_paints_words_search_selection_text_then_link() {
         let mut text = TextSystem::vendored_only(&Default::default());
         let mut layouts = LayoutCache::default();
         let layout = layouts
@@ -337,6 +352,7 @@ mod tests {
             search_active: color(4),
             search_outline: color(5),
             selection: color(6),
+            link: color(7),
         };
         let mut scene = Scene::default();
         let words = vec![4..9, 11..12];
@@ -353,6 +369,7 @@ mod tests {
                 active: true,
             }],
             Some((0, 9)),
+            Some((4, 9)),
             colors,
             22.0,
             13.0,
@@ -378,7 +395,8 @@ mod tests {
                 "fill 4",
                 "outline 5 2",
                 "fill 6",
-                "text"
+                "text",
+                "fill 7"
             ]
         );
     }

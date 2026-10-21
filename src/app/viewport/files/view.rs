@@ -73,11 +73,14 @@ pub fn file_view(
     let theme = cx.theme;
     let tab: &mut FileTab = files.active_tab_mut()?;
     let path = tab.file.path.clone();
+    if let TabState::Ready(state) = &mut tab.state {
+        state.set_viewport(width, height);
+    }
+    tab.apply_reveal();
     let view = match &mut tab.state {
         TabState::Loading => empty_state("Loading file", &path, theme),
         TabState::Failed(message) => empty_state("Couldn't open file", message, theme),
         TabState::Ready(state) => {
-            state.set_viewport(width, height);
             let scale_factor = cx.frame.scale_factor();
             let now_ms = cx.frame.elapsed().as_millis() as u64;
             let text = cx.frame.text();

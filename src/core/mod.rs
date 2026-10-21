@@ -8,6 +8,7 @@ pub mod ref_catalog;
 pub mod repo_discovery;
 pub mod review;
 pub mod search;
+pub mod symbols;
 pub mod syntax;
 pub mod text;
 pub mod theme_colors;

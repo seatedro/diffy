@@ -153,6 +153,49 @@ fn git_workdir(repo: &gix::Repository) -> Result<PathBuf> {
         .ok_or_else(|| git_error_fatal("open", "repository has no working directory"))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeBlob {
+    pub path: String,
+    pub oid: Option<gix::ObjectId>,
+}
+
+fn is_file_mode(mode: &[u8]) -> bool {
+    mode == b"100644" || mode == b"100755"
+}
+
+fn parse_staged_blobs(output: &[u8]) -> Vec<TreeBlob> {
+    output
+        .split(|byte| *byte == 0)
+        .filter_map(|record| {
+            let (meta, path) = record.split_once_str("\t")?;
+            let mut fields = meta.split(|byte| *byte == b' ');
+            let mode = fields.next()?;
+            let oid = gix::ObjectId::from_hex(fields.next()?).ok()?;
+            (is_file_mode(mode) && fields.next()? == b"0").then(|| TreeBlob {
+                path: String::from_utf8_lossy(path).into_owned(),
+                oid: Some(oid),
+            })
+        })
+        .collect()
+}
+
+fn parse_tree_blobs(output: &[u8]) -> Vec<TreeBlob> {
+    output
+        .split(|byte| *byte == 0)
+        .filter_map(|record| {
+            let (meta, path) = record.split_once_str("\t")?;
+            let mut fields = meta.split(|byte| *byte == b' ');
+            let mode = fields.next()?;
+            let kind = fields.next()?;
+            let oid = gix::ObjectId::from_hex(fields.next()?).ok()?;
+            (is_file_mode(mode) && kind == b"blob").then(|| TreeBlob {
+                path: String::from_utf8_lossy(path).into_owned(),
+                oid: Some(oid),
+            })
+        })
+        .collect()
+}
+
 struct GitOutput {
     stdout: Vec<u8>,
 }
@@ -973,6 +1016,45 @@ impl GitService {
             .map_err(gix_error)?
             .peel_to_tree()
             .map_err(gix_error)
+    }
+
+    pub fn list_blobs_at(&self, reference: &str) -> Result<Vec<TreeBlob>> {
+        let repo_path = self.repo_path_ref()?;
+        let git = |args: &[&str]| {
+            let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+            run_system_git_capture(repo_path, &args).map(|output| output.stdout)
+        };
+        let mut blobs = match reference {
+            WORKDIR_REF | INDEX_REF => parse_staged_blobs(&git(&["ls-files", "-s", "-z"])?),
+            revision => parse_tree_blobs(&git(&["ls-tree", "-r", "-z", "--full-tree", revision])?),
+        };
+        if reference == WORKDIR_REF {
+            let dirty = git(&["ls-files", "-z", "-m", "-o", "--exclude-standard"])?;
+            let dirty: HashSet<&[u8]> = dirty
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty())
+                .collect();
+            let tracked: HashSet<String> = blobs.iter().map(|blob| blob.path.clone()).collect();
+            for blob in &mut blobs {
+                if dirty.contains(blob.path.as_bytes()) {
+                    blob.oid = None;
+                }
+            }
+            blobs.extend(
+                dirty
+                    .into_iter()
+                    .map(|path| String::from_utf8_lossy(path).into_owned())
+                    .filter(|path| !tracked.contains(path))
+                    .map(|path| TreeBlob { path, oid: None }),
+            );
+        }
+        blobs.sort_by(|a, b| a.path.cmp(&b.path));
+        blobs.dedup_by(|a, b| a.path == b.path);
+        Ok(blobs)
+    }
+
+    pub fn read_blob(&self, oid: gix::ObjectId) -> Result<Vec<u8>> {
+        Ok(self.repo()?.find_blob(oid).map_err(gix_error)?.take_data())
     }
 
     pub fn list_files_at(&self, reference: &str) -> Result<Vec<String>> {

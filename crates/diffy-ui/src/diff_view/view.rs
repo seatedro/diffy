@@ -269,7 +269,8 @@ fn build(
                 w={width}
                 h={height}
                 class="relative"
-                class="cursor-text"
+                @when {frame.link} { class="cursor-pointer" }
+                @when {!frame.link} { class="cursor-text" }
                 on:drag={move |press: ClickEvent| {
                     Box::new(SelectDrag { press, on_event }) as Box<dyn DragHandler>
                 }}
@@ -688,6 +689,7 @@ fn text_cell(
     }
     let paint = row.paint.clone();
     let selected = row.selected[shown as usize];
+    let link = row.link[shown as usize];
     let search = row.search[shown as usize].clone();
     let pad = frame.metrics.text_pad;
     let line_h = frame.metrics.line_h;
@@ -698,6 +700,7 @@ fn text_cell(
     let hash = inputs_hash(&(
         paint.stamp,
         selected,
+        link,
         &search,
         width.to_bits(),
         origin.to_bits(),
@@ -809,6 +812,7 @@ fn text_cell(
                                 },
                                 &search,
                                 selected,
+                                link,
                                 pad,
                                 origin,
                                 font_size,
@@ -847,6 +851,7 @@ fn paint_text(
     tone: TextTone,
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
+    link: Option<(usize, usize)>,
     pad: f32,
     origin: f64,
     font_size: f32,
@@ -883,6 +888,7 @@ fn paint_text(
         &line.renamed,
         search,
         selected,
+        link,
         LineColors {
             text: match tone {
                 TextTone::Normal => colors.text,
@@ -895,6 +901,7 @@ fn paint_text(
             search_active: colors.search_active,
             search_outline: colors.search_outline,
             selection: colors.selection,
+            link: colors.accent,
         },
         bounds.height,
         font_size,
@@ -1706,22 +1713,47 @@ struct SelectDrag {
     on_event: fn(DiffEvent) -> Action,
 }
 
+impl SelectDrag {
+    fn follows(&self) -> bool {
+        let mods = self.press.modifiers;
+        if cfg!(target_os = "macos") {
+            mods.cmd
+        } else {
+            mods.ctrl
+        }
+    }
+}
+
 impl DragHandler for SelectDrag {
     fn on_press(&mut self) -> Vec<Action> {
-        vec![(self.on_event)(DiffEvent::Press {
+        let press = (self.on_event)(DiffEvent::Press {
             x: self.press.x,
             y: self.press.y,
-        })]
+        });
+        if !self.follows() {
+            return vec![press];
+        }
+        vec![
+            press,
+            (self.on_event)(DiffEvent::Release),
+            (self.on_event)(DiffEvent::Key(DiffKey::Definition)),
+        ]
     }
 
     fn on_move(&mut self, x: f32, y: f32) -> Vec<Action> {
+        if self.follows() {
+            return Vec::new();
+        }
         vec![(self.on_event)(DiffEvent::Drag { x, y })]
     }
 
     fn on_release(&mut self) -> DragReleaseResult {
-        DragReleaseResult {
-            actions: vec![(self.on_event)(DiffEvent::Release)],
-        }
+        let actions = if self.follows() {
+            Vec::new()
+        } else {
+            vec![(self.on_event)(DiffEvent::Release)]
+        };
+        DragReleaseResult { actions }
     }
 
     /// The selection made so far stays; the release only ends the drag.

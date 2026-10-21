@@ -175,7 +175,7 @@ pub fn menus(
                 item(ids::WORKING_TREE),
                 item(ids::REFRESH),
                 MenuItem::Separator,
-                role(MenuRole::CloseWindow),
+                item(ids::CLOSE),
             ],
         ),
         Menu::edit(),
@@ -219,6 +219,7 @@ pub mod ids {
     pub const PALETTE: &str = "palette.open";
     pub const OPEN_REPOSITORY: &str = "repo.open";
     pub const GO_TO_FILE: &str = "file.go_to";
+    pub const CLOSE: &str = "file.close";
     pub const WORKING_TREE: &str = "repo.working_tree";
     pub const REFRESH: &str = "repo.refresh";
     pub const TOGGLE_SIDEBAR: &str = "view.sidebar";

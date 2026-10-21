@@ -304,6 +304,17 @@ impl DiffViewState {
                 }
                 _ => Default::default(),
             };
+            let link = match r {
+                RowRef::Line { seg, row } => [Side::Old, Side::New].map(|side| {
+                    let line = paint.sides[side as usize].as_ref()?;
+                    if line.merge.is_some() {
+                        return None;
+                    }
+                    let start = line.window.map_or(0, |w| w.start);
+                    self.row_link(seg as usize, row, side, start, line.layout.text().len())
+                }),
+                _ => [None, None],
+            };
             let rows_table = self.list.rows();
             let height = rows_table.height_at(index);
             // Rows stack from the first row's top, taken relative to the
@@ -319,6 +330,7 @@ impl DiffViewState {
                 paint: paint.clone(),
                 selected,
                 search,
+                link,
                 focused: self.focused == Some(key),
             });
             kept.insert(key, paint);
@@ -347,6 +359,7 @@ impl DiffViewState {
             hscroll: self.hscroll.clone(),
             scrollbar_auto_hide: self.scrollbar_auto_hide,
             scrollbar: self.scrollbar.clone(),
+            link: self.link.is_some(),
         }));
     }
 
@@ -398,6 +411,7 @@ impl DiffViewState {
             paint,
             selected: [None, None],
             search: Default::default(),
+            link: [None, None],
             focused: self.focused == Some(key),
         })
     }

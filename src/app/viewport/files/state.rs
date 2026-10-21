@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
 use diffy_diff::DiffDocument;
+use diffy_diff::{FileId, Side};
 use diffy_ui::diff_view::presentation::{DiffLayout, DiffNumbers, DiffPresentation, FileHeaders};
-use diffy_ui::{DiffEvent, DiffKey, DiffViewState};
+use diffy_ui::{
+    DiffEvent, DiffKey, DiffOutcome, DiffTarget, DiffViewState, RevealAlign, SourcePoint,
+};
 
 use crate::app::text_targets::VIEWPORT;
 use crate::contracts::shared::SharedContext;
@@ -22,10 +25,41 @@ pub enum TabState {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Reveal {
+    Source { line: u32, column: u32, len: u32 },
+    Scroll(f32),
+}
+
 pub struct FileTab {
     pub id: TabId,
     pub file: FileAt,
     pub state: TabState,
+    pub reveal: Option<Reveal>,
+}
+
+impl FileTab {
+    pub fn apply_reveal(&mut self) {
+        let TabState::Ready(view) = &mut self.state else {
+            return;
+        };
+        match self.reveal.take() {
+            Some(Reveal::Source { line, column, len }) => {
+                let point = SourcePoint {
+                    file: FileId(0),
+                    side: Side::New,
+                    line,
+                    byte: column,
+                };
+                view.reveal_target(DiffTarget::Source(point), RevealAlign::Center);
+                view.select_source(point, len);
+            }
+            Some(Reveal::Scroll(offset)) => {
+                view.handle(DiffEvent::ScrollTo(offset));
+            }
+            None => {}
+        }
+    }
 }
 
 #[derive(Default)]
@@ -34,6 +68,7 @@ pub struct FilesController {
     active: Option<TabId>,
     next_id: u64,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    definition: Option<(FileAt, SourcePoint, String)>,
 }
 
 impl std::fmt::Debug for FilesController {
@@ -63,6 +98,89 @@ impl FilesController {
         self.tabs.iter_mut().find(|tab| tab.id == active)
     }
 
+    pub fn active_place(&self) -> Option<(FileAt, f32, Option<SourcePoint>)> {
+        let active = self.active?;
+        let tab = self.tabs.iter().find(|tab| tab.id == active)?;
+        let (scroll, caret) = match &tab.state {
+            TabState::Ready(view) => (view.scroll_offset(), view.caret().map(|(point, _)| point)),
+            TabState::Loading | TabState::Failed(_) => (0.0, None),
+        };
+        Some((tab.file.clone(), scroll, caret))
+    }
+
+    pub fn take_definition(&mut self) -> Option<(FileAt, SourcePoint, String)> {
+        self.definition.take()
+    }
+
+    pub fn request_definition(&mut self) -> Reduction {
+        self.input(DiffEvent::Key(DiffKey::Definition))
+    }
+
+    pub fn open_at(&mut self, file: FileAt, reveal: Reveal, cx: &SharedContext) -> Reduction {
+        let mut reduction = self.open(file.clone(), cx);
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.file == file) {
+            tab.reveal = Some(reveal);
+            reduction.changed = true;
+        }
+        reduction
+    }
+
+    pub fn hover_at(&self, x: f32, y: f32) -> Option<(FileAt, diffy_ui::HoverHit)> {
+        let active = self.active?;
+        let tab = self.tabs.iter().find(|tab| tab.id == active)?;
+        let TabState::Ready(view) = &tab.state else {
+            return None;
+        };
+        Some((tab.file.clone(), view.hover_at(x, y)?))
+    }
+
+    pub fn set_link(&mut self, link: Option<(SourcePoint, u32)>) -> bool {
+        let active = self.active;
+        let mut changed = false;
+        for tab in &mut self.tabs {
+            if let TabState::Ready(view) = &mut tab.state {
+                let link = if Some(tab.id) == active { link } else { None };
+                changed |= view.set_link(link);
+            }
+        }
+        changed
+    }
+
+    pub fn has_link(&self) -> bool {
+        self.active_tab().is_some_and(|tab| match &tab.state {
+            TabState::Ready(view) => view.has_link(),
+            TabState::Loading | TabState::Failed(_) => false,
+        })
+    }
+
+    fn active_tab(&self) -> Option<&FileTab> {
+        let active = self.active?;
+        self.tabs.iter().find(|tab| tab.id == active)
+    }
+
+    pub fn show_diff(&mut self) -> Reduction {
+        self.activate(None)
+    }
+
+    fn input(&mut self, event: DiffEvent) -> Reduction {
+        let Some(tab) = self.active_tab_mut() else {
+            return Reduction::default();
+        };
+        let TabState::Ready(view) = &mut tab.state else {
+            return Reduction::default();
+        };
+        match view.handle(event) {
+            DiffOutcome::Definition { point, line } => {
+                self.definition = Some((tab.file.clone(), point, line));
+                Reduction::default()
+            }
+            DiffOutcome::Copy(text) if !text.is_empty() => {
+                Reduction::default().effect(ShellEffect::SetClipboard(text))
+            }
+            _ => Reduction::changed(),
+        }
+    }
+
     fn position(&self, id: TabId) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.id == id)
     }
@@ -80,6 +198,7 @@ impl FilesController {
             id,
             file: file.clone(),
             state: TabState::Loading,
+            reveal: None,
         });
         self.active = Some(id);
         Reduction::changed()
@@ -156,17 +275,7 @@ impl FilesController {
             FilesAction::Close(id) => self.close(id),
             FilesAction::NextTab => self.step(1),
             FilesAction::PreviousTab => self.step(-1),
-            FilesAction::Input(input) => {
-                let Some(FileTab {
-                    state: TabState::Ready(view),
-                    ..
-                }) = self.active_tab_mut()
-                else {
-                    return Reduction::default();
-                };
-                view.handle(input.0);
-                Reduction::changed()
-            }
+            FilesAction::Input(input) => self.input(input.0),
         }
     }
 

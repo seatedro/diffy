@@ -170,6 +170,13 @@ impl GrammarStore {
     }
 
     #[cfg(feature = "engine")]
+    pub(crate) fn ships_tags(&self, language: &LanguageId) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.ships_tags(language.as_str()))
+    }
+
+    #[cfg(feature = "engine")]
     pub fn tree_sitter_language(&self, language: &LanguageId) -> Option<tree_sitter::Language> {
         match self.grammar(language) {
             Tag::Ready(grammar) => Some(grammar.language().clone()),
@@ -604,6 +611,24 @@ impl Inner {
             self.notify_status();
         }
         found
+    }
+
+    fn ships_tags(&self, tag: &str) -> bool {
+        let mut state = lock(&self.state);
+        if let Some(Tag::Ready(grammar)) = state.tags.get(tag) {
+            return grammar.tags().is_some();
+        }
+        let local = state
+            .local
+            .get_or_insert_with(|| scan_local(&self.config.local_packs));
+        if let Some((_, manifest)) = local.get(tag) {
+            return manifest.tags.is_some();
+        }
+        #[cfg(feature = "download")]
+        if let Some(downloads) = &self.config.downloads {
+            return crate::download::ships_tags(downloads, &mut state, tag);
+        }
+        false
     }
 
     fn resolve(self: &Arc<Self>, state: &mut State, tag: &str) -> Tag {

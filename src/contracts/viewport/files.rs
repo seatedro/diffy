@@ -3,12 +3,13 @@ use std::sync::Arc;
 
 use diffy_diff::DiffDocument;
 
+use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{Action, AppEvent, Effect};
 use crate::contracts::viewport::interaction::DiffInput;
 use crate::contracts::viewport::{ViewportAction, ViewportEffect, ViewportEvent};
 use crate::core::ref_catalog::WORKING_TREE_LABEL;
 use crate::core::vcs::git::{INDEX_REF, WORKDIR_REF};
-use crate::core::vcs::model::RevisionId;
+use crate::core::vcs::model::{RevisionId, VcsKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TabId(pub u64);
@@ -19,6 +20,23 @@ pub fn revision_label(id: &str) -> String {
         INDEX_REF => "Index".to_owned(),
         id => id.chars().take(8).collect(),
     }
+}
+
+pub fn head_revision(cx: &SharedContext) -> Option<(PathBuf, RevisionId)> {
+    let snapshot = &cx.repository.as_ref()?.snapshot;
+    let id = match cx.manifest.as_deref() {
+        Some(manifest) if manifest.working_tree => WORKDIR_REF.to_owned(),
+        Some(manifest) if !manifest.resolved_right.is_empty() => manifest.resolved_right.clone(),
+        _ if snapshot.location.kind == VcsKind::JJ => "@".to_owned(),
+        _ => "HEAD".to_owned(),
+    };
+    Some((
+        snapshot.path.clone(),
+        RevisionId {
+            backend: snapshot.location.kind,
+            id,
+        },
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

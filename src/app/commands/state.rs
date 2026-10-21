@@ -31,8 +31,9 @@ use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, Controller, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
 };
-use crate::contracts::viewport::files::{FileAt, FilesAction, revision_label};
+use crate::contracts::viewport::files::{FileAt, FilesAction, head_revision, revision_label};
 use crate::contracts::viewport::pipeline::{DiffSizeRequest, PipelineAction};
+use crate::contracts::viewport::symbols::SymbolsAction;
 use crate::core::compare::LayoutMode;
 use crate::core::frecency::{FrecencyStore, recent_repo_paths, repo_last_opened};
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
@@ -43,6 +44,7 @@ use crate::core::vcs::git::{WORKDIR_REF, is_full_hex_oid};
 use crate::core::vcs::model::{RevisionId, VcsKind};
 use crate::fonts::{FontFamilyEntry, FontRole, bundled_font_entries, normalize_font_selection};
 use crate::platform::persistence::Settings;
+use diffy_syntax::SymbolKind;
 
 pub const CONFIRM_CANCEL: FocusId = FocusId::from_key("diffy.confirm.cancel");
 pub const CONFIRM_ACCEPT: FocusId = FocusId::from_key("diffy.confirm.accept");
@@ -111,9 +113,11 @@ pub struct CommandsController {
     repo_scan: Option<Arc<RepoScan>>,
     repo_scanning: bool,
     repo_picker_current: Option<PathBuf>,
-    file_listing: Option<(u64, RevisionId, String)>,
-    file_lists: Vec<(RevisionId, Arc<[String]>)>,
+    file_picker: Option<FileListKey>,
+    file_lists: Vec<FileList>,
+    file_pending: Option<FileListKey>,
     file_generation: u64,
+    go_prefix: bool,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
     activation_click: Cell<bool>,
@@ -158,9 +162,11 @@ impl Default for CommandsController {
             repo_scan: None,
             repo_scanning: false,
             repo_picker_current: None,
-            file_listing: None,
+            file_picker: None,
             file_lists: Vec::new(),
+            file_pending: None,
             file_generation: 0,
+            go_prefix: false,
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
             activation_click: Cell::new(false),
@@ -553,71 +559,103 @@ impl CommandsController {
     }
 
     fn open_file_picker(&mut self, cx: &SharedContext) -> Reduction {
-        let Some(repository) = cx.repository.as_ref() else {
+        let Some(key) = file_list_key(cx) else {
             return Reduction::default();
         };
-        let snapshot = &repository.snapshot;
-        let id = match cx.manifest.as_deref() {
-            Some(manifest) if manifest.working_tree => WORKDIR_REF.to_owned(),
-            Some(manifest) if !manifest.resolved_right.is_empty() => {
-                manifest.resolved_right.clone()
-            }
-            _ if snapshot.location.kind == VcsKind::JJ => "@".to_owned(),
-            _ => "HEAD".to_owned(),
-        };
-        let label = revision_label(&id);
-        let revision = RevisionId {
-            backend: snapshot.location.kind,
-            id,
-        };
-        self.file_generation += 1;
-        let generation = self.file_generation;
-        self.file_listing = Some((generation, revision.clone(), label));
         let mut reduction = self.show_picker(PickerState::new(PickerKind::File, Vec::new()));
-        let cached = self
-            .file_lists
-            .iter()
-            .find(|(cached, _)| *cached == revision)
-            .map(|(_, files)| files.clone());
-        match (cached, self.picker.as_mut()) {
-            (Some(files), Some(picker)) => picker.set_files(files),
-            _ => {
-                reduction =
-                    reduction.effect(CommandsEffect::ListFiles(Box::new(FileListRequest {
-                        generation,
-                        repo_path: snapshot.path.clone(),
-                        revision,
-                    })));
-            }
+        let Some(picker) = self.picker.as_mut() else {
+            return reduction;
+        };
+        let cached = self.file_lists.iter().position(|list| list.key == key);
+        let fresh = cached.is_some() && is_full_hex_oid(&key.revision.id);
+        if let Some(index) = cached {
+            let list = self.file_lists.remove(index);
+            picker.set_files(list.files.clone());
+            self.file_lists.push(list);
+        }
+        self.file_picker = Some(key.clone());
+        if !fresh && let Some(effect) = self.list_files(key) {
+            reduction = reduction.effect(effect);
         }
         reduction
     }
 
-    fn files_listed(&mut self, generation: u64, files: Result<Arc<[String]>, String>) -> Reduction {
-        let Some((current, revision, _)) = &self.file_listing else {
+    fn prefetch_files(&mut self, cx: &SharedContext) -> Reduction {
+        let Some(key) = file_list_key(cx) else {
             return Reduction::default();
         };
-        if *current != generation {
+        if self.file_lists.iter().any(|list| list.key == key) {
             return Reduction::default();
         }
+        match self.list_files(key) {
+            Some(effect) => Reduction::default().effect(effect),
+            None => Reduction::default(),
+        }
+    }
+
+    fn list_files(&mut self, key: FileListKey) -> Option<CommandsEffect> {
+        if self.file_pending.as_ref() == Some(&key) {
+            return None;
+        }
+        self.file_generation += 1;
+        self.file_pending = Some(key.clone());
+        Some(CommandsEffect::ListFiles(Box::new(FileListRequest {
+            generation: self.file_generation,
+            repo_path: key.repo_path,
+            revision: key.revision,
+        })))
+    }
+
+    fn files_listed(
+        &mut self,
+        request: FileListRequest,
+        files: Result<Arc<[String]>, String>,
+    ) -> Reduction {
+        let key = FileListKey {
+            repo_path: request.repo_path,
+            revision: request.revision,
+        };
+        if self.file_pending.as_ref() == Some(&key) {
+            self.file_pending = None;
+        }
+        let showing = self.file_picker.as_ref() == Some(&key)
+            && self
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.kind == PickerKind::File);
         let files = match files {
             Ok(files) => files,
-            Err(message) => {
+            Err(message) if showing => {
                 self.toasts.apply(ToastUpdate::error(format!(
                     "Couldn't list files: {message}"
                 )));
                 return Reduction::changed();
             }
+            Err(_) => return Reduction::default(),
         };
-        if is_full_hex_oid(&revision.id) {
-            self.file_lists.retain(|(cached, _)| cached != revision);
-            self.file_lists.push((revision.clone(), files.clone()));
-            if self.file_lists.len() > FILE_LIST_CACHE {
-                self.file_lists.remove(0);
+        match self.file_lists.iter().position(|list| list.key == key) {
+            Some(index) if self.file_lists[index].generation > request.generation => {
+                return Reduction::default();
             }
+            Some(index) if self.file_lists[index].files == files => {
+                self.file_lists[index].generation = request.generation;
+                return Reduction::default();
+            }
+            Some(index) => {
+                self.file_lists.remove(index);
+            }
+            None => {}
+        }
+        self.file_lists.push(FileList {
+            key,
+            generation: request.generation,
+            files: files.clone(),
+        });
+        if self.file_lists.len() > FILE_LIST_CACHE {
+            self.file_lists.remove(0);
         }
         match self.picker.as_mut() {
-            Some(picker) if picker.kind == PickerKind::File => {
+            Some(picker) if showing => {
                 picker.set_files(files);
                 Reduction::changed()
             }
@@ -968,12 +1006,12 @@ impl CommandsController {
                 reduction = reduction.intent(Intent::OpenPullRequest { url });
             }
             (_, PickerChoice::File(path)) => {
-                if let Some((_, revision, label)) = self.file_listing.clone() {
+                if let Some(key) = self.file_picker.clone() {
                     self.request(PlatformRequest::Dispatch(
                         FilesAction::Open(FileAt {
                             path,
-                            revision,
-                            label,
+                            label: revision_label(&key.revision.id),
+                            revision: key.revision,
                         })
                         .into(),
                     ));
@@ -1114,6 +1152,17 @@ impl CommandsController {
     }
 
     fn shortcut(&mut self, command: ShortcutCommand, cx: &SharedContext) -> Reduction {
+        let prefixed = std::mem::take(&mut self.go_prefix);
+        match command {
+            ShortcutCommand::GoPrefix => {
+                self.go_prefix = true;
+                return Reduction::default();
+            }
+            ShortcutCommand::ScrollHalfPageDown if prefixed => {
+                return self.run(SymbolsAction::GoToDefinition.into(), cx);
+            }
+            _ => {}
+        }
         if let Some(external) = self.external.iter().find(|d| d.shortcut == Some(command)) {
             if !external.enabled {
                 return Reduction::default();
@@ -1245,6 +1294,42 @@ impl CommandsController {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileListKey {
+    repo_path: PathBuf,
+    revision: RevisionId,
+}
+
+#[derive(Debug)]
+struct FileList {
+    key: FileListKey,
+    generation: u64,
+    files: Arc<[String]>,
+}
+
+fn kind_label(kind: SymbolKind) -> &'static str {
+    match kind {
+        SymbolKind::Function => "function",
+        SymbolKind::Method => "method",
+        SymbolKind::Class => "type",
+        SymbolKind::Interface => "interface",
+        SymbolKind::Module => "module",
+        SymbolKind::Macro => "macro",
+        SymbolKind::Constant => "constant",
+        SymbolKind::Type => "type",
+        SymbolKind::Field => "field",
+        SymbolKind::Other => "definition",
+    }
+}
+
+fn file_list_key(cx: &SharedContext) -> Option<FileListKey> {
+    let (repo_path, revision) = head_revision(cx)?;
+    Some(FileListKey {
+        repo_path,
+        revision,
+    })
+}
+
 fn layer_focus(kind: LayerKind) -> FocusId {
     match kind {
         LayerKind::Palette => PALETTE_INPUT,
@@ -1300,6 +1385,7 @@ fn command_detail(id: &str) -> Option<&'static str> {
     Some(match id {
         ids::OPEN_REPOSITORY => "Pick a repository or type a path",
         ids::GO_TO_FILE => "Open any file at the compared revision",
+        ids::CLOSE => "Close the open file tab, or the window without tabs",
         ids::WORKING_TREE => "Compare HEAD with uncommitted changes",
         ids::REFRESH => "Reload refs, status and the current compare",
         "compare.base" => "Pick the ref to compare from",
@@ -1364,6 +1450,7 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
             CommandsAction::OpenFilePicker,
         )
         .shortcut(S::GoToFile),
+        D::new(ids::CLOSE, "Close", ShellAction::CloseTabOrWindow).shortcut(S::CloseTab),
         D::new(
             ids::WORKING_TREE,
             "Show Working Tree",
@@ -1943,9 +2030,7 @@ impl Controller for CommandsController {
                 }
                 _ => Reduction::default(),
             },
-            CommandsEvent::FilesListed { generation, files } => {
-                self.files_listed(generation, files)
-            }
+            CommandsEvent::FilesListed { request, files } => self.files_listed(*request, files),
             CommandsEvent::RepositoriesScanned { scan, cached } => {
                 if !cached {
                     self.repo_scanning = false;
@@ -1991,8 +2076,9 @@ impl Controller for CommandsController {
                 {
                     store.record_access(&format!("repo:{}", repository.snapshot.path.display()));
                 }
-                Reduction::default()
+                self.prefetch_files(cx)
             }
+            Intent::PublishManifest(_) => self.prefetch_files(cx),
             Intent::Toast(update) => {
                 let mut reduction = Reduction::changed();
                 if let ToastUpdate::Undo { id, expires_ms, .. } = update {
@@ -2003,6 +2089,25 @@ impl Controller for CommandsController {
                 }
                 self.toasts.apply(update.clone());
                 reduction
+            }
+            Intent::ChooseDefinition(targets) => {
+                let candidates = targets
+                    .iter()
+                    .map(|target| {
+                        let (dir, name) =
+                            target.path.rsplit_once('/').unwrap_or(("", &target.path));
+                        let mut candidate = PickerCandidate::new(
+                            format!("{name}:{}", target.line + 1),
+                            PickerChoice::Action(SymbolsAction::Jump(target.clone()).into()),
+                        )
+                        .detail(dir);
+                        if let Some(kind) = target.kind {
+                            candidate = candidate.meta(kind_label(kind));
+                        }
+                        candidate
+                    })
+                    .collect();
+                self.show_picker(PickerState::new(PickerKind::Definition, candidates))
             }
             Intent::RequestConfirmation(request) => {
                 let Some(return_focus) = self.admit(LayerKind::Confirmation) else {

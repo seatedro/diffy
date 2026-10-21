@@ -8,7 +8,10 @@
 
 use diffy_diff::{RowKind, Side};
 
+use quark::selection::{Selection, SelectionPoint};
+
 use super::DiffViewState;
+use super::selection::{block_key, decode_key};
 use super::state::{RowRef, source_line, store_index};
 
 pub use diffy_diff::{FileId, Revision};
@@ -55,6 +58,41 @@ impl DiffViewState {
             return u32::try_from(file.0).ok();
         }
         self.files.id_slots.get(&file).copied()
+    }
+
+    pub fn caret(&self) -> Option<(SourcePoint, String)> {
+        let point = self.selection?.focus;
+        let (side, unit, index) = decode_key(point.block);
+        let (seg, file) = self.locate(unit)?;
+        let doc = &self.segments[seg].doc;
+        let text = doc.text(file, side).display_line(index)?.to_owned();
+        let point = SourcePoint {
+            file: self.file_id(unit),
+            side,
+            line: source_line(doc, file, side, index),
+            byte: u32::try_from(point.byte).ok()?,
+        };
+        Some((point, text))
+    }
+
+    pub fn select_source(&mut self, point: SourcePoint, len: u32) -> bool {
+        let Some(unit) = self.unit_of(point.file) else {
+            return false;
+        };
+        let Some((seg, file)) = self.locate(unit) else {
+            return false;
+        };
+        let Some(index) = store_index(&self.segments[seg].doc, file, point.side, point.line) else {
+            return false;
+        };
+        let block = block_key(point.side, unit, index);
+        let start = point.byte as usize;
+        let selection = Selection::new(
+            SelectionPoint::new(block, start),
+            SelectionPoint::new(block, start + len as usize),
+        );
+        self.set_selection(Some(selection), point.side);
+        true
     }
 
     /// The [`FileId`] of `unit`.

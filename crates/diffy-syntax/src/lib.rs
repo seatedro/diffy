@@ -61,10 +61,12 @@
 mod download;
 #[cfg(feature = "engine")]
 mod engine;
+mod navigate;
 #[cfg(feature = "engine")]
 pub mod pack;
 mod scope;
 mod store;
+mod symbols;
 #[cfg(feature = "engine")]
 #[doc(hidden)]
 pub mod testing;
@@ -74,12 +76,16 @@ use std::sync::Arc;
 
 #[cfg(feature = "download")]
 pub use download::{Downloads, default_cache_dir};
+pub use navigate::{DefinitionLookup, SourcePos};
 #[cfg(feature = "download")]
 pub use quark_update::PublicKey;
 pub use scope::{ScopeResult, ScopeSpan, ScopeTable, ScopeWorker, scope_table};
 pub use store::{Catalog, GrammarState, GrammarStatus, GrammarStore, LanguageStatus};
 #[cfg(feature = "engine")]
 pub use store::{GrammarQueries, StoreConfig};
+pub use symbols::{Symbol, SymbolKind};
+#[cfg(feature = "engine")]
+pub use symbols::{Tagger, TaggerLookup};
 pub use worker::{
     HighlightFocus, HighlightPart, HighlightRequest, HighlightWorker, Highlighted, Priority,
     WorkerGone,

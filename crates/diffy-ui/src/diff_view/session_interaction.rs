@@ -13,6 +13,7 @@ use quark_ui::theme::Theme;
 use super::DiffViewState;
 use super::annotations::{DiffAnchor, DiffAnnotation};
 use super::decorator::{DiffDecorator, DiffSources, DiffViewOptions};
+use super::hover::HoverHit;
 use super::navigation::{DiffTarget, FileId, RevealAlign, SourcePoint};
 use super::prepared::{AnnotationId, DiffPreviewLimit, ViewFrame};
 use super::presentation::{DiffAppearance, DiffPresentation};
@@ -42,6 +43,9 @@ impl DiffSessionViewState {
         fn top_file() -> Option<FileId>;
         fn selected_lines() -> Option<DiffAnchor>;
         fn line_at(x: f32, y: f32) -> Option<LineHit>;
+        fn caret() -> Option<(SourcePoint, String)>;
+        fn hover_at(x: f32, y: f32) -> Option<HoverHit>;
+        fn has_link() -> bool;
     }
 
     forward! { mut
@@ -64,6 +68,8 @@ impl DiffSessionViewState {
         fn enable_syntax_shared(worker: &HighlightWorker, store: GrammarStore) -> ();
         fn finish_syntax() -> bool;
         fn refresh_syntax() -> ();
+        fn select_source(point: SourcePoint, len: u32) -> bool;
+        fn set_link(link: Option<(SourcePoint, u32)>) -> bool;
     }
 
     /// See [`DiffViewState::set_syntax_wake`].

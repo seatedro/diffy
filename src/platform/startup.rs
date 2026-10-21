@@ -228,6 +228,12 @@ pub fn app_config_dir() -> Option<PathBuf> {
     config_dir_override().or_else(|| dirs::config_dir().map(|base| base.join(APP_DIR_NAME)))
 }
 
+pub fn app_cache_dir() -> Option<PathBuf> {
+    config_dir_override()
+        .map(|dir| dir.join("cache"))
+        .or_else(|| dirs::cache_dir().map(|base| base.join(APP_DIR_NAME)))
+}
+
 pub fn app_log_dir() -> Option<PathBuf> {
     if let Some(dir) = config_dir_override() {
         return Some(dir.join("logs"));

@@ -103,10 +103,7 @@ impl CommandsRuntime {
                             .and_then(|mut repo| repo.list_files(&request.revision))
                             .map(Arc::from)
                             .map_err(|error| error.user_message());
-                    events.send(CommandsEvent::FilesListed {
-                        generation: request.generation,
-                        files,
-                    });
+                    events.send(CommandsEvent::FilesListed { request, files });
                 });
             }
             CommandsEffect::ScanRepositories { options, known } => {

@@ -23,6 +23,7 @@ pub enum PickerKind {
     CompareMenu,
     PullRequest,
     File,
+    Definition,
 }
 
 impl PickerKind {
@@ -37,6 +38,7 @@ impl PickerKind {
             Self::CompareMenu => "Compare",
             Self::PullRequest => "Open pull request",
             Self::File => "Go to file",
+            Self::Definition => "Definitions",
         }
     }
 
@@ -49,6 +51,7 @@ impl PickerKind {
             Self::CompareMenu => "Search compare options",
             Self::PullRequest => "Paste a GitHub pull request URL",
             Self::File => "Search files",
+            Self::Definition => "Filter definitions",
         }
     }
 }
@@ -209,8 +212,12 @@ impl PickerState {
     }
 
     pub fn set_files(&mut self, files: Arc<[String]>) {
-        self.files = Some(files);
-        self.refilter();
+        let loaded = self.files.replace(files).is_some();
+        if loaded {
+            self.refresh();
+        } else {
+            self.refilter();
+        }
     }
 
     pub fn set_candidates(&mut self, candidates: Vec<PickerCandidate>) {

@@ -6,7 +6,7 @@ use crate::contracts::delivery::DeliveryAction;
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{NavigationAction, SidebarTab};
 use crate::contracts::shell::{Action, LogicalFocus, ShellAction};
-use crate::contracts::viewport::{FilesAction, InteractionAction, ViewportAction};
+use crate::contracts::viewport::{FilesAction, InteractionAction, SymbolsAction, ViewportAction};
 use crate::core::compare::LayoutMode;
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
 
@@ -25,6 +25,10 @@ const GLOBAL: ShortcutScope = ShortcutScope::GLOBAL;
 use ShortcutCommand as C;
 
 const NAVIGATION: &[Entry] = &[
+    Entry::new(WORKSPACE, C::GoToDefinition, &["f12"], "Go to definition"),
+    Entry::new(WORKSPACE, C::GoPrefix, &["g"], "Go to… (g d: definition)"),
+    Entry::new(WORKSPACE, C::NavigateBack, &["mod+["], "Go back"),
+    Entry::new(WORKSPACE, C::NavigateForward, &["mod+]"], "Go forward"),
     Entry::new(WORKSPACE, C::NextHunk, &["]"], "Next hunk"),
     Entry::new(WORKSPACE, C::PreviousHunk, &["["], "Previous hunk"),
     Entry::new(WORKSPACE, C::FocusFileList, &["h"], "Focus file list"),
@@ -218,6 +222,12 @@ const WORKING_TREE: &[Entry] = &[
 const REPOSITORY: &[Entry] = &[
     Entry::new(GLOBAL, C::OpenRepository, &["mod+o"], "Open repository"),
     Entry::new(GLOBAL, C::GoToFile, &["mod+p"], "Go to file"),
+    Entry::new(
+        GLOBAL,
+        C::CloseTab,
+        &["mod+w"],
+        "Close tab, or the window without tabs",
+    ),
     Entry::new(GLOBAL, C::NextTab, &["mod+shift+]", "ctrl+tab"], "Next tab"),
     Entry::new(
         GLOBAL,
@@ -344,6 +354,10 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::OpenCommandPalette => CommandsAction::OpenCommandPalette.into(),
         C::OpenRepository => CommandsAction::OpenRepoPicker { anchored: false }.into(),
         C::GoToFile => CommandsAction::OpenFilePicker.into(),
+        C::CloseTab => ShellAction::CloseTabOrWindow.into(),
+        C::GoToDefinition => SymbolsAction::GoToDefinition.into(),
+        C::NavigateBack => SymbolsAction::Back.into(),
+        C::NavigateForward => SymbolsAction::Forward.into(),
         C::NextTab => FilesAction::NextTab.into(),
         C::PreviousTab => FilesAction::PreviousTab.into(),
         C::IncreaseUiScale => CommandsAction::IncreaseUiScale.into(),
@@ -403,6 +417,7 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::OpenPublishMenu => MutationsAction::OpenPublishMenu.into(),
         C::ToggleDebugOverlay => ShellAction::ToggleDebugOverlay.into(),
         C::ToggleFocus
+        | C::GoPrefix
         | C::SettingsNextSection
         | C::SettingsPreviousSection
         | C::Stage

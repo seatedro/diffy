@@ -335,7 +335,7 @@ pub enum CommandsEvent {
     },
     ToastExpired(JobId),
     FilesListed {
-        generation: u64,
+        request: Box<FileListRequest>,
         files: Result<Arc<[String]>, String>,
     },
     RepositoriesScanned {

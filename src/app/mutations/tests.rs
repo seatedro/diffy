@@ -73,6 +73,7 @@ fn repository(
                 active: true,
                 upstream: Some("origin/main".to_owned()),
                 ahead_behind: None,
+                worktree: None,
             }],
             changes: Vec::new(),
             operation_log: Vec::new(),

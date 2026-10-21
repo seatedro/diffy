@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -10,6 +11,7 @@ use crate::apprt::vcs_worker::{VcsCommand, VcsWorkerCommand};
 use crate::contracts::navigation::RepositoryChangeKind;
 use crate::contracts::shared::WorkspaceEpoch;
 use crate::core::vcs::discovery;
+use crate::core::vcs::git::all_ignored;
 
 const REPO_WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
@@ -28,10 +30,17 @@ impl RepoWatchWorker {
     pub fn dispatch(&self, workspace: WorkspaceEpoch, path: Option<PathBuf>) {
         let _ = self.sender.send(WatchCommand::SetRepo(workspace, path));
     }
+
+    /// Also watches the linked worktree a compare reads, reporting its
+    /// changes as working-tree changes of the open repository.
+    pub fn watch_compare_worktree(&self, workspace: WorkspaceEpoch, path: Option<PathBuf>) {
+        let _ = self.sender.send(WatchCommand::SetWorktree(workspace, path));
+    }
 }
 
 enum WatchCommand {
     SetRepo(WorkspaceEpoch, Option<PathBuf>),
+    SetWorktree(WorkspaceEpoch, Option<PathBuf>),
     Notify(Result<Event, notify::Error>),
 }
 
@@ -59,11 +68,13 @@ fn repo_watch_worker_loop(
         }
     };
 
-    let mut active = None;
+    let mut active: Option<ActiveRepoWatch> = None;
     let mut pending_dirty: Option<RepositoryChangeKind> = None;
+    let mut worktree: Option<PathBuf> = None;
+    let mut pending_worktree: HashSet<PathBuf> = HashSet::new();
 
     loop {
-        let command = if pending_dirty.is_some() {
+        let command = if pending_dirty.is_some() || !pending_worktree.is_empty() {
             match receiver.recv_timeout(REPO_WATCH_DEBOUNCE) {
                 Ok(command) => Some(command),
                 Err(RecvTimeoutError::Timeout) => None,
@@ -79,11 +90,55 @@ fn repo_watch_worker_loop(
         match command {
             Some(WatchCommand::SetRepo(workspace, path)) => {
                 pending_dirty = None;
+                pending_worktree.clear();
+                if let Some(old) = worktree.take() {
+                    unwatch_paths(&mut watcher, &[old]);
+                }
                 replace_active_watch(&mut watcher, &mut active, workspace, path);
             }
+            Some(WatchCommand::SetWorktree(workspace, path)) => {
+                if active.as_ref().is_none_or(|a| a.workspace != workspace) {
+                    continue;
+                }
+                pending_worktree.clear();
+                if let Some(old) = worktree.take() {
+                    unwatch_paths(&mut watcher, &[old]);
+                }
+                if let Some(path) = path {
+                    let path = std::fs::canonicalize(&path).unwrap_or(path);
+                    match watcher.watch(&path, RecursiveMode::Recursive) {
+                        Ok(()) => worktree = Some(path),
+                        Err(error) => tracing::warn!(
+                            path = %path.display(),
+                            "failed to watch compare worktree: {error}"
+                        ),
+                    }
+                }
+            }
             Some(WatchCommand::Notify(Ok(event))) => {
+                if active.is_none() || !should_consider_event(&event) {
+                    continue;
+                }
+                let (theirs, ours): (Vec<PathBuf>, Vec<PathBuf>) =
+                    event.paths.iter().cloned().partition(|path| {
+                        worktree.as_ref().is_some_and(|root| path.starts_with(root))
+                    });
+                if let Some(root) = worktree.as_ref() {
+                    let metadata = root.join(".git");
+                    pending_worktree.extend(
+                        theirs
+                            .into_iter()
+                            .filter(|path| !path.starts_with(&metadata)),
+                    );
+                }
+                if ours.is_empty() {
+                    continue;
+                }
+                let event = Event {
+                    paths: ours,
+                    ..event
+                };
                 if let Some(active_watch) = active.as_ref()
-                    && should_consider_event(&event)
                     && !is_ignored_metadata_event(active_watch, &event)
                 {
                     let change_kind = classify_event(active_watch, &event);
@@ -100,8 +155,29 @@ fn repo_watch_worker_loop(
             None => {
                 let Some(active_watch) = active.as_ref() else {
                     pending_dirty = None;
+                    pending_worktree.clear();
                     continue;
                 };
+                if let Some(root) = worktree.as_ref()
+                    && !pending_worktree.is_empty()
+                {
+                    // Agents' builds write thousands of ignored files; only
+                    // a change git would show refreshes the compare.
+                    let paths: Vec<PathBuf> = pending_worktree.drain().collect();
+                    let ignored = all_ignored(root, &paths);
+                    tracing::debug!(
+                        path = %root.display(),
+                        changes = paths.len(),
+                        ignored,
+                        "compare worktree changed"
+                    );
+                    if !ignored {
+                        let _ = dirty_sender.send(VcsWorkerCommand {
+                            workspace: active_watch.workspace,
+                            command: VcsCommand::CompareWorktreeChanged { path: root.clone() },
+                        });
+                    }
+                }
                 let Some(change_hint) = pending_dirty.take() else {
                     continue;
                 };

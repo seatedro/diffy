@@ -48,6 +48,7 @@ pub struct CompareSelection {
     pub layout: LayoutMode,
     pub renderer: RendererKind,
     pub working_copy: bool,
+    pub committed_only: bool,
 }
 
 impl Default for CompareSelection {
@@ -59,6 +60,7 @@ impl Default for CompareSelection {
             layout: LayoutMode::default(),
             renderer: RendererKind::default(),
             working_copy: false,
+            committed_only: false,
         }
     }
 }
@@ -74,24 +76,28 @@ impl CompareSelection {
     }
 
     pub fn request(&self) -> VcsCompareRequest {
+        self.request_to(&self.right)
+    }
+
+    fn request_to(&self, right: &str) -> VcsCompareRequest {
         let spec = if self.working_copy {
             VcsCompareSpec::WorkingCopy
         } else {
             match self.mode {
                 CompareMode::SingleCommit => VcsCompareSpec::Change {
-                    revision: if self.right.is_empty() {
+                    revision: if right.is_empty() {
                         self.left.clone()
                     } else {
-                        self.right.clone()
+                        right.to_owned()
                     },
                 },
                 CompareMode::TwoDot => VcsCompareSpec::Range {
                     from: self.left.clone(),
-                    to: self.right.clone(),
+                    to: right.to_owned(),
                 },
                 CompareMode::ThreeDot => VcsCompareSpec::MergeBaseRange {
                     base: self.left.clone(),
-                    head: self.right.clone(),
+                    head: right.to_owned(),
                 },
             }
         };
@@ -185,6 +191,7 @@ pub struct NavigationController {
     tags: RefCell<(usize, Rc<HashMap<String, Vec<String>>>)>,
     avatars_requested: HashSet<String>,
     scrollbars: [ScrollbarVisibility; 2],
+    watched_worktree: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -231,6 +238,7 @@ impl Default for NavigationController {
             tags: RefCell::new((0, Rc::default())),
             avatars_requested: HashSet::new(),
             scrollbars: Default::default(),
+            watched_worktree: None,
         }
     }
 }
@@ -246,6 +254,28 @@ impl NavigationController {
 
     pub fn status(&self) -> &RepoStatus {
         &self.status
+    }
+
+    /// Where the head branch is checked out, when that is another worktree
+    /// whose files a two- or three-dot compare can show.
+    pub fn head_worktree(&self) -> Option<&Path> {
+        if self.compare.working_copy || self.compare.mode == CompareMode::SingleCommit {
+            return None;
+        }
+        self.repository
+            .as_ref()?
+            .snapshot
+            .refs
+            .iter()
+            .find(|r| r.kind == RefKind::Branch && r.name == self.compare.right)?
+            .worktree
+            .as_deref()
+    }
+
+    fn compare_worktree(&self) -> Option<PathBuf> {
+        self.head_worktree()
+            .filter(|_| !self.compare.committed_only)
+            .map(Path::to_path_buf)
     }
 
     pub fn compare(&self) -> &CompareSelection {
@@ -761,10 +791,22 @@ impl NavigationController {
         self.history.commits = None;
         self.compare_requested = true;
         self.history.range = None;
-        let mut reduction = Reduction::changed().intent(Intent::RequestCompare(CompareIntent {
-            repo_path: repo_path.clone(),
-            request: self.compare.request(),
-        }));
+        let worktree = self.compare_worktree();
+        let intent = match &worktree {
+            Some(path) => CompareIntent {
+                repo_path: path.clone(),
+                request: self.compare.request_to(crate::core::vcs::git::WORKDIR_REF),
+            },
+            None => CompareIntent {
+                repo_path: repo_path.clone(),
+                request: self.compare.request(),
+            },
+        };
+        let mut reduction = Reduction::changed().intent(Intent::RequestCompare(intent));
+        if worktree != self.watched_worktree {
+            self.watched_worktree = worktree.clone();
+            reduction = reduction.effect(NavigationEffect::WatchCompareWorktree { path: worktree });
+        }
         if let Some(intent) = self.persist_compare(&repo_path, cx) {
             reduction = reduction.intent(intent);
         }
@@ -879,6 +921,7 @@ impl NavigationController {
                 .or(settings.last_compare.as_ref().map(|c| c.renderer))
                 .unwrap_or_default(),
             working_copy: false,
+            committed_only: false,
         };
         let auto =
             options.wants_compare(self.compare.mode, &self.compare.left, &self.compare.right);
@@ -921,6 +964,7 @@ impl NavigationController {
             self.startup = None;
         }
         self.repo_path = Some(path.to_path_buf());
+        self.watched_worktree = None;
         self.status = RepoStatus::Opening;
         self.repository = None;
         self.manifest = None;
@@ -1011,6 +1055,11 @@ impl NavigationController {
             return self.compare_intent(cx);
         }
         if self.compare_requested {
+            // A compare started before the snapshot could not know the head
+            // branch's worktree.
+            if self.compare_worktree() != self.watched_worktree {
+                return self.compare_intent(cx);
+            }
             return Reduction::default();
         }
         if let Some(persisted) = cx.settings.settings.last_compare.as_ref().filter(|c| {
@@ -1024,6 +1073,7 @@ impl NavigationController {
                 layout: persisted.layout,
                 renderer: persisted.renderer,
                 working_copy: false,
+                committed_only: false,
             };
             if candidate.refs_valid() {
                 self.compare = candidate;
@@ -1206,7 +1256,10 @@ impl NavigationController {
                 self.compare.working_copy = false;
                 match field {
                     CompareField::Left => self.compare.left = value,
-                    CompareField::Right => self.compare.right = value,
+                    CompareField::Right => {
+                        self.compare.right = value;
+                        self.compare.committed_only = false;
+                    }
                 }
                 self.resolved[field_index(field)] = None;
                 self.compare.auto_select_mode();
@@ -1226,6 +1279,13 @@ impl NavigationController {
                     .borrow_mut()
                     .push(CommandsAction::ShowRefPicker(Box::new(request)).into());
                 Reduction::default()
+            }
+            A::ToggleCommittedOnly => {
+                if self.head_worktree().is_none() {
+                    return Reduction::default();
+                }
+                self.compare.committed_only = !self.compare.committed_only;
+                self.compare_intent(cx)
             }
             A::SwapRefs => {
                 if self.compare.left.trim().is_empty() || self.compare.right.trim().is_empty() {
@@ -1472,6 +1532,17 @@ impl NavigationController {
                 Reduction::changed()
             }
             NavigationEvent::RefResolveFailed { .. } => Reduction::default(),
+            NavigationEvent::CompareWorktreeChanged { path } => {
+                if self.manifest.is_none()
+                    || self
+                        .watched_worktree
+                        .as_ref()
+                        .is_none_or(|watched| *watched != path)
+                {
+                    return Reduction::default();
+                }
+                self.compare_intent(cx)
+            }
         }
     }
 

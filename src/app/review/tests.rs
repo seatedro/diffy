@@ -1574,6 +1574,7 @@ fn preview_pull_request_compares_the_default_branch_with_the_worktree() {
         active,
         upstream: None,
         ahead_behind: None,
+        worktree: None,
     };
     snapshot.refs = vec![
         reference("feature", crate::core::vcs::model::RefKind::Branch, true),

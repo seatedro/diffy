@@ -603,6 +603,7 @@ impl VcsRepository for JjRepository {
             active: true,
             upstream: None,
             ahead_behind: None,
+            worktree: None,
         }];
         let current_target = refs[0].target.clone();
         let remote_names = parse_remote_names(&remotes);
@@ -1424,6 +1425,7 @@ fn parse_remote_bookmark_list(
             active: false,
             upstream: Some(format!("{remote}/{name}")),
             ahead_behind: None,
+            worktree: None,
         })
         .collect()
 }

@@ -42,6 +42,7 @@ pub fn snapshot(reason: RepositorySyncReason, operation_log: bool) -> Repository
                 active: name == "main",
                 upstream: None,
                 ahead_behind: None,
+                worktree: None,
             })
             .collect(),
         changes: vec![change("c1", "First change"), change("c2", "Second change")],

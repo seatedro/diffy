@@ -33,7 +33,9 @@ pub fn compare(
         r.phase(ComparePhase::EnumeratingChanges);
     }
     if right == WORKDIR_REF {
-        return CompareOutput::from_patch(&git.diff_two_refs(&left, &right)?);
+        let mut output = CompareOutput::from_patch(&git.diff_two_refs(&left, &right)?)?;
+        push_untracked(&mut output, git, None)?;
+        return Ok(output);
     }
     let mut repo = open_gix_repo(git)?;
     let mut changes = collect_gix_changes(&mut repo, &left, &right, None, false)?;
@@ -285,7 +287,24 @@ pub fn compare_path(
     } else {
         git.diff_two_refs_path_no_renames(&left, &right, path)?
     };
-    CompareOutput::from_patch(&raw)
+    let mut output = CompareOutput::from_patch(&raw)?;
+    if right == WORKDIR_REF {
+        push_untracked(&mut output, git, Some(path))?;
+    }
+    Ok(output)
+}
+
+fn push_untracked(output: &mut CompareOutput, git: &GitService, only: Option<&str>) -> Result<()> {
+    for path in git.untracked_paths(only)? {
+        let new = git.read_file_bytes_at(WORKDIR_REF, &path)?;
+        let meta = FileMeta {
+            new_path: Some(Arc::from(path.as_str())),
+            status: FileStatus::Added,
+            ..FileMeta::default()
+        };
+        output.push_document(Arc::new(document_from_bytes(meta, &[], &new)?));
+    }
+    Ok(())
 }
 
 pub fn compare_entry(entry: &CompareEntry, git: &GitService) -> Result<Option<DiffDocument>> {

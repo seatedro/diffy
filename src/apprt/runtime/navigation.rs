@@ -30,6 +30,10 @@ impl NavigationRuntime {
             NavigationEffect::WatchRepository { path } => {
                 self.watcher.dispatch(events.workspace(), path);
             }
+            NavigationEffect::WatchCompareWorktree { path } => {
+                self.watcher
+                    .watch_compare_worktree(events.workspace(), path);
+            }
             NavigationEffect::SyncRepository(request) => {
                 self.vcs.dispatch(
                     events.workspace(),

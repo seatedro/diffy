@@ -53,6 +53,9 @@ pub fn compare_bar(
     let scale = tokens::ui_scale(theme);
     let (left, right) = nav.compare_labels();
     let read_only = !nav.compare().working_copy;
+    let uncommitted = nav
+        .head_worktree()
+        .map(|_| uncommitted_toggle(!nav.compare().committed_only, theme));
     let base = chip(nav, CompareField::Left, &left, editing, theme);
     let head = chip(nav, CompareField::Right, &right, editing, theme);
     let margin = tokens::scaled(Layout::COMPARE_ARROW_MARGIN, scale);
@@ -73,6 +76,10 @@ pub fn compare_bar(
                 <icon svg={lucide::ARROW_RIGHT} size={Ico::SM} color={tc.text_muted} />
             </div>
             {head}
+            if let Some(toggle) = uncommitted {
+                <div class="shrink-0" w={tokens::scaled(Sp::XS, scale)} />
+                {toggle}
+            }
             if read_only {
                 <div class="shrink-0" w={tokens::scaled(Sp::XS, scale)} />
                 <div
@@ -90,6 +97,38 @@ pub fn compare_bar(
             }
         </div>
     })
+}
+
+fn uncommitted_toggle(on: bool, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let (icon, label, color) = if on {
+        (lucide::PENCIL, "Uncommitted", tc.text_strong)
+    } else {
+        (icons::COMMIT, "Committed", tc.text_muted)
+    };
+    view! {
+        <div
+            class="flex-row items-center"
+            h={tokens::scaled(Layout::COMPARE_CHIP_H, scale)}
+            gap={tokens::scaled(Sp::XS, scale)}
+            px={tokens::scaled(Sp::SM, scale)}
+            border_l={tc.border_variant}
+            rounded={theme.metrics.control_radius}
+            hover_bg={tc.ghost_element_hover}
+            cursor={CursorHint::Pointer}
+            id="title.compare.uncommitted"
+            test_id="title.compare.uncommitted"
+            accessibility_role={AccessibilityRole::Button}
+            accessibility_toggled={on}
+            aria-label="Include uncommitted changes"
+            tooltip={if on { "Showing the worktree's files, uncommitted changes included" } else { "Showing commits only" }}
+            on:click={NavigationAction::ToggleCommittedOnly}
+        >
+            <icon svg={icon} size={Ico::XS} color={color} />
+            <text size={TextStyle::BodySmall.font_size(theme)} color={color}>{label}</text>
+        </div>
+    }
 }
 
 fn chip(

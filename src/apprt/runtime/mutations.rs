@@ -262,6 +262,9 @@ impl VcsEvents for VcsEventRouter {
                     });
                 }
             }
+            VcsWorkerEvent::CompareWorktreeChanged { path } => {
+                events.send(NavigationEvent::CompareWorktreeChanged { path });
+            }
             VcsWorkerEvent::SnapshotReady { revision, snapshot } => {
                 events.send(NavigationEvent::SnapshotReady {
                     revision: RepositoryRevision(revision),

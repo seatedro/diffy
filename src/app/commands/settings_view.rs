@@ -145,7 +145,7 @@ const ITEMS: &[Item] = &[
         section: SettingsSection::Behavior,
         control: Control::RepoScan,
         title: "Last repository scan",
-        description: "Skips Library, node_modules and target folders",
+        description: "Skips system, dependency, build and cache folders",
     },
 ];
 

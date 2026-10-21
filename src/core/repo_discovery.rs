@@ -21,8 +21,47 @@ const SKIPPED_DIRS: &[&str] = &[
     "Movies",
     "Music",
     "Pictures",
+    ".Trash",
     "node_modules",
+    "bower_components",
+    "jspm_packages",
+    ".pnpm-store",
+    ".yarn",
+    "Pods",
+    "Carthage",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".tox",
+    ".nox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "site-packages",
+    ".gradle",
+    ".m2",
+    ".ivy2",
+    ".terraform",
+    ".dart_tool",
+    ".pub-cache",
+    "elm-stuff",
+    ".stack-work",
+    "_build",
     "target",
+    "build",
+    "dist",
+    "out",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".turbo",
+    ".parcel-cache",
+    "DerivedData",
+    ".build",
+    "zig-out",
+    ".zig-cache",
+    "zig-cache",
+    ".cache",
+    ".npm",
 ];
 const SHORT_SHA: usize = 7;
 
@@ -315,6 +354,8 @@ mod tests {
         repo(root, "work/beta", "0123456789abcdef\n");
         repo(root, ".config/hidden", "ref: refs/heads/main\n");
         repo(root, "node_modules/pkg", "ref: refs/heads/main\n");
+        repo(root, "code/.venv/tool", "ref: refs/heads/main\n");
+        repo(root, "code/DerivedData/pkg", "ref: refs/heads/main\n");
         repo(root, "a/b/c/d/e/f/deep", "ref: refs/heads/main\n");
 
         let options = RepoDiscovery::default();
@@ -346,6 +387,12 @@ mod tests {
                 .repos
                 .iter()
                 .any(|repo| repo.path.ends_with(".config/hidden"))
+        );
+        assert!(
+            !scan(&hidden, &[], Some(root))
+                .repos
+                .iter()
+                .any(|repo| repo.path.ends_with(".venv/tool"))
         );
     }
 

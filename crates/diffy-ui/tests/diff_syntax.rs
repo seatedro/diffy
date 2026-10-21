@@ -350,8 +350,8 @@ fn file_status_names_how_far_colors_can_be_trusted() {
             SyntaxStatus::MissingGrammar,
         ),
         (
-            "no extension",
-            texts("Makefile", "fn b() {}\n"),
+            "unclaimed name",
+            texts("NOTES", "fn b() {}\n"),
             SyntaxStatus::MissingGrammar,
         ),
         (

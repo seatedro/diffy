@@ -13,7 +13,7 @@ pub struct DeviceFlowState {
 
 pub fn start_device_flow(client_id: &str) -> Result<DeviceFlowState> {
     let body = http::block_on(async {
-        let response = reqwest::Client::new()
+        let response = crate::core::http::client()
             .post("https://github.com/login/device/code")
             .header("Accept", "application/x-www-form-urlencoded")
             .header("User-Agent", "diffy/0.1")
@@ -51,7 +51,7 @@ pub fn start_device_flow(client_id: &str) -> Result<DeviceFlowState> {
 
 pub fn poll_for_token(client_id: &str, device_code: &str) -> Result<Option<String>> {
     let body = http::block_on(async {
-        let response = reqwest::Client::new()
+        let response = crate::core::http::client()
             .post("https://github.com/login/oauth/access_token")
             .header("Accept", "application/x-www-form-urlencoded")
             .header("User-Agent", "diffy/0.1")

@@ -1,6 +1,16 @@
 use std::future::Future;
+use std::time::Duration;
 
 use crate::core::error::{DiffyError, Result};
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub(crate) fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .unwrap_or_default()
+}
 
 pub(crate) fn block_on<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
     let runtime = tokio::runtime::Builder::new_current_thread()

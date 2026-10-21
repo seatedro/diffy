@@ -319,7 +319,7 @@ impl GitHubApi {
 
     pub fn fetch_current_user(&self) -> Result<GitHubUser> {
         let body = http::block_on(async {
-            let mut request = reqwest::Client::new()
+            let mut request = crate::core::http::client()
                 .get("https://api.github.com/user")
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "diffy/0.1");
@@ -358,7 +358,7 @@ impl GitHubApi {
     ) -> Result<PullRequestInfo> {
         let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}");
         let body = http::block_on(async {
-            let mut request = reqwest::Client::new()
+            let mut request = crate::core::http::client()
                 .get(&url)
                 .header("Accept", "application/vnd.github.v3+json")
                 .header("User-Agent", "diffy/0.1");
@@ -409,7 +409,7 @@ impl GitHubApi {
         number: i32,
     ) -> Result<Vec<PullRequestReviewComment>> {
         http::block_on(async {
-            let client = reqwest::Client::new();
+            let client = crate::core::http::client();
             let mut comments = Vec::new();
             let mut page = 1_u32;
 
@@ -516,7 +516,7 @@ impl GitHubApi {
         let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}/comments");
         let request_body = serde_json::to_string(comment)?;
         let body = http::block_on(async {
-            let response = reqwest::Client::new()
+            let response = crate::core::http::client()
                 .post(&url)
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2026-03-10")
@@ -552,7 +552,7 @@ impl GitHubApi {
         );
         let request_body = serde_json::to_string(reply)?;
         let body = http::block_on(async {
-            let response = reqwest::Client::new()
+            let response = crate::core::http::client()
                 .post(&url)
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2026-03-10")
@@ -586,7 +586,7 @@ impl GitHubApi {
             format!("https://api.github.com/repos/{owner}/{repo}/pulls/comments/{comment_id}");
         let request_body = serde_json::to_string(update)?;
         let body = http::block_on(async {
-            let response = reqwest::Client::new()
+            let response = crate::core::http::client()
                 .patch(&url)
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2026-03-10")
@@ -618,7 +618,7 @@ impl GitHubApi {
         let url =
             format!("https://api.github.com/repos/{owner}/{repo}/pulls/comments/{comment_id}");
         http::block_on(async {
-            let response = reqwest::Client::new()
+            let response = crate::core::http::client()
                 .delete(&url)
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2026-03-10")
@@ -649,7 +649,7 @@ impl GitHubApi {
         let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}/reviews");
         let request_body = serde_json::to_string(review)?;
         let body = http::block_on(async {
-            let response = reqwest::Client::new()
+            let response = crate::core::http::client()
                 .post(&url)
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2026-03-10")
@@ -687,7 +687,7 @@ impl GitHubApi {
         );
         let request_body = serde_json::to_string(submit)?;
         let body = http::block_on(async {
-            let response = reqwest::Client::new()
+            let response = crate::core::http::client()
                 .post(&url)
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2026-03-10")
@@ -823,7 +823,7 @@ impl GitHubApi {
         })
         .to_string();
         let body = http::block_on(async {
-            let response = reqwest::Client::new()
+            let response = crate::core::http::client()
                 .post("https://api.github.com/graphql")
                 .header("Accept", "application/vnd.github+json")
                 .header("X-GitHub-Api-Version", "2026-03-10")

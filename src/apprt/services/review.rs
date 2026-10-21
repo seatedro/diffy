@@ -120,7 +120,7 @@ impl ReviewServices {
 
     pub fn fetch_avatar(&self, url: &str) -> Result<AvatarImage> {
         let bytes = http::block_on(async {
-            let response = reqwest::Client::new()
+            let response = crate::core::http::client()
                 .get(url)
                 .header("User-Agent", "diffy/0.1")
                 .send()

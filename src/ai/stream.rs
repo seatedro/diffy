@@ -105,7 +105,7 @@ async fn drive_stream(request: GenerateRequest, tx: Sender<StreamMessage>) {
         return;
     }
 
-    let client = reqwest::Client::new();
+    let client = crate::core::http::client();
     if let Err(error) = match provider {
         Provider::OpenAi => stream_openai(&client, &api_key, &user_message, &tx).await,
         Provider::Anthropic => stream_anthropic(&client, &api_key, &user_message, &tx).await,

@@ -134,7 +134,7 @@ pub fn apply_staged_update(staged: &StagedUpdate) -> Result<()> {
 fn fetch_manifest() -> Result<SignedUpdateManifest> {
     let url = manifest_url();
     let text = http::block_on(async {
-        let response = reqwest::get(&url).await.map_err(|error| {
+        let response = http::client().get(&url).send().await.map_err(|error| {
             DiffyError::network(format!("update manifest request failed: {error}"))
         })?;
         http::response_text(response, "update manifest").await
@@ -144,7 +144,9 @@ fn fetch_manifest() -> Result<SignedUpdateManifest> {
 
 fn download_file(url: &str, path: &Path) -> Result<()> {
     let bytes = http::block_on(async {
-        let response = reqwest::get(url)
+        let response = http::client()
+            .get(url)
+            .send()
             .await
             .map_err(|error| DiffyError::network(format!("update download failed: {error}")))?;
         http::response_bytes(response, "update download").await

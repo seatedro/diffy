@@ -143,7 +143,7 @@ pub fn diff_view_with(
     )
 }
 
-pub(crate) fn diff_view_custom(
+pub fn diff_view_custom(
     state: &mut DiffViewState,
     theme: &Theme,
     env: CollectionEnv,

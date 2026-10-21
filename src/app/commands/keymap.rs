@@ -6,7 +6,7 @@ use crate::contracts::delivery::DeliveryAction;
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{NavigationAction, SidebarTab};
 use crate::contracts::shell::{Action, LogicalFocus, ShellAction};
-use crate::contracts::viewport::{InteractionAction, ViewportAction};
+use crate::contracts::viewport::{FilesAction, InteractionAction, ViewportAction};
 use crate::core::compare::LayoutMode;
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
 
@@ -113,12 +113,7 @@ const VIEW: &[Entry] = &[
 
 const SEARCH: &[Entry] = &[
     Entry::new(GLOBAL, C::OpenSearch, &["mod+f"], "Open search"),
-    Entry::new(
-        GLOBAL,
-        C::OpenCommandPalette,
-        &["mod+k", "mod+p"],
-        "Command palette",
-    ),
+    Entry::new(GLOBAL, C::OpenCommandPalette, &["mod+k"], "Command palette"),
     Entry::new(GLOBAL, C::ShowKeymaps, &["shift+/"], "Open keymaps"),
 ];
 
@@ -222,6 +217,14 @@ const WORKING_TREE: &[Entry] = &[
 
 const REPOSITORY: &[Entry] = &[
     Entry::new(GLOBAL, C::OpenRepository, &["mod+o"], "Open repository"),
+    Entry::new(GLOBAL, C::GoToFile, &["mod+p"], "Go to file"),
+    Entry::new(GLOBAL, C::NextTab, &["mod+shift+]", "ctrl+tab"], "Next tab"),
+    Entry::new(
+        GLOBAL,
+        C::PreviousTab,
+        &["mod+shift+[", "ctrl+shift+tab"],
+        "Previous tab",
+    ),
     Entry::new(WORKSPACE, C::FetchRemotes, &["f"], "Fetch remotes"),
     Entry::new(
         WORKSPACE,
@@ -340,6 +343,9 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::OpenSearch => interaction(InteractionAction::OpenSearch),
         C::OpenCommandPalette => CommandsAction::OpenCommandPalette.into(),
         C::OpenRepository => CommandsAction::OpenRepoPicker { anchored: false }.into(),
+        C::GoToFile => CommandsAction::OpenFilePicker.into(),
+        C::NextTab => FilesAction::NextTab.into(),
+        C::PreviousTab => FilesAction::PreviousTab.into(),
         C::IncreaseUiScale => CommandsAction::IncreaseUiScale.into(),
         C::DecreaseUiScale => CommandsAction::DecreaseUiScale.into(),
         C::ToggleSidebar => NavigationAction::ToggleSidebar.into(),

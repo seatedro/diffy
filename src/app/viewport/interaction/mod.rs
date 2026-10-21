@@ -1,7 +1,7 @@
 mod decorations;
 #[cfg(test)]
 pub mod fixtures;
-mod keys;
+pub(crate) mod keys;
 mod scopes;
 mod state;
 mod syntax;

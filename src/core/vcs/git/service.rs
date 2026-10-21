@@ -975,6 +975,37 @@ impl GitService {
             .map_err(gix_error)
     }
 
+    pub fn list_files_at(&self, reference: &str) -> Result<Vec<String>> {
+        let args: Vec<OsString> = match reference {
+            WORKDIR_REF => [
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ]
+            .map(OsString::from)
+            .to_vec(),
+            INDEX_REF => ["ls-files", "-z", "--cached"].map(OsString::from).to_vec(),
+            revision => vec![
+                OsString::from("ls-tree"),
+                OsString::from("-rz"),
+                OsString::from("--name-only"),
+                OsString::from(revision),
+            ],
+        };
+        let output = run_system_git_capture(self.repo_path_ref()?, &args)?;
+        let mut paths: Vec<String> = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        Ok(paths)
+    }
+
     pub fn read_file_source_at(&self, reference: &str, path: &str) -> Result<SourceText> {
         Ok(SourceText::from_bytes(
             self.read_file_bytes_at(reference, path)?,
@@ -2212,7 +2243,7 @@ fn fixed_short_oid(oid: &str) -> &str {
     oid.get(..8).unwrap_or(oid)
 }
 
-pub(crate) fn is_full_hex_oid(value: &str) -> bool {
+pub fn is_full_hex_oid(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 

@@ -164,4 +164,5 @@ pub trait VcsRepository: Send {
     }
     fn compare_working_file(&mut self, path: &str) -> Result<CompareOutput>;
     fn read_file_source(&mut self, revision: &RevisionId, path: &str) -> Result<SourceText>;
+    fn list_files(&mut self, revision: &RevisionId) -> Result<Vec<String>>;
 }

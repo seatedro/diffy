@@ -13,6 +13,7 @@ use crate::core::keymap::ShortcutCommand;
 use crate::core::ref_catalog::{RefCatalog, RefResults};
 use crate::core::repo_discovery::RepoScan;
 use crate::core::theme_types::ThemeMode;
+use crate::core::vcs::model::RevisionId;
 use crate::fonts::FontFamilyEntry;
 use crate::platform::persistence::{RepoDiscovery, Settings};
 
@@ -136,6 +137,7 @@ pub enum CommandsAction {
     OpenRepoPicker {
         anchored: bool,
     },
+    OpenFilePicker,
     OpenRepositoryFolder,
     ToggleRepoGroup(String),
     RepoGroupKey(bool),
@@ -218,6 +220,7 @@ impl CommandsAction {
             self,
             Self::OpenCommandPalette
                 | Self::OpenRepoPicker { .. }
+                | Self::OpenFilePicker
                 | Self::OpenRefPicker(_)
                 | Self::ShowRefPicker(_)
                 | Self::OpenCompareMenu
@@ -254,10 +257,18 @@ pub enum CommandsEffect {
         query: String,
     },
     LoadDiffSize(Box<DiffSizeRequest>),
+    ListFiles(Box<FileListRequest>),
     ExpireToast {
         id: JobId,
         after_ms: u64,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileListRequest {
+    pub generation: u64,
+    pub repo_path: PathBuf,
+    pub revision: RevisionId,
 }
 
 #[derive(Debug, Clone)]
@@ -323,6 +334,10 @@ pub enum CommandsEvent {
         size: Option<DiffSize>,
     },
     ToastExpired(JobId),
+    FilesListed {
+        generation: u64,
+        files: Result<Arc<[String]>, String>,
+    },
     RepositoriesScanned {
         scan: Arc<RepoScan>,
         cached: bool,

@@ -19,7 +19,7 @@ use quark_ui::theme::Theme;
 use crate::app::diff_slots::DiffSlots;
 use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
 use crate::app::text_targets::{self, TextCx};
-use crate::app::tokens::{self, Layout, Sp, TextStyle};
+use crate::app::tokens::{self, Layout, Sp, Sz, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, SettingsSnapshot, ToastUpdate};
@@ -462,22 +462,43 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             banner,
             tokens::ui_scale(theme),
         );
+        let strip = viewport::files::tab_strip(&self.controllers.viewport.files, main_w, cx);
+        let strip_h = if strip.is_some() {
+            tokens::scaled(Sz::SIDEBAR_LIST_OFFSET, tokens::ui_scale(theme))
+        } else {
+            0.0
+        };
+        let body_h = (height - strip_h).max(0.0);
         let slot = Slot {
             shared: &self.shared,
             width: main_w,
-            height,
+            height: body_h,
         };
-        let main = match navigation::merge_base_empty(&self.controllers.navigation, theme) {
-            Some(empty) => empty,
-            None => viewport::interaction::view_shared(
+        let file =
+            viewport::files::file_view(&mut self.controllers.viewport.files, main_w, body_h, cx);
+        let showing_file = file.is_some();
+        let main = match (
+            file,
+            navigation::merge_base_empty(&self.controllers.navigation, theme),
+        ) {
+            (Some(file), _) => file,
+            (None, Some(empty)) => empty,
+            (None, None) => viewport::interaction::view_shared(
                 &mut self.controllers.viewport.interaction,
                 &slot,
                 decorator,
                 cx,
             ),
         };
-        let bar = mutations::selection_bar(&mut self.controllers.mutations, &slot, cx);
-        let main = view! { <div w={main_w} h={height} class="relative">{main}{?bar}</div> };
+        let bar = (!showing_file)
+            .then(|| mutations::selection_bar(&mut self.controllers.mutations, &slot, cx))
+            .flatten();
+        let main = view! {
+            <div w={main_w} h={height} class="flex-col">
+                {?strip}
+                <div w={main_w} h={body_h} class="relative">{main}{?bar}</div>
+            </div>
+        };
         let content = match files {
             Some(files) => Split::new(
                 "diffy.sidebar",
@@ -574,6 +595,10 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             .review
             .set_syntax_wake(self.dispatcher.syntax_wake());
         if let Some(wake) = self.dispatcher.syntax_wake() {
+            self.controllers
+                .viewport
+                .files
+                .set_syntax_wake(wake.clone());
             self.controllers.viewport.interaction.set_syntax_wake(wake);
         }
         if let Some(startup) = self.startup.take() {

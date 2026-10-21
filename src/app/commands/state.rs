@@ -21,8 +21,8 @@ use super::toasts::ToastHost;
 use crate::app::text_targets::{PICKER, SETTINGS, SETTINGS_SEARCH, TextCx, TextHost};
 use crate::contracts::commands::{
     CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
-    ContextMenuEntry, RefCatalogRequest, RefPickerAction, RefPickerRequest, SettingsSection,
-    SettingsSnapshot, ToastUpdate,
+    ContextMenuEntry, FileListRequest, RefCatalogRequest, RefPickerAction, RefPickerRequest,
+    SettingsSection, SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::navigation::{
     CompareField, NavigationAction, RepositorySyncReason, SidebarTab,
@@ -31,6 +31,7 @@ use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, Controller, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
 };
+use crate::contracts::viewport::files::{FileAt, FilesAction, revision_label};
 use crate::contracts::viewport::pipeline::{DiffSizeRequest, PipelineAction};
 use crate::core::compare::LayoutMode;
 use crate::core::frecency::{FrecencyStore, recent_repo_paths, repo_last_opened};
@@ -38,8 +39,8 @@ use crate::core::keymap::{KeymapOverride, ShortcutCommand};
 use crate::core::ref_catalog::{RefCatalog, RefEntryKind, WORKING_TREE_LABEL};
 use crate::core::repo_discovery::RepoScan;
 use crate::core::theme_types::ThemeMode;
-use crate::core::vcs::git::WORKDIR_REF;
-use crate::core::vcs::model::VcsKind;
+use crate::core::vcs::git::{WORKDIR_REF, is_full_hex_oid};
+use crate::core::vcs::model::{RevisionId, VcsKind};
 use crate::fonts::{FontFamilyEntry, FontRole, bundled_font_entries, normalize_font_selection};
 use crate::platform::persistence::Settings;
 
@@ -49,6 +50,7 @@ pub const CONFIRM_ACCEPT: FocusId = FocusId::from_key("diffy.confirm.accept");
 pub const MIN_UI_SCALE_PCT: u16 = 70;
 pub const MAX_UI_SCALE_PCT: u16 = 180;
 pub const UI_SCALE_STEP_PCT: u16 = 10;
+const FILE_LIST_CACHE: usize = 4;
 pub const DEFAULT_UI_SCALE_PCT: u16 = 100;
 const RECENT_REPOSITORIES: usize = 12;
 const RECENT_COMMANDS: usize = 8;
@@ -109,6 +111,9 @@ pub struct CommandsController {
     repo_scan: Option<Arc<RepoScan>>,
     repo_scanning: bool,
     repo_picker_current: Option<PathBuf>,
+    file_listing: Option<(u64, RevisionId, String)>,
+    file_lists: Vec<(RevisionId, Arc<[String]>)>,
+    file_generation: u64,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
     activation_click: Cell<bool>,
@@ -153,6 +158,9 @@ impl Default for CommandsController {
             repo_scan: None,
             repo_scanning: false,
             repo_picker_current: None,
+            file_listing: None,
+            file_lists: Vec::new(),
+            file_generation: 0,
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
             activation_click: Cell::new(false),
@@ -544,6 +552,79 @@ impl CommandsController {
         reduction
     }
 
+    fn open_file_picker(&mut self, cx: &SharedContext) -> Reduction {
+        let Some(repository) = cx.repository.as_ref() else {
+            return Reduction::default();
+        };
+        let snapshot = &repository.snapshot;
+        let id = match cx.manifest.as_deref() {
+            Some(manifest) if manifest.working_tree => WORKDIR_REF.to_owned(),
+            Some(manifest) if !manifest.resolved_right.is_empty() => {
+                manifest.resolved_right.clone()
+            }
+            _ if snapshot.location.kind == VcsKind::JJ => "@".to_owned(),
+            _ => "HEAD".to_owned(),
+        };
+        let label = revision_label(&id);
+        let revision = RevisionId {
+            backend: snapshot.location.kind,
+            id,
+        };
+        self.file_generation += 1;
+        let generation = self.file_generation;
+        self.file_listing = Some((generation, revision.clone(), label));
+        let mut reduction = self.show_picker(PickerState::new(PickerKind::File, Vec::new()));
+        let cached = self
+            .file_lists
+            .iter()
+            .find(|(cached, _)| *cached == revision)
+            .map(|(_, files)| files.clone());
+        match (cached, self.picker.as_mut()) {
+            (Some(files), Some(picker)) => picker.set_files(files),
+            _ => {
+                reduction =
+                    reduction.effect(CommandsEffect::ListFiles(Box::new(FileListRequest {
+                        generation,
+                        repo_path: snapshot.path.clone(),
+                        revision,
+                    })));
+            }
+        }
+        reduction
+    }
+
+    fn files_listed(&mut self, generation: u64, files: Result<Arc<[String]>, String>) -> Reduction {
+        let Some((current, revision, _)) = &self.file_listing else {
+            return Reduction::default();
+        };
+        if *current != generation {
+            return Reduction::default();
+        }
+        let files = match files {
+            Ok(files) => files,
+            Err(message) => {
+                self.toasts.apply(ToastUpdate::error(format!(
+                    "Couldn't list files: {message}"
+                )));
+                return Reduction::changed();
+            }
+        };
+        if is_full_hex_oid(&revision.id) {
+            self.file_lists.retain(|(cached, _)| cached != revision);
+            self.file_lists.push((revision.clone(), files.clone()));
+            if self.file_lists.len() > FILE_LIST_CACHE {
+                self.file_lists.remove(0);
+            }
+        }
+        match self.picker.as_mut() {
+            Some(picker) if picker.kind == PickerKind::File => {
+                picker.set_files(files);
+                Reduction::changed()
+            }
+            _ => Reduction::default(),
+        }
+    }
+
     fn apply_repo_scan(&mut self) {
         let Some(scan) = self.repo_scan.clone() else {
             return;
@@ -886,6 +967,18 @@ impl CommandsController {
             (_, PickerChoice::PullRequest(url)) => {
                 reduction = reduction.intent(Intent::OpenPullRequest { url });
             }
+            (_, PickerChoice::File(path)) => {
+                if let Some((_, revision, label)) = self.file_listing.clone() {
+                    self.request(PlatformRequest::Dispatch(
+                        FilesAction::Open(FileAt {
+                            path,
+                            revision,
+                            label,
+                        })
+                        .into(),
+                    ));
+                }
+            }
             (
                 _,
                 PickerChoice::Ref(_)
@@ -1206,6 +1299,7 @@ fn step_scale(current: u16, delta: i32) -> u16 {
 fn command_detail(id: &str) -> Option<&'static str> {
     Some(match id {
         ids::OPEN_REPOSITORY => "Pick a repository or type a path",
+        ids::GO_TO_FILE => "Open any file at the compared revision",
         ids::WORKING_TREE => "Compare HEAD with uncommitted changes",
         ids::REFRESH => "Reload refs, status and the current compare",
         "compare.base" => "Pick the ref to compare from",
@@ -1264,6 +1358,12 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
             CommandsAction::OpenRepoPicker { anchored: false },
         )
         .shortcut(S::OpenRepository),
+        D::new(
+            ids::GO_TO_FILE,
+            "Go to File…",
+            CommandsAction::OpenFilePicker,
+        )
+        .shortcut(S::GoToFile),
         D::new(
             ids::WORKING_TREE,
             "Show Working Tree",
@@ -1454,6 +1554,7 @@ impl Controller for CommandsController {
         match action {
             A::OpenCommandPalette => self.open_palette(cx),
             A::OpenRepoPicker { anchored } => self.open_repo_picker(anchored, cx),
+            A::OpenFilePicker => self.open_file_picker(cx),
             A::ToggleRepoGroup(group) => {
                 let Some(picker) = self.picker.as_mut() else {
                     return Reduction::default();
@@ -1842,6 +1943,9 @@ impl Controller for CommandsController {
                 }
                 _ => Reduction::default(),
             },
+            CommandsEvent::FilesListed { generation, files } => {
+                self.files_listed(generation, files)
+            }
             CommandsEvent::RepositoriesScanned { scan, cached } => {
                 if !cached {
                     self.repo_scanning = false;

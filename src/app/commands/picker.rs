@@ -1,5 +1,8 @@
 use crate::core::search::fuzzy::match_ranges;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use neo_frizbee::{Config, Matcher};
 
 use quark_components::FuzzyMatcher;
 use quark_ui::element::ScrollbarVisibility;
@@ -19,6 +22,7 @@ pub enum PickerKind {
     Font(FontRole),
     CompareMenu,
     PullRequest,
+    File,
 }
 
 impl PickerKind {
@@ -32,6 +36,7 @@ impl PickerKind {
             Self::Font(FontRole::Mono) => "Code font",
             Self::CompareMenu => "Compare",
             Self::PullRequest => "Open pull request",
+            Self::File => "Go to file",
         }
     }
 
@@ -43,6 +48,7 @@ impl PickerKind {
             Self::Font(_) => "Search fonts",
             Self::CompareMenu => "Search compare options",
             Self::PullRequest => "Paste a GitHub pull request URL",
+            Self::File => "Search files",
         }
     }
 }
@@ -57,6 +63,7 @@ pub enum PickerChoice {
     Font(String),
     Action(Action),
     PullRequest(String),
+    File(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -146,6 +153,7 @@ pub struct PickerState {
     pub scrollbar: ScrollbarVisibility,
     pub pending_reveal: bool,
     pub repos: Option<RepoView>,
+    pub files: Option<Arc<[String]>>,
     pub anchored: bool,
     matcher: FuzzyMatcher,
 }
@@ -166,6 +174,7 @@ impl PickerState {
             scrollbar: ScrollbarVisibility::new(),
             pending_reveal: true,
             repos: None,
+            files: None,
             anchored: false,
             matcher: FuzzyMatcher::default(),
         };
@@ -199,6 +208,11 @@ impl PickerState {
         }
     }
 
+    pub fn set_files(&mut self, files: Arc<[String]>) {
+        self.files = Some(files);
+        self.refilter();
+    }
+
     pub fn set_candidates(&mut self, candidates: Vec<PickerCandidate>) {
         self.candidates = candidates;
         self.refilter();
@@ -222,6 +236,12 @@ impl PickerState {
                 .unwrap_or(0);
             self.scroll_px = 0.0;
             self.pending_reveal = true;
+            return;
+        }
+        if self.kind == PickerKind::File {
+            self.rows = file_rows(self.files.as_deref().unwrap_or_default(), query);
+            self.selected = 0;
+            self.scroll_px = 0.0;
             return;
         }
         if query.is_empty() {
@@ -352,6 +372,78 @@ impl PickerState {
         self.refilter();
         true
     }
+}
+
+const FILE_ROWS: usize = 500;
+const FILE_NAME_BONUS: u32 = 16;
+const FILE_TYPO_MIN_LEN: usize = 8;
+
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn file_row(path: &str, highlights: Vec<(usize, usize)>) -> PickerRow {
+    let name = file_name(path);
+    let dir = &path[..path.len() - name.len()];
+    PickerRow {
+        label: name.to_owned(),
+        detail: Some(dir.trim_end_matches('/').to_owned()).filter(|dir| !dir.is_empty()),
+        meta: None,
+        highlights,
+        choice: PickerChoice::File(path.to_owned()),
+        current: false,
+        kind: RowKind::Item,
+        branch: None,
+        indent: false,
+    }
+}
+
+fn file_rows(paths: &[String], query: &str) -> Vec<PickerRow> {
+    if query.is_empty() {
+        return paths
+            .iter()
+            .take(FILE_ROWS)
+            .map(|path| file_row(path, Vec::new()))
+            .collect();
+    }
+    let config = Config {
+        max_typos: Some(u16::from(query.len() >= FILE_TYPO_MIN_LEN)),
+        ..Config::default()
+    };
+    let mut matcher = Matcher::new(query, &config);
+    let mut scores = vec![0u32; paths.len()];
+    for found in matcher.match_list(paths) {
+        scores[found.index as usize] = u32::from(found.score) + 1;
+    }
+    let names: Vec<&str> = paths.iter().map(|path| file_name(path)).collect();
+    for found in matcher.match_list(&names) {
+        let score = &mut scores[found.index as usize];
+        *score = (*score).max(u32::from(found.score) + 1 + FILE_NAME_BONUS);
+    }
+    let mut ranked: Vec<(u32, usize)> = scores
+        .iter()
+        .enumerate()
+        .filter(|(_, score)| **score > 0)
+        .map(|(index, score)| (*score, index))
+        .collect();
+    ranked.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(paths[a.1].len().cmp(&paths[b.1].len())));
+    ranked
+        .into_iter()
+        .take(FILE_ROWS)
+        .map(|(_, index)| {
+            let path = &paths[index];
+            let name = file_name(path);
+            let highlights = matcher
+                .match_one_indices(name, 0)
+                .map(|found| {
+                    let mut positions = found.indices;
+                    positions.sort_unstable();
+                    match_ranges(name, &positions)
+                })
+                .unwrap_or_default();
+            file_row(path, highlights)
+        })
+        .collect()
 }
 
 fn row(candidate: &PickerCandidate, highlights: Vec<(usize, usize)>) -> PickerRow {

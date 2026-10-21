@@ -31,11 +31,13 @@ use crate::contracts::navigation::{
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shared::SourceTarget;
 use crate::contracts::shell::{Action, LogicalFocus, ShellAction};
+use crate::contracts::viewport::files::{FileAt, FilesAction, revision_label};
 use crate::contracts::viewport::interaction::InteractionAction;
-use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
+use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, FileStats, ManifestFile};
 use crate::core::compare::CompareMode;
 use crate::core::ref_catalog::relative_age;
-use crate::core::vcs::model::{ChangeBucket, VcsChange};
+use crate::core::vcs::git::WORKDIR_REF;
+use crate::core::vcs::model::{ChangeBucket, RevisionId, VcsChange};
 use diffy_diff::FileStatus;
 use diffy_diff::ItemChange;
 use quark_components::kbd;
@@ -375,7 +377,8 @@ fn files(
                     highlights,
                 };
                 let actions = file_row_actions(file, cx);
-                file_row(file, *depth, state, &actions, theme)
+                let menu = view_file_actions(file, &manifest, cx);
+                file_row(file, *depth, state, &actions, menu, theme)
             }
             Row::Section { bucket, files } => {
                 section_row(*bucket, *files, group_action(*bucket, cx), theme)
@@ -442,11 +445,56 @@ struct RowState<'a> {
     highlights: &'a [(usize, usize)],
 }
 
+fn view_file_actions(
+    file: &ManifestFile,
+    manifest: &CompareManifestSnapshot,
+    cx: &SharedContext,
+) -> Vec<RowAction> {
+    let Some(repository) = cx.repository.as_ref() else {
+        return Vec::new();
+    };
+    let backend = repository.snapshot.location.kind;
+    let head = if manifest.working_tree {
+        WORKDIR_REF.to_owned()
+    } else {
+        manifest.resolved_right.clone()
+    };
+    let sides = [
+        ("View Full File", file.paths.new_path(), head, "file.view"),
+        (
+            "View Base File",
+            file.paths.old_path(),
+            manifest.resolved_left.clone(),
+            "file.view-base",
+        ),
+    ];
+    sides
+        .into_iter()
+        .filter_map(|(label, path, id, test_id)| {
+            let path = path?.into_owned();
+            (!id.is_empty()).then(|| RowAction {
+                label: label.to_owned(),
+                action: FilesAction::Open(FileAt {
+                    path,
+                    label: revision_label(&id),
+                    revision: RevisionId { backend, id },
+                })
+                .into(),
+                destructive: false,
+                icon: Some(lucide::FILE),
+                shortcut: None,
+                test_id: test_id.to_owned(),
+            })
+        })
+        .collect()
+}
+
 fn file_row(
     file: &ManifestFile,
     depth: u16,
     state: RowState,
     actions: &[RowAction],
+    menu: Vec<RowAction>,
     theme: &Theme,
 ) -> AnyElement {
     let tc = &theme.colors;
@@ -556,6 +604,7 @@ fn file_row(
             aria-label={label}
             aria-selected={state.selected}
             on:click={NavigationAction::SelectFile(SelectedFile { key, origin: SelectionOrigin::Sidebar })}
+            on:context_menu={row_menu(menu)}
         >
             <div
                 class="flex-row items-center justify-center shrink-0"

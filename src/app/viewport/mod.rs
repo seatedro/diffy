@@ -1,3 +1,4 @@
+pub mod files;
 pub mod interaction;
 pub mod pipeline;
 
@@ -7,6 +8,7 @@ use crate::contracts::viewport::interaction::InstallItem;
 use crate::contracts::viewport::pipeline::PipelineAction;
 use crate::contracts::viewport::{ViewportAction, ViewportEvent};
 
+pub use files::FilesController;
 pub use interaction::InteractionController;
 pub use pipeline::PipelineController;
 use pipeline::PipelineInstall;
@@ -15,6 +17,7 @@ use pipeline::PipelineInstall;
 pub struct ViewportController {
     pub pipeline: PipelineController,
     pub interaction: InteractionController,
+    pub files: FilesController,
 }
 
 impl ViewportController {
@@ -64,9 +67,15 @@ impl Controller for ViewportController {
                 self.install(reduction, cx)
             }
             ViewportAction::Interaction(action) => {
+                if self.files.active().is_some()
+                    && let Some(reduction) = self.files.redirect(&action)
+                {
+                    return reduction;
+                }
                 let reduction = self.interaction.reduce_action(action, cx);
                 self.request_sources(reduction, cx)
             }
+            ViewportAction::Files(action) => self.files.reduce_action(action, cx),
         }
     }
 
@@ -78,6 +87,7 @@ impl Controller for ViewportController {
                 self.install(reduction, cx)
             }
             ViewportEvent::Interaction(event) => self.interaction.reduce_event(event, cx),
+            ViewportEvent::Files(event) => self.files.reduce_event(event),
         }
     }
 
@@ -86,6 +96,7 @@ impl Controller for ViewportController {
         let reduction = self.pipeline.apply_intent(intent, cx);
         let mut reduction = self.install(reduction, cx);
         reduction.merge(self.interaction.apply_intent(intent, cx));
+        reduction.merge(self.files.apply_intent(intent));
         reduction
     }
 }

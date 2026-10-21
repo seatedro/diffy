@@ -1261,6 +1261,22 @@ impl VcsRepository for JjRepository {
         Ok(source)
     }
 
+    fn list_files(&mut self, revision: &RevisionId) -> Result<Vec<String>> {
+        let output = self.cli.run_bytes_ignored_wc(&[
+            OsString::from("file"),
+            OsString::from("list"),
+            OsString::from("-r"),
+            OsString::from(revision.id.as_str()),
+        ])?;
+        let mut paths: Vec<String> = String::from_utf8_lossy(&output)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect();
+        paths.sort_unstable();
+        Ok(paths)
+    }
+
     fn mutation_material(&mut self, change: &FileChange) -> Result<MutationMaterial> {
         let mut args = vec![
             OsString::from("diff"),

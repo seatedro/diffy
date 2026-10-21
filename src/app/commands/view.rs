@@ -105,7 +105,9 @@ fn picker_panel(
     let list = if picker.rows.is_empty() {
         view! {
             <div class="flex-row items-center" h={theme.metrics.ui_row_height} px={tokens::scaled(Sp::MD, scale)}>
-                <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>"No matches"</text>
+                <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>
+                    {if picker.kind == PickerKind::File && picker.files.is_none() { "Loading files" } else { "No matches" }}
+                </text>
             </div>
         }
     } else {

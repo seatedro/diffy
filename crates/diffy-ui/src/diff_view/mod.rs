@@ -79,7 +79,7 @@ pub use search::{FindOptions, SearchCoverage, SearchDirection, SearchSides, Sear
 pub use selection::CopyContent;
 pub use session::DiffSessionViewState;
 pub use session_interaction::{diff_session_view, diff_session_view_with};
-pub use view::{diff_view, diff_view_with};
+pub use view::{diff_view, diff_view_custom, diff_view_with};
 
 use annotations::AnnotationTable;
 use prepared::{Metrics, RowPaint, ViewFrame};

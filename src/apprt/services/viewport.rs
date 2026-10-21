@@ -1,6 +1,8 @@
+pub mod files;
 pub mod interaction;
 pub mod pipeline;
 
+pub use files::FilesServices;
 pub use interaction::InteractionServices;
 pub use pipeline::PipelineServices;
 
@@ -8,4 +10,5 @@ pub use pipeline::PipelineServices;
 pub struct ViewportServices {
     pub pipeline: PipelineServices,
     pub interaction: InteractionServices,
+    pub files: FilesServices,
 }

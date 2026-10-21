@@ -24,6 +24,7 @@ use crate::app::review::{ReviewController, author_avatar};
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SIDEBAR, SIDEBAR_FILTER};
 use crate::app::tokens::{self, Ico, Layout, Sp, TextStyle, Tint};
+use crate::app::viewport::{ViewportController, outline};
 use crate::contracts::commands::CommandsAction;
 use crate::contracts::navigation::{
     NavigationAction, SelectedFile, SelectionOrigin, SidebarMode, SidebarTab,
@@ -31,11 +32,13 @@ use crate::contracts::navigation::{
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shared::SourceTarget;
 use crate::contracts::shell::{Action, LogicalFocus, ShellAction};
+use crate::contracts::viewport::files::{FileAt, FilesAction, revision_label};
 use crate::contracts::viewport::interaction::InteractionAction;
-use crate::contracts::viewport::pipeline::{FileStats, ManifestFile};
+use crate::contracts::viewport::pipeline::{CompareManifestSnapshot, FileStats, ManifestFile};
 use crate::core::compare::CompareMode;
 use crate::core::ref_catalog::relative_age;
-use crate::core::vcs::model::{ChangeBucket, VcsChange};
+use crate::core::vcs::git::WORKDIR_REF;
+use crate::core::vcs::model::{ChangeBucket, RevisionId, VcsChange};
 use diffy_diff::FileStatus;
 use diffy_diff::ItemChange;
 use quark_components::kbd;
@@ -47,6 +50,7 @@ const FILE_ROW_GROUP: &str = "sidebar.file-row";
 pub fn view(
     nav: &mut NavigationController,
     review: &ReviewController,
+    viewport: &ViewportController,
     slot: &Slot,
     commit_box: Option<(AnyElement, f32)>,
     cx: &mut ViewContext,
@@ -57,8 +61,8 @@ pub fn view(
     let focus = cx.focus();
     let header = header(nav, theme);
     let tab = nav.tab();
-    let filter =
-        (tab != SidebarTab::OperationLog).then(|| filter_field(nav, tab, filter_focused, theme));
+    let filter = matches!(tab, SidebarTab::Files | SidebarTab::Commits)
+        .then(|| filter_field(nav, tab, filter_focused, theme));
     let progress = (tab == SidebarTab::Files)
         .then(|| progress(nav, theme))
         .flatten();
@@ -87,6 +91,7 @@ pub fn view(
         SidebarTab::Files => files(nav, slot.shared, list_h, focus, theme),
         SidebarTab::Commits => history(nav, review, list_h, focus, theme),
         SidebarTab::OperationLog => operations(nav, list_h, theme),
+        SidebarTab::Outline => outline::view(viewport, slot.shared, slot.width, list_h, cx),
     };
     let commit_box = commit_box.map(|(element, _)| element);
     view! {
@@ -131,6 +136,12 @@ fn header(nav: &NavigationController, theme: &Theme) -> AnyElement {
         )
         .id("sidebar.history")
         .active(tab == SidebarTab::Commits),
+        TabItem::new(
+            SidebarTab::Outline.label(),
+            NavigationAction::SetSidebarTab(SidebarTab::Outline),
+        )
+        .id("sidebar.outline")
+        .active(tab == SidebarTab::Outline),
     ];
     if nav.operation_log_available() {
         items.push(
@@ -375,7 +386,8 @@ fn files(
                     highlights,
                 };
                 let actions = file_row_actions(file, cx);
-                file_row(file, *depth, state, &actions, theme)
+                let menu = view_file_actions(file, &manifest, cx);
+                file_row(file, *depth, state, &actions, menu, theme)
             }
             Row::Section { bucket, files } => {
                 section_row(*bucket, *files, group_action(*bucket, cx), theme)
@@ -442,11 +454,56 @@ struct RowState<'a> {
     highlights: &'a [(usize, usize)],
 }
 
+fn view_file_actions(
+    file: &ManifestFile,
+    manifest: &CompareManifestSnapshot,
+    cx: &SharedContext,
+) -> Vec<RowAction> {
+    let Some(repository) = cx.repository.as_ref() else {
+        return Vec::new();
+    };
+    let backend = repository.snapshot.location.kind;
+    let head = if manifest.working_tree {
+        WORKDIR_REF.to_owned()
+    } else {
+        manifest.resolved_right.clone()
+    };
+    let sides = [
+        ("View Full File", file.paths.new_path(), head, "file.view"),
+        (
+            "View Base File",
+            file.paths.old_path(),
+            manifest.resolved_left.clone(),
+            "file.view-base",
+        ),
+    ];
+    sides
+        .into_iter()
+        .filter_map(|(label, path, id, test_id)| {
+            let path = path?.into_owned();
+            (!id.is_empty()).then(|| RowAction {
+                label: label.to_owned(),
+                action: FilesAction::Open(FileAt {
+                    path,
+                    label: revision_label(&id),
+                    revision: RevisionId { backend, id },
+                })
+                .into(),
+                destructive: false,
+                icon: Some(lucide::FILE),
+                shortcut: None,
+                test_id: test_id.to_owned(),
+            })
+        })
+        .collect()
+}
+
 fn file_row(
     file: &ManifestFile,
     depth: u16,
     state: RowState,
     actions: &[RowAction],
+    menu: Vec<RowAction>,
     theme: &Theme,
 ) -> AnyElement {
     let tc = &theme.colors;
@@ -556,6 +613,7 @@ fn file_row(
             aria-label={label}
             aria-selected={state.selected}
             on:click={NavigationAction::SelectFile(SelectedFile { key, origin: SelectionOrigin::Sidebar })}
+            on:context_menu={row_menu(menu)}
         >
             <div
                 class="flex-row items-center justify-center shrink-0"

@@ -415,6 +415,7 @@ pub struct FrameRow {
     pub selected: [Option<(usize, usize)>; 2],
     /// Search matches on each side's line, in order.
     pub search: [Vec<SearchMark>; 2],
+    pub link: [Option<(usize, usize)>; 2],
     /// The row holds the keyboard focus target (the row a navigation key
     /// or search result last moved to).
     pub focused: bool,
@@ -463,4 +464,5 @@ pub struct ViewFrame {
     pub hscroll: [ScrollHandle; 2],
     pub scrollbar_auto_hide: bool,
     pub scrollbar: ScrollbarVisibility,
+    pub link: bool,
 }

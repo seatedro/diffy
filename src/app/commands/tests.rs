@@ -275,7 +275,7 @@ fn palette_opens_from_the_shortcut_runs_a_command_and_returns_focus() {
         Effect::Commands(CommandsEffect::SaveSettings(s)) if s.viewport.wrap_enabled
     )));
 
-    ui.key("mod+p");
+    ui.key("mod+k");
     ui.find(By::role_name(Role::Dialog, "Command palette"));
     ui.key("escape");
     assert!(

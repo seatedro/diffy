@@ -1381,3 +1381,157 @@ mod scope {
         );
     }
 }
+
+mod symbols {
+    use super::*;
+    use crate::{SymbolKind, TaggerLookup};
+
+    #[test]
+    fn definitions_by_language_table() {
+        type Case<'a> = (&'a str, &'a str, &'a str, &'a [(&'a str, SymbolKind, u32)]);
+        let cases: &[Case] = &[
+            (
+                "rust",
+                "rs",
+                "struct Point;\nimpl Point {\n    fn new() -> Self {\n        build();\n        Point\n    }\n}\nfn build() {}\n",
+                &[
+                    ("Point", SymbolKind::Class, 0),
+                    ("new", SymbolKind::Method, 2),
+                    ("build", SymbolKind::Function, 7),
+                ],
+            ),
+            (
+                "python",
+                "py",
+                "class Store:\n    def load(self):\n        return 1\n",
+                &[
+                    ("Store", SymbolKind::Class, 0),
+                    ("load", SymbolKind::Function, 1),
+                ],
+            ),
+        ];
+        for (pack, tag, source, expected) in cases {
+            let Some(store) = testing::store_with(pack) else {
+                continue;
+            };
+            let TaggerLookup::Ready(tagger) = store.tagger(&language(tag)) else {
+                panic!("{pack} has no tagger");
+            };
+            let symbols = tagger.symbols(source, &|| false);
+            let found: Vec<(&str, SymbolKind, u32)> = symbols
+                .iter()
+                .map(|symbol| (&*symbol.name, symbol.kind, symbol.line))
+                .collect();
+            assert_eq!(&found, expected, "{pack}");
+        }
+    }
+
+    #[test]
+    fn languages_without_tags_are_unsupported() {
+        let Some(store) = testing::store_with("json") else {
+            return;
+        };
+        assert!(matches!(
+            store.tagger(&language("json")),
+            TaggerLookup::Unsupported
+        ));
+    }
+}
+
+mod navigate {
+    use super::*;
+    use crate::SourcePos;
+
+    fn pos(line: u32, column: u32) -> SourcePos {
+        SourcePos { line, column }
+    }
+
+    #[test]
+    fn local_definitions_follow_scopes() {
+        type Case<'a> = (
+            &'a str,
+            &'a str,
+            &'a str,
+            &'a [((u32, u32), &'a str, Option<(u32, u32)>)],
+        );
+        let cases: &[Case] = &[
+            (
+                "rust",
+                "rs",
+                "fn helper(value: u32) -> u32 {\n    let doubled = value * 2;\n    let doubled = doubled + 1;\n    doubled\n}\n\nfn main() {\n    let value = 3;\n    helper(value);\n}\n",
+                &[
+                    ((3, 6), "doubled", Some((2, 8))),
+                    ((8, 12), "value", Some((7, 8))),
+                    ((8, 4), "helper", Some((0, 3))),
+                    ((1, 18), "value", Some((0, 10))),
+                ],
+            ),
+            (
+                "rust",
+                "rs",
+                "struct Store;\nimpl Store {\n    fn open(&self, other: &Store) {\n        other.open(self);\n    }\n}\n",
+                &[((3, 14), "open", None)],
+            ),
+            (
+                "python",
+                "py",
+                "def load(path):\n    return path\n\ndef run():\n    path = 1\n    return load(path)\n",
+                &[
+                    ((5, 11), "load", Some((0, 4))),
+                    ((5, 17), "path", Some((4, 4))),
+                    ((1, 11), "path", Some((0, 9))),
+                ],
+            ),
+        ];
+        for (pack, tag, source, expectations) in cases {
+            let Some(store) = testing::store_with(pack) else {
+                continue;
+            };
+            for ((line, byte), word, local) in *expectations {
+                let lookup = store
+                    .lookup_definition(&language(tag), source, *line, *byte)
+                    .unwrap_or_else(|| panic!("{pack} {line}:{byte} found nothing"));
+                assert_eq!(&*lookup.word, *word, "{pack} {line}:{byte}");
+                assert_eq!(
+                    lookup.local,
+                    local.map(|(l, c)| pos(l, c)),
+                    "{pack} {line}:{byte}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reports_file_symbols_and_the_word_start() {
+        let Some(store) = testing::store_with("rust") else {
+            return;
+        };
+        let source = "struct Point;\nfn build() -> Point {\n    Point\n}\n";
+        let lookup = store
+            .lookup_definition(&language("rs"), source, 2, 7)
+            .unwrap();
+        assert_eq!(&*lookup.word, "Point");
+        assert_eq!(lookup.at, pos(2, 4));
+        let names: Vec<&str> = lookup.symbols.iter().map(|s| &*s.name).collect();
+        assert_eq!(names, vec!["Point", "build"]);
+        assert!(
+            store
+                .lookup_definition(&language("rs"), source, 1, 9)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn imports_are_kept_apart_from_local_definitions() {
+        let Some(store) = testing::store_with("rust") else {
+            return;
+        };
+        let source = "use crate::store::{Inner, State};\nfn run(state: State) {}\n";
+        let lookup = store
+            .lookup_definition(&language("rs"), source, 1, 15)
+            .unwrap();
+        assert_eq!(&*lookup.word, "State");
+        assert_eq!(lookup.local, None);
+        assert_eq!(lookup.import, Some(pos(0, 26)));
+    }
+}

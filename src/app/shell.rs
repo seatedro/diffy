@@ -15,11 +15,12 @@ use quark_ui::element::*;
 use quark_ui::style::Styled;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 use quark_ui::theme::Theme;
+use winit::window::CursorIcon;
 
 use crate::app::diff_slots::DiffSlots;
 use crate::app::route::{self, Controllers, MAX_INTENTS_PER_TURN, Routed};
 use crate::app::text_targets::{self, TextCx};
-use crate::app::tokens::{self, Layout, Sp, TextStyle};
+use crate::app::tokens::{self, Layout, Sp, Sz, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, SettingsSnapshot, ToastUpdate};
@@ -217,12 +218,23 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 shared.selected_file = None;
                 shared.selection = None;
                 shared.review = None;
+                shared.symbols = None;
+                shared.document = None;
                 self.shell.set_workspace(path);
                 true
             }
             Intent::PublishManifest(manifest) => {
                 shared.manifest = Some(manifest.clone());
                 true
+            }
+            Intent::PublishSymbols(index) => {
+                shared.symbols = index.clone();
+                true
+            }
+            Intent::PublishDocument(document) => {
+                let changed = shared.document != *document;
+                shared.document = document.clone();
+                changed
             }
             Intent::SelectFile(file) => {
                 let changed = shared.selected_file != *file;
@@ -271,6 +283,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             | Intent::RequestCompare(_)
             | Intent::InvalidateRepository
             | Intent::GrammarAvailable(_)
+            | Intent::ChooseDefinition(_)
             | Intent::RequestConfirmation(_)
             | Intent::Toast(_) => false,
         }
@@ -333,6 +346,13 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                     cx.window.close_window(window);
                 }
             }
+            ShellAction::CloseTabOrWindow => match self.controllers.viewport.files.active() {
+                Some(tab) => self.update(
+                    crate::contracts::viewport::FilesAction::Close(tab).into(),
+                    cx,
+                ),
+                None => self.shell_action(ShellAction::Close, cx),
+            },
             ShellAction::ResizeSidebar(event) => {
                 let commit = matches!(event, SplitEvent::Release { .. } | SplitEvent::Nudge { .. });
                 self.shell.sidebar.apply(event, self.clock_ms);
@@ -441,6 +461,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             navigation::view(
                 &mut self.controllers.navigation,
                 &self.controllers.review,
+                &self.controllers.viewport,
                 &slot,
                 mutations::commit_box(&mut self.controllers.mutations, &slot, cx),
                 cx,
@@ -462,22 +483,43 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             banner,
             tokens::ui_scale(theme),
         );
+        let strip = viewport::files::tab_strip(&self.controllers.viewport.files, main_w, cx);
+        let strip_h = if strip.is_some() {
+            tokens::scaled(Sz::SIDEBAR_LIST_OFFSET, tokens::ui_scale(theme))
+        } else {
+            0.0
+        };
+        let body_h = (height - strip_h).max(0.0);
         let slot = Slot {
             shared: &self.shared,
             width: main_w,
-            height,
+            height: body_h,
         };
-        let main = match navigation::merge_base_empty(&self.controllers.navigation, theme) {
-            Some(empty) => empty,
-            None => viewport::interaction::view_shared(
+        let file =
+            viewport::files::file_view(&mut self.controllers.viewport.files, main_w, body_h, cx);
+        let showing_file = file.is_some();
+        let main = match (
+            file,
+            navigation::merge_base_empty(&self.controllers.navigation, theme),
+        ) {
+            (Some(file), _) => file,
+            (None, Some(empty)) => empty,
+            (None, None) => viewport::interaction::view_shared(
                 &mut self.controllers.viewport.interaction,
                 &slot,
                 decorator,
                 cx,
             ),
         };
-        let bar = mutations::selection_bar(&mut self.controllers.mutations, &slot, cx);
-        let main = view! { <div w={main_w} h={height} class="relative">{main}{?bar}</div> };
+        let bar = (!showing_file)
+            .then(|| mutations::selection_bar(&mut self.controllers.mutations, &slot, cx))
+            .flatten();
+        let main = view! {
+            <div w={main_w} h={height} class="flex-col">
+                {?strip}
+                <div w={main_w} h={body_h} class="relative">{main}{?bar}</div>
+            </div>
+        };
         let content = match files {
             Some(files) => Split::new(
                 "diffy.sidebar",
@@ -520,6 +562,19 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             Some(RendererKind::Semantic) => "Semantic",
             _ => "Git diff",
         };
+        let indexing = self
+            .controllers
+            .viewport
+            .symbols
+            .progress()
+            .map(|(done, total)| {
+                let percent = done * 100 / total.max(1);
+                view! {
+                    <text size={small} color={tc.text_muted}>
+                        {format!("Indexing symbols {percent}%")}
+                    </text>
+                }
+            });
         view! {
             <div
                 w={width}
@@ -537,6 +592,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 <div class="flex-1 flex-row items-center" min_w={0.0}>{compare}</div>
                 {?viewing}
                 {changes}
+                {?indexing}
                 <text size={small} color={tc.text_muted}>{engine}</text>
                 {delivery}
             </div>
@@ -563,6 +619,54 @@ pub fn empty_state(title: &str, detail: &str, theme: &Theme) -> AnyElement {
     }
 }
 
+impl<D: EffectDispatcher> DiffyApp<D> {
+    fn hover_event(&mut self, event: &InputEvent, cx: &mut UiContext) {
+        let viewport = &mut self.controllers.viewport;
+        let (pointer, primary) = match event {
+            InputEvent::PointerMoved { x, y } => (Some((*x, *y)), viewport.hover.primary),
+            InputEvent::PointerLeft => (None, viewport.hover.primary),
+            InputEvent::ModifiersChanged(modifiers) => {
+                let primary = if cfg!(target_os = "macos") {
+                    modifiers.super_key()
+                } else {
+                    modifiers.control_key()
+                };
+                (viewport.hover.pointer, primary)
+            }
+            InputEvent::Wheel { .. } | InputEvent::KeyPress(_) => {
+                if viewport.dismiss_hover() {
+                    cx.window.request_redraw();
+                }
+                return;
+            }
+            InputEvent::PointerButton {
+                state: winit::event::ElementState::Pressed,
+                ..
+            } => {
+                if viewport.hover.dismiss() {
+                    cx.window.request_redraw();
+                }
+                return;
+            }
+            _ => return,
+        };
+        let pointer = pointer.filter(|_| !self.controllers.commands.modal_open());
+        let linked = self.controllers.viewport.link_active();
+        let reduction = self
+            .controllers
+            .viewport
+            .hover(pointer, primary, &self.shared);
+        if self.reduce(reduction) {
+            cx.window.request_redraw();
+        }
+        if self.controllers.viewport.link_active() {
+            cx.window.set_cursor(CursorIcon::Pointer);
+        } else if linked {
+            cx.window.set_cursor(CursorIcon::Text);
+        }
+    }
+}
+
 impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
     type Action = Action;
     type Message = AppMessage;
@@ -574,6 +678,10 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             .review
             .set_syntax_wake(self.dispatcher.syntax_wake());
         if let Some(wake) = self.dispatcher.syntax_wake() {
+            self.controllers
+                .viewport
+                .files
+                .set_syntax_wake(wake.clone());
             self.controllers.viewport.interaction.set_syntax_wake(wake);
         }
         if let Some(startup) = self.startup.take() {
@@ -627,6 +735,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 ),
             },
         );
+        let hover = self.controllers.viewport.hover.card((width, height), cx);
         let overlays = commands::overlays(&mut self.controllers.commands, &slot, external, cx);
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
@@ -638,6 +747,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 {status}
                 {?mutation_panel}
                 {?review_overlay}
+                {?hover}
                 {?overlays}
                 {?languages}
                 {?toasts}
@@ -738,6 +848,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn event(&mut self, event: &InputEvent, cx: &mut UiContext) -> bool {
         self.tick(cx);
+        self.hover_event(event, cx);
         let Some(action) = commands::key_action(&self.controllers, event, cx.focus()) else {
             return false;
         };

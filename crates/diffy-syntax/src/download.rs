@@ -164,6 +164,14 @@ fn find<'a>(packs: &'a [Arc<PackManifest>], tag: &str) -> Option<&'a Arc<PackMan
         .find(|pack| pack.tags().any(|t| t.eq_ignore_ascii_case(tag)))
 }
 
+pub(crate) fn ships_tags(downloads: &Downloads, state: &mut State, tag: &str) -> bool {
+    let cached = state
+        .remote
+        .cached
+        .get_or_insert_with(|| read_cached_index(downloads));
+    find(cached, tag).is_some_and(|manifest| manifest.tags.is_some())
+}
+
 /// Resolves `tag` from the cache, or queues it for the fetch thread.
 pub(crate) fn resolve(
     inner: &Arc<Inner>,

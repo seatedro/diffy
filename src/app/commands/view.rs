@@ -103,9 +103,19 @@ fn picker_panel(
         .w_full()
         .h(tokens::scaled(Sz::INPUT, scale));
     let list = if picker.rows.is_empty() {
+        let loading = picker.kind == PickerKind::File && picker.files.is_none();
+        let h = if loading {
+            row_stride * picker.visible_rows() as f32
+        } else {
+            theme.metrics.ui_row_height
+        };
         view! {
-            <div class="flex-row items-center" h={theme.metrics.ui_row_height} px={tokens::scaled(Sp::MD, scale)}>
-                <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>"No matches"</text>
+            <div class="flex-row items-start" h={h} px={tokens::scaled(Sp::MD, scale)}>
+                <div class="flex-row items-center" h={theme.metrics.ui_row_height}>
+                    <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>
+                        {picker.empty_message()}
+                    </text>
+                </div>
             </div>
         }
     } else {

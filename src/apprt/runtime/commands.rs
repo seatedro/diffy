@@ -3,7 +3,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
-use crate::apprt::services::CommandsServices;
+use crate::apprt::services::{CommandsServices, open_compare_repository};
 use crate::apprt::transport::ScopedEventSender;
 use std::sync::Arc;
 
@@ -95,6 +95,16 @@ impl CommandsRuntime {
             }
             CommandsEffect::LoadDiffSize(request) => {
                 let _ = self.size_worker.send((*request, events));
+            }
+            CommandsEffect::ListFiles(request) => {
+                thread::spawn(move || {
+                    let files =
+                        open_compare_repository(&request.repo_path, [request.revision.id.as_str()])
+                            .and_then(|mut repo| repo.list_files(&request.revision))
+                            .map(Arc::from)
+                            .map_err(|error| error.user_message());
+                    events.send(CommandsEvent::FilesListed { request, files });
+                });
             }
             CommandsEffect::ScanRepositories { options, known } => {
                 let job = ScanJob {

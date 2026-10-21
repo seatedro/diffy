@@ -40,7 +40,10 @@ pub(crate) struct Grammar {
     locals: Option<Arc<str>>,
     semantic: Option<Arc<str>>,
     tags: Option<Arc<str>>,
+    library: Option<Arc<str>>,
     scopes: std::sync::OnceLock<Option<Arc<crate::scope::ScopeQuery>>>,
+    tags_query: std::sync::OnceLock<Option<Arc<crate::symbols::TagsQuery>>>,
+    locals_query: std::sync::OnceLock<Option<Arc<crate::navigate::LocalsQuery>>>,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -76,6 +79,7 @@ impl Grammar {
             locals: read(&manifest.locals)?.map(Arc::from),
             semantic: read(&manifest.semantic)?.map(Arc::from),
             tags: read(&manifest.tags)?.map(Arc::from),
+            library: Some(Arc::from(manifest.library.sha256.as_str())),
             ..grammar
         })
     }
@@ -160,7 +164,10 @@ impl Grammar {
             locals: None,
             semantic: None,
             tags: None,
+            library: None,
             scopes: std::sync::OnceLock::new(),
+            tags_query: std::sync::OnceLock::new(),
+            locals_query: std::sync::OnceLock::new(),
         })
     }
 
@@ -168,6 +175,25 @@ impl Grammar {
         self.scopes
             .get_or_init(|| {
                 crate::scope::ScopeQuery::compile(&self.language, language).map(Arc::new)
+            })
+            .clone()
+    }
+
+    pub(crate) fn tags_query(&self) -> Option<Arc<crate::symbols::TagsQuery>> {
+        self.tags_query
+            .get_or_init(|| {
+                let source = self.tags.as_deref()?;
+                crate::symbols::TagsQuery::compile(&self.language, source, self.library.as_deref())
+                    .map(Arc::new)
+            })
+            .clone()
+    }
+
+    pub(crate) fn locals_query(&self) -> Option<Arc<crate::navigate::LocalsQuery>> {
+        self.locals_query
+            .get_or_init(|| {
+                crate::navigate::LocalsQuery::compile(&self.language, self.locals.as_deref()?)
+                    .map(Arc::new)
             })
             .clone()
     }

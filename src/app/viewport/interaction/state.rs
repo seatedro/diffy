@@ -93,6 +93,7 @@ pub struct InteractionController {
     pub(super) line_actions: Vec<MutationsAction>,
     pub(super) line_drag: Option<SourceTarget>,
     pub(super) stale_view: Option<f32>,
+    pub(super) definition: Option<(SourcePoint, String)>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -150,6 +151,7 @@ impl Default for InteractionController {
             modifiers: LineModifiers::default(),
             line_actions: Vec::new(),
             line_drag: None,
+            definition: None,
             stale_view: None,
         }
     }
@@ -848,7 +850,82 @@ impl InteractionController {
             }
             DiffOutcome::Copy(text) if text.is_empty() => Reduction::default(),
             DiffOutcome::Copy(text) => Reduction::default().effect(ShellEffect::SetClipboard(text)),
+            DiffOutcome::Definition { point, line } => {
+                if !self.text_compare.active {
+                    self.definition = Some((point, line));
+                }
+                Reduction::default()
+            }
         }
+    }
+
+    pub fn request_definition(&mut self) -> Reduction {
+        let outcome = self.key(DiffKey::Definition);
+        self.outcome(outcome)
+    }
+
+    pub fn take_definition(&mut self) -> Option<(SourcePoint, String)> {
+        self.definition.take()
+    }
+
+    pub fn hover_at(&self, x: f32, y: f32) -> Option<diffy_ui::HoverHit> {
+        if self.text_compare.active {
+            return None;
+        }
+        self.diff.as_ref()?.hover_at(x, y)
+    }
+
+    pub fn has_link(&self) -> bool {
+        self.diff
+            .as_ref()
+            .is_some_and(DiffSessionViewState::has_link)
+    }
+
+    pub fn set_link(&mut self, link: Option<(SourcePoint, u32)>) -> bool {
+        self.diff.as_mut().is_some_and(|diff| diff.set_link(link))
+    }
+
+    pub fn caret(&self) -> Option<SourcePoint> {
+        self.diff.as_ref()?.caret().map(|(point, _)| point)
+    }
+
+    pub fn scroll_offset(&self) -> Option<f32> {
+        self.diff.as_ref().map(DiffSessionViewState::scroll_offset)
+    }
+
+    pub fn restore_scroll(&mut self, offset: f32) -> Reduction {
+        let outcome = match &mut self.diff {
+            Some(diff) => diff.handle(DiffEvent::ScrollTo(offset)),
+            None => DiffOutcome::Unchanged,
+        };
+        let reduction = self.outcome(outcome);
+        self.follow(reduction, false)
+    }
+
+    pub fn reveal_definition(&mut self, point: SourcePoint, len: u32) -> Option<Reduction> {
+        let live = self
+            .diff
+            .as_ref()
+            .is_some_and(|diff| diff.session().file(point.file).is_some());
+        if !live || self.text_compare.active {
+            return None;
+        }
+        let mut reduction = Reduction::changed();
+        let solo = self.diff.as_ref().and_then(DiffSessionViewState::solo);
+        if solo.is_some() && solo != Some(point.file) && self.sync_solo(Some(point.file)) {
+            reduction
+                .intents
+                .push(Intent::SelectFile(Some(SelectedFile {
+                    key: point.file,
+                    origin: SelectionOrigin::Viewport,
+                })));
+        }
+        let diff = self.diff.as_mut()?;
+        if !diff.reveal_target(DiffTarget::Source(point), RevealAlign::Center) {
+            return None;
+        }
+        diff.select_source(point, len);
+        Some(self.follow(reduction, false))
     }
 
     fn follow(&mut self, mut reduction: Reduction, select: bool) -> Reduction {

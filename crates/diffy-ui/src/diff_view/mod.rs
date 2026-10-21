@@ -37,6 +37,7 @@
 mod annotations;
 pub mod decorator;
 mod frame;
+mod hover;
 mod interaction;
 mod long_lines;
 mod navigation;
@@ -72,6 +73,7 @@ use quark_ui::element::{ScrollHandle, ScrollbarVisibility};
 use quark_ui::virtual_list::VariableList;
 
 pub use annotations::{DiffAnchor, DiffAnnotation};
+pub use hover::HoverHit;
 pub use navigation::{DiffTarget, FileId, RevealAlign, Revision, SourcePoint};
 pub use prepared::{AnnotationId, DiffPreviewLimit};
 pub use prepared_update::{Preparation, PreparedSegment};
@@ -79,7 +81,7 @@ pub use search::{FindOptions, SearchCoverage, SearchDirection, SearchSides, Sear
 pub use selection::CopyContent;
 pub use session::DiffSessionViewState;
 pub use session_interaction::{diff_session_view, diff_session_view_with};
-pub use view::{diff_view, diff_view_with};
+pub use view::{diff_view, diff_view_custom, diff_view_with};
 
 use annotations::AnnotationTable;
 use prepared::{Metrics, RowPaint, ViewFrame};
@@ -192,6 +194,7 @@ pub enum DiffKey {
     PrevMatch,
     /// Annotate the selection, or the focused row's line.
     Annotate,
+    Definition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +211,10 @@ pub enum DiffOutcome {
     /// The app should open its annotation editor for `anchor`.
     Annotate {
         anchor: DiffAnchor,
+    },
+    Definition {
+        point: navigation::SourcePoint,
+        line: String,
     },
 }
 
@@ -255,6 +262,7 @@ pub struct DiffViewState {
     scrollbar_auto_hide: bool,
     scrollbar: ScrollbarVisibility,
     selection: Option<Selection>,
+    link: Option<(quark::selection::BlockKey, std::ops::Range<usize>)>,
     /// The side a side-by-side selection copies.
     selection_side: Side,
     drag: Option<Drag>,
@@ -337,6 +345,7 @@ impl DiffViewState {
             scrollbar_auto_hide: false,
             scrollbar: ScrollbarVisibility::new(),
             selection: None,
+            link: None,
             selection_side: Side::New,
             drag: None,
             bounds: Rc::default(),

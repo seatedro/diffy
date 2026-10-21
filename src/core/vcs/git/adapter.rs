@@ -550,6 +550,10 @@ impl VcsRepository for GitRepository {
         }
         Ok(source)
     }
+
+    fn list_files(&mut self, revision: &RevisionId) -> Result<Vec<String>> {
+        self.service.list_files_at(&revision.id)
+    }
 }
 
 fn git_compare_spec(request: &VcsCompareRequest) -> CompareSpec {

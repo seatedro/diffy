@@ -16,6 +16,9 @@ use crate::contracts::viewport::{
 };
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::core::symbols::{DefinitionTarget, SymbolIndex};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShellAction {
@@ -27,6 +30,7 @@ pub enum ShellAction {
     Minimize,
     ToggleMaximize,
     Close,
+    CloseTabOrWindow,
     Noop,
 }
 
@@ -134,6 +138,9 @@ pub enum Intent {
     OpenTextCompare,
     AccountChanged,
     GrammarAvailable(GrammarAvailability),
+    PublishSymbols(Option<Arc<SymbolIndex>>),
+    ChooseDefinition(Vec<DefinitionTarget>),
+    PublishDocument(Option<crate::contracts::viewport::files::FileAt>),
     SettingsChanged(Rc<SettingsSnapshot>),
     RequestConfirmation(ConfirmationRequest),
     Toast(ToastUpdate),

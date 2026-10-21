@@ -8,7 +8,10 @@
 
 use diffy_diff::{RowKind, Side};
 
+use quark::selection::{Selection, SelectionPoint};
+
 use super::DiffViewState;
+use super::selection::{block_key, decode_key};
 use super::state::{RowRef, source_line, store_index};
 
 pub use diffy_diff::{FileId, Revision};
@@ -55,6 +58,63 @@ impl DiffViewState {
             return u32::try_from(file.0).ok();
         }
         self.files.id_slots.get(&file).copied()
+    }
+
+    pub fn caret(&self) -> Option<(SourcePoint, String)> {
+        let point = self.selection?.focus;
+        let (side, unit, index) = decode_key(point.block);
+        let (seg, file) = self.locate(unit)?;
+        let doc = &self.segments[seg].doc;
+        let text = doc.text(file, side).display_line(index)?.to_owned();
+        let point = SourcePoint {
+            file: self.file_id(unit),
+            side,
+            line: source_line(doc, file, side, index),
+            byte: u32::try_from(point.byte).ok()?,
+        };
+        Some((point, text))
+    }
+
+    pub fn changed_lines(&self, file: FileId, side: Side) -> Option<Vec<std::ops::Range<u32>>> {
+        let (seg, file) = self.locate(self.unit_of(file)?)?;
+        let doc = &self.segments[seg].doc;
+        let (h, b) = (doc.hunks(), doc.blocks());
+        let mut lines = Vec::new();
+        for hunk in doc.files().hunks[file as usize].clone() {
+            for block in h.blocks[hunk as usize].clone() {
+                let bi = block as usize;
+                if b.kind[bi] == diffy_diff::BlockKind::Context {
+                    continue;
+                }
+                let (line, len) = match side {
+                    Side::Old => (b.old_line[bi], b.old_len[bi]),
+                    Side::New => (b.new_line[bi], b.new_len[bi]),
+                };
+                let start = line.saturating_sub(1);
+                lines.push(start..start + len.max(1));
+            }
+        }
+        Some(lines)
+    }
+
+    pub fn select_source(&mut self, point: SourcePoint, len: u32) -> bool {
+        let Some(unit) = self.unit_of(point.file) else {
+            return false;
+        };
+        let Some((seg, file)) = self.locate(unit) else {
+            return false;
+        };
+        let Some(index) = store_index(&self.segments[seg].doc, file, point.side, point.line) else {
+            return false;
+        };
+        let block = block_key(point.side, unit, index);
+        let start = point.byte as usize;
+        let selection = Selection::new(
+            SelectionPoint::new(block, start),
+            SelectionPoint::new(block, start + len as usize),
+        );
+        self.set_selection(Some(selection), point.side);
+        true
     }
 
     /// The [`FileId`] of `unit`.

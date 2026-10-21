@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn native_engine_matches_every_fixture() {
-        if engine::language("rust").is_none() {
+        if engine::grammar("x.rs").is_none() {
             return;
         }
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");

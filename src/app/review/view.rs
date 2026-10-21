@@ -91,14 +91,18 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
             theme,
         );
         view! { scale,
-            <div class="flex-row items-center" gap={Sp::SM} min_w={0.0} test_id="review.pull_request">
+            <div class="flex-row items-center overflow-hidden" gap={Sp::SM} min_w={0.0} test_id="review.pull_request">
                 <icon svg={lucide::GIT_PULL_REQUEST} size={Px(small)} color={tc.text_muted} />
-                <text size={Px(small)} class="truncate font-medium" color={color}>{label}</text>
-                if let Some(detail) = detail {
-                    <text size={Px(small)} class="truncate" color={tc.text_muted}>{detail}</text>
-                }
-                {open}
-                {?submit}
+                <div class="flex-row items-center overflow-hidden" gap={Sp::SM} min_w={0.0}>
+                    <text size={Px(small)} class="truncate font-medium" color={color}>{label}</text>
+                    if let Some(detail) = detail {
+                        <text size={Px(small)} class="truncate" color={tc.text_muted}>{detail}</text>
+                    }
+                </div>
+                <div class="flex-row items-center shrink-0" gap={Sp::SM}>
+                    {open}
+                    {?submit}
+                </div>
             </div>
         }
     });
@@ -109,15 +113,15 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
             Tone::Ghost,
         )
         .icon(lucide::GIT_PULL_REQUEST);
-        view! { <div test_id="review.open_pull_request">{button}</div> }
+        view! { <div class="shrink-0" test_id="review.open_pull_request">{button}</div> }
     });
     let account = account_view(review, theme);
     view! { scale,
-        <div h={Px(slot.height)} class="flex-row items-center shrink-0" gap={Sp::SM} test_id="title.review"
+        <div h={Px(slot.height)} class="flex-row items-center justify-end overflow-hidden" min_w={0.0} gap={Sp::SM} test_id="title.review"
              on:key:escape={action(ReviewAction::CloseOverlay)}>
             {?pull_request}
             {?review_pr}
-            {account}
+            <div class="flex-row items-center shrink-0">{account}</div>
         </div>
     }
 }

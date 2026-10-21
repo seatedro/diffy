@@ -2061,6 +2061,21 @@ fn title_bar_shows_the_loaded_pull_request_and_account() {
 }
 
 #[test]
+fn pull_request_title_truncates_before_pushing_controls_out() {
+    let width = 360.0;
+    let ui = UiTestHarness::new(App::new(Driver::signed_in_with_pr()), (width, 600.0), 2.0);
+    for name in ["Open on GitHub", "Submit review", "GitHub account"] {
+        let bounds = ui.find(By::role_name(Role::Button, name)).bounds;
+        assert!(
+            bounds.x >= 0.0 && bounds.x + bounds.width <= width,
+            "{name} spans {}..{}",
+            bounds.x,
+            bounds.x + bounds.width
+        );
+    }
+}
+
+#[test]
 fn sign_in_dialog_fits_its_content_with_actions_on_the_right() {
     let mut ui = harness(signed_out());
     ui.click_node(By::role_name(Role::Button, "Sign in to GitHub"));

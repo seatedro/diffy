@@ -440,7 +440,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             >
                 <div class="flex-1 flex-row items-center" min_w={0.0}>{repo}</div>
                 {?compare}
-                <div class="flex-1 flex-row items-center justify-end" min_w={0.0} gap={tokens::scaled(Sp::SM, scale)}>{review}</div>
+                <div class="flex-1 flex-row items-center justify-end overflow-hidden" min_w={0.0} gap={tokens::scaled(Sp::SM, scale)}>{review}</div>
             </div>
         }
     }

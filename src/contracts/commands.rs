@@ -138,6 +138,9 @@ pub enum CommandsAction {
         anchored: bool,
     },
     OpenFilePicker,
+    OpenSymbolPicker {
+        workspace: bool,
+    },
     OpenRepositoryFolder,
     ToggleRepoGroup(String),
     RepoGroupKey(bool),
@@ -221,6 +224,7 @@ impl CommandsAction {
             Self::OpenCommandPalette
                 | Self::OpenRepoPicker { .. }
                 | Self::OpenFilePicker
+                | Self::OpenSymbolPicker { .. }
                 | Self::OpenRefPicker(_)
                 | Self::ShowRefPicker(_)
                 | Self::OpenCompareMenu

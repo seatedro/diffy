@@ -113,7 +113,7 @@ fn picker_panel(
             <div class="flex-row items-start" h={h} px={tokens::scaled(Sp::MD, scale)}>
                 <div class="flex-row items-center" h={theme.metrics.ui_row_height}>
                     <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>
-                        {if loading { "Loading files" } else { "No matches" }}
+                        {picker.empty_message()}
                     </text>
                 </div>
             </div>

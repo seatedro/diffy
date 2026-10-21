@@ -46,6 +46,7 @@ impl DiffSessionViewState {
         fn caret() -> Option<(SourcePoint, String)>;
         fn hover_at(x: f32, y: f32) -> Option<HoverHit>;
         fn has_link() -> bool;
+        fn changed_lines(file: FileId, side: Side) -> Option<Vec<std::ops::Range<u32>>>;
     }
 
     forward! { mut

@@ -12,6 +12,8 @@ pub struct FileSymbols {
 pub struct SymbolIndex {
     files: Vec<FileSymbols>,
     by_name: Vec<(u32, u32)>,
+    names: Vec<Box<str>>,
+    name_starts: Vec<u32>,
     pending: bool,
 }
 
@@ -26,9 +28,21 @@ impl SymbolIndex {
             })
             .collect();
         by_name.sort_by(|a, b| name_of(&files, *a).cmp(name_of(&files, *b)));
+        let mut names: Vec<Box<str>> = Vec::new();
+        let mut name_starts = Vec::new();
+        for (at, entry) in by_name.iter().enumerate() {
+            let name = name_of(&files, *entry);
+            if names.last().is_none_or(|last| **last != *name) {
+                names.push(Box::from(name));
+                name_starts.push(at as u32);
+            }
+        }
+        name_starts.push(by_name.len() as u32);
         Self {
             files,
             by_name,
+            names,
+            name_starts,
             pending,
         }
     }
@@ -50,6 +64,24 @@ impl SymbolIndex {
 
     pub fn pending(&self) -> bool {
         self.pending
+    }
+
+    pub fn names(&self) -> &[Box<str>] {
+        &self.names
+    }
+
+    pub fn definitions_of(
+        &self,
+        name: usize,
+    ) -> impl Iterator<Item = (&FileSymbols, &Symbol)> + '_ {
+        let start = self.name_starts.get(name).copied().unwrap_or_default() as usize;
+        let end = self.name_starts.get(name + 1).copied().unwrap_or_default() as usize;
+        self.by_name[start..end.max(start)]
+            .iter()
+            .map(|&(file, symbol)| {
+                let file = &self.files[file as usize];
+                (file, &file.symbols[symbol as usize])
+            })
     }
 
     pub fn definitions<'a>(
@@ -113,5 +145,9 @@ mod tests {
         assert_eq!(index.definitions("missing").count(), 0);
         assert_eq!(index.file("src/b.rs").map(|f| f.symbols.len()), Some(2));
         assert_eq!(index.symbol_count(), 5);
+        let names: Vec<&str> = index.names().iter().map(|name| &**name).collect();
+        assert_eq!(names, vec!["run", "runner", "start", "stop"]);
+        assert_eq!(index.definitions_of(0).count(), 2);
+        assert_eq!(index.definitions_of(4).count(), 0);
     }
 }

@@ -36,6 +36,7 @@ use crate::platform::persistence::Settings;
 struct NavApp {
     nav: NavigationController,
     review: crate::app::review::ReviewController,
+    viewport: crate::app::viewport::ViewportController,
     shared: SharedContext,
     intents: Vec<Intent>,
     effects: Vec<Effect>,
@@ -97,7 +98,7 @@ impl UiApp for NavApp {
             width,
             height,
         };
-        super::view(&mut self.nav, &self.review, &slot, None, cx)
+        super::view(&mut self.nav, &self.review, &self.viewport, &slot, None, cx)
     }
 
     fn update(&mut self, action: Action, cx: &mut UiContext) {

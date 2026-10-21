@@ -24,6 +24,7 @@ use crate::app::review::{ReviewController, author_avatar};
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SIDEBAR, SIDEBAR_FILTER};
 use crate::app::tokens::{self, Ico, Layout, Sp, TextStyle, Tint};
+use crate::app::viewport::{ViewportController, outline};
 use crate::contracts::commands::CommandsAction;
 use crate::contracts::navigation::{
     NavigationAction, SelectedFile, SelectionOrigin, SidebarMode, SidebarTab,
@@ -49,6 +50,7 @@ const FILE_ROW_GROUP: &str = "sidebar.file-row";
 pub fn view(
     nav: &mut NavigationController,
     review: &ReviewController,
+    viewport: &ViewportController,
     slot: &Slot,
     commit_box: Option<(AnyElement, f32)>,
     cx: &mut ViewContext,
@@ -59,8 +61,8 @@ pub fn view(
     let focus = cx.focus();
     let header = header(nav, theme);
     let tab = nav.tab();
-    let filter =
-        (tab != SidebarTab::OperationLog).then(|| filter_field(nav, tab, filter_focused, theme));
+    let filter = matches!(tab, SidebarTab::Files | SidebarTab::Commits)
+        .then(|| filter_field(nav, tab, filter_focused, theme));
     let progress = (tab == SidebarTab::Files)
         .then(|| progress(nav, theme))
         .flatten();
@@ -89,6 +91,7 @@ pub fn view(
         SidebarTab::Files => files(nav, slot.shared, list_h, focus, theme),
         SidebarTab::Commits => history(nav, review, list_h, focus, theme),
         SidebarTab::OperationLog => operations(nav, list_h, theme),
+        SidebarTab::Outline => outline::view(viewport, slot.shared, slot.width, list_h, cx),
     };
     let commit_box = commit_box.map(|(element, _)| element);
     view! {
@@ -133,6 +136,12 @@ fn header(nav: &NavigationController, theme: &Theme) -> AnyElement {
         )
         .id("sidebar.history")
         .active(tab == SidebarTab::Commits),
+        TabItem::new(
+            SidebarTab::Outline.label(),
+            NavigationAction::SetSidebarTab(SidebarTab::Outline),
+        )
+        .id("sidebar.outline")
+        .active(tab == SidebarTab::Outline),
     ];
     if nav.operation_log_available() {
         items.push(

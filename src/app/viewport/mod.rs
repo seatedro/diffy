@@ -1,6 +1,7 @@
 pub mod files;
 pub mod hover;
 pub mod interaction;
+pub mod outline;
 pub mod pipeline;
 pub mod symbols;
 
@@ -33,6 +34,7 @@ pub struct ViewportController {
     pub files: FilesController,
     pub symbols: SymbolsController,
     pub hover: hover::HoverController,
+    document: Option<FileAt>,
 }
 
 impl ViewportController {
@@ -71,6 +73,29 @@ impl ViewportController {
 }
 
 impl ViewportController {
+    fn document(&self, cx: &SharedContext) -> Option<FileAt> {
+        if let Some((file, _, _)) = self.files.active_place() {
+            return Some(file);
+        }
+        let manifest = cx.manifest.as_deref()?;
+        let file = manifest.file(cx.selected_file.as_ref()?.key)?;
+        let (_, head) = head_revision(cx)?;
+        Some(FileAt {
+            path: file.paths.new_path()?.into_owned(),
+            label: revision_label(&head.id),
+            revision: head,
+        })
+    }
+
+    fn publish_document(&mut self, mut reduction: Reduction, cx: &SharedContext) -> Reduction {
+        let document = self.document(cx);
+        if document != self.document {
+            self.document = document.clone();
+            reduction.intents.push(Intent::PublishDocument(document));
+        }
+        reduction
+    }
+
     fn place(&self) -> Option<Place> {
         if let Some((file, scroll, caret)) = self.files.active_place() {
             return Some(Place::File {
@@ -327,11 +352,8 @@ fn diff_point(target: &DefinitionTarget, cx: &SharedContext) -> Option<SourcePoi
     })
 }
 
-impl Controller for ViewportController {
-    type Action = ViewportAction;
-    type Event = ViewportEvent;
-
-    fn reduce_action(&mut self, action: ViewportAction, cx: &SharedContext) -> Reduction {
+impl ViewportController {
+    fn route_action(&mut self, action: ViewportAction, cx: &SharedContext) -> Reduction {
         match action {
             ViewportAction::Pipeline(action) => {
                 self.prepare();
@@ -356,7 +378,7 @@ impl Controller for ViewportController {
         }
     }
 
-    fn reduce_event(&mut self, event: ViewportEvent, cx: &SharedContext) -> Reduction {
+    fn route_event(&mut self, event: ViewportEvent, cx: &SharedContext) -> Reduction {
         match event {
             ViewportEvent::Pipeline(event) => {
                 self.prepare();
@@ -386,7 +408,7 @@ impl Controller for ViewportController {
         }
     }
 
-    fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
+    fn route_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
         self.prepare();
         let reduction = self.pipeline.apply_intent(intent, cx);
         let mut reduction = self.install(reduction, cx);
@@ -394,5 +416,28 @@ impl Controller for ViewportController {
         reduction.merge(self.files.apply_intent(intent));
         reduction.merge(self.symbols.apply_intent(intent, cx));
         reduction
+    }
+}
+
+impl Controller for ViewportController {
+    type Action = ViewportAction;
+    type Event = ViewportEvent;
+
+    fn reduce_action(&mut self, action: ViewportAction, cx: &SharedContext) -> Reduction {
+        let reduction = self.route_action(action, cx);
+        self.publish_document(reduction, cx)
+    }
+
+    fn reduce_event(&mut self, event: ViewportEvent, cx: &SharedContext) -> Reduction {
+        let reduction = self.route_event(event, cx);
+        self.publish_document(reduction, cx)
+    }
+
+    fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
+        if matches!(intent, Intent::PublishDocument(_)) {
+            return Reduction::default();
+        }
+        let reduction = self.route_intent(intent, cx);
+        self.publish_document(reduction, cx)
     }
 }

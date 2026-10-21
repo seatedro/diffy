@@ -140,6 +140,7 @@ pub enum Intent {
     GrammarAvailable(GrammarAvailability),
     PublishSymbols(Option<Arc<SymbolIndex>>),
     ChooseDefinition(Vec<DefinitionTarget>),
+    PublishDocument(Option<crate::contracts::viewport::files::FileAt>),
     SettingsChanged(Rc<SettingsSnapshot>),
     RequestConfirmation(ConfirmationRequest),
     Toast(ToastUpdate),

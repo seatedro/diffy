@@ -20,6 +20,7 @@ pub enum SidebarTab {
     #[default]
     Files,
     Commits,
+    Outline,
     OperationLog,
 }
 
@@ -28,6 +29,7 @@ impl SidebarTab {
         match self {
             Self::Files => "Changes",
             Self::Commits => "History",
+            Self::Outline => "Outline",
             Self::OperationLog => "Ops",
         }
     }

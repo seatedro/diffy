@@ -9,10 +9,16 @@ use quark_ui::element::ScrollbarVisibility;
 use quark_ui::text_input::TextField;
 
 use super::repo_picker::RepoView;
+use crate::app::viewport::outline;
 use crate::contracts::navigation::{CompareField, NavigationAction};
 use crate::contracts::shell::Action;
+use crate::contracts::viewport::files::FileAt;
+use crate::contracts::viewport::symbols::{DefinitionTarget, SymbolsAction};
 use crate::core::compare::CompareMode;
+use crate::core::symbols::SymbolIndex;
+use crate::core::vcs::model::RevisionId;
 use crate::fonts::{FontFamilyEntry, FontRole};
+use diffy_syntax::Symbol;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKind {
@@ -50,7 +56,7 @@ impl PickerKind {
             Self::Font(_) => "Search fonts",
             Self::CompareMenu => "Search compare options",
             Self::PullRequest => "Paste a GitHub pull request URL",
-            Self::File => "Search files",
+            Self::File => "Search files, @ symbols here, # all symbols",
             Self::Definition => "Filter definitions",
         }
     }
@@ -157,6 +163,9 @@ pub struct PickerState {
     pub pending_reveal: bool,
     pub repos: Option<RepoView>,
     pub files: Option<Arc<[String]>>,
+    pub symbols: Option<Arc<SymbolIndex>>,
+    pub document: Option<FileAt>,
+    pub head: Option<RevisionId>,
     pub anchored: bool,
     matcher: FuzzyMatcher,
 }
@@ -178,6 +187,9 @@ impl PickerState {
             pending_reveal: true,
             repos: None,
             files: None,
+            symbols: None,
+            document: None,
+            head: None,
             anchored: false,
             matcher: FuzzyMatcher::default(),
         };
@@ -220,6 +232,117 @@ impl PickerState {
         }
     }
 
+    pub fn symbol_mode(&self) -> Option<SymbolMode> {
+        if self.kind != PickerKind::File {
+            return None;
+        }
+        match self.query.text().trim_start().chars().next() {
+            Some('@') => Some(SymbolMode::File),
+            Some('#') => Some(SymbolMode::Workspace),
+            _ => None,
+        }
+    }
+
+    pub fn empty_message(&self) -> &'static str {
+        match self.symbol_mode() {
+            Some(_) if self.symbols.is_none() => "Indexing symbols",
+            Some(SymbolMode::File) if self.document.is_none() => "Open a file first",
+            Some(SymbolMode::Workspace) if self.query.text().trim().len() <= 1 => {
+                "Type a symbol name"
+            }
+            Some(_) => "No symbols",
+            None if self.kind == PickerKind::File && self.files.is_none() => "Loading files",
+            None => "No matches",
+        }
+    }
+
+    fn document_symbol_rows(&self, query: &str) -> Vec<PickerRow> {
+        let (Some(index), Some(document)) = (&self.symbols, &self.document) else {
+            return Vec::new();
+        };
+        if self.head.as_ref() != Some(&document.revision) {
+            return Vec::new();
+        }
+        let Some(file) = index.file(&document.path) else {
+            return Vec::new();
+        };
+        let symbols = &file.symbols;
+        let ranked: Vec<(usize, Vec<(usize, usize)>)> = if query.is_empty() {
+            (0..symbols.len()).map(|i| (i, Vec::new())).collect()
+        } else {
+            let names: Vec<&str> = symbols.iter().map(|symbol| &*symbol.name).collect();
+            let config = symbol_config(query);
+            let mut matcher = Matcher::new(query, &config);
+            let mut found = matcher.match_list(&names);
+            found.sort_by(|a, b| {
+                b.score.cmp(&a.score).then(
+                    symbols[a.index as usize]
+                        .line
+                        .cmp(&symbols[b.index as usize].line),
+                )
+            });
+            found
+                .into_iter()
+                .map(|m| {
+                    let i = m.index as usize;
+                    (i, name_highlights(&mut matcher, names[i]))
+                })
+                .collect()
+        };
+        ranked
+            .into_iter()
+            .take(SYMBOL_ROWS)
+            .map(|(i, highlights)| {
+                let symbol = &symbols[i];
+                symbol_row(
+                    symbol,
+                    format!("line {}", symbol.line + 1),
+                    &document.path,
+                    &document.revision,
+                    highlights,
+                )
+            })
+            .collect()
+    }
+
+    fn workspace_symbol_rows(&self, query: &str) -> Vec<PickerRow> {
+        let (Some(index), Some(head)) = (&self.symbols, &self.head) else {
+            return Vec::new();
+        };
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let config = symbol_config(query);
+        let mut matcher = Matcher::new(query, &config);
+        let names = index.names();
+        let mut found = matcher.match_list(names);
+        found.sort_by(|a, b| {
+            b.score.cmp(&a.score).then(
+                names[a.index as usize]
+                    .len()
+                    .cmp(&names[b.index as usize].len()),
+            )
+        });
+        let mut rows = Vec::new();
+        for m in found {
+            let name = &names[m.index as usize];
+            let highlights = name_highlights(&mut matcher, name);
+            for (file, symbol) in index.definitions_of(m.index as usize) {
+                rows.push(symbol_row(
+                    symbol,
+                    format!("{}:{}", file.path, symbol.line + 1),
+                    &file.path,
+                    head,
+                    highlights.clone(),
+                ));
+                if rows.len() == SYMBOL_ROWS {
+                    return rows;
+                }
+            }
+        }
+        rows
+    }
+
     pub fn set_candidates(&mut self, candidates: Vec<PickerCandidate>) {
         self.candidates = candidates;
         self.refilter();
@@ -246,7 +369,12 @@ impl PickerState {
             return;
         }
         if self.kind == PickerKind::File {
-            self.rows = file_rows(self.files.as_deref().unwrap_or_default(), query);
+            let rows = match self.symbol_mode() {
+                Some(SymbolMode::File) => self.document_symbol_rows(query[1..].trim()),
+                Some(SymbolMode::Workspace) => self.workspace_symbol_rows(query[1..].trim()),
+                None => file_rows(self.files.as_deref().unwrap_or_default(), query),
+            };
+            self.rows = rows;
             self.selected = 0;
             self.scroll_px = 0.0;
             return;
@@ -382,6 +510,59 @@ impl PickerState {
 }
 
 const FILE_ROWS: usize = 500;
+const SYMBOL_ROWS: usize = 500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolMode {
+    File,
+    Workspace,
+}
+
+fn symbol_config(query: &str) -> Config {
+    Config {
+        max_typos: Some(u16::from(query.len() >= FILE_TYPO_MIN_LEN)),
+        ..Config::default()
+    }
+}
+
+fn name_highlights(matcher: &mut Matcher, name: &str) -> Vec<(usize, usize)> {
+    matcher
+        .match_one_indices(name, 0)
+        .map(|found| {
+            let mut positions = found.indices;
+            positions.sort_unstable();
+            match_ranges(name, &positions)
+        })
+        .unwrap_or_default()
+}
+
+fn symbol_row(
+    symbol: &Symbol,
+    detail: String,
+    path: &str,
+    revision: &RevisionId,
+    highlights: Vec<(usize, usize)>,
+) -> PickerRow {
+    let target = DefinitionTarget {
+        path: path.to_owned(),
+        revision: revision.clone(),
+        line: symbol.line,
+        column: symbol.column,
+        len: symbol.name.len() as u32,
+        kind: Some(symbol.kind),
+    };
+    PickerRow {
+        label: symbol.name.to_string(),
+        detail: Some(detail),
+        meta: Some(outline::kind_label(symbol.kind).to_owned()),
+        highlights,
+        choice: PickerChoice::Action(SymbolsAction::Jump(target).into()),
+        current: false,
+        kind: RowKind::Item,
+        branch: None,
+        indent: false,
+    }
+}
 const FILE_NAME_BONUS: u32 = 16;
 const FILE_TYPO_MIN_LEN: usize = 8;
 

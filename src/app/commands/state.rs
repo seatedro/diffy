@@ -19,6 +19,7 @@ use super::ref_picker::{RefPicker, is_working_tree};
 use super::repo_picker::{RepoEntry, RepoView};
 use super::toasts::ToastHost;
 use crate::app::text_targets::{PICKER, SETTINGS, SETTINGS_SEARCH, TextCx, TextHost};
+use crate::app::viewport::outline;
 use crate::contracts::commands::{
     CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
     ContextMenuEntry, FileListRequest, RefCatalogRequest, RefPickerAction, RefPickerRequest,
@@ -44,7 +45,6 @@ use crate::core::vcs::git::{WORKDIR_REF, is_full_hex_oid};
 use crate::core::vcs::model::{RevisionId, VcsKind};
 use crate::fonts::{FontFamilyEntry, FontRole, bundled_font_entries, normalize_font_selection};
 use crate::platform::persistence::Settings;
-use diffy_syntax::SymbolKind;
 
 pub const CONFIRM_CANCEL: FocusId = FocusId::from_key("diffy.confirm.cancel");
 pub const CONFIRM_ACCEPT: FocusId = FocusId::from_key("diffy.confirm.accept");
@@ -558,11 +558,19 @@ impl CommandsController {
         reduction
     }
 
-    fn open_file_picker(&mut self, cx: &SharedContext) -> Reduction {
+    fn open_file_picker(&mut self, prefix: &str, cx: &SharedContext) -> Reduction {
         let Some(key) = file_list_key(cx) else {
             return Reduction::default();
         };
-        let mut reduction = self.show_picker(PickerState::new(PickerKind::File, Vec::new()));
+        let mut state = PickerState::new(PickerKind::File, Vec::new());
+        state.symbols = cx.symbols.clone();
+        state.document = cx.document.clone();
+        state.head = Some(key.revision.clone());
+        if !prefix.is_empty() {
+            state.query = TextField::new(prefix);
+        }
+        state.refilter();
+        let mut reduction = self.show_picker(state);
         let Some(picker) = self.picker.as_mut() else {
             return reduction;
         };
@@ -1307,21 +1315,6 @@ struct FileList {
     files: Arc<[String]>,
 }
 
-fn kind_label(kind: SymbolKind) -> &'static str {
-    match kind {
-        SymbolKind::Function => "function",
-        SymbolKind::Method => "method",
-        SymbolKind::Class => "type",
-        SymbolKind::Interface => "interface",
-        SymbolKind::Module => "module",
-        SymbolKind::Macro => "macro",
-        SymbolKind::Constant => "constant",
-        SymbolKind::Type => "type",
-        SymbolKind::Field => "field",
-        SymbolKind::Other => "definition",
-    }
-}
-
 fn file_list_key(cx: &SharedContext) -> Option<FileListKey> {
     let (repo_path, revision) = head_revision(cx)?;
     Some(FileListKey {
@@ -1386,6 +1379,8 @@ fn command_detail(id: &str) -> Option<&'static str> {
         ids::OPEN_REPOSITORY => "Pick a repository or type a path",
         ids::GO_TO_FILE => "Open any file at the compared revision",
         ids::CLOSE => "Close the open file tab, or the window without tabs",
+        ids::GO_TO_SYMBOL => "Jump to a definition in the open file",
+        ids::GO_TO_WORKSPACE_SYMBOL => "Search every definition in the repository",
         ids::WORKING_TREE => "Compare HEAD with uncommitted changes",
         ids::REFRESH => "Reload refs, status and the current compare",
         "compare.base" => "Pick the ref to compare from",
@@ -1451,6 +1446,18 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
         )
         .shortcut(S::GoToFile),
         D::new(ids::CLOSE, "Close", ShellAction::CloseTabOrWindow).shortcut(S::CloseTab),
+        D::new(
+            ids::GO_TO_SYMBOL,
+            "Go to Symbol in File…",
+            CommandsAction::OpenSymbolPicker { workspace: false },
+        )
+        .shortcut(S::GoToSymbol),
+        D::new(
+            ids::GO_TO_WORKSPACE_SYMBOL,
+            "Go to Symbol in Workspace…",
+            CommandsAction::OpenSymbolPicker { workspace: true },
+        )
+        .shortcut(S::GoToWorkspaceSymbol),
         D::new(
             ids::WORKING_TREE,
             "Show Working Tree",
@@ -1641,7 +1648,10 @@ impl Controller for CommandsController {
         match action {
             A::OpenCommandPalette => self.open_palette(cx),
             A::OpenRepoPicker { anchored } => self.open_repo_picker(anchored, cx),
-            A::OpenFilePicker => self.open_file_picker(cx),
+            A::OpenFilePicker => self.open_file_picker("", cx),
+            A::OpenSymbolPicker { workspace } => {
+                self.open_file_picker(if workspace { "#" } else { "@" }, cx)
+            }
             A::ToggleRepoGroup(group) => {
                 let Some(picker) = self.picker.as_mut() else {
                     return Reduction::default();
@@ -2102,7 +2112,7 @@ impl Controller for CommandsController {
                         )
                         .detail(dir);
                         if let Some(kind) = target.kind {
-                            candidate = candidate.meta(kind_label(kind));
+                            candidate = candidate.meta(outline::kind_label(kind));
                         }
                         candidate
                     })

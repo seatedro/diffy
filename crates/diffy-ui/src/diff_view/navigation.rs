@@ -75,6 +75,28 @@ impl DiffViewState {
         Some((point, text))
     }
 
+    pub fn changed_lines(&self, file: FileId, side: Side) -> Option<Vec<std::ops::Range<u32>>> {
+        let (seg, file) = self.locate(self.unit_of(file)?)?;
+        let doc = &self.segments[seg].doc;
+        let (h, b) = (doc.hunks(), doc.blocks());
+        let mut lines = Vec::new();
+        for hunk in doc.files().hunks[file as usize].clone() {
+            for block in h.blocks[hunk as usize].clone() {
+                let bi = block as usize;
+                if b.kind[bi] == diffy_diff::BlockKind::Context {
+                    continue;
+                }
+                let (line, len) = match side {
+                    Side::Old => (b.old_line[bi], b.old_len[bi]),
+                    Side::New => (b.new_line[bi], b.new_len[bi]),
+                };
+                let start = line.saturating_sub(1);
+                lines.push(start..start + len.max(1));
+            }
+        }
+        Some(lines)
+    }
+
     pub fn select_source(&mut self, point: SourcePoint, len: u32) -> bool {
         let Some(unit) = self.unit_of(point.file) else {
             return false;

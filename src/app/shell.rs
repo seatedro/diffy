@@ -219,6 +219,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 shared.selection = None;
                 shared.review = None;
                 shared.symbols = None;
+                shared.document = None;
                 self.shell.set_workspace(path);
                 true
             }
@@ -229,6 +230,11 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             Intent::PublishSymbols(index) => {
                 shared.symbols = index.clone();
                 true
+            }
+            Intent::PublishDocument(document) => {
+                let changed = shared.document != *document;
+                shared.document = document.clone();
+                changed
             }
             Intent::SelectFile(file) => {
                 let changed = shared.selected_file != *file;
@@ -455,6 +461,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             navigation::view(
                 &mut self.controllers.navigation,
                 &self.controllers.review,
+                &self.controllers.viewport,
                 &slot,
                 mutations::commit_box(&mut self.controllers.mutations, &slot, cx),
                 cx,

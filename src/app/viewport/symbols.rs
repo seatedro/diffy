@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use diffy_ui::SourcePoint;
+use quark_ui::element::ScrollHandle;
 
 use crate::contracts::commands::ToastUpdate;
 use crate::contracts::shared::SharedContext;
@@ -39,9 +40,14 @@ pub struct SymbolsController {
     jump: Option<DefinitionTarget>,
     back: Vec<Place>,
     forward: Vec<Place>,
+    outline_scroll: ScrollHandle,
 }
 
 impl SymbolsController {
+    pub fn outline_scroll(&self) -> &ScrollHandle {
+        &self.outline_scroll
+    }
+
     pub fn resolve(&mut self, position: SourcePosition, cx: &SharedContext) -> Reduction {
         let Some((repo_path, head)) = head_revision(cx) else {
             return Reduction::default();

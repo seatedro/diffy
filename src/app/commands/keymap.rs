@@ -78,6 +78,12 @@ const NAVIGATION: &[Entry] = &[
         &["shift+c"],
         "History sidebar tab",
     ),
+    Entry::new(
+        WORKSPACE,
+        C::SidebarOutline,
+        &["shift+o"],
+        "Outline sidebar tab",
+    ),
 ];
 
 const SCROLLING: &[Entry] = &[
@@ -224,6 +230,18 @@ const REPOSITORY: &[Entry] = &[
     Entry::new(GLOBAL, C::GoToFile, &["mod+p"], "Go to file"),
     Entry::new(
         GLOBAL,
+        C::GoToSymbol,
+        &["mod+shift+o"],
+        "Go to symbol in file",
+    ),
+    Entry::new(
+        GLOBAL,
+        C::GoToWorkspaceSymbol,
+        &["mod+t"],
+        "Go to symbol in workspace",
+    ),
+    Entry::new(
+        GLOBAL,
         C::CloseTab,
         &["mod+w"],
         "Close tab, or the window without tabs",
@@ -354,6 +372,8 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::OpenCommandPalette => CommandsAction::OpenCommandPalette.into(),
         C::OpenRepository => CommandsAction::OpenRepoPicker { anchored: false }.into(),
         C::GoToFile => CommandsAction::OpenFilePicker.into(),
+        C::GoToSymbol => CommandsAction::OpenSymbolPicker { workspace: false }.into(),
+        C::GoToWorkspaceSymbol => CommandsAction::OpenSymbolPicker { workspace: true }.into(),
         C::CloseTab => ShellAction::CloseTabOrWindow.into(),
         C::GoToDefinition => SymbolsAction::GoToDefinition.into(),
         C::NavigateBack => SymbolsAction::Back.into(),
@@ -380,6 +400,7 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         }
         C::SidebarFiles => NavigationAction::SetSidebarTab(SidebarTab::Files).into(),
         C::SidebarCommits => NavigationAction::SetSidebarTab(SidebarTab::Commits).into(),
+        C::SidebarOutline => NavigationAction::SetSidebarTab(SidebarTab::Outline).into(),
         C::ScrollHalfPageDown => interaction(InteractionAction::ScrollHalfPage(1)),
         C::ScrollHalfPageUp => interaction(InteractionAction::ScrollHalfPage(-1)),
         C::PageDown => interaction(InteractionAction::ScrollPages(1)),

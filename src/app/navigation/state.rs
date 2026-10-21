@@ -693,7 +693,7 @@ impl NavigationController {
         self.select(key, SelectionOrigin::Sidebar)
     }
 
-    fn reconcile_selection(&mut self) -> Reduction {
+    fn reconcile_selection(&mut self, reveal: bool) -> Reduction {
         let files = self.files();
         if files.is_empty() {
             let had = self.selection.take().is_some();
@@ -737,7 +737,11 @@ impl NavigationController {
             if let Some(selection) = &mut self.selection {
                 selection.path = path;
             }
-            self.reveal_selected();
+            if reveal {
+                self.reveal_selected();
+            } else {
+                self.clamp_scroll();
+            }
             return Reduction::changed();
         }
         self.select(key, SelectionOrigin::Command)
@@ -1055,7 +1059,7 @@ impl NavigationController {
                 ];
             }
         }
-        self.reconcile_selection()
+        self.reconcile_selection(generation_changed)
     }
 
     fn set_tab(&mut self, tab: SidebarTab) -> Reduction {

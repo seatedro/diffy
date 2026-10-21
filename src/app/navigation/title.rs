@@ -34,7 +34,7 @@ pub fn repo_chip(nav: &NavigationController, theme: &Theme) -> AnyElement {
             test_id="title.repo"
             role="button"
             aria-label={format!("Repository {name}")}
-            on:click={CommandsAction::OpenRepoPicker}
+            on:click={CommandsAction::OpenRepoPicker { anchored: true }}
         >
             <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.icon} />
             <text size={TextStyle::Body.font_size(theme)} class="font-medium truncate" color={tc.text_strong}>{name}</text>

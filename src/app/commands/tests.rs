@@ -13,6 +13,7 @@ use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 use tempfile::TempDir;
 
 use super::harness::{self, effects, no_args, startup};
+use super::picker::PickerKind;
 use super::state::{CONFIRM_ACCEPT, CONFIRM_CANCEL};
 use super::{CommandsController, LayerKind, PlatformRequest};
 use crate::app::shell::Slot;
@@ -701,9 +702,11 @@ fn menu_items_route_through_command_descriptors() {
     let mut ui = cmd_harness(Settings::default());
     ui.app_event(WindowEvent::Menu("repo.open".to_owned()));
     assert_eq!(
-        ui.app().dispatched,
-        vec![Action::from(NavigationAction::OpenRepositoryDialog)]
+        ui.app().commands.picker().map(|p| p.kind),
+        Some(PickerKind::Repository)
     );
+    assert!(ui.app().dispatched.is_empty());
+    ui.key("escape");
     ui.app_event(WindowEvent::Menu("app.about".to_owned()));
     ui.find(By::role_name(Role::Tab, "Updates"));
     assert_eq!(

@@ -5,24 +5,27 @@ use diffy_ui::DiffEvent;
 use diffy_ui::diff_view::decorator::{DiffDecorator, DiffViewOptions, LinePointer};
 use quark::view;
 use quark_app::ViewContext;
-use quark_components::search_field;
 use quark_components::{Button, ButtonSize, ButtonStyle, CollectionEnv, DropdownItem, dropdown};
+use quark_components::{kbd, search_field};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
+use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
 use quark_ui::text_input::{EditorMode, text_editor_element};
 use quark_ui::theme::Theme;
 
 use super::keys;
 use super::state::{InteractionController, Phase};
-use crate::app::commands::keymap::WORKSPACE_CONTEXT;
+use crate::app::commands::keymap::{self, WORKSPACE_CONTEXT};
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT};
 use crate::app::tokens::{self, Sp, TextStyle};
+use crate::contracts::commands::CommandsAction;
 use crate::contracts::shell::Action;
 use crate::contracts::viewport::interaction::{
     DiffInput, InteractionAction, LineInput, TextCompareLanguage, TextCompareSide, TextCompareView,
 };
+use crate::core::keymap::ShortcutCommand;
 
 const SYNTAX_POLL: Duration = Duration::from_millis(50);
 
@@ -80,6 +83,15 @@ fn render(
     let decorator = interaction.decorations(decorator, theme);
     let body = if editing {
         text_compare_editors(interaction, width, body_h, cx)
+    } else if slot.shared.repository.is_none()
+        && !text_compare
+        && matches!(interaction.phase, Phase::Idle)
+        && interaction
+            .diff
+            .as_ref()
+            .is_none_or(|diff| diff.session().is_empty())
+    {
+        welcome(slot, width, body_h, theme)
     } else {
         diff_area(interaction, width, body_h, Some(decorator), cx)
     };
@@ -176,6 +188,51 @@ fn toolbar(
             test_id="diff.toolbar"
         >
             {...controls}
+        </div>
+    }
+}
+
+fn welcome(slot: &Slot, width: f32, height: f32, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let saved = &slot.shared.settings.settings.keymap_overrides;
+    let hint = |command: ShortcutCommand, label: &'static str| {
+        keymap::display_binding(saved, command).map(|binding| {
+            view! {
+                <div class="flex-row items-center" gap={tokens::scaled(Sp::XS, scale)}>
+                    {kbd(binding, theme)}
+                    <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>{label}</text>
+                </div>
+            }
+        })
+    };
+    view! {
+        <div
+            w={width}
+            h={height}
+            class="flex-col items-center justify-center"
+            gap={tokens::scaled(Sp::LG, scale)}
+            p={tokens::scaled(Sp::LG, scale)}
+            test_id="diff.welcome"
+        >
+            <div class="flex-col items-center" gap={tokens::scaled(Sp::XS, scale)}>
+                <text size={TextStyle::Heading.font_size(theme)} class="font-semibold" color={tc.text_strong}>
+                    "Open a repository"
+                </text>
+                <text size={TextStyle::BodySmall.font_size(theme)} color={tc.text_muted}>
+                    "Review branches, commits and uncommitted changes."
+                </text>
+            </div>
+            <Button
+                on:click={Action::from(CommandsAction::OpenRepoPicker { anchored: false })}
+                label="Open Repository…"
+                icon={lucide::FOLDER_OPEN}
+                variant={ButtonStyle::Filled}
+            />
+            <div class="flex-row items-center" gap={tokens::scaled(Sp::LG, scale)}>
+                {?hint(ShortcutCommand::OpenRepository, "Open repository")}
+                {?hint(ShortcutCommand::OpenCommandPalette, "All commands")}
+            </div>
         </div>
     }
 }

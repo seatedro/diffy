@@ -72,6 +72,7 @@ pub fn option_row(row: OptionRow, theme: &Theme, on_click: quark_ui::Action) -> 
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);
+    let paint = tokens::row_paint(theme, tc.elevated_surface, row.selected, true);
     view! {
         <div
             class="w-full flex-row items-center"
@@ -79,7 +80,7 @@ pub fn option_row(row: OptionRow, theme: &Theme, on_click: quark_ui::Action) -> 
             px={tokens::scaled(Sp::SM, scale)}
             gap={tokens::scaled(Sp::SM, scale)}
             rounded={theme.metrics.control_radius}
-            bg={if row.selected { tokens::selected_fill(tc.elevated_surface, true, theme) } else { Color::TRANSPARENT }}
+            bg={paint.bg}
             @when {!row.selected} { hover_bg={tc.ghost_element_hover} }
             cursor={CursorHint::Pointer}
             id={row.id.clone()}
@@ -89,16 +90,16 @@ pub fn option_row(row: OptionRow, theme: &Theme, on_click: quark_ui::Action) -> 
             aria-selected={row.selected}
             on:click={on_click}
         >
-            {?row.icon.map(|svg| view! { <icon svg={svg} size={Ico::SM} color={if row.current { tc.accent } else { tc.icon }} /> })}
-            {highlighted(row.label, row.highlights, if row.selected { tc.text_strong } else { tc.text }, theme)}
+            {?row.icon.map(|svg| view! { <icon svg={svg} size={Ico::SM} color={if row.current { tc.accent } else { paint.icon }} /> })}
+            {highlighted(row.label, row.highlights, paint.text, theme)}
             {?row.detail.filter(|d| !d.is_empty()).map(|d| view! {
                 <div class="flex-1 flex-row overflow-hidden" min_w={0.0}>
-                    <text size={small} class="truncate" color={tc.text_muted}>{d}</text>
+                    <text size={small} class="truncate" color={paint.muted}>{d}</text>
                 </div>
             })}
             if row.detail.is_none_or(str::is_empty) { <div class="flex-1" /> }
             {?row.rhs.filter(|r| !r.is_empty()).map(|r| view! {
-                <text size={small} color={tc.text_muted}>{r}</text>
+                <text size={small} color={paint.muted}>{r}</text>
             })}
             if row.current {
                 <icon svg={lucide::CHECK} size={Ico::SM} color={tc.accent} />

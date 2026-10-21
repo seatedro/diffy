@@ -6,7 +6,7 @@ use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
 use quark_ui::style::Styled;
-use quark_ui::theme::{Color, Theme};
+use quark_ui::theme::Theme;
 
 use super::CommandsController;
 use super::list::{self, OptionRow};
@@ -160,12 +160,13 @@ fn picker_panel(
         format!("{shown} of {}", view.total())
     });
     let footer = repository.then(|| repository_footer(browsing, theme));
-    let left = if repository {
+    let anchored = repository && picker.anchored;
+    let left = if anchored {
         tokens::title_leading_inset(theme).min((size.0 - panel_w).max(0.0))
     } else {
         ((size.0 - panel_w) / 2.0).max(0.0)
     };
-    let top = if repository {
+    let top = if anchored {
         theme.metrics.title_bar_height + tokens::scaled(Layout::POPOVER_GAP, scale)
     } else {
         tokens::scaled(Sz::MODAL_TOP_OFFSET, scale)
@@ -223,11 +224,8 @@ fn repo_row(row: &PickerRow, index: usize, selected: bool, theme: &Theme) -> Any
     let caption = TextStyle::Caption.font_size(theme);
     let height = theme.metrics.ui_row_height.round();
     let pad = tokens::scaled(Sp::SM, scale);
-    let fill = if selected {
-        tokens::selected_fill(tc.elevated_surface, true, theme)
-    } else {
-        Color::TRANSPARENT
-    };
+    let paint = tokens::row_paint(theme, tc.elevated_surface, selected, true);
+    let fill = paint.bg;
     let id = format!("picker-row:{index}:{}", row.label);
     let click: quark_ui::Action = Action::from(CommandsAction::SelectOverlayEntry(index)).into();
     match row.kind {
@@ -275,10 +273,10 @@ fn repo_row(row: &PickerRow, index: usize, selected: bool, theme: &Theme) -> Any
                 aria-expanded={expanded}
                 on:click={click}
             >
-                <icon svg={if expanded { lucide::CHEVRON_DOWN } else { lucide::CHEVRON_RIGHT }} size={Ico::XS} color={tc.text_muted} />
-                <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.icon} />
+                <icon svg={if expanded { lucide::CHEVRON_DOWN } else { lucide::CHEVRON_RIGHT }} size={Ico::XS} color={paint.muted} />
+                <icon svg={lucide::FOLDER} size={Ico::SM} color={paint.icon} />
                 <div class="flex-row items-center overflow-hidden" min_w={0.0}>
-                    <text size={TextStyle::Body.font_size(theme)} class="font-medium truncate" color={tc.text}>{row.label.clone()}</text>
+                    <text size={TextStyle::Body.font_size(theme)} class="font-medium truncate" color={paint.text}>{row.label.clone()}</text>
                 </div>
                 <div
                     class="flex-row items-center shrink-0"
@@ -296,7 +294,6 @@ fn repo_row(row: &PickerRow, index: usize, selected: bool, theme: &Theme) -> Any
             } else {
                 pad
             };
-            let name_color = if selected { tc.text_strong } else { tc.text };
             view! {
                 <div
                     class="w-full flex-row items-center"
@@ -315,11 +312,11 @@ fn repo_row(row: &PickerRow, index: usize, selected: bool, theme: &Theme) -> Any
                     aria-selected={selected}
                     on:click={click}
                 >
-                    <icon svg={lucide::FOLDER_GIT} size={Ico::SM} color={if row.current { tc.accent } else { tc.icon }} />
-                    {list::highlighted(&row.label, &row.highlights, name_color, theme)}
+                    <icon svg={lucide::FOLDER_GIT} size={Ico::SM} color={if row.current { tc.accent } else { paint.icon }} />
+                    {list::highlighted(&row.label, &row.highlights, paint.text, theme)}
                     <div class="flex-1 flex-row overflow-hidden" min_w={0.0}>
                         {?row.detail.as_ref().map(|detail| view! {
-                            <text size={small} class="truncate" color={tc.text_muted}>{detail.clone()}</text>
+                            <text size={small} class="truncate" color={paint.muted}>{detail.clone()}</text>
                         })}
                     </div>
                     {?row.branch.as_ref().map(|branch| view! {
@@ -328,12 +325,12 @@ fn repo_row(row: &PickerRow, index: usize, selected: bool, theme: &Theme) -> Any
                             max_w={tokens::scaled(Layout::BRANCH_MAX_W, scale)}
                             gap={tokens::scaled(Sp::XS, scale)}
                         >
-                            <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={tc.text_muted} />
-                            <text size={TextStyle::MonoSmall.font_size(theme)} class="font-mono truncate" color={tc.text_muted}>{branch.clone()}</text>
+                            <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={paint.muted} />
+                            <text size={TextStyle::MonoSmall.font_size(theme)} class="font-mono truncate" color={paint.muted}>{branch.clone()}</text>
                         </div>
                     })}
                     <div class="flex-row justify-end shrink-0" w={tokens::scaled(Layout::AGE_W, scale)}>
-                        {?row.meta.as_ref().map(|age| view! { <text size={caption} color={tc.text_muted}>{age.clone()}</text> })}
+                        {?row.meta.as_ref().map(|age| view! { <text size={caption} color={paint.muted}>{age.clone()}</text> })}
                     </div>
                     if row.current {
                         <icon svg={lucide::CHECK} size={Ico::SM} color={tc.accent} />

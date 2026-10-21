@@ -82,7 +82,7 @@ dependencies = [
 [[package]]
 name = "accesskit_unix"
 version = "0.22.1"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "accesskit",
  "accesskit_atspi_common",
@@ -780,7 +780,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
 dependencies = [
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -881,7 +881,7 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.15.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "bitflags 2.11.0",
  "fontdb",
@@ -4856,7 +4856,7 @@ checksum = "b5a041e753da8b807c9255f28de81879c78c876392ff2469cde94799b2896b9d"
 [[package]]
 name = "quark"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "quark-macros",
  "serde",
@@ -4866,7 +4866,7 @@ dependencies = [
 [[package]]
 name = "quark-app"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4906,7 +4906,7 @@ dependencies = [
 [[package]]
 name = "quark-components"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "accesskit",
  "quark",
@@ -4919,7 +4919,7 @@ dependencies = [
 [[package]]
 name = "quark-i18n"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "fluent-bundle",
  "fluent-langneg",
@@ -4931,7 +4931,7 @@ dependencies = [
 [[package]]
 name = "quark-macros"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "proc-macro2",
  "quark-view-syntax",
@@ -4942,7 +4942,7 @@ dependencies = [
 [[package]]
 name = "quark-render"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "bytemuck",
  "etagere",
@@ -4963,7 +4963,7 @@ dependencies = [
 [[package]]
 name = "quark-text"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "cosmic-text",
  "quark",
@@ -4978,7 +4978,7 @@ dependencies = [
 [[package]]
 name = "quark-ui"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "accesskit",
  "pulldown-cmark",
@@ -4997,7 +4997,7 @@ dependencies = [
 [[package]]
 name = "quark-update"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "ring",
  "semver",
@@ -5011,7 +5011,7 @@ dependencies = [
 [[package]]
 name = "quark-view-syntax"
 version = "0.1.0"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "proc-macro2",
  "syn 2.0.117",
@@ -6218,7 +6218,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.9.2"
-source = "git+https://github.com/seatedro/quark?rev=3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97#3ae91d5945c28cbcc6e3b5a9371047e1e7cabc97"
+source = "git+https://github.com/seatedro/quark?rev=c1904d83f0bd129112e9729fc18c592d8287d1a3#c1904d83f0bd129112e9729fc18c592d8287d1a3"
 dependencies = [
  "arrayvec",
  "grid",

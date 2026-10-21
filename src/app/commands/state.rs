@@ -505,7 +505,7 @@ impl CommandsController {
         })
     }
 
-    fn open_repo_picker(&mut self, cx: &SharedContext) -> Reduction {
+    fn open_repo_picker(&mut self, anchored: bool, cx: &SharedContext) -> Reduction {
         let current = cx.repository.as_ref().map(|r| r.snapshot.path.clone());
         let mut recent: Vec<PathBuf> =
             recent_repo_paths(self.frecency.as_ref(), RECENT_REPOSITORIES);
@@ -540,7 +540,7 @@ impl CommandsController {
         let mut reduction = self.scan_repositories();
         view.scanning = self.repo_scanning;
         self.repo_picker_current = current;
-        reduction.merge(self.show_picker(PickerState::repositories(view)));
+        reduction.merge(self.show_picker(PickerState::repositories(view, anchored)));
         reduction
     }
 
@@ -1199,8 +1199,7 @@ fn step_scale(current: u16, delta: i32) -> u16 {
 
 fn command_detail(id: &str) -> Option<&'static str> {
     Some(match id {
-        ids::OPEN_REPOSITORY => "Choose a folder to open",
-        ids::SWITCH_REPOSITORY => "Pick a recent repository",
+        ids::OPEN_REPOSITORY => "Pick a repository or type a path",
         ids::WORKING_TREE => "Compare HEAD with uncommitted changes",
         ids::REFRESH => "Reload refs, status and the current compare",
         "compare.base" => "Pick the ref to compare from",
@@ -1256,13 +1255,9 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
         D::new(
             ids::OPEN_REPOSITORY,
             "Open Repository…",
-            NavigationAction::OpenRepositoryDialog,
-        ),
-        D::new(
-            ids::SWITCH_REPOSITORY,
-            "Switch Repository…",
-            CommandsAction::OpenRepoPicker,
-        ),
+            CommandsAction::OpenRepoPicker { anchored: false },
+        )
+        .shortcut(S::OpenRepository),
         D::new(
             ids::WORKING_TREE,
             "Show Working Tree",
@@ -1447,7 +1442,7 @@ impl Controller for CommandsController {
         use CommandsAction as A;
         match action {
             A::OpenCommandPalette => self.open_palette(cx),
-            A::OpenRepoPicker => self.open_repo_picker(cx),
+            A::OpenRepoPicker { anchored } => self.open_repo_picker(anchored, cx),
             A::ToggleRepoGroup(group) => {
                 let Some(picker) = self.picker.as_mut() else {
                     return Reduction::default();

@@ -116,7 +116,7 @@ const SEARCH: &[Entry] = &[
     Entry::new(
         GLOBAL,
         C::OpenCommandPalette,
-        &["mod+p", "mod+k"],
+        &["mod+k", "mod+p"],
         "Command palette",
     ),
     Entry::new(GLOBAL, C::ShowKeymaps, &["shift+/"], "Open keymaps"),
@@ -221,6 +221,7 @@ const WORKING_TREE: &[Entry] = &[
 ];
 
 const REPOSITORY: &[Entry] = &[
+    Entry::new(GLOBAL, C::OpenRepository, &["mod+o"], "Open repository"),
     Entry::new(WORKSPACE, C::FetchRemotes, &["f"], "Fetch remotes"),
     Entry::new(
         WORKSPACE,
@@ -338,6 +339,7 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
     Some(match command {
         C::OpenSearch => interaction(InteractionAction::OpenSearch),
         C::OpenCommandPalette => CommandsAction::OpenCommandPalette.into(),
+        C::OpenRepository => CommandsAction::OpenRepoPicker { anchored: false }.into(),
         C::IncreaseUiScale => CommandsAction::IncreaseUiScale.into(),
         C::DecreaseUiScale => CommandsAction::DecreaseUiScale.into(),
         C::ToggleSidebar => NavigationAction::ToggleSidebar.into(),

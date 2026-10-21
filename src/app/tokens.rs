@@ -40,16 +40,43 @@ pub fn ui_scale(theme: &Theme) -> f32 {
 pub struct Tint;
 
 impl Tint {
-    pub const SELECTED: f32 = 0.2;
     pub const SELECTED_IDLE: f32 = 0.08;
+    pub const SELECTION_MUTED: f32 = 0.3;
     pub const BADGE: f32 = 0.16;
 }
 
-pub fn selected_fill(base: Color, focused: bool, theme: &Theme) -> Color {
-    if focused {
-        base.lerp(theme.colors.accent, Tint::SELECTED)
-    } else {
-        base.lerp(theme.colors.text, Tint::SELECTED_IDLE)
+#[derive(Debug, Clone, Copy)]
+pub struct RowPaint {
+    pub bg: Color,
+    pub text: Color,
+    pub muted: Color,
+    pub icon: Color,
+}
+
+pub fn row_paint(theme: &Theme, base: Color, selected: bool, focused: bool) -> RowPaint {
+    let tc = &theme.colors;
+    match (selected, focused) {
+        (true, true) => {
+            let muted = tc.selection_fg.lerp(tc.selection_bg, Tint::SELECTION_MUTED);
+            RowPaint {
+                bg: tc.selection_bg,
+                text: tc.selection_fg,
+                muted,
+                icon: muted,
+            }
+        }
+        (true, false) => RowPaint {
+            bg: base.lerp(crate::app::theme::contrasting(base), Tint::SELECTED_IDLE),
+            text: tc.text_strong,
+            muted: tc.text_muted,
+            icon: tc.icon,
+        },
+        (false, _) => RowPaint {
+            bg: Color::TRANSPARENT,
+            text: tc.text,
+            muted: tc.text_muted,
+            icon: tc.icon,
+        },
     }
 }
 

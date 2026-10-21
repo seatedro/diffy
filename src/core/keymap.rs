@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum ShortcutCommand {
     OpenSearch,
     OpenCommandPalette,
+    OpenRepository,
     IncreaseUiScale,
     DecreaseUiScale,
     ToggleSidebar,

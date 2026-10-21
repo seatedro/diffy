@@ -146,6 +146,7 @@ pub struct PickerState {
     pub scrollbar: ScrollbarVisibility,
     pub pending_reveal: bool,
     pub repos: Option<RepoView>,
+    pub anchored: bool,
     matcher: FuzzyMatcher,
 }
 
@@ -165,15 +166,17 @@ impl PickerState {
             scrollbar: ScrollbarVisibility::new(),
             pending_reveal: true,
             repos: None,
+            anchored: false,
             matcher: FuzzyMatcher::default(),
         };
         state.refilter();
         state
     }
 
-    pub fn repositories(view: RepoView) -> Self {
+    pub fn repositories(view: RepoView, anchored: bool) -> Self {
         let mut state = Self::new(PickerKind::Repository, Vec::new());
         state.repos = Some(view);
+        state.anchored = anchored;
         state.refilter();
         state
     }

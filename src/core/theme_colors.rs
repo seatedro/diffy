@@ -12,6 +12,7 @@ pub struct ThemeColors {
     pub accent: Rgba,
     pub accent_strong: Rgba,
     pub selection_bg: Rgba,
+    pub selection_fg: Rgba,
     pub background: Rgba,
     pub surface: Rgba,
     pub editor_surface: Rgba,
@@ -146,6 +147,7 @@ impl SemanticPalette {
             accent: c(s.accent),
             accent_strong: c(s.accent_strong),
             selection_bg: c(s.selection_bg),
+            selection_fg: c(s.selection_fg),
 
             overlay_scrim: c(if d {
                 Rgba::new(0, 0, 0, 180)

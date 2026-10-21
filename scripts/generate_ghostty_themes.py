@@ -113,6 +113,7 @@ def semantic_from(theme: dict) -> dict:
     warning_text = palette[11] if is_dark else palette[3]
 
     selection_bg = theme.get("selection_background") or mix(background, accent, 0.22 if is_dark else 0.18)
+    selection_fg = theme.get("selection_foreground") or foreground
 
     app_bg = background
     canvas = mix(background, foreground, 0.03 if is_dark else 0.015)
@@ -183,6 +184,7 @@ def semantic_from(theme: dict) -> dict:
         "warningBorder": rgb_to_hex(warning_border),
         "warningText": rgb_to_hex(warning_text),
         "selectionBg": rgb_to_hex(selection_bg),
+        "selectionFg": rgb_to_hex(selection_fg),
         "selectionBorder": rgb_to_hex(accent),
         "lineContext": rgb_to_hex(line_context),
         "lineContextAlt": rgb_to_hex(line_context_alt),
@@ -244,6 +246,7 @@ def parse_theme_archive(archive_bytes: bytes) -> list[dict]:
                     "foreground": foreground,
                     "palette": palette_rgb,
                     "selection_background": hex_to_rgb(data["selection-background"]) if "selection-background" in data else None,
+                    "selection_foreground": hex_to_rgb(data["selection-foreground"]) if "selection-foreground" in data else None,
                     "lum": luminance,
                     "is_dark": luminance < 0.5,
                 }

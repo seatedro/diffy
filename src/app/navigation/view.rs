@@ -487,18 +487,15 @@ fn file_row(
     } else {
         "Mark viewed"
     };
-    let name_color = if viewed || deleted {
-        tc.text_muted
-    } else {
-        tc.text
-    };
     let badge = tokens::scaled(Layout::STATUS_BADGE, scale);
     let base = tc.sidebar_background;
-    let row_bg = if state.selected {
-        tokens::selected_fill(base, state.focused, theme)
+    let paint = tokens::row_paint(theme, base, state.selected, state.focused);
+    let name_color = if viewed || deleted {
+        paint.muted
     } else {
-        Color::TRANSPARENT
+        paint.text
     };
+    let row_bg = paint.bg;
     let hover_bg = if state.selected {
         row_bg
     } else {
@@ -523,7 +520,7 @@ fn file_row(
             <icon
                 svg={if viewed { lucide::EYE_OFF } else { lucide::EYE }}
                 size={Ico::XS}
-                color={tc.icon}
+                color={paint.icon}
             />
         </div>
     };
@@ -576,7 +573,7 @@ fn file_row(
                     {highlighted_text(name, &name_ranges, name_color, TextStyle::Body.font_size(theme), theme)}
                 }
                 if show_dir {
-                    {highlighted_text(dir, &dir_ranges, tc.text_muted, small, theme)}
+                    {highlighted_text(dir, &dir_ranges, paint.muted, small, theme)}
                 }
             </div>
             {?stats.map(|(add, del)| view! {
@@ -923,7 +920,7 @@ fn history(
                 });
             let base = tc.sidebar_background;
             let focused = is_selected && within(focus, Some(&format!("commit:{revision}")));
-            let fill = tokens::selected_fill(base, focused, theme);
+            let paint = tokens::row_paint(theme, base, is_selected, focused);
             view! {
                 <div
                     class="flex-row items-start w-full shrink-0"
@@ -932,8 +929,8 @@ fn history(
                     pt={tokens::scaled(Sp::SM - Sp::XXS, scale)}
                     gap={tokens::scaled(Sp::SM, scale)}
                     rounded={theme.metrics.control_radius}
-                    bg={if is_selected { fill } else { Color::TRANSPARENT }}
-                    hover_bg={if is_selected { fill } else { tc.sidebar_row_hover }}
+                    bg={paint.bg}
+                    hover_bg={if is_selected { paint.bg } else { tc.sidebar_row_hover }}
                     cursor={CursorHint::Pointer}
                     key={revision.clone()}
                     id={format!("commit:{revision}")}
@@ -947,11 +944,11 @@ fn history(
                     <div class="shrink-0" pt={tokens::scaled(Sp::XXS, scale)}>{avatar}</div>
                     <div class="flex-1 flex-col overflow-hidden" min_w={0.0} gap={tokens::scaled(Sp::XXS, scale)}>
                         <div class="flex-row overflow-hidden" min_w={0.0}>
-                            <text size={TextStyle::Body.font_size(theme)} class="truncate font-medium" color={tc.text}>{commit.summary.clone()}</text>
+                            <text size={TextStyle::Body.font_size(theme)} class="truncate font-medium" color={paint.text}>{commit.summary.clone()}</text>
                         </div>
                         <div class="flex-row items-center overflow-hidden" min_w={0.0}>
-                            <text size={TextStyle::MonoSmall.font_size(theme)} class="font-mono" color={tc.text_muted}>{commit.short_revision.clone()}</text>
-                            <text size={small} class="truncate" color={tc.text_muted}>{meta}</text>
+                            <text size={TextStyle::MonoSmall.font_size(theme)} class="font-mono" color={paint.muted}>{commit.short_revision.clone()}</text>
+                            <text size={small} class="truncate" color={paint.muted}>{meta}</text>
                         </div>
                     </div>
                     {...pills}

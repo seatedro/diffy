@@ -44,6 +44,7 @@ pub struct SemanticPalette {
     pub danger_text: Rgba,
     pub warning_text: Rgba,
     pub selection_bg: Rgba,
+    pub selection_fg: Rgba,
     pub line_context: Rgba,
     pub line_add: Rgba,
     pub line_add_accent: Rgba,
@@ -163,6 +164,8 @@ impl SemanticPalette {
             danger_text: hex_field(obj, "dangerText"),
             warning_text: hex_field(obj, "warningText"),
             selection_bg: hex_field(obj, "selectionBg"),
+            selection_fg: Self::hex_field_opt(obj, "selectionFg")
+                .unwrap_or_else(|| hex_field(obj, "textBase")),
             line_context: hex_field(obj, "lineContext"),
             line_add: hex_field(obj, "lineAdd"),
             line_add_accent: hex_field(obj, "lineAddAccent"),

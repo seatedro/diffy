@@ -201,8 +201,9 @@ fn colors(palette: &SemanticPalette) -> ThemeColors {
         text_strong: rgb!(l.text_strong),
         accent,
         accent_strong: rgb!(l.accent_strong),
-        on_accent: on_accent(accent),
+        on_accent: contrasting(accent),
         selection_bg: rgb!(l.selection_bg),
+        selection_fg: rgb!(l.selection_fg),
         background: rgb!(l.background),
         surface: rgb!(l.surface),
         editor_surface: editor,
@@ -269,7 +270,7 @@ fn flatten(tint: Color, base: Color) -> Color {
         .with_alpha(255)
 }
 
-fn on_accent(accent: Color) -> Color {
+pub(crate) fn contrasting(accent: Color) -> Color {
     let white = Color::rgba(255, 255, 255, 255);
     let black = Color::rgba(0, 0, 0, 255);
     if contrast(white, accent) >= contrast(black, accent) {

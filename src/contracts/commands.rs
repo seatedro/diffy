@@ -133,7 +133,9 @@ pub trait CommandSource {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandsAction {
     OpenCommandPalette,
-    OpenRepoPicker,
+    OpenRepoPicker {
+        anchored: bool,
+    },
     OpenRepositoryFolder,
     ToggleRepoGroup(String),
     RepoGroupKey(bool),
@@ -215,7 +217,7 @@ impl CommandsAction {
         matches!(
             self,
             Self::OpenCommandPalette
-                | Self::OpenRepoPicker
+                | Self::OpenRepoPicker { .. }
                 | Self::OpenRefPicker(_)
                 | Self::ShowRefPicker(_)
                 | Self::OpenCompareMenu

@@ -877,14 +877,14 @@ fn paint_text(
                 .iter()
                 .enumerate()
                 .map(|(i, &k)| match tone {
-                    _ if removed(i) => colors.del_text,
+                    _ if removed(i) => colors.removed_text,
                     TextTone::Removed | TextTone::Dim => colors.muted,
                     TextTone::Normal => tones[k as usize],
                 })
                 .collect()
         },
         &line.words,
-        &line.struck,
+        &line.removed_words,
         &line.renamed,
         search,
         selected,
@@ -895,7 +895,7 @@ fn paint_text(
                 TextTone::Dim | TextTone::Removed => colors.muted,
             },
             word,
-            strike: colors.del_marker,
+            removed: colors.del_line,
             rename: colors.accent,
             search: colors.search_match,
             search_active: colors.search_active,

@@ -337,6 +337,7 @@ pub(crate) struct DiffColors {
     pub warning: Color,
     pub strong: Color,
     pub faint: Color,
+    pub removed_text: Color,
     pub picked_wash: Color,
     pub picked_gutter: Color,
     pub moved_wash: Color,
@@ -415,6 +416,7 @@ impl DiffColors {
             warning: c.status_warning,
             strong: c.text_strong,
             faint: c.text_disabled,
+            removed_text: surface.lerp(c.text_muted, REMOVED_TEXT),
             picked_wash: surface.lerp(c.accent, PICKED_WASH),
             picked_gutter: gutter.lerp(c.accent, PICKED_GUTTER),
             moved_wash: surface.lerp(syntax[HighlightKind::Keyword as usize], MOVED_WASH),
@@ -460,6 +462,7 @@ impl DiffColors {
             self.warning,
             self.strong,
             self.faint,
+            self.removed_text,
             self.picked_wash,
             self.picked_gutter,
             self.picked_number,
@@ -522,6 +525,7 @@ const TINT: f32 = 0.14;
 const PICKED_WASH: f32 = 0.09;
 const SEPARATOR_LIFT: f32 = 0.035;
 const NUMBER_TINT: f32 = 0.45;
+const REMOVED_TEXT: f32 = 0.5;
 const PICKED_GUTTER: f32 = 0.16;
 const PICKED_NUMBER: f32 = 0.6;
 const MOVED_WASH: f32 = 0.07;

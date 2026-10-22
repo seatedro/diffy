@@ -121,7 +121,7 @@ pub(super) fn vertical_hairline(
 pub(super) struct LineColors {
     pub text: Color,
     pub word: Color,
-    pub strike: Color,
+    pub removed: Color,
     pub rename: Color,
     pub search: Color,
     pub search_active: Color,
@@ -142,7 +142,7 @@ pub(super) fn line(
     layout: &Arc<TextLayout>,
     span_colors: Arc<[Color]>,
     words: &[Range<usize>],
-    struck: &[Range<usize>],
+    removed: &[Range<usize>],
     renamed: &[Range<usize>],
     search: &[SearchMark],
     selected: Option<(usize, usize)>,
@@ -189,6 +189,11 @@ pub(super) fn line(
                 },
                 color: colors.word,
             });
+        }
+    }
+    for range in removed {
+        for rect in rects(range.clone()) {
+            scene.rounded_rect(RoundedRectPrimitive::uniform(rect, 2.0, colors.removed));
         }
     }
     for mark in search {
@@ -273,7 +278,6 @@ pub(super) fn line(
             });
         }
     }
-    let thickness = whole_pixels(1.0, scale);
     let dot = whole_pixels(1.5, scale);
     for range in renamed {
         for rect in rects(range.clone()) {
@@ -290,18 +294,6 @@ pub(super) fn line(
                 });
                 x += dot * 2.0;
             }
-        }
-    }
-    for range in struck {
-        for rect in rects(range.clone()) {
-            scene.rect(RectPrimitive {
-                rect: Rect {
-                    y: rect.y + (rect.height - thickness) / 2.0,
-                    height: thickness,
-                    ..rect
-                },
-                color: colors.strike,
-            });
         }
     }
 }
@@ -346,7 +338,7 @@ mod tests {
         let colors = LineColors {
             text: color(1),
             word: color(2),
-            strike: color(8),
+            removed: color(8),
             rename: color(9),
             search: color(3),
             search_active: color(4),

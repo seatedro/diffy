@@ -161,7 +161,7 @@ pub struct LinePaint {
     /// For a line too long to shape whole (without wrap), the part of it
     /// around where its column is scrolled, which is all the layout holds.
     pub window: Option<LineWindow>,
-    pub struck: Vec<Range<usize>>,
+    pub removed_words: Vec<Range<usize>>,
     pub unspoken: Vec<Range<usize>>,
     pub renamed: Vec<Range<usize>>,
     pub removed_spans: Arc<[bool]>,
@@ -210,6 +210,13 @@ impl LineMerge {
             .filter(|(_, s, _)| *s == side)
             .find(|(_, _, source)| source.start <= byte && byte <= source.end)
             .map(|(layout, _, source)| layout.start + (byte - source.start))
+    }
+
+    pub(crate) fn source_of(&self, range: Range<usize>) -> Option<(Side, usize)> {
+        self.pieces
+            .iter()
+            .find(|(layout, _, _)| layout.start <= range.start && range.end <= layout.end)
+            .map(|(layout, side, source)| (*side, source.start + range.start - layout.start))
     }
 
     pub(crate) fn to_source(&self, layout_byte: usize) -> usize {

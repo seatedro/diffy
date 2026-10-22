@@ -307,8 +307,10 @@ impl DiffViewState {
             let link = match r {
                 RowRef::Line { seg, row } => [Side::Old, Side::New].map(|side| {
                     let line = paint.sides[side as usize].as_ref()?;
-                    if line.merge.is_some() {
-                        return None;
+                    if let Some(merge) = &line.merge {
+                        let (lo, hi) =
+                            self.row_link(seg as usize, row, side, 0, merge.source_len())?;
+                        return Some((merge.to_layout(side, lo)?, merge.to_layout(side, hi)?));
                     }
                     let start = line.window.map_or(0, |w| w.start);
                     self.row_link(seg as usize, row, side, start, line.layout.text().len())
@@ -885,15 +887,15 @@ impl DiffViewState {
                     if whole {
                         words.clear();
                     }
-                    let (words, struck) = if quiet && kind == RowKind::Removed {
+                    let (words, removed_words) = if quiet && kind == RowKind::Removed {
                         (Vec::new(), words)
                     } else {
                         (words, Vec::new())
                     };
-                    let (spans, tones, removed_spans) = if struck.is_empty() {
+                    let (spans, tones, removed_spans) = if removed_words.is_empty() {
                         (spans, tones, Arc::from([]))
                     } else {
-                        split_at_marks(spans, &tones, &struck)
+                        split_at_marks(spans, &tones, &removed_words)
                     };
                     let params = TextParams::new(line, self.text_style())
                         .spans(spans)
@@ -920,7 +922,7 @@ impl DiffViewState {
                         window,
                         unspoken: Vec::new(),
                         renamed,
-                        struck,
+                        removed_words,
                         removed_spans,
                         merge: None,
                     });
@@ -1006,7 +1008,7 @@ impl DiffViewState {
         let mut tones = Vec::new();
         let mut removed = Vec::new();
         let mut words = Vec::new();
-        let mut struck = Vec::new();
+        let mut removed_words = Vec::new();
         let mut unspoken = Vec::new();
         let mut renamed = Vec::new();
         let mut merge = LineMerge::default();
@@ -1070,7 +1072,7 @@ impl DiffViewState {
             match (piece.side, piece.changed, piece.renamed) {
                 (Side::Old, true, _) => {
                     unspoken.push(shown.clone());
-                    struck.push(shown.clone());
+                    removed_words.push(shown.clone());
                 }
                 (Side::Old, false, _) => unspoken.push(shown.clone()),
                 (Side::New, true, true) => renamed.push(shown.clone()),
@@ -1095,7 +1097,7 @@ impl DiffViewState {
             detail: LineDetail::Complete,
             word_detail: WordDetail::Done(InlineDetail::Exact),
             window: None,
-            struck,
+            removed_words,
             unspoken,
             renamed,
             removed_spans: removed.into(),

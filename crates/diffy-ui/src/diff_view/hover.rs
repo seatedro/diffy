@@ -62,9 +62,6 @@ impl DiffViewState {
         };
         let (side, index) = self.shown_line(seg as usize, r, wanted)?;
         let paint = row.paint.sides[side as usize].as_ref()?;
-        if paint.merge.is_some() {
-            return None;
-        }
         let column = frame.columns.of(side);
         if x < column.text_x {
             return None;
@@ -87,6 +84,13 @@ impl DiffViewState {
         if (tx as f32) < rect.x || tx as f32 > rect.x + rect.width {
             return None;
         }
+        let byte = match &paint.merge {
+            Some(merge) => match merge.source_of(word.clone())? {
+                (piece, byte) if piece == side => byte,
+                _ => return None,
+            },
+            None => start + word.start,
+        };
         let segment = &self.segments[seg as usize];
         let file = segment.projection.file[r as usize];
         let unit = segment.unit(file);
@@ -96,7 +100,7 @@ impl DiffViewState {
                 file: self.file_id(unit),
                 side,
                 line: source_line(&segment.doc, file, side, index),
-                byte: u32::try_from(start + word.start).ok()?,
+                byte: u32::try_from(byte).ok()?,
             },
             len: (word.end - word.start) as u32,
             line: text,

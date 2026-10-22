@@ -25,6 +25,8 @@ pub enum ShellAction {
     Bootstrap,
     ResizeSidebar(quark_components::SplitEvent),
     FocusLogical(Option<crate::contracts::shell::LogicalFocus>),
+    FocusArea(AreaDirection),
+    StartJump,
     CopyText(String),
     ToggleDebugOverlay,
     Minimize,
@@ -32,6 +34,14 @@ pub enum ShellAction {
     Close,
     CloseTabOrWindow,
     Noop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AreaDirection {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,6 +64,9 @@ pub enum LogicalFocus {
     ReviewDialog,
     ReviewOverview,
     DeliveryLanguages,
+    TitleBar,
+    PullRequestBar,
+    StatusBar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -24,6 +24,9 @@ pub const SETTINGS_STEERING_PROMPT: FocusId = FocusId::from_key("diffy.settings.
 pub const REVIEW_ACCOUNT: FocusId = FocusId::from_key("diffy.review.account");
 pub const REVIEW_DIALOG: FocusId = FocusId::from_key("diffy.review.dialog");
 pub const REVIEW_OVERVIEW: FocusId = FocusId::from_key("diffy.review.overview");
+pub const STATUS_SETTINGS: &str = "status.settings";
+pub const TITLE_BAR: FocusId = FocusId::from_key("title.repo");
+pub const PULL_REQUEST_BAR: FocusId = FocusId::from_key("review.pull_request.title");
 
 pub fn focus_id(focus: LogicalFocus) -> FocusId {
     match focus {
@@ -45,6 +48,9 @@ pub fn focus_id(focus: LogicalFocus) -> FocusId {
         LogicalFocus::ReviewDialog => REVIEW_DIALOG,
         LogicalFocus::ReviewOverview => REVIEW_OVERVIEW,
         LogicalFocus::DeliveryLanguages => crate::app::delivery::LANGUAGES_TOGGLE,
+        LogicalFocus::TitleBar => TITLE_BAR,
+        LogicalFocus::PullRequestBar => PULL_REQUEST_BAR,
+        LogicalFocus::StatusBar => crate::app::mutations::control_focus_id(STATUS_SETTINGS),
     }
 }
 

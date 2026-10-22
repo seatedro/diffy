@@ -172,6 +172,7 @@ pub enum CommandsAction {
     SetExternalCommands(Rc<[CommandDescriptor]>),
     RunCommand(&'static str),
     Shortcut(ShortcutCommand),
+    Leader(String),
     OpenContextMenu {
         entries: Vec<ContextMenuEntry>,
         x: i32,

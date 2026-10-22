@@ -160,6 +160,7 @@ pub enum NavigationAction {
     ToggleSidebar,
     SetSidebarTab(SidebarTab),
     SelectHistoryCommit(String),
+    MoveSelection(i32),
     ClearHistoryCommit,
     CompareWithWorkingTree(String),
     ScrollHistory(i32),

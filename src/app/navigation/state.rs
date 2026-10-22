@@ -1230,6 +1230,41 @@ impl NavigationController {
         }))
     }
 
+    fn move_history_selection(&mut self, delta: i32) -> Reduction {
+        let query = self.filter.text().to_owned();
+        let Some(all) = self.history_commits() else {
+            return Reduction::default();
+        };
+        let commits: Vec<&VcsChange> = all.iter().filter(|c| commit_matches(c, &query)).collect();
+        let Some(last) = commits.len().checked_sub(1) else {
+            return Reduction::default();
+        };
+        let current = self.history.selected.as_deref().and_then(|selected| {
+            commits
+                .iter()
+                .position(|c| c.revision.id.starts_with(selected))
+        });
+        let next = match current {
+            Some(index) => (index as i64 + i64::from(delta)).clamp(0, last as i64) as usize,
+            None if delta < 0 => last,
+            None => 0,
+        };
+        if current == Some(next) {
+            return Reduction::default();
+        }
+        let revision = commits[next].revision.id.clone();
+        let h = self.metrics.history_row;
+        if h > 0.0 {
+            let top = next as f32 * h;
+            if top < self.history.scroll_px {
+                self.history.scroll_px = top;
+            } else if top + h > self.history.scroll_px + self.metrics.viewport {
+                self.history.scroll_px = top + h - self.metrics.viewport;
+            }
+        }
+        self.drill_into(revision)
+    }
+
     fn restore_drill(&mut self, cx: &SharedContext) -> Reduction {
         let Some(previous) = self.history.pre_drill.take() else {
             return Reduction::default();
@@ -1452,6 +1487,10 @@ impl NavigationController {
                     }
                 }
             }
+            A::MoveSelection(delta) if self.tab == SidebarTab::Commits => {
+                self.move_history_selection(delta)
+            }
+            A::MoveSelection(delta) => self.shift_selection(delta as isize),
             A::SelectNextFile => self.shift_selection(1),
             A::SelectPreviousFile => self.shift_selection(-1),
             A::ToggleFolder(path) => {
@@ -1737,4 +1776,12 @@ fn short_revision(reference: &str) -> String {
     } else {
         reference.to_owned()
     }
+}
+
+pub(super) fn commit_matches(commit: &VcsChange, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || commit.summary.to_lowercase().contains(&query)
+        || commit.short_revision.contains(&query)
+        || commit.author_name.to_lowercase().contains(&query)
 }

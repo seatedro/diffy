@@ -248,6 +248,9 @@ pub mod ids {
 
 impl CommandsController {
     pub(super) fn key_action(&self, binding: &str) -> Option<Action> {
+        if self.go_pending() {
+            return Some(CommandsAction::Leader(binding.to_owned()).into());
+        }
         if let Some(command) = self.capturing() {
             return Some(
                 match binding {

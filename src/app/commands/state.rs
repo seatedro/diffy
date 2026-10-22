@@ -119,6 +119,7 @@ pub struct CommandsController {
     file_pending: Option<FileListKey>,
     file_generation: u64,
     go_prefix: bool,
+    go_since: Cell<Option<u64>>,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
     activation_click: Cell<bool>,
@@ -169,6 +170,7 @@ impl Default for CommandsController {
             file_pending: None,
             file_generation: 0,
             go_prefix: false,
+            go_since: Cell::new(None),
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
             activation_click: Cell::new(false),
@@ -248,6 +250,29 @@ impl CommandsController {
 
     pub fn settings_open(&self) -> bool {
         self.settings_page.is_some()
+    }
+
+    pub fn go_pending(&self) -> bool {
+        self.go_prefix
+    }
+
+    pub(super) fn go_since(&self, now_ms: u64) -> u64 {
+        let since = self.go_since.get().unwrap_or(now_ms);
+        self.go_since.set(Some(since));
+        since
+    }
+
+    fn leader(&mut self, binding: &str, cx: &SharedContext) -> Reduction {
+        self.go_prefix = false;
+        self.go_since.set(None);
+        match keymap::leader(binding) {
+            Some(leader) => {
+                let mut reduction = self.run(leader.action(), cx);
+                reduction.changed = true;
+                reduction
+            }
+            None => Reduction::changed(),
+        }
     }
 
     pub(super) fn capturing(&self) -> Option<ShortcutCommand> {
@@ -1175,16 +1200,10 @@ impl CommandsController {
     }
 
     fn shortcut(&mut self, command: ShortcutCommand, cx: &SharedContext) -> Reduction {
-        let prefixed = std::mem::take(&mut self.go_prefix);
-        match command {
-            ShortcutCommand::GoPrefix => {
-                self.go_prefix = true;
-                return Reduction::default();
-            }
-            ShortcutCommand::ScrollHalfPageDown if prefixed => {
-                return self.run(SymbolsAction::GoToDefinition.into(), cx);
-            }
-            _ => {}
+        if command == ShortcutCommand::GoPrefix {
+            self.go_prefix = true;
+            self.go_since.set(None);
+            return Reduction::changed();
         }
         if let Some(external) = self.external.iter().find(|d| d.shortcut == Some(command)) {
             if !external.enabled {
@@ -1829,6 +1848,7 @@ impl Controller for CommandsController {
                 }
                 None => Reduction::default(),
             },
+            A::Leader(binding) => self.leader(&binding, cx),
             A::OverlayKey(binding) => match self.top_layer() {
                 Some(LayerKind::Palette) => {
                     let outcome = binding

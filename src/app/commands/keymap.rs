@@ -4,8 +4,10 @@ use quark_ui::key_context::KeyBindings;
 use crate::contracts::commands::{CommandsAction, SettingsSection};
 use crate::contracts::delivery::DeliveryAction;
 use crate::contracts::mutations::MutationsAction;
+use crate::contracts::navigation::CompareField;
 use crate::contracts::navigation::{NavigationAction, SidebarTab};
-use crate::contracts::shell::{Action, LogicalFocus, ShellAction};
+use crate::contracts::review::ReviewAction;
+use crate::contracts::shell::{Action, AreaDirection, LogicalFocus, ShellAction};
 use crate::contracts::viewport::{FilesAction, InteractionAction, SymbolsAction, ViewportAction};
 use crate::core::compare::LayoutMode;
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
@@ -26,7 +28,7 @@ use ShortcutCommand as C;
 
 const NAVIGATION: &[Entry] = &[
     Entry::new(WORKSPACE, C::GoToDefinition, &["f12"], "Go to definition"),
-    Entry::new(WORKSPACE, C::GoPrefix, &["g"], "Go to… (g d: definition)"),
+    Entry::new(WORKSPACE, C::GoPrefix, &["g"], "Go to…"),
     Entry::new(WORKSPACE, C::NavigateBack, &["mod+["], "Go back"),
     Entry::new(WORKSPACE, C::NavigateForward, &["mod+]"], "Go forward"),
     Entry::new(WORKSPACE, C::NextHunk, &["]"], "Next hunk"),
@@ -66,12 +68,7 @@ const NAVIGATION: &[Entry] = &[
         &["/"],
         "Focus sidebar search",
     ),
-    Entry::new(
-        WORKSPACE,
-        C::SidebarFiles,
-        &["shift+f"],
-        "Files sidebar tab",
-    ),
+    Entry::new(WORKSPACE, C::SidebarFiles, &[], "Files sidebar tab"),
     Entry::new(
         WORKSPACE,
         C::SidebarCommits,
@@ -253,7 +250,7 @@ const REPOSITORY: &[Entry] = &[
         &["mod+shift+[", "ctrl+shift+tab"],
         "Previous tab",
     ),
-    Entry::new(WORKSPACE, C::FetchRemotes, &["f"], "Fetch remotes"),
+    Entry::new(WORKSPACE, C::FetchRemotes, &["shift+f"], "Fetch remotes"),
     Entry::new(
         WORKSPACE,
         C::PullCurrentBranch,
@@ -268,6 +265,24 @@ const REPOSITORY: &[Entry] = &[
     ),
 ];
 
+const AREAS: &[Entry] = &[
+    Entry::new(GLOBAL, C::JumpToElement, &["f"], "Jump to any control"),
+    Entry::new(
+        GLOBAL,
+        C::FocusAreaLeft,
+        &["alt+h"],
+        "Focus area to the left",
+    ),
+    Entry::new(GLOBAL, C::FocusAreaDown, &["alt+j"], "Focus area below"),
+    Entry::new(GLOBAL, C::FocusAreaUp, &["alt+k"], "Focus area above"),
+    Entry::new(
+        GLOBAL,
+        C::FocusAreaRight,
+        &["alt+l"],
+        "Focus area to the right",
+    ),
+];
+
 const DEBUG: &[Entry] = &[Entry::new(
     GLOBAL,
     C::ToggleDebugOverlay,
@@ -279,6 +294,10 @@ const GROUPS: &[ShortcutGroup<ShortcutCommand>] = &[
     ShortcutGroup {
         title: "Navigation",
         entries: NAVIGATION,
+    },
+    ShortcutGroup {
+        title: "Areas",
+        entries: AREAS,
     },
     ShortcutGroup {
         title: "Scrolling",
@@ -311,6 +330,80 @@ const GROUPS: &[ShortcutGroup<ShortcutCommand>] = &[
 ];
 
 pub const KEYMAP: Keymap<ShortcutCommand> = Keymap::new(GROUPS);
+
+pub struct Leader {
+    pub key: &'static str,
+    pub label: &'static str,
+    action: fn() -> Action,
+}
+
+impl Leader {
+    pub fn action(&self) -> Action {
+        (self.action)()
+    }
+}
+
+pub const GO: &[Leader] = &[
+    Leader {
+        key: "f",
+        label: "Files",
+        action: || NavigationAction::SetSidebarTab(SidebarTab::Files).into(),
+    },
+    Leader {
+        key: "h",
+        label: "History",
+        action: || NavigationAction::SetSidebarTab(SidebarTab::Commits).into(),
+    },
+    Leader {
+        key: "o",
+        label: "Outline",
+        action: || NavigationAction::SetSidebarTab(SidebarTab::Outline).into(),
+    },
+    Leader {
+        key: "v",
+        label: "PR overview",
+        action: || ReviewAction::ToggleOverview.into(),
+    },
+    Leader {
+        key: "c",
+        label: "Commit message",
+        action: || ShellAction::FocusLogical(Some(LogicalFocus::CommitMessage)).into(),
+    },
+    Leader {
+        key: "b",
+        label: "Base ref",
+        action: || CommandsAction::OpenRefPicker(CompareField::Left).into(),
+    },
+    Leader {
+        key: "t",
+        label: "Head ref",
+        action: || CommandsAction::OpenRefPicker(CompareField::Right).into(),
+    },
+    Leader {
+        key: "r",
+        label: "Repositories",
+        action: || CommandsAction::OpenRepoPicker { anchored: false }.into(),
+    },
+    Leader {
+        key: "d",
+        label: "Definition",
+        action: || SymbolsAction::GoToDefinition.into(),
+    },
+    Leader {
+        key: "s",
+        label: "Settings",
+        action: || CommandsAction::OpenSettings.into(),
+    },
+    Leader {
+        key: "g",
+        label: "Top of diff",
+        action: || interaction(InteractionAction::ScrollToTop),
+    },
+];
+
+pub fn leader(key: &str) -> Option<&'static Leader> {
+    GO.iter().find(|leader| leader.key == key)
+}
 
 pub fn overrides(saved: &[KeymapOverride]) -> Vec<Override> {
     saved
@@ -390,8 +483,8 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::PreviousHunk => interaction(InteractionAction::GoToPreviousHunk),
         C::FocusFileList => ShellAction::FocusLogical(Some(LogicalFocus::Sidebar)).into(),
         C::FocusEditor => ShellAction::FocusLogical(Some(LogicalFocus::Viewport)).into(),
-        C::MoveDown => NavigationAction::SelectNextFile.into(),
-        C::MoveUp => NavigationAction::SelectPreviousFile.into(),
+        C::MoveDown => NavigationAction::MoveSelection(1).into(),
+        C::MoveUp => NavigationAction::MoveSelection(-1).into(),
         C::MoveRowDown => interaction(InteractionAction::MoveRowCursor(1)),
         C::MoveRowUp => interaction(InteractionAction::MoveRowCursor(-1)),
         C::NextFile => NavigationAction::SelectNextFile.into(),
@@ -438,6 +531,11 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::PullCurrentBranch => MutationsAction::PullCurrentBranch.into(),
         C::OpenPublishMenu => MutationsAction::OpenPublishMenu.into(),
         C::ToggleDebugOverlay => ShellAction::ToggleDebugOverlay.into(),
+        C::JumpToElement => ShellAction::StartJump.into(),
+        C::FocusAreaLeft => ShellAction::FocusArea(AreaDirection::Left).into(),
+        C::FocusAreaRight => ShellAction::FocusArea(AreaDirection::Right).into(),
+        C::FocusAreaUp => ShellAction::FocusArea(AreaDirection::Up).into(),
+        C::FocusAreaDown => ShellAction::FocusArea(AreaDirection::Down).into(),
         C::ToggleFocus
         | C::GoPrefix
         | C::SettingsNextSection

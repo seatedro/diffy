@@ -1,6 +1,6 @@
-use quark::view;
+use quark::{Px, view};
 use quark_app::ViewContext;
-use quark_components::{Modal, PALETTE_INPUT, PaletteEvent, kbd_icon, progress_bar};
+use quark_components::{Modal, PALETTE_INPUT, PaletteEvent, kbd, kbd_icon, progress_bar};
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
@@ -9,6 +9,7 @@ use quark_ui::style::Styled;
 use quark_ui::theme::Theme;
 
 use super::CommandsController;
+use super::keymap;
 use super::list::{self, OptionRow};
 use super::picker::{PickerChoice, PickerKind, PickerRow, RowKind, TYPED_PATH};
 use super::state::{CONFIRM_ACCEPT, CONFIRM_CANCEL, LayerKind};
@@ -609,6 +610,75 @@ pub fn toasts(
             aria-label="Notifications"
         >
             {...rows}
+        </div>
+    })
+}
+
+const LEADER_MENU_DELAY_MS: u64 = 350;
+
+pub fn leader_menu(
+    commands: &CommandsController,
+    slot: &Slot,
+    cx: &mut ViewContext,
+) -> Option<AnyElement> {
+    if !commands.go_pending() {
+        return None;
+    }
+    let now = cx.frame.elapsed().as_millis() as u64;
+    let shown_at = commands.go_since(now) + LEADER_MENU_DELAY_MS;
+    if now < shown_at {
+        cx.frame
+            .request_frame_in(std::time::Duration::from_millis(shown_at - now));
+        return None;
+    }
+    let theme = cx.theme;
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let margin = tokens::scaled(Sp::LG, scale);
+    let width = tokens::scaled(Sz::TOAST_MAX_W, scale)
+        .min(slot.width - margin * 2.0)
+        .max(1.0);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let row = |leader: &keymap::Leader| {
+        view! { scale,
+            <div class="flex-row items-center" gap={Sp::SM} py={Sp::XXS}
+                 accessibility_role={AccessibilityRole::ListItem}
+                 aria-label={format!("{}: {}", leader.key, leader.label)}>
+                {kbd(leader.key, theme)}
+                <text size={Px(small)} color={tc.text}>{leader.label}</text>
+            </div>
+        }
+    };
+    let half = keymap::GO.len().div_ceil(2);
+    let left: Vec<AnyElement> = keymap::GO[..half].iter().map(row).collect();
+    let right: Vec<AnyElement> = keymap::GO[half..].iter().map(row).collect();
+    Some(view! { scale,
+        <div
+            class="absolute flex-col"
+            right={Px(margin)}
+            bottom={Px(theme.metrics.status_bar_height + margin)}
+            w={Px(width)}
+            gap={Sp::XS}
+            p={Sp::MD}
+            bg={tc.elevated_surface}
+            border={tc.border_variant}
+            rounded={Rad::LG}
+            shadow_preset={Shadow::TOAST}
+            z_index={600}
+            accessibility_role={AccessibilityRole::List}
+            aria-label="Go to"
+            test_id="leader.go"
+        >
+            <div class="flex-row items-center w-full" gap={Sp::XS}>
+                {kbd("g", theme)}
+                <text size={Px(small)} color={tc.text_muted}>"Go to\u{2026}"</text>
+                <spacer />
+                <text size={Px(TextStyle::Caption.font_size(theme))} color={tc.text_muted}>"esc"</text>
+            </div>
+            <div class="flex-row items-start w-full" gap={Sp::LG}>
+                <div class="flex-col flex-1">{...left}</div>
+                <div class="flex-col flex-1">{...right}</div>
+            </div>
         </div>
     })
 }

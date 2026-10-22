@@ -14,7 +14,7 @@ use super::NavigationController;
 use super::row_actions::{file_row_actions, group_action, selection_actions};
 use super::rows::{self, Row};
 use super::smart_sort::SortStatus;
-use super::state::{ListMetrics, RepoStatus};
+use super::state::{ListMetrics, RepoStatus, commit_matches};
 use crate::app::commands::keymap::WORKSPACE_CONTEXT;
 use crate::app::icons;
 use crate::app::mutations::{
@@ -918,14 +918,6 @@ fn folder_row(path: &str, depth: u16, expanded: bool, theme: &Theme) -> AnyEleme
     }
 }
 
-fn commit_matches(commit: &VcsChange, query: &str) -> bool {
-    let query = query.trim().to_lowercase();
-    query.is_empty()
-        || commit.summary.to_lowercase().contains(&query)
-        || commit.short_revision.contains(&query)
-        || commit.author_name.to_lowercase().contains(&query)
-}
-
 pub(super) use crate::core::ref_catalog::now_secs;
 
 fn history(
@@ -1071,7 +1063,10 @@ fn history(
             px={theme.metrics.spacing_sm}
             scrollbar_visibility={nav.history_scrollbar()}
             on:scroll={ScrollActionBuilder::new(|lines| Action::from(NavigationAction::ScrollHistory(lines)).into())}
+            focus_ring={SIDEBAR}
             key_context={WORKSPACE_CONTEXT}
+            on:key:arrowdown={NavigationAction::MoveSelection(1)}
+            on:key:arrowup={NavigationAction::MoveSelection(-1)}
             accessibility_role={AccessibilityRole::ListBox}
             aria-label="Commits"
         >

@@ -26,8 +26,8 @@ use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, SettingsSnapshot, ToastUpdate};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
-    Action, AppMessage, AppStartup, Controller, Effect, Intent, Reduction, ShellAction,
-    ShellEffect, ShellEvent,
+    Action, AppMessage, AppStartup, AreaDirection, Controller, Effect, Intent, LogicalFocus,
+    Reduction, ShellAction, ShellEffect, ShellEvent,
 };
 use crate::contracts::viewport::ViewportAction;
 use crate::core::compare::RendererKind;
@@ -64,6 +64,18 @@ struct ShellState {
     repository_dialog: Option<DialogId>,
     scan_folder_dialog: Option<DialogId>,
     copied_until: u64,
+    area: Area,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Area {
+    Title,
+    PullRequest,
+    Sidebar,
+    #[default]
+    Main,
+    Commit,
+    Status,
 }
 
 impl ShellState {
@@ -81,6 +93,7 @@ impl ShellState {
             repository_dialog: None,
             scan_folder_dialog: None,
             copied_until: 0,
+            area: Area::Main,
         }
     }
 
@@ -336,11 +349,29 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             self.shell.window_title_dirty = false;
             cx.window.set_title(&self.shell.window_title());
         }
+        if cx.focus().is_none()
+            && self.shared.repository.is_some()
+            && self.controllers.commands.top_layer().is_none()
+            && !self.controllers.commands.settings_open()
+            && !self.controllers.review.is_modal_open()
+        {
+            cx.set_focus(Some(text_targets::focus_id(self.area_focus(Area::Main))));
+        }
     }
 
     fn shell_action(&mut self, action: ShellAction, cx: &mut UiContext) {
         match action {
             ShellAction::FocusLogical(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
+            ShellAction::StartJump => {
+                cx.start_jump_hints();
+            }
+            ShellAction::FocusArea(direction) => {
+                let from = self.area_of(cx.focus());
+                if let Some(to) = self.area_toward(from, direction) {
+                    self.shell.area = to;
+                    cx.set_focus(Some(text_targets::focus_id(self.area_focus(to))));
+                }
+            }
             ShellAction::CopyText(text) => self.copy(text, cx),
             ShellAction::ToggleDebugOverlay => {
                 self.shell.debug_overlay = !self.shell.debug_overlay;
@@ -375,6 +406,69 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 cx.window.request_redraw();
             }
             ShellAction::Bootstrap | ShellAction::Noop => {}
+        }
+    }
+
+    fn area_of(&self, focus: Option<FocusId>) -> Area {
+        use text_targets as t;
+        match focus {
+            Some(t::SIDEBAR | t::SIDEBAR_FILTER) => Area::Sidebar,
+            Some(
+                t::VIEWPORT
+                | t::SEARCH
+                | t::REVIEW_OVERVIEW
+                | t::REVIEW_COMPOSER
+                | t::TEXT_COMPARE_LEFT
+                | t::TEXT_COMPARE_RIGHT,
+            ) => Area::Main,
+            Some(t::COMMIT_MESSAGE) => Area::Commit,
+            Some(t::TITLE_BAR | t::REVIEW_ACCOUNT) => Area::Title,
+            Some(t::PULL_REQUEST_BAR) => Area::PullRequest,
+            Some(id) if id == text_targets::focus_id(LogicalFocus::StatusBar) => Area::Status,
+            _ => self.shell.area,
+        }
+    }
+
+    fn area_toward(&self, from: Area, direction: AreaDirection) -> Option<Area> {
+        let pull_request = self.controllers.review.active_pull_request().is_some();
+        let sidebar = self.controllers.navigation.visible() && self.shared.repository.is_some();
+        let commit = sidebar
+            && mutations::working_tree(&self.shared)
+            && self
+                .shared
+                .repository
+                .as_ref()
+                .is_some_and(|repo| repo.snapshot.capabilities.create_commit);
+        let top = if pull_request {
+            Area::PullRequest
+        } else {
+            Area::Title
+        };
+        use AreaDirection as D;
+        let to = match (from, direction) {
+            (Area::Main, D::Left) | (Area::Commit, D::Up) if sidebar => Area::Sidebar,
+            (Area::Sidebar | Area::Commit, D::Right) => Area::Main,
+            (Area::Main | Area::Sidebar, D::Up) => top,
+            (Area::PullRequest, D::Up) => Area::Title,
+            (Area::Title, D::Down) if pull_request => Area::PullRequest,
+            (Area::Title | Area::PullRequest, D::Down) => Area::Main,
+            (Area::Sidebar, D::Down) if commit => Area::Commit,
+            (Area::Sidebar | Area::Main | Area::Commit, D::Down) => Area::Status,
+            (Area::Status, D::Up) => Area::Main,
+            _ => return None,
+        };
+        Some(to)
+    }
+
+    fn area_focus(&self, area: Area) -> LogicalFocus {
+        match area {
+            Area::Title => LogicalFocus::TitleBar,
+            Area::PullRequest => LogicalFocus::PullRequestBar,
+            Area::Sidebar => LogicalFocus::Sidebar,
+            Area::Main if self.controllers.review.overview_open() => LogicalFocus::ReviewOverview,
+            Area::Main => LogicalFocus::Viewport,
+            Area::Commit => LogicalFocus::CommitMessage,
+            Area::Status => LogicalFocus::StatusBar,
         }
     }
 
@@ -565,7 +659,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         let branch = branch_status(&self.shared, sync, theme);
         let settings = mutations::render_control(
             mutations::Control::new(
-                "status.settings",
+                text_targets::STATUS_SETTINGS,
                 "Settings",
                 CommandsAction::OpenSettings,
                 mutations::Tone::Ghost,
@@ -766,6 +860,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         let overlays = commands::overlays(&mut self.controllers.commands, &slot, external, cx);
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
+        let leader = commands::leader_menu(&self.controllers.commands, &slot, cx);
         let tooltip = tooltip(cx, width, height);
         let energy = self.shell.debug_overlay.then(|| self.energy_hud.view(cx));
         view! {
@@ -780,6 +875,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 {?overlays}
                 {?languages}
                 {?toasts}
+                {?leader}
                 {?tooltip}
                 {?energy}
             </div>

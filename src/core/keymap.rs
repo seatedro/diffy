@@ -78,6 +78,11 @@ pub enum ShortcutCommand {
     ConfirmOverlay,
     CloseOverlay,
     ToggleDebugOverlay,
+    JumpToElement,
+    FocusAreaLeft,
+    FocusAreaRight,
+    FocusAreaUp,
+    FocusAreaDown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

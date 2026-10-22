@@ -747,6 +747,7 @@ fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyEl
         let rows: Vec<AnyElement> = group
             .entries
             .iter()
+            .filter(|entry| keymap::applies(entry, reviewing))
             .filter_map(|entry| {
                 let binding = keymap::display_binding(saved, entry.command)?;
                 let caps = keycaps::command(saved, entry.command, theme)?;
@@ -776,8 +777,7 @@ fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyEl
         columns[column].push(element);
     }
     let [left, right] = columns;
-    let margin = tokens::scaled(Sz::MODAL_MARGIN, scale);
-    let height = (slot.height - margin * 2.0).max(1.0);
+    let height = (slot.height / scale - Sz::MODAL_MARGIN * 2.0).max(1.0);
     let customize = action_button(
         "Customize",
         CommandsAction::OpenKeymaps.into(),
@@ -800,15 +800,22 @@ fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyEl
     )
     .height(height)
     .body_child(view! { scale,
-        <div class="flex-row items-start w-full overflow-y-scroll scrollbar-auto-hide" gap={Sp::XL}
-             focus_target={crate::app::text_targets::SHORTCUTS}
-             test_id="shortcuts.sheet">
-            <div class="flex-col flex-1" min_w={0.0} gap={Sp::LG}>{...left}</div>
-            <div class="flex-col flex-1" min_w={0.0} gap={Sp::LG}>{...right}</div>
+        <div class="flex-col w-full flex-1" min_h={0.0} gap={Sp::LG}>
+            <div class="flex-col w-full flex-1 overflow-y-scroll scrollbar-auto-hide" min_h={0.0}
+                 track_scroll={commands.shortcuts_scroll()}
+                 focus_target={crate::app::text_targets::SHORTCUTS}
+                 test_id="shortcuts.sheet">
+                <div class="flex-row items-start w-full shrink-0" gap={Sp::XL} pr={Sp::LG}>
+                    <div class="flex-col flex-1" min_w={0.0} gap={Sp::LG}>{...left}</div>
+                    <div class="flex-col flex-1" min_w={0.0} gap={Sp::LG}>{...right}</div>
+                </div>
+            </div>
+            <div class="flex-row items-center w-full shrink-0">
+                <spacer />
+                {customize}
+            </div>
         </div>
-    })
-    .footer_child(view! { <div class="flex-1" /> })
-    .footer_child(customize);
+    });
     view! { <div class="absolute top-0 left-0" z_index={350}>{modal}</div> }
 }
 

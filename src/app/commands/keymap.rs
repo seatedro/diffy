@@ -448,6 +448,14 @@ pub const GO: &[Leader] = &[
     },
 ];
 
+pub fn applies(entry: &Entry, reviewing: bool) -> bool {
+    match entry.scope {
+        scope if scope == TREE => !reviewing,
+        scope if scope == REVIEW => reviewing,
+        _ => true,
+    }
+}
+
 pub fn leader(key: &str) -> Option<&'static Leader> {
     GO.iter().find(|leader| leader.key == key)
 }

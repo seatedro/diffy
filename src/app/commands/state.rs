@@ -140,6 +140,7 @@ pub struct CommandsController {
     tip: Cell<TipSession>,
     tip_since: Cell<Option<u64>>,
     shortcuts_reviewing: bool,
+    shortcuts_scroll: ScrollHandle,
     go_since: Cell<Option<u64>>,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
@@ -197,6 +198,7 @@ impl Default for CommandsController {
             tip: Cell::new(TipSession::Pending),
             tip_since: Cell::new(None),
             shortcuts_reviewing: false,
+            shortcuts_scroll: ScrollHandle::new(),
             go_since: Cell::new(None),
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
@@ -507,12 +509,17 @@ impl CommandsController {
             return Reduction::default();
         };
         self.shortcuts_reviewing = cx.review.is_some();
+        self.shortcuts_scroll.set_offset(0.0, 0.0);
         self.push_layer(LayerKind::Shortcuts, return_focus);
         Reduction::changed()
     }
 
     pub(super) fn shortcuts_reviewing(&self) -> bool {
         self.shortcuts_reviewing
+    }
+
+    pub(super) fn shortcuts_scroll(&self) -> &ScrollHandle {
+        &self.shortcuts_scroll
     }
 
     fn current_focus(&self) -> Option<FocusId> {

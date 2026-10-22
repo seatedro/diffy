@@ -205,6 +205,7 @@ pub enum CommandsAction {
     ToggleAutoUpdate,
     SetAiSteeringPrompt(String),
     SetAiProvider(Option<crate::ai::Provider>),
+    ToggleAiCli,
     BeginKeymapRebind(ShortcutCommand),
     ApplyKeymapBinding {
         command: ShortcutCommand,

@@ -91,6 +91,7 @@ pub struct Settings {
     pub continuous_scroll: bool,
     pub ai_steering_prompt: String,
     pub ai_provider: Option<crate::ai::Provider>,
+    pub ai_use_cli: bool,
     pub keymap_overrides: Vec<KeymapOverride>,
     pub repo_discovery: RepoDiscovery,
 }
@@ -111,6 +112,7 @@ impl Default for Settings {
             continuous_scroll: false,
             ai_steering_prompt: String::new(),
             ai_provider: None,
+            ai_use_cli: false,
             keymap_overrides: Vec::new(),
             repo_discovery: RepoDiscovery::default(),
         }

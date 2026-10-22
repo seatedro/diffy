@@ -1,6 +1,7 @@
 use quark::style::BorderStyle;
 use quark::view;
 use quark_app::ViewContext;
+use quark_components::switch;
 use quark_ui::FocusId;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
@@ -11,7 +12,8 @@ use quark_ui::theme::Theme;
 
 use super::MutationsController;
 use super::controls::{self, Chrome, Control, Tone};
-use crate::ai::{DEFAULT_STEERING_PROMPT, Provider};
+use crate::ai::{CliAuth, CliInfo, CliScan, CliTool, DEFAULT_STEERING_PROMPT, Provider};
+use crate::app::commands::repo_picker::tilde;
 use crate::app::text_targets::{
     SETTINGS_ANTHROPIC_KEY, SETTINGS_OPENAI_KEY, SETTINGS_STEERING_PROMPT,
 };
@@ -41,7 +43,7 @@ impl Layout {
             gap: tokens::scaled(Sp::SM, scale),
             pad: tokens::scaled(Sp::MD, scale),
             row: theme.metrics.ui_row_height,
-            label: tokens::scaled(Sp::XXL * 2.5, scale),
+            label: tokens::scaled(Sp::XXXL * 2.25, scale),
             radius: theme.metrics.control_radius,
             body: TextStyle::Body.font_size(theme),
             small: TextStyle::BodySmall.font_size(theme),
@@ -94,6 +96,116 @@ fn provider_row(current: Option<Provider>, chrome: &Chrome) -> AnyElement {
         })
         .collect();
     controls::row(controls, chrome)
+}
+
+fn cli_row(
+    tool: CliTool,
+    info: Option<&CliInfo>,
+    scanning: bool,
+    theme: &Theme,
+    layout: &Layout,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let name = tool.label();
+    let (status, tone) = match info.map(|info| info.auth) {
+        None if scanning => ("Checking\u{2026}", tc.text_disabled),
+        None => ("Not found", tc.text_disabled),
+        Some(CliAuth::SignedIn) => ("Signed in", tc.text_accent),
+        Some(CliAuth::SignedOut) => ("Signed out", tc.status_warning),
+        Some(CliAuth::Unknown) => ("Installed", tc.text_muted),
+    };
+    let version = info
+        .and_then(|info| info.version.clone())
+        .unwrap_or_default();
+    let home = dirs::home_dir();
+    let location = info
+        .map(|info| tilde(&info.program, home.as_deref()))
+        .unwrap_or_default();
+    let label = if version.is_empty() {
+        format!("{name}, {status}")
+    } else {
+        format!("{name} {version}, {status}")
+    };
+    view! {
+        <div
+            class="flex-row items-center"
+            h={layout.row}
+            px={layout.gap}
+            gap={layout.gap}
+            rounded={layout.radius}
+            bg={tc.editor_surface}
+            border={tc.border}
+            accessibility_role={AccessibilityRole::Group}
+            aria-label={label}
+            test_id={format!("settings.ai.cli.{}", tool.binary())}
+        >
+            <div min_w={layout.label} class="shrink-0">
+                <text size={layout.small} class="whitespace-nowrap" color={tc.text_muted}>{name}</text>
+            </div>
+            <text size={layout.small} class="font-mono" color={tc.text}>{version}</text>
+            <div class="flex-1 flex-row" min_w={0.0}>
+                <text size={layout.small} class="font-mono truncate" color={tc.text_disabled}>{location}</text>
+            </div>
+            <text size={layout.small} class="whitespace-nowrap" color={tone}>{status}</text>
+        </div>
+    }
+}
+
+fn cli_body(
+    enabled: bool,
+    scan: Option<&CliScan>,
+    scanning: bool,
+    chrome: &Chrome,
+    theme: &Theme,
+    layout: &Layout,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let rescan = Control::new(
+        "settings.ai.cli.rescan",
+        if scanning {
+            "Checking\u{2026}"
+        } else {
+            "Check again"
+        },
+        MutationsAction::ScanAiClis { force: true },
+        Tone::Ghost,
+    )
+    .icon(lucide::REFRESH)
+    .disabled(scanning);
+    let rows: Vec<AnyElement> = CliTool::ALL
+        .into_iter()
+        .map(|tool| {
+            cli_row(
+                tool,
+                scan.and_then(|scan| scan.find(tool)),
+                scanning,
+                theme,
+                layout,
+            )
+        })
+        .collect();
+    let home = dirs::home_dir();
+    let folder = crate::ai::cli::workdir()
+        .map(|dir| {
+            format!(
+                "Runs in {} with tools off and no saved sessions.",
+                tilde(&dir, home.as_deref())
+            )
+        })
+        .unwrap_or_default();
+    view! {
+        <div class="flex-col" gap={layout.gap}>
+            <div class="flex-row items-center" gap={layout.gap}>
+                <div class="shrink-0" test_id="settings.ai.cli.toggle">
+                    {switch(enabled).label("Use local CLI").on_toggle(CommandsAction::ToggleAiCli)}
+                </div>
+                <div class="flex-1" />
+                {controls::row(vec![rescan], chrome)}
+            </div>
+            {...rows}
+            <text size={layout.small} color={tc.text_muted}>{folder}</text>
+        </div>
+    }
 }
 
 struct KeyRow {
@@ -352,6 +464,21 @@ pub fn clankers_settings(
         "The default prompt guides generated commit messages."
     };
 
+    let use_cli = settings.settings.ai_use_cli;
+    let cli = cli_body(
+        use_cli,
+        ai.cli.as_deref(),
+        ai.scanning,
+        &chrome,
+        theme,
+        &layout,
+    );
+    let provider_detail = if use_cli {
+        "Automatic prefers Claude Code, then Codex, then saved keys."
+    } else {
+        "Automatic uses Anthropic when both keys are saved."
+    };
+
     view! {
         <div
             class="flex-col"
@@ -363,8 +490,15 @@ pub fn clankers_settings(
         >
             {card(
                 "Provider",
-                "Automatic uses Anthropic when both keys are saved.",
+                provider_detail,
                 provider_row(settings.settings.ai_provider, &chrome),
+                theme,
+                &layout,
+            )}
+            {card(
+                "Local CLI",
+                "Use your Claude Code or Codex sign-in instead of an API key.",
+                cli,
                 theme,
                 &layout,
             )}

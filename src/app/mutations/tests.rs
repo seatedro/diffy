@@ -12,13 +12,14 @@ use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 
 use super::controls::{self as mutation_controls, Chrome};
 use super::{MutationsController, panel, view};
+use crate::ai::{CliAuth, CliInfo, CliScan, CliTool, Provider};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{TextCx, TextHost};
 use crate::contracts::commands::CommandSource;
 use crate::contracts::commands::{CommandsAction, ToastUpdate};
 use crate::contracts::mutations::{
-    ConfirmedMutation, MutationSelection, MutationSource, MutationSourceKey, MutationsAction,
-    MutationsEffect, MutationsEvent, StagedDigest,
+    AiBackend, ConfirmedMutation, MutationSelection, MutationSource, MutationSourceKey,
+    MutationsAction, MutationsEffect, MutationsEvent, StagedDigest,
 };
 use crate::contracts::navigation::{
     RepositoryContext, RepositoryRevision, RepositorySnapshot, RepositorySyncReason,
@@ -547,8 +548,147 @@ fn provider_preference_and_saved_prompt_steer_generation() {
     let [MutationsEffect::GenerateCommitMessage(request)] = effects.as_slice() else {
         panic!("expected a generation");
     };
-    assert_eq!(request.provider, crate::ai::Provider::Anthropic);
+    assert!(matches!(
+        &request.backend,
+        AiBackend::Api {
+            provider: Provider::Anthropic,
+            ..
+        }
+    ));
     assert_eq!(request.steering_prompt, "Use imperative mood");
+}
+
+fn cli_scan(tools: &[(CliTool, CliAuth)]) -> Arc<CliScan> {
+    Arc::new(CliScan {
+        tools: tools
+            .iter()
+            .map(|(tool, auth)| CliInfo {
+                tool: *tool,
+                program: PathBuf::from("/opt/tools").join(tool.binary()),
+                version: Some("1.0.0".to_owned()),
+                auth: *auth,
+            })
+            .collect(),
+        ..CliScan::default()
+    })
+}
+
+fn with_cli(cx: &mut SharedContext, provider: Option<Provider>) {
+    let mut settings = cx.settings.as_ref().clone();
+    settings.settings.ai_use_cli = true;
+    settings.settings.ai_provider = provider;
+    cx.settings = Rc::new(settings);
+}
+
+fn scanned(
+    controller: &mut MutationsController,
+    cx: &SharedContext,
+    scan: Arc<CliScan>,
+) -> Reduction {
+    let reduction = controller.reduce_action(MutationsAction::ScanAiClis { force: true }, cx);
+    let reduction_effects = mutation_effects(&reduction);
+    let [MutationsEffect::ScanAiClis { generation }] = reduction_effects.as_slice() else {
+        panic!("expected a scan");
+    };
+    controller.reduce_event(
+        MutationsEvent::AiClisScanned {
+            generation: *generation,
+            scan,
+        },
+        cx,
+    )
+}
+
+#[test]
+fn generation_waits_for_the_cli_scan_then_uses_a_signed_in_cli() {
+    let mut cx = shared();
+    with_cli(&mut cx, None);
+    let mut controller = MutationsController::default();
+    let pending = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
+    let pending_effects = mutation_effects(&pending);
+    let [MutationsEffect::ScanAiClis { generation }] = pending_effects.as_slice() else {
+        panic!("expected a scan before generating");
+    };
+    let stale = controller.reduce_event(
+        MutationsEvent::AiClisScanned {
+            generation: generation.wrapping_sub(1),
+            scan: cli_scan(&[]),
+        },
+        &cx,
+    );
+    assert!(mutation_effects(&stale).is_empty());
+    let ready = controller.reduce_event(
+        MutationsEvent::AiClisScanned {
+            generation: *generation,
+            scan: cli_scan(&[
+                (CliTool::ClaudeCode, CliAuth::SignedOut),
+                (CliTool::Codex, CliAuth::SignedIn),
+            ]),
+        },
+        &cx,
+    );
+    let ready_effects = mutation_effects(&ready);
+    let [MutationsEffect::GenerateCommitMessage(request)] = ready_effects.as_slice() else {
+        panic!("expected a generation after the scan");
+    };
+    let AiBackend::Cli(command) = &request.backend else {
+        panic!("expected the CLI backend");
+    };
+    assert_eq!(command.tool, CliTool::Codex);
+    assert_eq!(command.program, PathBuf::from("/opt/tools/codex"));
+}
+
+#[test]
+fn signed_out_cli_reports_and_missing_cli_falls_back_to_keys() {
+    let mut cx = shared();
+    with_cli(&mut cx, Some(Provider::Anthropic));
+    let mut controller = MutationsController::default();
+    ai_ready(&mut controller, &cx);
+    scanned(
+        &mut controller,
+        &cx,
+        cli_scan(&[(CliTool::ClaudeCode, CliAuth::SignedOut)]),
+    );
+    let signed_out = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
+    assert!(mutation_effects(&signed_out).is_empty());
+    assert!(!signed_out.intents.is_empty());
+
+    scanned(
+        &mut controller,
+        &cx,
+        cli_scan(&[(CliTool::Codex, CliAuth::SignedIn)]),
+    );
+    let fallback = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
+    let fallback_effects = mutation_effects(&fallback);
+    let [MutationsEffect::GenerateCommitMessage(request)] = fallback_effects.as_slice() else {
+        panic!("expected a generation");
+    };
+    assert!(matches!(
+        &request.backend,
+        AiBackend::Api {
+            provider: Provider::Anthropic,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn cancelling_a_generation_stops_the_worker() {
+    let cx = shared();
+    let mut controller = MutationsController::default();
+    ai_ready(&mut controller, &cx);
+    let started = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
+    let started_effects = mutation_effects(&started);
+    let [MutationsEffect::GenerateCommitMessage(request)] = started_effects.as_slice() else {
+        panic!("expected a generation");
+    };
+    let cancelled = controller.reduce_action(MutationsAction::CancelGeneration, &cx);
+    let cancelled_effects = mutation_effects(&cancelled);
+    let [MutationsEffect::CancelCommitMessage { generation }] = cancelled_effects.as_slice() else {
+        panic!("expected a cancel");
+    };
+    assert_ne!(*generation, request.generation);
+    assert!(!controller.ai().active);
 }
 
 #[test]
@@ -1011,6 +1151,47 @@ fn clankers_settings_save_keys_and_prompt() {
         ui.app().commands.last(),
         Some(&CommandsAction::SetAiSteeringPrompt("Be brief".to_owned()))
     );
+}
+
+#[test]
+fn clankers_settings_show_detected_clis() {
+    let cx = shared();
+    let mut controller = MutationsController::default();
+    scanned(
+        &mut controller,
+        &cx,
+        cli_scan(&[(CliTool::ClaudeCode, CliAuth::SignedIn)]),
+    );
+    let mut ui = UiTestHarness::new(
+        SettingsHost {
+            controller,
+            shared: cx,
+            reductions: Vec::new(),
+            commands: Vec::new(),
+            now_ms: 0,
+        },
+        (900.0, 1100.0),
+        2.0,
+    );
+    assert_eq!(
+        ui.find(By::test_id("settings.ai.cli.claude"))
+            .name
+            .as_deref(),
+        Some("Claude Code 1.0.0, Signed in")
+    );
+    assert_eq!(
+        ui.find(By::test_id("settings.ai.cli.codex"))
+            .name
+            .as_deref(),
+        Some("Codex, Not found")
+    );
+    ui.click_node(By::role_name(Role::Switch, "Use local CLI"));
+    assert_eq!(ui.app().commands, vec![CommandsAction::ToggleAiCli]);
+    ui.click_node(By::role_name(Role::Button, "Check again"));
+    assert!(matches!(
+        ui.app().reductions.iter().flat_map(mutation_effects).last(),
+        Some(MutationsEffect::ScanAiClis { .. })
+    ));
 }
 
 #[test]

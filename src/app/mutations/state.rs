@@ -11,7 +11,7 @@ use quark_ui::text_input::{
 };
 
 use super::presentation::{MutationPresentation, PresentationStyle};
-use crate::ai::{DEFAULT_STEERING_PROMPT, Provider};
+use crate::ai::{CliAuth, CliCommand, CliScan, CliTool, DEFAULT_STEERING_PROMPT, Provider};
 use crate::app::text_targets::{
     COMMIT_MESSAGE, SETTINGS_ANTHROPIC_KEY, SETTINGS_OPENAI_KEY, SETTINGS_STEERING_PROMPT, TextCx,
     TextHost,
@@ -20,9 +20,9 @@ use crate::contracts::commands::{
     CommandDescriptor, CommandSource, ConfirmationRequest, ToastKind, ToastUpdate,
 };
 use crate::contracts::mutations::{
-    ConfirmedMutation, FileOperationRequest, GenerateCommitMessageRequest, MutationSelection,
-    MutationSource, MutationSourceKey, MutationsAction, MutationsEffect, MutationsEvent,
-    PatchOperationRequest, StagedDigest,
+    AiBackend, ConfirmedMutation, FileOperationRequest, GenerateCommitMessageRequest,
+    MutationSelection, MutationSource, MutationSourceKey, MutationsAction, MutationsEffect,
+    MutationsEvent, PatchOperationRequest, StagedDigest,
 };
 use crate::contracts::navigation::RepositoryContext;
 use crate::contracts::review::Secret;
@@ -101,6 +101,36 @@ pub struct AiState {
     pub anthropic: Option<Secret>,
     pub openai_editing: bool,
     pub anthropic_editing: bool,
+    pub cli: Option<Arc<CliScan>>,
+    pub scanning: bool,
+    scan_generation: u64,
+    queued: bool,
+}
+
+enum CliChoice {
+    Ready(CliCommand),
+    SignedOut(CliTool),
+    Pending,
+    Missing,
+}
+
+fn pick_cli(scan: &CliScan, provider: Option<Provider>) -> CliChoice {
+    let tools: Vec<CliTool> = match provider {
+        Some(provider) => vec![CliTool::for_provider(provider)],
+        None => CliTool::ALL.to_vec(),
+    };
+    let found: Vec<_> = tools.iter().filter_map(|tool| scan.find(*tool)).collect();
+    let usable = found
+        .iter()
+        .find(|info| info.auth == CliAuth::SignedIn)
+        .or_else(|| found.iter().find(|info| info.auth == CliAuth::Unknown));
+    if let Some(command) = usable.and_then(|info| scan.command(info.tool)) {
+        return CliChoice::Ready(command);
+    }
+    match found.first() {
+        Some(info) => CliChoice::SignedOut(info.tool),
+        None => CliChoice::Missing,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,6 +243,24 @@ fn failure(id: Option<JobId>, message: impl Into<String>, detail: impl Into<Stri
         message: message.into(),
         description: Some(detail.into()),
     })
+}
+
+fn missing_backend(preferred: Option<Provider>, use_cli: bool) -> String {
+    match (preferred, use_cli) {
+        (Some(provider), true) => format!(
+            "Install {} or add a {} key under Settings \u{2192} AI.",
+            CliTool::for_provider(provider).label(),
+            provider.label()
+        ),
+        (Some(provider), false) => format!(
+            "Add a {} key under Settings \u{2192} AI first.",
+            provider.label()
+        ),
+        (None, true) => {
+            "Install Claude Code or Codex, or add an AI key under Settings \u{2192} AI.".to_owned()
+        }
+        (None, false) => "Add an AI key under Settings \u{2192} AI first.".to_owned(),
+    }
 }
 
 fn error(message: impl Into<String>) -> Reduction {
@@ -896,26 +944,46 @@ impl MutationsController {
         let Some(repo) = cx.repository.as_ref() else {
             return error("Open a repository before generating a commit message.");
         };
-        let key = |provider: Provider| {
-            match provider {
-                Provider::OpenAi => self.ai.openai.clone(),
-                Provider::Anthropic => self.ai.anthropic.clone(),
+        let preferred = cx.settings.settings.ai_provider;
+        let choice = if !cx.settings.settings.ai_use_cli {
+            CliChoice::Missing
+        } else {
+            match self.ai.cli.as_deref() {
+                Some(scan) if !self.ai.scanning => pick_cli(scan, preferred),
+                _ => CliChoice::Pending,
             }
-            .filter(|key| !key.is_empty())
-            .map(|key| (provider, key))
         };
-        let chosen = match cx.settings.settings.ai_provider {
-            Some(provider) => key(provider),
-            None => key(Provider::Anthropic).or_else(|| key(Provider::OpenAi)),
-        };
-        let Some((provider, api_key)) = chosen else {
-            return error(match cx.settings.settings.ai_provider {
-                Some(provider) => format!(
-                    "Add a {} key under Settings \u{2192} Clankers first.",
-                    provider.label()
-                ),
-                None => "Add an AI key under Settings \u{2192} Clankers first.".to_owned(),
-            });
+        let backend = match choice {
+            CliChoice::Ready(command) => AiBackend::Cli(command),
+            CliChoice::SignedOut(tool) => {
+                return error(format!(
+                    "{} is signed out. {}",
+                    tool.label(),
+                    tool.sign_in_hint()
+                ));
+            }
+            CliChoice::Pending => {
+                self.ai.queued = true;
+                return self.scan_clis(false);
+            }
+            CliChoice::Missing => {
+                let key = |provider: Provider| {
+                    match provider {
+                        Provider::OpenAi => self.ai.openai.clone(),
+                        Provider::Anthropic => self.ai.anthropic.clone(),
+                    }
+                    .filter(|key| !key.is_empty())
+                    .map(|api_key| AiBackend::Api { provider, api_key })
+                };
+                let chosen = match preferred {
+                    Some(provider) => key(provider),
+                    None => key(Provider::Anthropic).or_else(|| key(Provider::OpenAi)),
+                };
+                let Some(backend) = chosen else {
+                    return error(missing_backend(preferred, cx.settings.settings.ai_use_cli));
+                };
+                backend
+            }
         };
         let staging = repo.snapshot.capabilities.staging_area;
         let has_staged = staging
@@ -956,8 +1024,7 @@ impl MutationsController {
                 repository: repo.revision,
                 repo_path: repo.snapshot.path.clone(),
                 has_staged,
-                provider,
-                api_key,
+                backend,
                 steering_prompt,
                 subject_override,
             },
@@ -969,14 +1036,19 @@ impl MutationsController {
     }
 
     fn stop_stale_generation(&mut self) -> Reduction {
+        self.ai.generation = self.ai.generation.wrapping_add(1);
         self.ai.active = false;
         self.ai.buffered.clear();
         self.ai.checks = 0;
-        Reduction::changed().intent(toast(
-            ToastKind::Info,
-            None,
-            "Staged changes moved, so commit message generation stopped.",
-        ))
+        Reduction::changed()
+            .effect(MutationsEffect::CancelCommitMessage {
+                generation: self.ai.generation,
+            })
+            .intent(toast(
+                ToastKind::Info,
+                None,
+                "Staged changes moved, so commit message generation stopped.",
+            ))
     }
 
     fn settle_generation(&mut self) {
@@ -1277,6 +1349,7 @@ impl MutationsController {
     }
 
     fn cancel_generation(&mut self) -> Reduction {
+        self.ai.queued = false;
         if !self.ai.active {
             return Reduction::default();
         }
@@ -1284,7 +1357,23 @@ impl MutationsController {
         self.ai.active = false;
         self.ai.buffered.clear();
         self.ai.checks = 0;
-        Reduction::changed()
+        Reduction::changed().effect(MutationsEffect::CancelCommitMessage {
+            generation: self.ai.generation,
+        })
+    }
+
+    fn scan_clis(&mut self, force: bool) -> Reduction {
+        if self.ai.scanning {
+            return Reduction::default();
+        }
+        if !force && self.ai.cli.is_some() {
+            return Reduction::default();
+        }
+        self.ai.scanning = true;
+        self.ai.scan_generation = self.ai.scan_generation.wrapping_add(1);
+        Reduction::changed().effect(MutationsEffect::ScanAiClis {
+            generation: self.ai.scan_generation,
+        })
     }
 
     fn start_amend(&mut self, cx: &SharedContext) -> Reduction {
@@ -1570,6 +1659,7 @@ impl Controller for MutationsController {
                 Reduction::changed()
             }
             A::CancelGeneration => self.cancel_generation(),
+            A::ScanAiClis { force } => self.scan_clis(force),
             A::UndoCommit(id) => self.undo_commit(id),
             A::UndoDiscard(id) => self.undo_discard(id),
             A::ForgetUndo(id) => {
@@ -1592,7 +1682,7 @@ impl Controller for MutationsController {
         }
     }
 
-    fn reduce_event(&mut self, event: Self::Event, _cx: &SharedContext) -> Reduction {
+    fn reduce_event(&mut self, event: Self::Event, cx: &SharedContext) -> Reduction {
         use MutationsEvent as E;
         match event {
             E::MutationSourceReady { source } => self.source_ready(source),
@@ -1919,6 +2009,19 @@ impl Controller for MutationsController {
             E::AiKeySaveFailed { message } => {
                 error(format!("Couldn't save AI key to keyring: {message}"))
             }
+            E::AiClisScanned { generation, scan } => {
+                if generation != self.ai.scan_generation {
+                    return Reduction::default();
+                }
+                self.ai.scanning = false;
+                self.ai.cli = Some(scan);
+                if !std::mem::take(&mut self.ai.queued) {
+                    return Reduction::changed();
+                }
+                let mut reduction = Reduction::changed();
+                reduction.merge(self.generate_commit_message(cx));
+                reduction
+            }
             E::CommitMessageStarted { generation, staged } => {
                 self.staged_seen(generation, Some(staged), true)
             }
@@ -1974,17 +2077,27 @@ impl Controller for MutationsController {
         match intent {
             Intent::Startup(startup) => {
                 self.sync_steering(&startup.settings.ai_steering_prompt);
-                Reduction::default().effect(MutationsEffect::LoadAiKeys)
+                let mut reduction = Reduction::default().effect(MutationsEffect::LoadAiKeys);
+                if startup.settings.ai_use_cli {
+                    reduction.merge(self.scan_clis(false));
+                }
+                reduction
             }
             Intent::SettingsChanged(snapshot) => {
                 self.sync_steering(&snapshot.settings.ai_steering_prompt);
-                Reduction::changed()
+                let mut reduction = Reduction::changed();
+                if snapshot.settings.ai_use_cli {
+                    reduction.merge(self.scan_clis(false));
+                }
+                reduction
             }
             Intent::ActivateWorkspace { .. } => {
+                let mut reduction = self.cancel_generation();
                 self.reset();
                 self.commit.set_text("");
                 self.refresh_presentation(cx);
-                Reduction::changed()
+                reduction.changed = true;
+                reduction
             }
             Intent::RepositoryChanged(repo) => {
                 self.sources

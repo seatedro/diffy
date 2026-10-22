@@ -1826,7 +1826,7 @@ fn plural_time(value: u64, unit: &str) -> String {
     }
 }
 
-fn parse_rfc3339_utc_seconds(value: &str) -> Option<u64> {
+pub(super) fn parse_rfc3339_utc_seconds(value: &str) -> Option<u64> {
     let bytes = value.as_bytes();
     if bytes.len() < 20
         || bytes.get(4) != Some(&b'-')

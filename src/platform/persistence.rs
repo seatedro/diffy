@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -94,6 +95,7 @@ pub struct Settings {
     pub ai_use_cli: bool,
     pub keymap_overrides: Vec<KeymapOverride>,
     pub repo_discovery: RepoDiscovery,
+    pub github_clones: BTreeMap<String, PathBuf>,
 }
 
 impl Default for Settings {
@@ -115,6 +117,7 @@ impl Default for Settings {
             ai_use_cli: false,
             keymap_overrides: Vec::new(),
             repo_discovery: RepoDiscovery::default(),
+            github_clones: BTreeMap::new(),
         }
     }
 }

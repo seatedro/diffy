@@ -6,7 +6,7 @@ use crate::contracts::delivery::DeliveryAction;
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::CompareField;
 use crate::contracts::navigation::{NavigationAction, SidebarTab};
-use crate::contracts::review::ReviewAction;
+use crate::contracts::review::{PullsAction, ReviewAction};
 use crate::contracts::shell::{Action, AreaDirection, LogicalFocus, ShellAction};
 use crate::contracts::viewport::{FilesAction, InteractionAction, SymbolsAction, ViewportAction};
 use crate::core::compare::LayoutMode;
@@ -400,6 +400,11 @@ pub const GO: &[Leader] = &[
         key: "o",
         label: "Outline",
         action: || NavigationAction::SetSidebarTab(SidebarTab::Outline).into(),
+    },
+    Leader {
+        key: "p",
+        label: "Your pull requests",
+        action: || ReviewAction::Pulls(PullsAction::Open).into(),
     },
     Leader {
         key: "v",

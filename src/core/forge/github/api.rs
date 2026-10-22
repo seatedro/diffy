@@ -133,6 +133,17 @@ pub struct PullRequestCheckSummary {
     pub contexts: Vec<PullRequestCheckContext>,
 }
 
+impl PullRequestCheckSummary {
+    pub(super) fn add_state(&mut self, state: &str, count: i32) {
+        match state {
+            "SUCCESS" | "NEUTRAL" | "SKIPPED" => self.success_count += count,
+            "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED"
+            | "STARTUP_FAILURE" => self.failure_count += count,
+            _ => self.pending_count += count,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PullRequestCheckContext {
     pub name: String,
@@ -1081,14 +1092,11 @@ pub(super) fn parse_check_summary(value: &Value) -> PullRequestCheckSummary {
         .map(parse_check_context)
         .filter(|context| !context.name.is_empty())
         .collect();
-    for context in &summary.contexts {
-        match context.state.as_str() {
-            "SUCCESS" | "NEUTRAL" | "SKIPPED" => summary.success_count += 1,
-            "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED"
-            | "STARTUP_FAILURE" => summary.failure_count += 1,
-            _ => summary.pending_count += 1,
-        }
+    let contexts = std::mem::take(&mut summary.contexts);
+    for context in &contexts {
+        summary.add_state(&context.state, 1);
     }
+    summary.contexts = contexts;
     summary
 }
 

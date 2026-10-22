@@ -28,6 +28,8 @@ pub const REVIEW_OVERVIEW: FocusId = FocusId::from_key("diffy.review.overview");
 pub const STATUS_SETTINGS: &str = "status.settings";
 pub const TITLE_BAR: FocusId = FocusId::from_key("title.repo");
 pub const PULL_REQUEST_BAR: FocusId = FocusId::from_key("review.pull_request.title");
+pub const REVIEW_PULLS: FocusId = FocusId::from_key("diffy.review.pulls");
+pub const REVIEW_PULLS_FILTER: FocusId = FocusId::from_key("diffy.review.pulls.filter");
 
 pub fn focus_id(focus: LogicalFocus) -> FocusId {
     match focus {
@@ -48,12 +50,25 @@ pub fn focus_id(focus: LogicalFocus) -> FocusId {
         LogicalFocus::ReviewAccount => REVIEW_ACCOUNT,
         LogicalFocus::ReviewDialog => REVIEW_DIALOG,
         LogicalFocus::ReviewOverview => REVIEW_OVERVIEW,
+        LogicalFocus::ReviewPulls => REVIEW_PULLS,
+        LogicalFocus::ReviewPullsFilter => REVIEW_PULLS_FILTER,
         LogicalFocus::DeliveryLanguages => crate::app::delivery::LANGUAGES_TOGGLE,
         LogicalFocus::TitleBar => TITLE_BAR,
         LogicalFocus::PullRequestBar => PULL_REQUEST_BAR,
         LogicalFocus::StatusBar => crate::app::mutations::control_focus_id(STATUS_SETTINGS),
         LogicalFocus::Launcher => LAUNCHER,
     }
+}
+
+pub fn workspace_focus(focus: FocusId) -> Option<LogicalFocus> {
+    [
+        LogicalFocus::Viewport,
+        LogicalFocus::Sidebar,
+        LogicalFocus::SidebarFilter,
+        LogicalFocus::ReviewOverview,
+    ]
+    .into_iter()
+    .find(|logical| focus_id(*logical) == focus)
 }
 
 pub struct TextCx<'a> {

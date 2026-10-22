@@ -14,8 +14,7 @@ use super::state::{AuthStatus, ReviewOverlay};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{REVIEW_ACCOUNT, REVIEW_DIALOG};
 use crate::app::tokens::{self, Bp, Ico, Layout, Rad, Shadow, Sp, Sz, TextStyle};
-use crate::contracts::commands::CommandsAction;
-use crate::contracts::review::ReviewAction;
+use crate::contracts::review::{PullsAction, ReviewAction};
 use crate::contracts::shell::ShellAction;
 use crate::core::forge::github::{PullRequestCheckSummary, PullRequestOverview};
 use crate::core::review::ReviewDecision;
@@ -26,10 +25,6 @@ const REVIEWER_STACK_MAX: usize = 4;
 
 fn action(action: ReviewAction) -> quark_ui::Action {
     action.into()
-}
-
-fn commands(action: CommandsAction) -> quark_ui::Action {
-    crate::contracts::shell::Action::from(action).into()
 }
 
 pub fn default_card_width(width: f32, theme: &Theme) -> f32 {
@@ -50,6 +45,7 @@ pub fn prepare(review: &mut ReviewController, width: f32, cx: &mut ViewContext) 
 
 pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) -> AnyElement {
     prepare(review, slot.width, cx);
+    review.observe_focus(cx.focus());
     let theme = cx.theme;
     let scale = tokens::ui_scale(theme);
     let submit = review
@@ -69,10 +65,11 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
     let review_pr = review.active_pull_request().is_none().then(|| {
         let button = controls::button(
             "Review PR",
-            commands(CommandsAction::OpenPullRequestPicker),
+            action(ReviewAction::Pulls(PullsAction::Open)),
             Tone::Ghost,
         )
-        .icon(lucide::GIT_PULL_REQUEST);
+        .icon(lucide::GIT_PULL_REQUEST)
+        .active(review.pulls_open());
         view! { <div class="shrink-0" test_id="review.open_pull_request">{button}</div> }
     });
     let account = account_view(review, theme);
@@ -87,7 +84,7 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
 }
 
 pub fn pull_request_bar_height(review: &ReviewController, theme: &Theme) -> f32 {
-    if review.active_pull_request().is_some() {
+    if review.active_pull_request().is_some() && !review.pulls_open() {
         tokens::scaled(Layout::COMPARE_BAR_H, tokens::ui_scale(theme))
     } else {
         0.0
@@ -100,7 +97,9 @@ pub fn pull_request_bar(
     height: f32,
     theme: &Theme,
 ) -> Option<AnyElement> {
-    let active = review.active_pull_request()?;
+    let active = review
+        .active_pull_request()
+        .filter(|_| !review.pulls_open())?;
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
     let small = TextStyle::BodySmall.font_size(theme);

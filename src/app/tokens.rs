@@ -139,4 +139,5 @@ impl Layout {
     pub const LAUNCHER_W: f32 = 560.0;
     pub const LAUNCHER_MARK: f32 = 34.0;
     pub const LAUNCHER_PATH_MAX_W: f32 = 220.0;
+    pub const PULLS_PREVIEW_W: f32 = 440.0;
 }

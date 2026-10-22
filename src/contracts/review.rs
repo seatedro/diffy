@@ -8,7 +8,7 @@ use crate::contracts::shared::{AccountEpoch, JobId, SourceTarget};
 use crate::core::forge::github::{
     CreatePullRequestReview, CreatePullRequestReviewComment, CreatePullRequestReviewReply,
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThreadComment,
-    GitHubReviewThreadResolution, GitHubUser, PullRequestInfo, PullRequestOverview,
+    GitHubReviewThreadResolution, GitHubUser, MyPullRequest, PullRequestInfo, PullRequestOverview,
     PullRequestReview, PullRequestReviewComment, SubmitPullRequestReview,
     UpdatePullRequestReviewComment,
 };
@@ -105,6 +105,30 @@ pub enum ReviewAction {
     ToggleOverviewChecks,
     OpenConversationComposer,
     OpenLink(String),
+    Pulls(PullsAction),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PullsAction {
+    Open,
+    Close,
+    Refresh,
+    Move(i32),
+    Select(String),
+    Review,
+    OpenOnGitHub,
+    CopyLink,
+    FocusFilter,
+    EscapeFilter,
+    ClearFilter,
+    LocateClone,
+    CloneChosen { repo: String, path: PathBuf },
+}
+
+impl From<PullsAction> for ReviewAction {
+    fn from(action: PullsAction) -> Self {
+        Self::Pulls(action)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -213,6 +237,9 @@ pub enum GitHubRequest {
         pr: PullRequestRef,
         token: Option<Secret>,
         body: String,
+    },
+    FetchMyPullRequests {
+        token: Secret,
     },
 }
 
@@ -380,6 +407,10 @@ pub enum GitHubResponse {
         body: String,
         message: String,
     },
+    MyPullRequestsLoaded(Vec<MyPullRequest>),
+    MyPullRequestsLoadFailed {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,6 +447,14 @@ pub enum ReviewEffect {
     },
     FetchAvatar {
         url: String,
+    },
+    ResolveClones {
+        job: JobId,
+        current: Option<PathBuf>,
+    },
+    ValidateClone {
+        repo: String,
+        path: PathBuf,
     },
 }
 
@@ -484,6 +523,14 @@ pub enum ReviewEvent {
         url: String,
         message: String,
     },
+    ClonesResolved {
+        job: JobId,
+        clones: Vec<(String, PathBuf)>,
+    },
+    CloneValidated {
+        repo: String,
+        result: Result<PathBuf, String>,
+    },
 }
 
 impl ReviewEvent {
@@ -491,7 +538,10 @@ impl ReviewEvent {
         match self {
             Self::GitHub { response, .. } => matches!(
                 **response,
-                GitHubResponse::UserFetched(_) | GitHubResponse::UserFetchFailed { .. }
+                GitHubResponse::UserFetched(_)
+                    | GitHubResponse::UserFetchFailed { .. }
+                    | GitHubResponse::MyPullRequestsLoaded(_)
+                    | GitHubResponse::MyPullRequestsLoadFailed { .. }
             ),
             Self::DeviceFlowStarted { .. }
             | Self::DeviceFlowStartFailed { .. }
@@ -501,7 +551,9 @@ impl ReviewEvent {
             | Self::TokenLoadFailed { .. }
             | Self::TokenSaveFailed { .. }
             | Self::AvatarFetched { .. }
-            | Self::AvatarFetchFailed { .. } => true,
+            | Self::AvatarFetchFailed { .. }
+            | Self::ClonesResolved { .. }
+            | Self::CloneValidated { .. } => true,
             Self::SessionLoaded { .. }
             | Self::SessionLoadFailed { .. }
             | Self::SessionSaved { .. }

@@ -372,7 +372,7 @@ impl Launcher {
 
 pub fn pull_request_row(signed_in: bool) -> (&'static str, &'static str) {
     if signed_in {
-        ("Open pull request\u{2026}", "Paste a GitHub link")
+        ("Your pull requests", "Open PRs you authored")
     } else {
         (
             "Sign in to GitHub to see your PRs",

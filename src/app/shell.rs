@@ -24,6 +24,7 @@ use crate::app::tokens::{self, Layout, Sp, Sz, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, LauncherFolder, SettingsSnapshot, ToastUpdate};
+use crate::contracts::review::PullsAction;
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, AppMessage, AppStartup, AreaDirection, Controller, Effect, Intent, LogicalFocus,
@@ -64,6 +65,7 @@ struct ShellState {
     repository_dialog: Option<DialogId>,
     scan_folder_dialog: Option<DialogId>,
     launcher_dialog: Option<(DialogId, LauncherFolder)>,
+    clone_dialog: Option<(DialogId, String)>,
     copied_until: u64,
     area: Area,
 }
@@ -94,6 +96,7 @@ impl ShellState {
             repository_dialog: None,
             scan_folder_dialog: None,
             launcher_dialog: None,
+            clone_dialog: None,
             copied_until: 0,
             area: Area::Main,
         }
@@ -218,6 +221,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                     effect @ (ShellEffect::OpenRepositoryDialog
                     | ShellEffect::OpenScanFolderDialog
                     | ShellEffect::OpenLauncherDialog(_)
+                    | ShellEffect::OpenCloneDialog { .. }
                     | ShellEffect::SetClipboard(_)
                     | ShellEffect::Focus(_)),
                 ) => self.deferred.push(effect),
@@ -353,6 +357,14 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                         ..FileDialog::default()
                     });
                     self.shell.launcher_dialog = Some((id, folder));
+                }
+                ShellEffect::OpenCloneDialog { repo } => {
+                    let dialog = cx.window.file_dialog(FileDialog {
+                        kind: FileDialogKind::OpenFolder,
+                        title: Some(format!("Locate {repo}")),
+                        ..FileDialog::default()
+                    });
+                    self.shell.clone_dialog = Some((dialog, repo));
                 }
                 ShellEffect::SetClipboard(text) => self.copy(text, cx),
                 ShellEffect::Focus(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
@@ -513,6 +525,15 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 &self.shared,
             ),
             ShellEvent::LauncherDialogClosed { path: None, .. } => Reduction::default(),
+            ShellEvent::CloneDialogClosed {
+                repo,
+                path: Some(path),
+            } => Controller::reduce_action(
+                &mut self.controllers.review,
+                PullsAction::CloneChosen { repo, path }.into(),
+                &self.shared,
+            ),
+            ShellEvent::CloneDialogClosed { path: None, .. } => Reduction::default(),
             ShellEvent::BrowserOpenFailed { message } => {
                 Reduction::default().intent(Intent::Toast(ToastUpdate::error(message)))
             }
@@ -576,6 +597,14 @@ impl<D: EffectDispatcher> DiffyApp<D> {
     }
 
     fn body(&mut self, width: f32, height: f32, cx: &mut ViewContext) -> AnyElement {
+        if self.controllers.review.pulls_open() {
+            let slot = Slot {
+                shared: &self.shared,
+                width,
+                height,
+            };
+            return review::pulls_page(&self.controllers.review, &slot, cx);
+        }
         if self.controllers.commands.launcher_active()
             && !self.controllers.viewport.interaction.text_compare().active
             && !self.controllers.review.overview_open()
@@ -996,6 +1025,10 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 .take_if(|(dialog, _)| *dialog == id)
             {
                 ShellEvent::LauncherDialogClosed { folder, path }
+            } else if let Some((_, repo)) =
+                self.shell.clone_dialog.take_if(|(dialog, _)| *dialog == id)
+            {
+                ShellEvent::CloneDialogClosed { repo, path }
             } else {
                 return;
             };

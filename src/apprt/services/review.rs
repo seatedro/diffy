@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -11,16 +12,19 @@ use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::{
     DeviceFlowState, GitHubApi, PullRequestInfo, parse_pr_url, poll_for_token, start_device_flow,
 };
+use crate::core::frecency::{FrecencyStore, recent_repo_paths};
 use crate::core::http;
+use crate::core::repo_discovery;
 use crate::core::review::{ReviewSession, ReviewSessionKey, ReviewTarget};
 use crate::core::vcs::discovery;
-use crate::core::vcs::git::pr_ref_path;
+use crate::core::vcs::git::{github_remotes, pr_ref_path};
 use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec, VcsKind};
 use crate::platform::persistence::SettingsStore;
 use crate::platform::review_store::ReviewStore;
 use crate::platform::secrets;
 
 const DEV_GITHUB_TOKEN_FILE_NAME: &str = "github-token.dev";
+const CLONE_CANDIDATES: usize = 400;
 
 pub trait GitHubBackend: Send + Sync + 'static {
     fn execute(&self, request: GitHubRequest, emit: &mut dyn FnMut(GitHubResponse));
@@ -116,6 +120,49 @@ impl ReviewServices {
         let key = session.key();
         self.review_store.save_session(session)?;
         Ok(key)
+    }
+
+    pub fn resolve_clones(&self, current: Option<PathBuf>) -> Vec<(String, PathBuf)> {
+        let dir = self.settings_store.dir();
+        let recent = FrecencyStore::open(dir)
+            .map(|store| recent_repo_paths(Some(&store), CLONE_CANDIDATES))
+            .unwrap_or_default();
+        let discovered = repo_discovery::load_cache(dir)
+            .map(|scan| scan.known.into_iter().chain(scan.repos))
+            .into_iter()
+            .flatten()
+            .map(|repo| repo.path);
+        let mut seen = HashSet::new();
+        let mut clones: Vec<(String, PathBuf)> = Vec::new();
+        let candidates = current.into_iter().chain(recent).chain(discovered);
+        for path in candidates
+            .filter(|path| seen.insert(path.clone()))
+            .take(CLONE_CANDIDATES)
+        {
+            let Ok((root, keys)) = github_remotes(&path) else {
+                continue;
+            };
+            for key in keys {
+                if clones.iter().all(|(known, _)| *known != key) {
+                    clones.push((key, root.clone()));
+                }
+            }
+        }
+        clones
+    }
+
+    pub fn validate_clone(&self, repo: &str, path: &Path) -> Result<PathBuf> {
+        let (root, keys) = github_remotes(path).map_err(|_| {
+            DiffyError::General(format!("{} is not a Git repository.", path.display()))
+        })?;
+        if keys.iter().any(|key| key.eq_ignore_ascii_case(repo)) {
+            Ok(root)
+        } else {
+            Err(DiffyError::General(format!(
+                "No remote in {} points at {repo}.",
+                root.display()
+            )))
+        }
     }
 
     pub fn fetch_avatar(&self, url: &str) -> Result<AvatarImage> {
@@ -525,6 +572,14 @@ impl GitHubBackend for LiveGitHub {
                     message: error.user_message(),
                 },
             },
+            GitHubRequest::FetchMyPullRequests { token } => {
+                match GitHubApi::with_token(token.into_inner()).fetch_my_pull_requests() {
+                    Ok(pulls) => GitHubResponse::MyPullRequestsLoaded(pulls),
+                    Err(error) => GitHubResponse::MyPullRequestsLoadFailed {
+                        message: error.user_message(),
+                    },
+                }
+            }
             GitHubRequest::AddPullRequestComment { pr, token, body } => {
                 match api(token).add_pull_request_comment(&pr.owner, &pr.repo, pr.number, &body) {
                     Ok(()) => GitHubResponse::PullRequestCommentAdded { pr },

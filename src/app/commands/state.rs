@@ -30,7 +30,7 @@ use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{
     CompareField, NavigationAction, RepositorySyncReason, SidebarTab,
 };
-use crate::contracts::review::ReviewAction;
+use crate::contracts::review::{PullsAction, ReviewAction};
 use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{
     Action, Controller, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
@@ -360,7 +360,10 @@ impl CommandsController {
                 ShellEffect::OpenLauncherDialog(LauncherFolder::LocateClone { url }),
             ),
             LauncherChoice::PullRequests if signed_in => {
-                self.reduce_action(CommandsAction::OpenPullRequestPicker, cx)
+                self.request(PlatformRequest::Dispatch(
+                    ReviewAction::Pulls(PullsAction::Open).into(),
+                ));
+                Reduction::changed()
             }
             LauncherChoice::PullRequests => {
                 self.request(PlatformRequest::Dispatch(

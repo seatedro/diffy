@@ -657,6 +657,26 @@ fn github_authority_matches(authority: &str) -> bool {
     host.eq_ignore_ascii_case("github.com")
 }
 
+/// The work tree containing `path` and the lowercase `owner/repo` of every
+/// GitHub remote it has, read from the config without spawning git.
+pub fn github_remotes(path: &Path) -> Result<(PathBuf, Vec<String>)> {
+    let repo = gix::discover(path).map_err(gix_error)?;
+    let root = repo
+        .workdir()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| git_error("repository read", "the folder has no work tree"))?;
+    let config = repo.config_snapshot();
+    let mut keys: Vec<String> = repo
+        .remote_names()
+        .iter()
+        .filter_map(|name| config.string(format!("remote.{name}.url").as_str()))
+        .filter_map(|url| github_repo_key_from_remote_url(&url.to_str_lossy()))
+        .map(|(owner, repo)| format!("{owner}/{repo}"))
+        .collect();
+    keys.dedup();
+    Ok((root, keys))
+}
+
 fn local_remote_names_by_priority(repo_path: &Path) -> Option<Vec<String>> {
     let output = run_system_git_capture(repo_path, &[OsString::from("remote")]).ok()?;
     let mut candidates = String::from_utf8_lossy(&output.stdout)

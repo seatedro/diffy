@@ -10,14 +10,15 @@ use quark_ui::text_input::{InlineStyle, TextEditCommand, TextEditOutcome};
 
 use super::composer::ComposerTarget;
 use super::presentation::{CardHost, ReviewPresentation};
-use crate::app::text_targets::{REVIEW_COMPOSER, TextCx, TextHost};
+use super::pulls::PullsPage;
+use crate::app::text_targets::{REVIEW_COMPOSER, REVIEW_PULLS_FILTER, TextCx, TextHost};
 use crate::contracts::commands::{
     CommandDescriptor, CommandSource, CommandsAction, SettingsSnapshot, ToastKind, ToastUpdate,
 };
 use crate::contracts::navigation::SelectionOrigin;
 use crate::contracts::review::{
     CardKey, ComposerFormat, GitHubRequest, GitHubResponse, PullRequestComparison, PullRequestRef,
-    ReviewAction, ReviewContext, ReviewEffect, ReviewEvent, ReviewScope, Secret,
+    PullsAction, ReviewAction, ReviewContext, ReviewEffect, ReviewEvent, ReviewScope, Secret,
 };
 use crate::contracts::shared::{AccountEpoch, JobId, SharedContext, SourceTarget};
 use crate::contracts::shell::{Controller, Intent, LogicalFocus, Reduction, ShellEffect};
@@ -121,7 +122,7 @@ pub struct Account {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Pending {
+pub(super) enum Pending {
     LoadPullRequest,
     User,
     ReviewData,
@@ -133,6 +134,7 @@ enum Pending {
     Peek,
     Overview,
     Comment,
+    Pulls,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,18 +203,19 @@ pub struct ReviewController {
     pub(super) account: Account,
     pub(super) overlay: Option<ReviewOverlay>,
     pending_url: Option<String>,
-    repo_path: Option<PathBuf>,
+    pub(super) repo_path: Option<PathBuf>,
     pub(super) pr: Option<ActivePullRequest>,
     next_job: u64,
     in_flight: HashMap<JobId, InFlight>,
     pub(super) expanded: HashMap<ReviewThreadId, bool>,
     pub(super) composer: Option<Composer>,
-    focus_request: Option<LogicalFocus>,
+    pub(super) focus_request: Option<LogicalFocus>,
     pub(super) focused_card: Option<CardKey>,
     avatars: AvatarCache,
     peeks: HashMap<PullRequestRef, PeekState>,
     pub(super) file_comments: Option<String>,
     pub(super) overview: OverviewState,
+    pub(super) pulls: PullsPage,
     pub(super) host: CardHost,
     presentation: Rc<ReviewPresentation>,
 }
@@ -240,6 +243,7 @@ impl Default for ReviewController {
             peeks: HashMap::new(),
             file_comments: None,
             overview: OverviewState::default(),
+            pulls: PullsPage::default(),
             presentation: Rc::new(ReviewPresentation::empty(host.clone())),
             host,
         }
@@ -266,11 +270,11 @@ fn toast(kind: ToastKind, message: impl Into<String>) -> Intent {
     })
 }
 
-fn info(message: impl Into<String>) -> Intent {
+pub(super) fn info(message: impl Into<String>) -> Intent {
     toast(ToastKind::Info, message)
 }
 
-fn error(message: impl Into<String>) -> Intent {
+pub(super) fn error(message: impl Into<String>) -> Intent {
     toast(ToastKind::Error, message)
 }
 
@@ -435,7 +439,7 @@ impl ReviewController {
         self.avatars.len()
     }
 
-    fn open_overlay(&mut self, overlay: ReviewOverlay) {
+    pub(super) fn open_overlay(&mut self, overlay: ReviewOverlay) {
         self.overlay = Some(overlay);
         self.focus_request = Some(LogicalFocus::ReviewDialog);
     }
@@ -547,13 +551,17 @@ impl ReviewController {
             .is_some_and(|token| !token.is_empty())
     }
 
-    fn token(&self) -> Option<Secret> {
+    pub(super) fn token(&self) -> Option<Secret> {
         self.account.token.clone().filter(|token| !token.is_empty())
     }
 
-    fn job(&mut self, pr: Option<PullRequestRef>, kind: Pending) -> ReviewScope {
+    pub(super) fn next_job_id(&mut self) -> JobId {
         self.next_job += 1;
-        let request = JobId(self.next_job);
+        JobId(self.next_job)
+    }
+
+    pub(super) fn job(&mut self, pr: Option<PullRequestRef>, kind: Pending) -> ReviewScope {
+        let request = self.next_job_id();
         self.in_flight.insert(request, InFlight { pr, kind });
         ReviewScope {
             account: self.epoch,
@@ -601,6 +609,7 @@ impl ReviewController {
         self.in_flight.clear();
         self.overview.loading = false;
         self.overview.request = None;
+        self.pulls.reset();
         Intent::AccountChanged
     }
 
@@ -1387,8 +1396,7 @@ impl ReviewController {
     }
 
     fn device_flow(&mut self) -> Reduction {
-        self.next_job += 1;
-        let flow = JobId(self.next_job);
+        let flow = self.next_job_id();
         self.account.flow = Some(flow);
         self.account.auth = AuthStatus::Starting;
         self.open_overlay(ReviewOverlay::Auth);
@@ -1621,6 +1629,10 @@ impl ReviewController {
                 self.overview.loading = false;
                 self.overview.error = Some(message);
                 Reduction::changed()
+            }
+            GitHubResponse::MyPullRequestsLoaded(pulls) => self.pulls_loaded(scope.request, pulls),
+            GitHubResponse::MyPullRequestsLoadFailed { message } => {
+                self.pulls_failed(scope.request, message)
             }
             GitHubResponse::PullRequestCommentAdded { .. } => {
                 let mut reduction = Reduction::changed().intent(info("Comment posted."));
@@ -1855,6 +1867,7 @@ impl ReviewController {
                     Reduction::default()
                 }
             }
+            ReviewAction::Pulls(action) => self.reduce_pulls(action, cx),
         }
     }
 
@@ -1913,6 +1926,9 @@ impl ReviewController {
                 {
                     reduction = reduction.effect(effect);
                 }
+                if self.pulls.open {
+                    reduction.merge(self.fetch_pulls());
+                }
                 reduction
             }
             ReviewEvent::TokenLoaded { token } => {
@@ -1921,6 +1937,9 @@ impl ReviewController {
                 let mut reduction = Reduction::changed();
                 reduction.merge(self.fetch_user());
                 reduction.merge(self.load_pending());
+                if self.pulls.open && self.pulls.data.is_none() && !self.pulls.loading {
+                    reduction.merge(self.fetch_pulls());
+                }
                 reduction
             }
             ReviewEvent::TokenLoadFailed { message } => {
@@ -1996,6 +2015,8 @@ impl ReviewController {
                 self.avatars.settle(&url, false);
                 Reduction::default()
             }
+            ReviewEvent::ClonesResolved { job, clones } => self.clones_resolved(job, clones),
+            ReviewEvent::CloneValidated { repo, result } => self.clone_validated(repo, result, cx),
         }
     }
 
@@ -2015,6 +2036,7 @@ impl ReviewController {
             }
             Intent::ActivateWorkspace { path } => {
                 self.repo_path = Some(path.clone());
+                self.pulls.open = false;
                 if self.pr.is_some() {
                     let mut reduction = self.close_pull_request();
                     reduction
@@ -2029,7 +2051,10 @@ impl ReviewController {
                 Reduction::default()
             }
             Intent::PublishManifest(_) => Reduction::changed(),
-            Intent::OpenPullRequest { url } => self.open_pull_request(url.clone()),
+            Intent::OpenPullRequest { url } => {
+                self.pulls.open = false;
+                self.open_pull_request(url.clone())
+            }
             Intent::FocusReviewCard(card) => {
                 if self.focused_card == *card {
                     return Reduction::default();
@@ -2098,8 +2123,22 @@ impl ReviewController {
                     .chain(overview.timeline.iter().map(|item| &item.author))
             })
             .map(|actor| (actor.login.as_str(), actor.avatar_url.as_str()));
+        let pulls = self
+            .pulls
+            .data
+            .as_deref()
+            .filter(|_| self.pulls.open)
+            .into_iter()
+            .flatten()
+            .flat_map(|pull| pull.reviewers.iter())
+            .map(|reviewer| {
+                (
+                    reviewer.actor.login.as_str(),
+                    reviewer.actor.avatar_url.as_str(),
+                )
+            });
         let mut wanted: Vec<(String, String)> = Vec::new();
-        for (login, raw) in comments.chain(overview) {
+        for (login, raw) in comments.chain(overview).chain(pulls) {
             if login.is_empty() {
                 continue;
             }
@@ -2272,7 +2311,8 @@ impl Controller for ReviewController {
 
 impl TextHost for ReviewController {
     fn owns_text(&self, target: FocusId) -> bool {
-        target == REVIEW_COMPOSER && self.composer.as_ref().is_some_and(|c| !c.preview)
+        (target == REVIEW_COMPOSER && self.composer.as_ref().is_some_and(|c| !c.preview))
+            || (target == REVIEW_PULLS_FILTER && self.pulls.open)
     }
 
     fn edit_text(
@@ -2283,6 +2323,9 @@ impl TextHost for ReviewController {
     ) -> Option<TextEditOutcome> {
         if !self.owns_text(target) {
             return None;
+        }
+        if target == REVIEW_PULLS_FILTER {
+            return Some(self.edit_pulls_filter(command, cx.now_ms));
         }
         let outcome = match command {
             TextEditCommand::ToggleStyle(style) => {
@@ -2338,6 +2381,10 @@ impl TextHost for ReviewController {
         if !self.owns_text(target) {
             return false;
         }
+        if target == REVIEW_PULLS_FILTER {
+            self.pulls.filter.set_preedit(text, cursor);
+            return true;
+        }
         self.host.composer_preedit(text, cursor);
         self.bump_presentation();
         true
@@ -2351,6 +2398,15 @@ impl TextHost for ReviewController {
     ) -> Option<TextEditOutcome> {
         if !self.owns_text(target) {
             return None;
+        }
+        if target == REVIEW_PULLS_FILTER {
+            let text_changed = self.pulls.filter.text() != value;
+            self.set_pulls_filter(&value);
+            return Some(TextEditOutcome {
+                text_changed,
+                selection_changed: true,
+                ..TextEditOutcome::default()
+            });
         }
         self.host.reset_composer(&value);
         self.sync_composer_draft();
@@ -2378,6 +2434,14 @@ impl CommandSource for ReviewController {
             )
             .detail("Load a GitHub pull request by URL")
             .enabled(cx.repository.is_some()),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "review.your_pull_requests",
+                "Your pull requests",
+                ReviewAction::Pulls(PullsAction::Open),
+            )
+            .detail("Open pull requests you authored, across repositories"),
         );
         out.push(
             CommandDescriptor::new(

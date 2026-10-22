@@ -1388,3 +1388,17 @@ fn cloning_from_the_launcher_reports_progress_and_opens_the_clone() {
         ))]
     );
 }
+
+#[test]
+fn g_then_p_opens_your_pull_requests() {
+    use crate::contracts::review::{PullsAction, ReviewAction};
+
+    let mut ui = cmd_harness(Settings::default());
+    ui.run(CommandsAction::Shortcut(ShortcutCommand::GoPrefix));
+    ui.run(CommandsAction::Leader("p".to_owned()));
+
+    assert_eq!(
+        ui.app().dispatched,
+        vec![Action::from(ReviewAction::Pulls(PullsAction::Open))]
+    );
+}

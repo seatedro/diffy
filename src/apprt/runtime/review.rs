@@ -275,6 +275,22 @@ impl ReviewRuntime {
                     events.send(event);
                 });
             }
+            ReviewEffect::ResolveClones { job, current } => {
+                let services = self.services.clone();
+                thread::spawn(move || {
+                    let clones = services.resolve_clones(current);
+                    events.send(ReviewEvent::ClonesResolved { job, clones });
+                });
+            }
+            ReviewEffect::ValidateClone { repo, path } => {
+                let services = self.services.clone();
+                thread::spawn(move || {
+                    let result = services
+                        .validate_clone(&repo, &path)
+                        .map_err(|error| error.user_message());
+                    events.send(ReviewEvent::CloneValidated { repo, result });
+                });
+            }
         }
     }
 }

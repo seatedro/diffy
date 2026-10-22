@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::ai::Provider;
+use crate::ai::{CliCommand, CliScan, Provider};
 use crate::contracts::navigation::RepositoryRevision;
 use crate::contracts::review::Secret;
 use crate::contracts::shared::{FileKey, FileRevision, HunkTarget, JobId, SourceTarget};
@@ -61,6 +61,9 @@ pub enum MutationsAction {
         editing: bool,
     },
     GenerateCommitMessage,
+    ScanAiClis {
+        force: bool,
+    },
     ApplyConfirmed(ConfirmedMutation),
     RunConfirmedOperation(VcsOperation),
     OpenCommitComposer,
@@ -221,13 +224,27 @@ pub struct PatchOperationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AiBackend {
+    Api { provider: Provider, api_key: Secret },
+    Cli(CliCommand),
+}
+
+impl AiBackend {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Api { provider, .. } => provider.label(),
+            Self::Cli(command) => command.tool.label(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerateCommitMessageRequest {
     pub generation: u64,
     pub repository: RepositoryRevision,
     pub repo_path: PathBuf,
     pub has_staged: bool,
-    pub provider: Provider,
-    pub api_key: Secret,
+    pub backend: AiBackend,
     pub steering_prompt: String,
     pub subject_override: Option<String>,
 }
@@ -296,6 +313,12 @@ pub enum MutationsEffect {
         kind: AiKeyKind,
     },
     GenerateCommitMessage(Box<GenerateCommitMessageRequest>),
+    CancelCommitMessage {
+        generation: u64,
+    },
+    ScanAiClis {
+        generation: u64,
+    },
     CheckStagedDiff {
         generation: u64,
         repo_path: PathBuf,
@@ -441,6 +464,10 @@ pub enum MutationsEvent {
     },
     AiKeySaveFailed {
         message: String,
+    },
+    AiClisScanned {
+        generation: u64,
+        scan: Arc<CliScan>,
     },
     CommitMessageStarted {
         generation: u64,

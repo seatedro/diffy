@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Instant;
 
@@ -14,6 +15,7 @@ pub struct MutationsRuntime {
     services: MutationsServices,
     vcs: VcsWorker,
     keyring_enabled: bool,
+    ai_live: Arc<AtomicU64>,
 }
 
 impl MutationsRuntime {
@@ -22,6 +24,7 @@ impl MutationsRuntime {
             services,
             vcs,
             keyring_enabled,
+            ai_live: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -224,8 +227,23 @@ impl MutationsRuntime {
             }
             MutationsEffect::GenerateCommitMessage(request) => {
                 let services = self.services;
+                let generation = request.generation;
+                let ai_live = Arc::clone(&self.ai_live);
+                ai_live.store(generation, Ordering::Release);
                 thread::spawn(move || {
-                    services.generate_commit_message(*request, &mut |event| events.send(event));
+                    let live = || ai_live.load(Ordering::Acquire) == generation;
+                    services
+                        .generate_commit_message(*request, &live, &mut |event| events.send(event));
+                });
+            }
+            MutationsEffect::CancelCommitMessage { generation } => {
+                self.ai_live.store(generation, Ordering::Release);
+            }
+            MutationsEffect::ScanAiClis { generation } => {
+                let services = self.services;
+                thread::spawn(move || {
+                    let scan = Arc::new(services.scan_ai_clis());
+                    events.send(MutationsEvent::AiClisScanned { generation, scan });
                 });
             }
         }

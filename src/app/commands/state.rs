@@ -25,6 +25,7 @@ use crate::contracts::commands::{
     ContextMenuEntry, FileListRequest, RefCatalogRequest, RefPickerAction, RefPickerRequest,
     SettingsSection, SettingsSnapshot, ToastUpdate,
 };
+use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{
     CompareField, NavigationAction, RepositorySyncReason, SidebarTab,
 };
@@ -1065,7 +1066,20 @@ impl CommandsController {
             }
         }
         self.focus(Some(SETTINGS_SEARCH));
+        self.prepare_section();
         Reduction::changed()
+    }
+
+    fn prepare_section(&self) {
+        if self
+            .settings_page
+            .as_ref()
+            .is_some_and(|page| page.section == SettingsSection::Clankers)
+        {
+            self.request(PlatformRequest::Dispatch(
+                MutationsAction::ScanAiClis { force: false }.into(),
+            ));
+        }
     }
 
     fn close_settings(&mut self) -> Reduction {
@@ -1900,6 +1914,7 @@ impl Controller for CommandsController {
                     }
                     page.capture = None;
                     page.notice = None;
+                    self.prepare_section();
                     Reduction::changed()
                 }
                 None => self.open_settings(Some(section)),
@@ -1946,6 +1961,7 @@ impl Controller for CommandsController {
                 self.update_settings(|s| s.ai_steering_prompt = prompt)
             }
             A::SetAiProvider(provider) => self.update_settings(|s| s.ai_provider = provider),
+            A::ToggleAiCli => self.update_settings(|s| s.ai_use_cli = !s.ai_use_cli),
             A::BeginKeymapRebind(command) => match &mut self.settings_page {
                 Some(page) => {
                     page.capture = Some(command);

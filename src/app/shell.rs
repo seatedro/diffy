@@ -556,6 +556,16 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         let small = TextStyle::BodySmall.font_size(theme);
         let sync = mutations::sync_controls(&self.controllers.mutations, &slot, theme);
         let branch = branch_status(&self.shared, sync, theme);
+        let settings = mutations::render_control(
+            mutations::Control::new(
+                "status.settings",
+                "Settings",
+                CommandsAction::OpenSettings,
+                mutations::Tone::Ghost,
+            )
+            .icon_only(quark_ui::icons::lucide::SETTINGS),
+            &mutations::Chrome::from_theme(theme).fit(height),
+        );
         let engine = match self
             .shared
             .settings
@@ -593,6 +603,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 aria-label="Status"
                 test_id="status"
             >
+                {settings}
                 {?branch}
                 <div class="flex-1 flex-row items-center" min_w={0.0}>{compare}</div>
                 {?viewing}

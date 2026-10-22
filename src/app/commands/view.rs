@@ -9,6 +9,7 @@ use quark_ui::style::Styled;
 use quark_ui::theme::Theme;
 
 use super::CommandsController;
+use super::keycaps;
 use super::keymap;
 use super::list::{self, OptionRow};
 use super::picker::{PickerChoice, PickerKind, PickerRow, RowKind, TYPED_PATH};
@@ -511,6 +512,8 @@ pub fn action_button(
 pub fn toasts(
     commands: &mut CommandsController,
     slot: &Slot,
+    dock: f32,
+    tip: Option<AnyElement>,
     cx: &mut ViewContext,
 ) -> Option<AnyElement> {
     let now = cx.frame.elapsed().as_millis() as u64;
@@ -519,7 +522,7 @@ pub fn toasts(
             .request_frame_in(std::time::Duration::from_millis(next.max(1)));
     }
     let items = commands.toasts().items();
-    if items.is_empty() {
+    if items.is_empty() && tip.is_none() {
         return None;
     }
     let theme = cx.theme;
@@ -605,7 +608,7 @@ pub fn toasts(
         <div
             class="absolute flex-col"
             right={margin}
-            bottom={theme.metrics.status_bar_height + margin}
+            bottom={theme.metrics.status_bar_height + dock + margin}
             w={width}
             gap={tokens::scaled(Sp::SM, scale)}
             z_index={500}
@@ -613,6 +616,7 @@ pub fn toasts(
             aria-label="Notifications"
         >
             {...rows}
+            {?tip}
         </div>
     })
 }
@@ -713,7 +717,7 @@ fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyEl
             "Scrolling",
         ]
     };
-    let row = |label: String, binding: String| {
+    let row = |label: String, binding: String, caps: AnyElement| {
         view! { scale,
             <div class="flex-row items-center w-full" gap={Sp::SM} py={Sp::XXS}
                  accessibility_role={AccessibilityRole::ListItem}
@@ -721,7 +725,7 @@ fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyEl
                 <div class="flex-1 flex-row" min_w={0.0}>
                     <text size={Px(small)} class="truncate" color={tc.text}>{label}</text>
                 </div>
-                {kbd(binding, theme)}
+                {caps}
             </div>
         }
     };
@@ -745,7 +749,8 @@ fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyEl
             .iter()
             .filter_map(|entry| {
                 let binding = keymap::display_binding(saved, entry.command)?;
-                Some(row(entry.description.to_owned(), binding))
+                let caps = keycaps::command(saved, entry.command, theme)?;
+                Some(row(entry.description.to_owned(), binding, caps))
             })
             .collect();
         if !rows.is_empty() {
@@ -754,7 +759,11 @@ fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyEl
         if *title == "Navigation" {
             let go: Vec<AnyElement> = keymap::GO
                 .iter()
-                .map(|leader| row(leader.label.to_owned(), format!("g {}", leader.key)))
+                .map(|leader| {
+                    let binding = format!("g {}", leader.key);
+                    let caps = keycaps::caps(&binding, theme);
+                    row(leader.label.to_owned(), binding, caps)
+                })
                 .collect();
             blocks.push((go.len(), block("Go to", go)));
         }
@@ -805,7 +814,7 @@ fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyEl
 
 const SHORTCUTS_CUSTOMIZE: FocusId = FocusId::from_key("diffy.shortcuts.customize");
 
-pub fn status_hints(
+pub fn tip_card(
     commands: &CommandsController,
     slot: &Slot,
     reviewing: bool,
@@ -818,11 +827,11 @@ pub fn status_hints(
     };
     let now = cx.frame.elapsed().as_millis() as u64;
     let tip = match commands.visible_tip(context, now) {
-        Ok(tip) => tip,
+        Ok(tip) => tip?,
         Err(wait) => {
             cx.frame
                 .request_frame_in(std::time::Duration::from_millis(wait.max(1)));
-            None
+            return None;
         }
     };
     let theme = cx.theme;
@@ -830,97 +839,161 @@ pub fn status_hints(
     let scale = tokens::ui_scale(theme);
     let saved = &slot.shared.settings.settings.keymap_overrides;
     let small = TextStyle::BodySmall.font_size(theme);
-    let hint = |binding: String, label: &str| {
+    let row = |caps: AnyElement, label: &str| {
         let label = label.to_owned();
         view! { scale,
-            <div class="flex-row items-center shrink-0" gap={Sp::XS}>
-                {kbd(binding, theme)}
+            <div class="flex-row items-center" gap={Sp::SM}>
+                {caps}
                 <text size={Px(small)} color={tc.text_muted}>{label}</text>
             </div>
         }
     };
-    let link = |label: &str, id: &str, action: CommandsAction| {
-        let label = label.to_owned();
-        view! { scale,
-            <div class="flex-row items-center shrink-0" px={Sp::XS}
-                 rounded={theme.metrics.control_radius}
-                 hover_bg={tc.ghost_element_hover}
-                 cursor={CursorHint::Pointer}
-                 id={id.to_owned()}
-                 role="button"
-                 aria-label={label.clone()}
-                 on:click={action}>
-                <text size={Px(small)} class="font-medium" color={tc.accent}>{label}</text>
-            </div>
-        }
-    };
-    use crate::core::keymap::ShortcutCommand as C;
-    let (label, mut items, close) = if let Some(tip) = tip {
-        let mut items: Vec<AnyElement> = tip
-            .keys
-            .iter()
-            .filter_map(|(command, label)| {
-                Some(hint(keymap::display_binding(saved, *command)?, label))
-            })
-            .collect();
-        if tip.leader {
-            items.extend(
-                keymap::GO
-                    .iter()
-                    .filter(|leader| matches!(leader.key, "f" | "h" | "p"))
-                    .map(|leader| hint(format!("g {}", leader.key), leader.label)),
-            );
-        }
-        items.insert(
-            0,
-            view! { <text size={small} class="font-medium" color={tc.text_muted}>"Tip"</text> },
+    let mut rows: Vec<AnyElement> = tip
+        .keys
+        .iter()
+        .filter_map(|(command, label)| Some(row(keycaps::command(saved, *command, theme)?, label)))
+        .collect();
+    if tip.leader {
+        rows.extend(
+            keymap::GO
+                .iter()
+                .filter(|leader| matches!(leader.key, "f" | "h" | "p"))
+                .map(|leader| {
+                    row(
+                        keycaps::caps(&format!("g {}", leader.key), theme),
+                        leader.label,
+                    )
+                }),
         );
-        (
-            format!("Tip: {}", tip.title),
-            items,
-            link("Got it", "tip.dismiss", CommandsAction::DismissTip),
-        )
-    } else if commands.hint_bar() {
-        let keys: &[(C, &str)] = if reviewing {
-            &[
-                (C::NextThread, "thread"),
-                (C::ReviewReply, "reply"),
-                (C::ReviewResolve, "resolve"),
-                (C::ReviewMarkViewed, "viewed"),
-                (C::SubmitReview, "submit"),
-            ]
-        } else {
-            &[
-                (C::NextHunk, "hunk"),
-                (C::NextFile, "file"),
-                (C::JumpToElement, "jump"),
-                (C::GoPrefix, "go to"),
-            ]
-        };
-        let mut items: Vec<AnyElement> = keys
-            .iter()
-            .filter_map(|(command, label)| {
-                Some(hint(keymap::display_binding(saved, *command)?, label))
-            })
-            .collect();
-        items.extend(
-            keymap::display_binding(saved, C::ShowKeymaps).map(|binding| hint(binding, "all keys")),
-        );
-        (
-            "Key hints".to_owned(),
-            items,
-            link("Hide", "hints.hide", CommandsAction::HideHintBar),
-        )
-    } else {
-        return None;
-    };
-    items.push(close);
+        rows.push(view! { scale,
+            <text size={Px(small)} color={tc.text_muted}>"Pause after g to see every destination."</text>
+        });
+    }
+    let dismiss = action_button(
+        "Got it",
+        CommandsAction::DismissTip.into(),
+        TIP_DISMISS,
+        ButtonTone::Plain,
+        theme,
+    );
     Some(view! { scale,
-        <div class="flex-row items-center justify-end overflow-hidden" min_w={0.0} gap={Sp::MD}
-             accessibility_role={AccessibilityRole::Group}
-             aria-label={label}
-             test_id="status.hints">
-            {...items}
+        <div
+            class="flex-col w-full"
+            gap={Sp::SM}
+            p={Sp::MD}
+            bg={tc.elevated_surface}
+            border={tc.border_variant}
+            rounded={Rad::LG}
+            shadow_preset={Shadow::TOAST}
+            accessibility_role={AccessibilityRole::Note}
+            aria-label={format!("Tip: {}", tip.title)}
+            test_id="tip.card"
+        >
+            <div class="flex-row items-center w-full" gap={Sp::SM}>
+                <icon svg={icons::KEYBOARD} size={Ico::SM} color={tc.accent} />
+                <text size={Px(TextStyle::Body.font_size(theme))} class="font-semibold" color={tc.text_strong}>{tip.title}</text>
+            </div>
+            <div class="flex-col" gap={Sp::XS}>{...rows}</div>
+            <div class="flex-row items-center w-full">
+                <spacer />
+                {dismiss}
+            </div>
         </div>
     })
 }
+
+pub fn hint_bar(
+    commands: &CommandsController,
+    slot: &Slot,
+    reviewing: bool,
+    theme: &Theme,
+) -> Option<AnyElement> {
+    if !commands.hint_bar() {
+        return None;
+    }
+    use crate::core::keymap::ShortcutCommand as C;
+    let keys: &[(C, &str)] = if reviewing {
+        &[
+            (C::NextHunk, "hunk"),
+            (C::NextThread, "thread"),
+            (C::NextFile, "file"),
+            (C::ReviewComment, "comment"),
+            (C::ReviewReply, "reply"),
+            (C::ReviewResolve, "resolve"),
+            (C::ReviewMarkViewed, "viewed"),
+            (C::SubmitReview, "submit"),
+        ]
+    } else {
+        &[
+            (C::NextHunk, "hunk"),
+            (C::NextFile, "file"),
+            (C::JumpToElement, "jump"),
+            (C::GoPrefix, "go to"),
+            (C::OpenCommandPalette, "anything"),
+        ]
+    };
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let saved = &slot.shared.settings.settings.keymap_overrides;
+    let small = TextStyle::BodySmall.font_size(theme);
+    let margin = tokens::scaled(Sp::LG, scale);
+    let hint = |caps: AnyElement, label: &str| {
+        let label = label.to_owned();
+        view! { scale,
+            <div class="flex-row items-center shrink-0" gap={Sp::XS}>
+                {caps}
+                <text size={Px(small)} color={tc.text_muted}>{label}</text>
+            </div>
+        }
+    };
+    let hints: Vec<AnyElement> = keys
+        .iter()
+        .filter_map(|(command, label)| Some(hint(keycaps::command(saved, *command, theme)?, label)))
+        .collect();
+    let all = keycaps::command(saved, C::ShowKeymaps, theme).map(|caps| hint(caps, "all keys"));
+    let close = view! { scale,
+        <div class="flex-row items-center justify-center shrink-0"
+             w={Px(tokens::scaled(Layout::CONTROL_SM_H, scale))}
+             h={Px(tokens::scaled(Layout::CONTROL_SM_H, scale))}
+             rounded={theme.metrics.control_radius}
+             hover_bg={tc.ghost_element_hover}
+             cursor={CursorHint::Pointer}
+             id="hints.hide"
+             role="button"
+             aria-label="Hide key hints"
+             tooltip="Hide key hints"
+             on:click={CommandsAction::HideHintBar}>
+            <icon svg={lucide::X} size={Ico::XS} color={tc.text_muted} />
+        </div>
+    };
+    Some(view! { scale,
+        <div
+            class="absolute flex-row items-center overflow-hidden"
+            left={Px(margin)}
+            right={Px(margin)}
+            bottom={Px(theme.metrics.status_bar_height + margin)}
+            h={Px(hint_bar_height(theme))}
+            gap={Sp::LG}
+            px={Sp::MD}
+            bg={tc.title_bar_background}
+            border={tc.border_variant}
+            rounded={Rad::LG}
+            shadow_preset={Shadow::TOAST}
+            z_index={400}
+            accessibility_role={AccessibilityRole::Toolbar}
+            aria-label="Key hints"
+            test_id="hints.bar"
+        >
+            {...hints}
+            <spacer />
+            {?all}
+            {close}
+        </div>
+    })
+}
+
+pub fn hint_bar_height(theme: &Theme) -> f32 {
+    tokens::scaled(Layout::COMPARE_BAR_H, tokens::ui_scale(theme))
+}
+
+const TIP_DISMISS: FocusId = FocusId::from_key("diffy.tip.dismiss");

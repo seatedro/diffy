@@ -138,7 +138,7 @@ impl UiApp for CmdApp {
             height,
         };
         let overlays = super::overlays(&mut self.commands, &slot, None, cx);
-        let toasts = super::toasts(&mut self.commands, &slot, cx);
+        let toasts = super::toasts(&mut self.commands, &slot, 0.0, None, cx);
         let theme = cx.theme;
         quark::view! {
             <div w={width} h={height} class="relative flex-col" bg={theme.colors.app_bg}>

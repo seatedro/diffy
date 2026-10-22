@@ -2,6 +2,7 @@
 pub mod fixtures;
 #[cfg(test)]
 pub mod harness;
+pub mod keycaps;
 pub mod keymap;
 mod launcher;
 mod launcher_view;
@@ -26,4 +27,4 @@ pub use platform::{
 pub use settings_view::settings_slot;
 pub use state::{CommandsController, LayerKind, builtin_commands, normalize as normalize_settings};
 pub use toasts::{ToastHost, ToastItem};
-pub use view::{leader_menu, overlays, status_hints, toasts};
+pub use view::{hint_bar, hint_bar_height, leader_menu, overlays, tip_card, toasts};

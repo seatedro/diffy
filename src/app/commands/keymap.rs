@@ -26,7 +26,12 @@ use ShortcutCommand as C;
 
 const NAVIGATION: &[Entry] = &[
     Entry::new(WORKSPACE, C::GoToDefinition, &["f12"], "Go to definition"),
-    Entry::new(WORKSPACE, C::GoPrefix, &["g"], "Go to… (g d: definition)"),
+    Entry::new(
+        WORKSPACE,
+        C::GoPrefix,
+        &["g"],
+        "Go to… (g d: definition, g p: your pull requests)",
+    ),
     Entry::new(WORKSPACE, C::NavigateBack, &["mod+["], "Go back"),
     Entry::new(WORKSPACE, C::NavigateForward, &["mod+]"], "Go forward"),
     Entry::new(WORKSPACE, C::NextHunk, &["]"], "Next hunk"),

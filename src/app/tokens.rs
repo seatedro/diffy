@@ -136,4 +136,5 @@ impl Layout {
     pub const STATUS_BADGE: f32 = 15.0;
     pub const PROGRESS_H: f32 = 4.0;
     pub const OVERVIEW_LABEL_W: f32 = 104.0;
+    pub const PULLS_PREVIEW_W: f32 = 440.0;
 }

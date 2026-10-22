@@ -16,7 +16,7 @@ use quark_ui::text_input::{TextEditCommand, TextEditOutcome};
 use super::view::default_card_width;
 use super::{AuthStatus, ReviewController, ReviewOverlay, overlay, view as title_view};
 use crate::app::shell::Slot;
-use crate::app::text_targets::{REVIEW_COMPOSER, TextCx, TextHost, focus_id};
+use crate::app::text_targets::{REVIEW_COMPOSER, REVIEW_PULLS_FILTER, TextCx, TextHost, focus_id};
 use crate::apprt::services::{GitHubBackend, ReviewServices};
 use crate::contracts::commands::ToastUpdate;
 use crate::contracts::navigation::{
@@ -24,7 +24,7 @@ use crate::contracts::navigation::{
 };
 use crate::contracts::review::{
     AvatarImage, CardKey, GitHubRequest, GitHubResponse, PullRequestComparison, PullRequestRef,
-    ReviewAction, ReviewEffect, ReviewEvent, Secret,
+    PullsAction, ReviewAction, ReviewEffect, ReviewEvent, Secret,
 };
 use crate::contracts::shared::{
     AccountEpoch, CompareGeneration, FileKey, FileRevision, SharedContext, Side, SourceTarget,
@@ -39,9 +39,9 @@ use crate::core::compare::stats::CompareFilePaths;
 use crate::core::forge::github::{
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThread,
     GitHubPullRequestReviewThreadComment, GitHubReviewSide, GitHubReviewThreadResolution,
-    GitHubUser, PullRequestActor, PullRequestCheckContext, PullRequestCheckSummary,
+    GitHubUser, MyPullRequest, PullRequestActor, PullRequestCheckContext, PullRequestCheckSummary,
     PullRequestInfo, PullRequestLabel, PullRequestOverview, PullRequestReview, PullRequestReviewer,
-    PullRequestTimelineItem, PullRequestTimelineKind,
+    PullRequestStats, PullRequestTimelineItem, PullRequestTimelineKind,
 };
 use crate::core::review::{
     ReviewAnchor, ReviewComment, ReviewCommentId, ReviewDecision, ReviewDraftKind,
@@ -205,6 +205,8 @@ struct Script {
     fail_replies: bool,
     fail_submit: bool,
     fail_overview: bool,
+    pulls: Vec<MyPullRequest>,
+    fail_pulls: bool,
     requests: Vec<GitHubRequest>,
 }
 
@@ -230,6 +232,7 @@ impl GitHubBackend for FakeGitHub {
                 s.fail_overview,
             )
         });
+        let (pulls, fail_pulls) = self.with(|s| (s.pulls.clone(), s.fail_pulls));
         let pr_number = |url: &str| if url == OTHER_URL { 7 } else { 42 };
         match request {
             GitHubRequest::LoadPullRequest { url, .. } => {
@@ -344,6 +347,13 @@ impl GitHubBackend for FakeGitHub {
             GitHubRequest::AddPullRequestComment { pr, .. } => {
                 emit(GitHubResponse::PullRequestCommentAdded { pr })
             }
+            GitHubRequest::FetchMyPullRequests { .. } => emit(if fail_pulls {
+                GitHubResponse::MyPullRequestsLoadFailed {
+                    message: "search unavailable".to_owned(),
+                }
+            } else {
+                GitHubResponse::MyPullRequestsLoaded(pulls)
+            }),
             other => panic!("unexpected request {other:?}"),
         }
     }
@@ -464,6 +474,7 @@ struct Fake {
     avatars: bool,
     held: Vec<ReviewEffect>,
     effects: Vec<ReviewEffect>,
+    clones: Vec<(String, PathBuf)>,
     _dir: Option<tempfile::TempDir>,
 }
 
@@ -487,6 +498,7 @@ impl Fake {
             avatars: true,
             held: Vec::new(),
             effects: Vec::new(),
+            clones: Vec::new(),
             _dir: None,
         }
     }
@@ -552,6 +564,18 @@ impl Fake {
                 events.push(ReviewEvent::SessionSaved { scope, key });
             }
             ReviewEffect::FetchAvatar { .. } if !self.avatars => {}
+            ReviewEffect::ResolveClones { job, .. } => events.push(ReviewEvent::ClonesResolved {
+                job,
+                clones: self.clones.clone(),
+            }),
+            ReviewEffect::ValidateClone { repo, path } => {
+                let result = if path.ends_with("unrelated") {
+                    Err(format!("No remote in {} points at {repo}.", path.display()))
+                } else {
+                    Ok(path)
+                };
+                events.push(ReviewEvent::CloneValidated { repo, result })
+            }
             ReviewEffect::FetchAvatar { url } => events.push(ReviewEvent::AvatarFetched {
                 url,
                 image: Arc::new(AvatarImage {
@@ -579,6 +603,8 @@ struct Driver {
     toasts: Vec<ToastUpdate>,
     compares: usize,
     compare_requests: Vec<crate::contracts::viewport::CompareIntent>,
+    activated: Vec<PathBuf>,
+    dialogs: Vec<String>,
 }
 
 impl Driver {
@@ -593,6 +619,8 @@ impl Driver {
             toasts: Vec::new(),
             compares: 0,
             compare_requests: Vec::new(),
+            activated: Vec::new(),
+            dialogs: Vec::new(),
         }
     }
 
@@ -627,6 +655,7 @@ impl Driver {
                 Effect::Shell(ShellEffect::Focus(focus)) => self.focus.push(focus),
                 Effect::Shell(ShellEffect::SetClipboard(text)) => self.clipboard.push(text),
                 Effect::Shell(ShellEffect::OpenBrowser { url }) => self.browser.push(url),
+                Effect::Shell(ShellEffect::OpenCloneDialog { repo }) => self.dialogs.push(repo),
                 other => panic!("unexpected effect {other:?}"),
             }
         }
@@ -646,6 +675,7 @@ impl Driver {
                     self.compares += 1;
                     self.compare_requests.push(request.clone());
                 }
+                Intent::ActivateWorkspace { path } => self.activated.push(path.clone()),
                 _ => {}
             }
             let follow = self.review.apply_intent(&intent, &self.shared);
@@ -1271,6 +1301,14 @@ impl UiApp for App {
             height,
         };
         let overlay = overlay(&self.driver.review, &full, cx);
+        let pulls = self.driver.review.pulls_open().then(|| {
+            let slot = Slot {
+                shared: &shared,
+                width,
+                height: (height - title_height).max(0.0),
+            };
+            super::pulls_page(&self.driver.review, &slot, cx)
+        });
         let page = self.driver.review.overview_open().then(|| {
             let slot = Slot {
                 shared: &shared,
@@ -1287,8 +1325,9 @@ impl UiApp for App {
                 <div w={width} h={title_height} class="flex-row items-center">{title}</div>
                 {?bar}
                 {?accounts}
+                {?pulls}
                 {?page}
-                if !self.driver.review.overview_open() {
+                if !self.driver.review.overview_open() && !self.driver.review.pulls_open() {
                     <div class="flex-row p-2">{?header}</div>
                     <div class="flex-col gap-2 p-2">{...cards}</div>
                 }
@@ -2083,6 +2122,7 @@ fn command_source_offers_review_commands() {
     assert!(commands.contains(&("review.approve", true)));
     assert!(commands.contains(&("review.sign_out", true)));
     assert!(commands.contains(&("review.preview_pull_request", true)));
+    assert!(commands.contains(&("review.your_pull_requests", true)));
 
     driver.act(ReviewAction::SignOut);
     let commands = ids(&driver);
@@ -2228,12 +2268,8 @@ fn title_bar_offers_review_pr_and_sign_in() {
     assert!(review.bounds.x + review.bounds.width <= sign_in.bounds.x);
     same_height(&ui, &["Review PR", "Sign in to GitHub"]);
     ui.click_node(By::role_name(Role::Button, "Review PR"));
-    assert!(matches!(
-        ui.app().forwarded.as_slice(),
-        [Action::Commands(
-            crate::contracts::commands::CommandsAction::OpenPullRequestPicker
-        )]
-    ));
+    assert!(ui.app().driver.review.pulls_open());
+    ui.find(By::role_name(Role::Region, "Your pull requests"));
 }
 
 #[test]
@@ -2578,4 +2614,328 @@ fn sidebar_selection_closes_the_overview_and_the_palette_offers_it() {
         },
     )));
     assert!(!driver.review.overview_open());
+}
+
+fn my_pull(
+    number: i32,
+    repo: &str,
+    title: &str,
+    edit: impl FnOnce(&mut MyPullRequest),
+) -> MyPullRequest {
+    let mut pull = MyPullRequest {
+        id: format!("PR_{number}"),
+        number,
+        title: title.to_owned(),
+        url: format!("https://github.com/{repo}/pull/{number}"),
+        repository: repo.to_owned(),
+        updated_at: format!("2026-01-{number:02}T00:00:00Z"),
+        head_branch: "feature".to_owned(),
+        base_branch: "main".to_owned(),
+        excerpt: "Adds a cache for widget heights.".to_owned(),
+        stats: Some(PullRequestStats {
+            mergeable: "MERGEABLE".to_owned(),
+            additions: 3,
+            deletions: 1,
+            changed_files: 1,
+        }),
+        checks: Some(PullRequestCheckSummary {
+            state: Some("SUCCESS".to_owned()),
+            total_count: 1,
+            success_count: 1,
+            ..PullRequestCheckSummary::default()
+        }),
+        ..MyPullRequest::default()
+    };
+    edit(&mut pull);
+    pull
+}
+
+fn my_pulls() -> Vec<MyPullRequest> {
+    vec![
+        my_pull(42, "owner/repo", "Tidy the widget", |p| {
+            p.review_decision = Some("CHANGES_REQUESTED".to_owned());
+            p.unresolved_threads = 2;
+            p.reviewers = vec![PullRequestReviewer {
+                actor: actor("alpha"),
+                state: "CHANGES_REQUESTED".to_owned(),
+            }];
+        }),
+        my_pull(9, "owner/gadget", "Polish the gadget", |p| {
+            p.review_decision = Some("REVIEW_REQUIRED".to_owned())
+        }),
+        my_pull(5, "owner/repo", "Rename the sprocket", |p| {
+            p.review_decision = Some("APPROVED".to_owned())
+        }),
+        my_pull(3, "elsewhere/thing", "Sketch the gizmo", |p| {
+            p.is_draft = true
+        }),
+    ]
+}
+
+fn pulls_driver() -> Driver {
+    let mut driver = Driver::new(Fake::new());
+    driver.fake.github.with(|s| s.pulls = my_pulls());
+    driver.fake.clones = vec![
+        ("owner/repo".to_owned(), PathBuf::from("/tmp/repo")),
+        ("owner/gadget".to_owned(), PathBuf::from("/tmp/gadget")),
+    ];
+    driver.startup(None);
+    driver.open_repository();
+    driver
+}
+
+fn pulls_requests(driver: &Driver) -> usize {
+    driver
+        .fake
+        .requests()
+        .iter()
+        .filter(|r| matches!(r, GitHubRequest::FetchMyPullRequests { .. }))
+        .count()
+}
+
+fn pull_url(number: i32) -> String {
+    my_pulls()
+        .into_iter()
+        .find(|pull| pull.number == number)
+        .map(|pull| pull.url)
+        .unwrap()
+}
+
+fn selected_number(ui: &UiTestHarness<App>) -> Option<i32> {
+    ui.app()
+        .driver
+        .review
+        .pulls()
+        .selected_pull()
+        .map(|pull| pull.number)
+}
+
+fn pulls(action: PullsAction) -> ReviewAction {
+    ReviewAction::Pulls(action)
+}
+
+#[test]
+fn your_pull_requests_group_by_need_and_move_with_the_keyboard() {
+    let mut driver = pulls_driver();
+    driver.focus.push(Some(LogicalFocus::Sidebar));
+    let mut ui = harness(driver);
+    ui.send_message(ReviewEvent::TokenSaveFailed {
+        message: "redraw".to_owned(),
+    });
+
+    ui.click_node(By::role_name(Role::Button, "Review PR"));
+
+    ui.find(By::role_name(Role::Region, "Your pull requests"));
+    assert_eq!(ui.focus(), Some(focus_id(LogicalFocus::ReviewPulls)));
+    assert_eq!(pulls_requests(&ui.app().driver), 1);
+    let tops: Vec<f32> = [
+        "Needs you",
+        "Waiting on reviewers",
+        "Ready to merge",
+        "Drafts",
+    ]
+    .iter()
+    .map(|group| ui.find(By::role_name(Role::Group, *group)).bounds.y)
+    .collect();
+    assert!(tops.windows(2).all(|pair| pair[0] < pair[1]), "{tops:?}");
+    let needs = ui.find(By::test_id("review.pulls.group.needs_you")).bounds;
+    assert!(contains(
+        needs,
+        ui.find(By::test_id("review.pulls.row.42")).bounds
+    ));
+    ui.find(By::role_name(
+        Role::ListBoxOption,
+        "Tidy the widget, repo#42, Changes requested",
+    ));
+    ui.find(By::role_name(Role::Label, "@alpha: Changes requested"));
+    ui.find(By::test_id("review.pulls.preview.path"));
+    let painted = ui.painted_text();
+    assert!(painted.contains("2 unresolved"), "{painted}");
+    assert!(painted.contains("Blocked by review"), "{painted}");
+    assert!(painted.contains("/tmp/repo"), "{painted}");
+    assert_eq!(selected_number(&ui), Some(42));
+
+    ui.key("j");
+    assert_eq!(selected_number(&ui), Some(9));
+    ui.key("arrowdown");
+    ui.key("j");
+    assert_eq!(selected_number(&ui), Some(3));
+    assert!(ui.painted_text().contains("Not opened in Diffy"));
+    ui.find(By::role_name(Role::Button, "Locate clone\u{2026}"));
+    ui.key("j");
+    assert_eq!(selected_number(&ui), Some(3));
+    ui.key("k");
+    ui.key("arrowup");
+    ui.key("k");
+    assert_eq!(selected_number(&ui), Some(42));
+
+    ui.key("o");
+    ui.key("y");
+    assert_eq!(ui.app().driver.browser, vec![pull_url(42)]);
+    assert_eq!(ui.clipboard_text(), Some(pull_url(42)));
+
+    ui.key("escape");
+    assert!(!ui.app().driver.review.pulls_open());
+    assert_eq!(ui.focus(), Some(focus_id(LogicalFocus::Sidebar)));
+}
+
+#[test]
+fn enter_reviews_in_the_open_repository() {
+    let mut ui = harness(pulls_driver());
+    ui.click_node(By::role_name(Role::Button, "Review PR"));
+
+    ui.key("enter");
+
+    let driver = &ui.app().driver;
+    assert!(!driver.review.pulls_open());
+    assert!(driver.activated.is_empty());
+    assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 42);
+    assert!(driver.fake.requests().iter().any(|r| matches!(r,
+        GitHubRequest::LoadPullRequest { url, repo_path, .. }
+            if *url == pull_url(42) && repo_path == Path::new("/tmp/repo"))));
+    assert_eq!(ui.focus(), Some(focus_id(LogicalFocus::Viewport)));
+}
+
+#[test]
+fn enter_opens_a_known_clone_or_asks_to_locate_one() {
+    let mut driver = pulls_driver();
+    driver.act(pulls(PullsAction::Open));
+    driver.act(pulls(PullsAction::Select(pull_url(9))));
+    driver.act(pulls(PullsAction::Review));
+
+    assert_eq!(driver.activated, vec![PathBuf::from("/tmp/gadget")]);
+    let active = driver.review.active_pull_request().unwrap();
+    assert_eq!((active.pr.repo.as_str(), active.pr.number), ("gadget", 9));
+    assert!(!driver.review.pulls_open());
+
+    driver.act(pulls(PullsAction::Open));
+    driver.act(pulls(PullsAction::Select(pull_url(3))));
+    driver.act(pulls(PullsAction::Review));
+    assert_eq!(driver.dialogs, vec!["elsewhere/thing".to_owned()]);
+    assert!(driver.review.pulls_open());
+
+    driver.act(pulls(PullsAction::CloneChosen {
+        repo: "elsewhere/thing".to_owned(),
+        path: PathBuf::from("/tmp/unrelated"),
+    }));
+    assert_eq!(
+        driver.errors(),
+        vec!["No remote in /tmp/unrelated points at elsewhere/thing.".to_owned()]
+    );
+    assert!(driver.review.pulls_open());
+
+    driver.act(pulls(PullsAction::Review));
+    driver.act(pulls(PullsAction::CloneChosen {
+        repo: "elsewhere/thing".to_owned(),
+        path: PathBuf::from("/tmp/thing"),
+    }));
+
+    assert_eq!(
+        driver
+            .shared
+            .settings
+            .settings
+            .github_clones
+            .get("elsewhere/thing"),
+        Some(&PathBuf::from("/tmp/thing"))
+    );
+    assert_eq!(driver.activated.last(), Some(&PathBuf::from("/tmp/thing")));
+    assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 3);
+    assert!(!driver.review.pulls_open());
+}
+
+#[test]
+fn filter_narrows_rows_and_escape_steps_back_out() {
+    let mut ui = harness(pulls_driver());
+    ui.click_node(By::role_name(Role::Button, "Review PR"));
+
+    ui.key("/");
+    assert_eq!(ui.focus(), Some(REVIEW_PULLS_FILTER));
+    ui.type_text("polish gadget");
+    assert_eq!(
+        ui.app().driver.review.pulls().filter.text(),
+        "polish gadget"
+    );
+    assert!(ui.try_find(By::test_id("review.pulls.row.42")).is_none());
+    ui.find(By::test_id("review.pulls.row.9"));
+    assert_eq!(selected_number(&ui), Some(9));
+    assert!(ui.app().driver.browser.is_empty());
+
+    ui.key("escape");
+    assert_eq!(ui.app().driver.review.pulls().filter.text(), "");
+    ui.find(By::test_id("review.pulls.row.42"));
+    ui.key("escape");
+    assert_eq!(ui.focus(), Some(focus_id(LogicalFocus::ReviewPulls)));
+    assert!(ui.app().driver.review.pulls_open());
+
+    ui.key("/");
+    ui.type_text("nothing like this");
+    ui.find(By::role_name(Role::Status, "No matching pull requests"));
+}
+
+#[test]
+fn signed_out_pull_requests_prompt_sign_in_then_load() {
+    let mut ui = harness(signed_out());
+    ui.click_node(By::role_name(Role::Button, "Review PR"));
+
+    ui.find(By::role_name(
+        Role::Group,
+        "Sign in to see your pull requests",
+    ));
+    assert_eq!(pulls_requests(&ui.app().driver), 0);
+    ui.key("r");
+    assert_eq!(pulls_requests(&ui.app().driver), 0);
+    ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
+    ui.app_mut()
+        .driver
+        .fake
+        .github
+        .with(|s| s.pulls = my_pulls());
+
+    ui.click_node(By::role_name(Role::Button, "Continue with GitHub"));
+
+    assert_eq!(pulls_requests(&ui.app().driver), 1);
+    ui.find(By::role_name(Role::Group, "Needs you"));
+}
+
+#[test]
+fn pull_request_lists_from_a_previous_account_are_dropped() {
+    let mut driver = pulls_driver();
+    driver.fake.hold = true;
+    driver.act(pulls(PullsAction::Open));
+    let held = std::mem::take(&mut driver.fake.held);
+    driver.fake.hold = false;
+    assert!(driver.review.pulls().loading);
+
+    driver.act(ReviewAction::SignOut);
+    driver.fake.held = held;
+    driver.release();
+
+    assert!(driver.review.pulls().data.is_none());
+    assert!(!driver.review.pulls().loading);
+    assert_eq!(pulls_requests(&driver), 1);
+}
+
+#[test]
+fn pull_request_list_errors_offer_retry_and_empty_lists_say_so() {
+    let driver = pulls_driver();
+    driver.fake.github.with(|s| s.fail_pulls = true);
+    let mut ui = harness(driver);
+    ui.click_node(By::role_name(Role::Button, "Review PR"));
+
+    ui.find(By::role_name(
+        Role::Alert,
+        "Couldn't load your pull requests",
+    ));
+    assert!(ui.painted_text().contains("search unavailable"));
+
+    ui.app_mut().driver.fake.github.with(|s| {
+        s.fail_pulls = false;
+        s.pulls.clear();
+    });
+    ui.click_node(By::role_name(Role::Button, "Retry"));
+
+    assert!(ui.try_find(By::test_id("review.pulls.error")).is_none());
+    ui.find(By::role_name(Role::Status, "No open pull requests"));
+    assert_eq!(pulls_requests(&ui.app().driver), 2);
 }

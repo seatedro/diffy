@@ -1117,3 +1117,22 @@ fn a_tooltip_shows_after_the_pointer_rests_and_hides_when_it_leaves() {
     ui.frame();
     assert!(!ui.painted_text().contains("Syntax languages"));
 }
+
+#[test]
+fn g_then_p_opens_your_pull_requests() {
+    use crate::contracts::mutations::MutationsAction;
+    use crate::contracts::review::{PullsAction, ReviewAction};
+
+    let mut ui = cmd_harness(Settings::default());
+    ui.run(CommandsAction::Shortcut(ShortcutCommand::GoPrefix));
+    ui.run(CommandsAction::Shortcut(ShortcutCommand::PullCurrentBranch));
+    ui.run(CommandsAction::Shortcut(ShortcutCommand::PullCurrentBranch));
+
+    assert_eq!(
+        ui.app().dispatched,
+        vec![
+            Action::from(ReviewAction::Pulls(PullsAction::Open)),
+            Action::from(MutationsAction::PullCurrentBranch),
+        ]
+    );
+}

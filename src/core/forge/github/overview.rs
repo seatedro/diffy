@@ -247,7 +247,7 @@ impl GitHubApi {
     }
 }
 
-fn actor(value: Option<&Value>) -> PullRequestActor {
+pub(super) fn actor(value: Option<&Value>) -> PullRequestActor {
     let Some(value) = value.filter(|value| !value.is_null()) else {
         return PullRequestActor::default();
     };
@@ -259,7 +259,7 @@ fn actor(value: Option<&Value>) -> PullRequestActor {
     }
 }
 
-fn nodes<'a>(value: &'a Value, pointer: &str) -> impl Iterator<Item = &'a Value> {
+pub(super) fn nodes<'a>(value: &'a Value, pointer: &str) -> impl Iterator<Item = &'a Value> {
     value
         .pointer(pointer)
         .and_then(Value::as_array)

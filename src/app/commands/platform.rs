@@ -7,12 +7,12 @@ use quark_ui::key_context::KeyBindings;
 use super::state::{CommandsController, LayerKind};
 use crate::app::route::Controllers;
 use crate::app::text_targets::{
-    COMMIT_MESSAGE, REVIEW_COMPOSER, SEARCH, SETTINGS_STEERING_PROMPT, SIDEBAR_FILTER,
-    TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT,
+    COMMIT_MESSAGE, REVIEW_COMPOSER, REVIEW_PULLS_FILTER, SEARCH, SETTINGS_STEERING_PROMPT,
+    SIDEBAR_FILTER, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT,
 };
 use crate::contracts::commands::{CommandDescriptor, CommandsAction, RefPickerAction};
 use crate::contracts::navigation::NavigationAction;
-use crate::contracts::review::ReviewAction;
+use crate::contracts::review::{PullsAction, ReviewAction};
 use crate::contracts::shell::Action;
 use crate::fonts::FontSettings;
 
@@ -111,6 +111,9 @@ pub fn key_action(
         && !controllers.commands.settings_open()
         && !controllers.review.is_modal_open()
         && !focus.is_some_and(|f| TEXT_FIELDS.contains(&f));
+    if binding == "escape" && quiet && controllers.review.pulls_open() {
+        return Some(ReviewAction::Pulls(PullsAction::Close).into());
+    }
     if binding == "escape"
         && quiet
         && controllers.review.overview_open()
@@ -127,11 +130,12 @@ pub fn key_action(
     leaves_commit.then(|| NavigationAction::ClearHistoryCommit.into())
 }
 
-const TEXT_FIELDS: [FocusId; 7] = [
+const TEXT_FIELDS: [FocusId; 8] = [
     SEARCH,
     SIDEBAR_FILTER,
     COMMIT_MESSAGE,
     REVIEW_COMPOSER,
+    REVIEW_PULLS_FILTER,
     TEXT_COMPARE_LEFT,
     TEXT_COMPARE_RIGHT,
     SETTINGS_STEERING_PROMPT,

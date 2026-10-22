@@ -53,6 +53,8 @@ pub enum LogicalFocus {
     ReviewAccount,
     ReviewDialog,
     ReviewOverview,
+    ReviewPulls,
+    ReviewPullsFilter,
     DeliveryLanguages,
 }
 
@@ -60,6 +62,7 @@ pub enum LogicalFocus {
 pub enum ShellEffect {
     OpenRepositoryDialog,
     OpenScanFolderDialog,
+    OpenCloneDialog { repo: String },
     OpenBrowser { url: String },
     SetClipboard(String),
     Focus(Option<LogicalFocus>),
@@ -69,6 +72,7 @@ pub enum ShellEffect {
 pub enum ShellEvent {
     RepositoryDialogClosed { path: Option<PathBuf> },
     ScanFolderDialogClosed { path: Option<PathBuf> },
+    CloneDialogClosed { repo: String, path: Option<PathBuf> },
     BrowserOpenFailed { message: String },
 }
 

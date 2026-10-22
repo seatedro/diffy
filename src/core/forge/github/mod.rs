@@ -1,5 +1,6 @@
 pub mod api;
 pub mod device_flow;
+pub mod my_pulls;
 pub mod overview;
 pub mod pull_request;
 mod transport;
@@ -15,6 +16,7 @@ pub use api::{
     SubmitPullRequestReview, UpdatePullRequestReviewComment,
 };
 pub use device_flow::{DeviceFlowState, poll_for_token, start_device_flow};
+pub use my_pulls::{MyPullRequest, PullRequestStats};
 pub use overview::{
     PullRequestActor, PullRequestOverview, PullRequestReviewer, PullRequestTimelineItem,
     PullRequestTimelineKind,

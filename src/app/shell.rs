@@ -24,6 +24,7 @@ use crate::app::tokens::{self, Layout, Sp, Sz, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, SettingsSnapshot, ToastUpdate};
+use crate::contracts::review::PullsAction;
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, AppMessage, AppStartup, Controller, Effect, Intent, Reduction, ShellAction,
@@ -63,6 +64,7 @@ struct ShellState {
     sidebar: SplitState,
     repository_dialog: Option<DialogId>,
     scan_folder_dialog: Option<DialogId>,
+    clone_dialog: Option<(DialogId, String)>,
     copied_until: u64,
 }
 
@@ -80,6 +82,7 @@ impl ShellState {
             sidebar: SplitState::new(Axis::Horizontal, vec![sidebar, main]),
             repository_dialog: None,
             scan_folder_dialog: None,
+            clone_dialog: None,
             copied_until: 0,
         }
     }
@@ -202,6 +205,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 Effect::Shell(
                     effect @ (ShellEffect::OpenRepositoryDialog
                     | ShellEffect::OpenScanFolderDialog
+                    | ShellEffect::OpenCloneDialog { .. }
                     | ShellEffect::SetClipboard(_)
                     | ShellEffect::Focus(_)),
                 ) => self.deferred.push(effect),
@@ -325,6 +329,14 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                         ..FileDialog::default()
                     }));
                 }
+                ShellEffect::OpenCloneDialog { repo } => {
+                    let dialog = cx.window.file_dialog(FileDialog {
+                        kind: FileDialogKind::OpenFolder,
+                        title: Some(format!("Locate {repo}")),
+                        ..FileDialog::default()
+                    });
+                    self.shell.clone_dialog = Some((dialog, repo));
+                }
                 ShellEffect::SetClipboard(text) => self.copy(text, cx),
                 ShellEffect::Focus(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
                 effect => self
@@ -390,6 +402,15 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 &self.shared,
             ),
             ShellEvent::ScanFolderDialogClosed { path: None } => Reduction::default(),
+            ShellEvent::CloneDialogClosed {
+                repo,
+                path: Some(path),
+            } => Controller::reduce_action(
+                &mut self.controllers.review,
+                PullsAction::CloneChosen { repo, path }.into(),
+                &self.shared,
+            ),
+            ShellEvent::CloneDialogClosed { path: None, .. } => Reduction::default(),
             ShellEvent::BrowserOpenFailed { message } => {
                 Reduction::default().intent(Intent::Toast(ToastUpdate::error(message)))
             }
@@ -453,6 +474,14 @@ impl<D: EffectDispatcher> DiffyApp<D> {
     }
 
     fn body(&mut self, width: f32, height: f32, cx: &mut ViewContext) -> AnyElement {
+        if self.controllers.review.pulls_open() {
+            let slot = Slot {
+                shared: &self.shared,
+                width,
+                height,
+            };
+            return review::pulls_page(&self.controllers.review, &slot, cx);
+        }
         let theme = cx.theme;
         let fits = tokens::sidebar_fits(theme, width) && self.controllers.navigation.visible();
         let (files_w, main_w) = match self.shell.sidebar.resolve(width).as_slice() {
@@ -849,6 +878,10 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             } else if self.shell.scan_folder_dialog == Some(id) {
                 self.shell.scan_folder_dialog = None;
                 ShellEvent::ScanFolderDialogClosed { path }
+            } else if let Some((_, repo)) =
+                self.shell.clone_dialog.take_if(|(dialog, _)| *dialog == id)
+            {
+                ShellEvent::CloneDialogClosed { repo, path }
             } else {
                 return;
             };

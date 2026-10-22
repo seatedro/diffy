@@ -29,6 +29,7 @@ use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{
     CompareField, NavigationAction, RepositorySyncReason, SidebarTab,
 };
+use crate::contracts::review::{PullsAction, ReviewAction};
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, Controller, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
@@ -1182,6 +1183,9 @@ impl CommandsController {
             }
             ShortcutCommand::ScrollHalfPageDown if prefixed => {
                 return self.run(SymbolsAction::GoToDefinition.into(), cx);
+            }
+            ShortcutCommand::PullCurrentBranch if prefixed => {
+                return self.run(ReviewAction::Pulls(PullsAction::Open).into(), cx);
             }
             _ => {}
         }

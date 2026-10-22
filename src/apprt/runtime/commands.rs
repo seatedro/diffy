@@ -12,7 +12,9 @@ use crate::contracts::commands::{CommandsEffect, CommandsEvent, RefCatalogReques
 use crate::contracts::viewport::pipeline::DiffSizeRequest;
 use crate::core::ref_catalog::{RefCatalog, build_catalog, filter};
 use crate::core::repo_discovery;
-use crate::core::vcs::git::{has_uncommitted_changes, ref_metadata};
+use crate::core::vcs::git::{
+    clone_repository, has_uncommitted_changes, ref_metadata, uncommitted_count,
+};
 use crate::fonts::{FontRole, font_family_entries};
 use crate::platform::persistence::{RepoDiscovery, Settings};
 use crate::platform::startup::app_config_dir;
@@ -25,6 +27,7 @@ pub struct CommandsRuntime {
     ref_worker: Sender<(RefJob, ScopedEventSender)>,
     size_worker: Sender<(DiffSizeRequest, ScopedEventSender)>,
     scan_worker: Sender<(ScanJob, ScopedEventSender)>,
+    count_worker: Sender<(Vec<PathBuf>, ScopedEventSender)>,
 }
 
 enum RefJob {
@@ -51,11 +54,14 @@ impl CommandsRuntime {
         thread::spawn(move || size_worker_loop(sizes));
         let (scan_worker, scans) = mpsc::channel();
         thread::spawn(move || scan_worker_loop(scans));
+        let (count_worker, counts) = mpsc::channel();
+        thread::spawn(move || count_worker_loop(counts));
         Self {
             save_worker,
             ref_worker,
             size_worker,
             scan_worker,
+            count_worker,
         }
     }
 
@@ -114,6 +120,36 @@ impl CommandsRuntime {
                 };
                 let _ = self.scan_worker.send((job, events));
             }
+            CommandsEffect::CountChanges(paths) => {
+                let _ = self.count_worker.send((paths, events));
+            }
+            CommandsEffect::CloneRepository { job, url, dest } => {
+                thread::spawn(move || {
+                    let result = if dest.join(".git").exists() {
+                        Ok(())
+                    } else if dest.exists() {
+                        Err(format!("{} already exists", dest.display()))
+                    } else {
+                        let mut shown = None;
+                        clone_repository(&url, &dest, &mut |received, total, _| {
+                            let percent = received * 100 / total.max(1);
+                            if shown.replace(percent) != Some(percent) {
+                                events.send(CommandsEvent::CloneProgress {
+                                    job,
+                                    received,
+                                    total,
+                                });
+                            }
+                        })
+                        .map_err(|error| error.user_message())
+                    };
+                    events.send(CommandsEvent::CloneFinished {
+                        job,
+                        path: dest,
+                        result,
+                    });
+                });
+            }
             CommandsEffect::LoadFontCatalog => {
                 thread::spawn(move || {
                     events.send(CommandsEvent::FontCatalogReady {
@@ -156,6 +192,15 @@ fn scan_worker_loop(receiver: Receiver<(ScanJob, ScopedEventSender)>) {
             scan: Arc::new(scan),
             cached: false,
         });
+    }
+}
+
+fn count_worker_loop(receiver: Receiver<(Vec<PathBuf>, ScopedEventSender)>) {
+    while let Ok((paths, events)) = receiver.recv() {
+        for path in paths {
+            let count = uncommitted_count(&path).ok();
+            events.send(CommandsEvent::ChangesCounted { path, count });
+        }
     }
 }
 

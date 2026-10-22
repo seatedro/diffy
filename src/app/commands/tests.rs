@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
-
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use quark_app::testing::{By, UiTestHarness};
 use quark_app::{AppEvent as WindowEvent, InputEvent, UiAdapter, UiApp, UiContext, ViewContext};
@@ -17,19 +18,23 @@ use super::picker::PickerKind;
 use super::state::{CONFIRM_ACCEPT, CONFIRM_CANCEL};
 use super::{CommandsController, LayerKind, PlatformRequest};
 use crate::app::shell::Slot;
-use crate::app::text_targets::{self, PICKER, SETTINGS_SEARCH, SIDEBAR, TextCx, TextHost};
+use crate::app::text_targets::{
+    self, LAUNCHER, PICKER, SETTINGS_SEARCH, SIDEBAR, TextCx, TextHost,
+};
 use crate::contracts::commands::{
     CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
-    RefPickerRequest, SettingsSnapshot, ToastUpdate,
+    LauncherFolder, RefPickerRequest, SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::navigation::{CompareField, NavigationAction, RepositorySyncReason};
-use crate::contracts::review::ReviewAction;
+use crate::contracts::review::{GitHubRequest, ReviewAction, ReviewEffect, ReviewEvent};
 use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{
-    Action, Controller, Effect, Intent, LogicalFocus, Reduction, ShellAction,
+    Action, Controller, Effect, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
+    ShellEvent,
 };
 use crate::core::frecency::FrecencyStore;
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
+use crate::core::repo_discovery::{DiscoveredRepo, RepoScan};
 use crate::core::theme_types::ThemeMode;
 use crate::platform::persistence::{Settings, SettingsStore};
 
@@ -255,8 +260,9 @@ fn focus_anchor(ui: &mut Cmd) {
 #[test]
 fn palette_opens_from_the_shortcut_runs_a_command_and_returns_focus() {
     let mut ui = harness::harness();
-    ui.click_node(By::role_name(Role::SearchInput, "Filter files"));
+    ui.click_node(By::role_name(Role::SearchInput, "Search repositories"));
     let filter = ui.focus();
+    assert_eq!(filter, Some(LAUNCHER));
 
     ui.key("mod+k");
     ui.find(By::role_name(Role::Dialog, "Command palette"));
@@ -455,6 +461,12 @@ fn palette_recents_follow_frecency() {
 #[test]
 fn settings_open_from_the_shortcut_and_escape_returns_focus() {
     let mut ui = harness::harness();
+    harness::deliver(
+        &mut ui,
+        ShellEvent::RepositoryDialogClosed {
+            path: Some(PathBuf::from("/fixtures/alpha")),
+        },
+    );
     ui.click_node(By::role_name(Role::SearchInput, "Filter files"));
     let filter = ui.focus();
     ui.key("mod+,");
@@ -1137,4 +1149,242 @@ fn a_tooltip_shows_after_the_pointer_rests_and_hides_when_it_leaves() {
     ui.pointer_move((button.center().0, 10.0));
     ui.frame();
     assert!(!ui.painted_text().contains("Syntax languages"));
+}
+
+fn scanned(ui: &mut harness::Harness, repos: &[(&str, Option<&str>)]) {
+    let scan = RepoScan {
+        repos: repos
+            .iter()
+            .map(|(path, remote)| DiscoveredRepo {
+                path: PathBuf::from(path),
+                branch: Some("main".to_owned()),
+                active: None,
+                remote: remote.map(str::to_owned),
+            })
+            .collect(),
+        ..RepoScan::default()
+    };
+    harness::deliver(
+        ui,
+        CommandsEvent::RepositoriesScanned {
+            scan: Arc::new(scan),
+            cached: false,
+        },
+    );
+}
+
+fn opened_repo(ui: &harness::Harness) -> Option<PathBuf> {
+    ui.app()
+        .0
+        .controllers()
+        .navigation
+        .repo_path()
+        .map(PathBuf::from)
+}
+
+#[test]
+fn launcher_replaces_the_workspace_until_a_repository_opens_and_focuses_its_box() {
+    let ui = harness::harness();
+    ui.find(By::role_name(Role::Main, "Launcher"));
+    ui.find(By::name("What do you want to review?"));
+    let input = ui.find(By::role_name(Role::SearchInput, "Search repositories"));
+    assert!(input.focused);
+    assert_eq!(ui.focus(), Some(LAUNCHER));
+    for section in ["Pull requests", "More"] {
+        ui.find(By::role_name(Role::Group, section));
+    }
+    ui.find(By::role_name(Role::ListBoxOption, "Open folder\u{2026}"));
+    assert!(
+        ui.try_find(By::role_name(Role::Navigation, "Files"))
+            .is_none()
+    );
+}
+
+#[test]
+fn typing_in_the_launcher_filters_repositories_and_counts_visible_changes() {
+    let mut ui = harness::harness();
+    scanned(&mut ui, &[("/w/alpha", None), ("/w/beta", None)]);
+    ui.find(By::role_name(Role::Group, "Repositories"));
+    ui.find(By::role_name(Role::ListBoxOption, "alpha"));
+    ui.find(By::role_name(Role::ListBoxOption, "beta"));
+    assert!(effects(&ui).iter().any(|effect| matches!(
+        effect,
+        Effect::Commands(CommandsEffect::CountChanges(paths)) if paths.len() == 2
+    )));
+
+    ui.type_text("bet");
+    ui.find(By::role_name(Role::ListBoxOption, "beta"));
+    assert!(
+        ui.try_find(By::role_name(Role::ListBoxOption, "alpha"))
+            .is_none()
+    );
+
+    harness::deliver(
+        &mut ui,
+        CommandsEvent::ChangesCounted {
+            path: PathBuf::from("/w/beta"),
+            count: Some(3),
+        },
+    );
+    assert!(ui.painted_text().contains("3 changed"));
+
+    ui.key("escape");
+    ui.find(By::role_name(Role::ListBoxOption, "alpha"));
+}
+
+#[test]
+fn enter_and_arrows_in_the_launcher_open_a_repository() {
+    let mut ui = harness::harness();
+    scanned(&mut ui, &[("/w/alpha", None), ("/w/beta", None)]);
+    ui.key("arrowdown");
+    ui.key("ctrl+p");
+    ui.key("arrowdown");
+    ui.key("enter");
+    assert_eq!(opened_repo(&ui), Some(PathBuf::from("/w/beta")));
+    assert!(ui.try_find(By::role_name(Role::Main, "Launcher")).is_none());
+    assert_eq!(ui.focus(), Some(SIDEBAR));
+}
+
+#[test]
+fn a_pull_request_link_opens_the_matching_local_clone_then_the_pull_request() {
+    let mut ui = harness::harness();
+    harness::deliver(&mut ui, ReviewEvent::TokenLoaded { token: None });
+    scanned(
+        &mut ui,
+        &[
+            ("/w/alpha", Some("git@github.com:Owner/Alpha.git")),
+            ("/w/beta", None),
+        ],
+    );
+    harness::clear_effects(&mut ui);
+    ui.type_text("https://github.com/owner/alpha/pull/7/files");
+    ui.find(By::role_name(Role::ListBoxOption, "Open owner/alpha#7"));
+    ui.key("enter");
+    assert_eq!(opened_repo(&ui), Some(PathBuf::from("/w/alpha")));
+    assert!(effects(&ui).iter().any(|effect| matches!(
+        effect,
+        Effect::Review(ReviewEffect::GitHub { request, .. })
+            if **request == GitHubRequest::LoadPullRequest {
+                url: "https://github.com/owner/alpha/pull/7".to_owned(),
+                repo_path: PathBuf::from("/w/alpha"),
+                token: None,
+            }
+    )));
+}
+
+fn launcher_text(ui: &mut Cmd, text: &str) {
+    let app = ui.app_mut();
+    let cx = TextCx {
+        shared: &app.shared,
+        now_ms: 0,
+    };
+    app.commands.set_text_value(LAUNCHER, text.to_owned(), &cx);
+}
+
+fn launcher_event(ui: &mut Cmd, event: CommandsEvent) {
+    let app = ui.app_mut();
+    let reduction = app.commands.reduce_event(event, &app.shared);
+    app.reduce(reduction);
+    ui.send_message(());
+}
+
+#[test]
+fn a_pull_request_without_a_local_clone_asks_for_its_folder() {
+    let mut ui = cmd_harness(Settings::default());
+    launcher_text(&mut ui, "other/repo#3");
+    ui.run(CommandsAction::LauncherConfirm);
+    let url = "https://github.com/other/repo/pull/3".to_owned();
+    let folder = LauncherFolder::LocateClone { url: url.clone() };
+    assert!(
+        ui.app()
+            .effects
+            .contains(&Effect::Shell(ShellEffect::OpenLauncherDialog(
+                folder.clone()
+            )))
+    );
+    ui.run(CommandsAction::LauncherFolderChosen {
+        folder,
+        path: PathBuf::from("/w/elsewhere"),
+    });
+    assert_eq!(
+        ui.app().dispatched,
+        vec![
+            Action::from(NavigationAction::OpenRepository(PathBuf::from(
+                "/w/elsewhere"
+            ))),
+            Action::from(ReviewAction::LoadPullRequest { url }),
+        ]
+    );
+}
+
+#[test]
+fn the_signed_out_launcher_row_opens_github_sign_in() {
+    let mut ui = harness::harness();
+    ui.click_node(By::role_name(
+        Role::ListBoxOption,
+        "Sign in to GitHub to see your PRs",
+    ));
+    ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
+}
+
+#[test]
+fn cloning_from_the_launcher_reports_progress_and_opens_the_clone() {
+    let mut ui = cmd_harness(Settings::default());
+    launcher_text(&mut ui, "owner/repo");
+    ui.run(CommandsAction::LauncherConfirm);
+    let folder = LauncherFolder::CloneInto {
+        url: "https://github.com/owner/repo.git".to_owned(),
+        name: "repo".to_owned(),
+    };
+    assert!(
+        ui.app()
+            .effects
+            .contains(&Effect::Shell(ShellEffect::OpenLauncherDialog(
+                folder.clone()
+            )))
+    );
+    ui.run(CommandsAction::LauncherFolderChosen {
+        folder,
+        path: PathBuf::from("/w"),
+    });
+    let job = ui
+        .app()
+        .effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Commands(CommandsEffect::CloneRepository { job, url, dest }) => {
+                assert_eq!(url, "https://github.com/owner/repo.git");
+                assert_eq!(dest, &PathBuf::from("/w/repo"));
+                Some(*job)
+            }
+            _ => None,
+        })
+        .expect("clone effect");
+    launcher_event(
+        &mut ui,
+        CommandsEvent::CloneProgress {
+            job,
+            received: 5,
+            total: 10,
+        },
+    );
+    ui.find(By::role_name(
+        Role::Status,
+        "Cloning repo: 5/10 objects\u{2026}",
+    ));
+    launcher_event(
+        &mut ui,
+        CommandsEvent::CloneFinished {
+            job,
+            path: PathBuf::from("/w/repo"),
+            result: Ok(()),
+        },
+    );
+    ui.find(By::role_name(Role::Status, "Cloned repo"));
+    assert_eq!(
+        ui.app().dispatched,
+        vec![Action::from(NavigationAction::OpenRepository(
+            PathBuf::from("/w/repo")
+        ))]
+    );
 }

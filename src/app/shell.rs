@@ -23,7 +23,7 @@ use crate::app::text_targets::{self, TextCx};
 use crate::app::tokens::{self, Layout, Sp, Sz, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
-use crate::contracts::commands::{CommandsAction, SettingsSnapshot, ToastUpdate};
+use crate::contracts::commands::{CommandsAction, LauncherFolder, SettingsSnapshot, ToastUpdate};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, AppMessage, AppStartup, Controller, Effect, Intent, Reduction, ShellAction,
@@ -63,6 +63,7 @@ struct ShellState {
     sidebar: SplitState,
     repository_dialog: Option<DialogId>,
     scan_folder_dialog: Option<DialogId>,
+    launcher_dialog: Option<(DialogId, LauncherFolder)>,
     copied_until: u64,
 }
 
@@ -80,6 +81,7 @@ impl ShellState {
             sidebar: SplitState::new(Axis::Horizontal, vec![sidebar, main]),
             repository_dialog: None,
             scan_folder_dialog: None,
+            launcher_dialog: None,
             copied_until: 0,
         }
     }
@@ -202,6 +204,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 Effect::Shell(
                     effect @ (ShellEffect::OpenRepositoryDialog
                     | ShellEffect::OpenScanFolderDialog
+                    | ShellEffect::OpenLauncherDialog(_)
                     | ShellEffect::SetClipboard(_)
                     | ShellEffect::Focus(_)),
                 ) => self.deferred.push(effect),
@@ -325,6 +328,18 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                         ..FileDialog::default()
                     }));
                 }
+                ShellEffect::OpenLauncherDialog(folder) => {
+                    let title = match folder {
+                        LauncherFolder::LocateClone { .. } => "Locate Clone",
+                        LauncherFolder::CloneInto { .. } => "Clone Into",
+                    };
+                    let id = cx.window.file_dialog(FileDialog {
+                        kind: FileDialogKind::OpenFolder,
+                        title: Some(title.to_owned()),
+                        ..FileDialog::default()
+                    });
+                    self.shell.launcher_dialog = Some((id, folder));
+                }
                 ShellEffect::SetClipboard(text) => self.copy(text, cx),
                 ShellEffect::Focus(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
                 effect => self
@@ -390,6 +405,15 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 &self.shared,
             ),
             ShellEvent::ScanFolderDialogClosed { path: None } => Reduction::default(),
+            ShellEvent::LauncherDialogClosed {
+                folder,
+                path: Some(path),
+            } => Controller::reduce_action(
+                &mut self.controllers.commands,
+                CommandsAction::LauncherFolderChosen { folder, path },
+                &self.shared,
+            ),
+            ShellEvent::LauncherDialogClosed { path: None, .. } => Reduction::default(),
             ShellEvent::BrowserOpenFailed { message } => {
                 Reduction::default().intent(Intent::Toast(ToastUpdate::error(message)))
             }
@@ -453,6 +477,22 @@ impl<D: EffectDispatcher> DiffyApp<D> {
     }
 
     fn body(&mut self, width: f32, height: f32, cx: &mut ViewContext) -> AnyElement {
+        if self.controllers.commands.launcher_active()
+            && !self.controllers.viewport.interaction.text_compare().active
+            && !self.controllers.review.overview_open()
+        {
+            let slot = Slot {
+                shared: &self.shared,
+                width,
+                height,
+            };
+            let signed_in = self.controllers.review.signed_in();
+            if let Some(launcher) =
+                commands::launcher(&mut self.controllers.commands, &slot, signed_in, cx)
+            {
+                return launcher;
+            }
+        }
         let theme = cx.theme;
         let fits = tokens::sidebar_fits(theme, width) && self.controllers.navigation.visible();
         let (files_w, main_w) = match self.shell.sidebar.resolve(width).as_slice() {
@@ -849,6 +889,12 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             } else if self.shell.scan_folder_dialog == Some(id) {
                 self.shell.scan_folder_dialog = None;
                 ShellEvent::ScanFolderDialogClosed { path }
+            } else if let Some((_, folder)) = self
+                .shell
+                .launcher_dialog
+                .take_if(|(dialog, _)| *dialog == id)
+            {
+                ShellEvent::LauncherDialogClosed { folder, path }
             } else {
                 return;
             };

@@ -1,6 +1,6 @@
 use crate::contracts::commands::{
-    CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest, SettingsSnapshot,
-    ToastUpdate,
+    CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest, LauncherFolder,
+    SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::delivery::{
     DeliveryAction, DeliveryEffect, DeliveryEvent, GrammarAvailability,
@@ -54,12 +54,14 @@ pub enum LogicalFocus {
     ReviewDialog,
     ReviewOverview,
     DeliveryLanguages,
+    Launcher,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellEffect {
     OpenRepositoryDialog,
     OpenScanFolderDialog,
+    OpenLauncherDialog(LauncherFolder),
     OpenBrowser { url: String },
     SetClipboard(String),
     Focus(Option<LogicalFocus>),
@@ -67,9 +69,19 @@ pub enum ShellEffect {
 
 #[derive(Debug, Clone)]
 pub enum ShellEvent {
-    RepositoryDialogClosed { path: Option<PathBuf> },
-    ScanFolderDialogClosed { path: Option<PathBuf> },
-    BrowserOpenFailed { message: String },
+    RepositoryDialogClosed {
+        path: Option<PathBuf>,
+    },
+    ScanFolderDialogClosed {
+        path: Option<PathBuf>,
+    },
+    LauncherDialogClosed {
+        folder: LauncherFolder,
+        path: Option<PathBuf>,
+    },
+    BrowserOpenFailed {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +122,7 @@ impl AppEvent {
         match self {
             Self::Review(event) => event.account_scoped(),
             Self::Mutations(event) => event.app_scoped(),
+            Self::Commands(event) => event.app_scoped(),
             _ => false,
         }
     }

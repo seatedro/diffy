@@ -12,6 +12,7 @@ pub const SIDEBAR_FILTER: FocusId = FocusId::from_key("diffy.sidebar.filter");
 pub const SEARCH: FocusId = FocusId::from_key("diffy.viewport.search");
 pub const PALETTE: FocusId = quark_components::PALETTE_INPUT;
 pub const PICKER: FocusId = FocusId::from_key("diffy.picker");
+pub const LAUNCHER: FocusId = FocusId::from_key("diffy.launcher");
 pub const SETTINGS: FocusId = FocusId::from_key("diffy.settings");
 pub const SETTINGS_SEARCH: FocusId = FocusId::from_key("diffy.settings.search");
 pub const COMMIT_MESSAGE: FocusId = FocusId::from_key("diffy.commit.message");
@@ -45,6 +46,7 @@ pub fn focus_id(focus: LogicalFocus) -> FocusId {
         LogicalFocus::ReviewDialog => REVIEW_DIALOG,
         LogicalFocus::ReviewOverview => REVIEW_OVERVIEW,
         LogicalFocus::DeliveryLanguages => crate::app::delivery::LANGUAGES_TOGGLE,
+        LogicalFocus::Launcher => LAUNCHER,
     }
 }
 

@@ -70,6 +70,7 @@ pub struct DiscoveredRepo {
     pub path: PathBuf,
     pub branch: Option<String>,
     pub active: Option<i64>,
+    pub remote: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -119,7 +120,7 @@ pub fn scan(options: &RepoDiscovery, known: &[PathBuf], home: Option<&Path>) -> 
                     return WalkState::Continue;
                 }
                 if let Ok(mut found) = found.lock() {
-                    found.insert(entry.path().to_path_buf());
+                    found.insert(canonical(entry.path().to_path_buf()));
                 }
                 if entry.depth() == 0 {
                     WalkState::Continue
@@ -133,10 +134,12 @@ pub fn scan(options: &RepoDiscovery, known: &[PathBuf], home: Option<&Path>) -> 
         .ok()
         .and_then(|found| found.into_inner().ok())
         .unwrap_or_default();
+    let mut seen = paths.clone();
     let known = known
         .iter()
-        .filter(|path| !paths.contains(*path))
-        .map(|path| describe(path.clone()))
+        .map(|path| canonical(path.clone()))
+        .filter(|path| seen.insert(path.clone()))
+        .map(describe)
         .collect();
     let repos = paths.into_iter().map(describe).collect();
     RepoScan {
@@ -147,11 +150,16 @@ pub fn scan(options: &RepoDiscovery, known: &[PathBuf], home: Option<&Path>) -> 
     }
 }
 
+fn canonical(path: PathBuf) -> PathBuf {
+    fs::canonicalize(&path).unwrap_or(path)
+}
+
 fn describe(path: PathBuf) -> DiscoveredRepo {
     let git = git_dir(&path);
     DiscoveredRepo {
         branch: git.as_deref().and_then(branch),
         active: git.as_deref().and_then(last_active),
+        remote: git.as_deref().and_then(origin_url),
         path,
     }
 }
@@ -178,6 +186,7 @@ pub fn load_cache(dir: &Path) -> Option<RepoScan> {
             Repositories::Branch,
             Repositories::Active,
             Repositories::Discovered,
+            Repositories::Remote,
         ])
         .from(Repositories::Table)
         .order_by(Repositories::Path, Order::Asc)
@@ -189,6 +198,7 @@ pub fn load_cache(dir: &Path) -> Option<RepoScan> {
                     path: PathBuf::from(row.get::<_, String>(0)?),
                     branch: row.get(1)?,
                     active: row.get(2)?,
+                    remote: row.get(4)?,
                 },
                 row.get::<_, bool>(3)?,
             ))
@@ -225,12 +235,14 @@ pub fn save_cache(dir: &Path, scan: &RepoScan) -> Result<()> {
                     Repositories::Branch,
                     Repositories::Active,
                     Repositories::Discovered,
+                    Repositories::Remote,
                 ])
                 .values_panic([
                     repo.path.to_string_lossy().into_owned().into(),
                     repo.branch.clone().into(),
                     repo.active.into(),
                     discovered.into(),
+                    repo.remote.clone().into(),
                 ])
                 .to_owned()
                 .build_rusqlite(SqliteQueryBuilder),
@@ -317,6 +329,31 @@ fn branch(git_dir: &Path) -> Option<String> {
     }
 }
 
+fn origin_url(git_dir: &Path) -> Option<String> {
+    let common = fs::read_to_string(git_dir.join("commondir"))
+        .ok()
+        .map(|dir| git_dir.join(dir.trim()))
+        .unwrap_or_else(|| git_dir.to_path_buf());
+    let config = fs::read_to_string(common.join("config")).ok()?;
+    let mut origin = false;
+    for line in config.lines().map(str::trim) {
+        if let Some(header) = line.strip_prefix('[') {
+            let header = header.trim_end_matches(']');
+            origin = header
+                .split_once(char::is_whitespace)
+                .is_some_and(|(section, name)| {
+                    section.eq_ignore_ascii_case("remote") && name.trim() == "\"origin\""
+                });
+        } else if origin
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim().eq_ignore_ascii_case("url")
+        {
+            return Some(value.trim().trim_matches('"').to_owned());
+        }
+    }
+    None
+}
+
 fn last_active(git_dir: &Path) -> Option<i64> {
     ["index", "logs/HEAD", "HEAD"]
         .iter()
@@ -344,7 +381,7 @@ mod tests {
     #[test]
     fn finds_top_level_repos_skips_hidden_and_heavy_folders_and_reads_branches() {
         let home = TempDir::new().unwrap();
-        let root = home.path();
+        let root = &fs::canonicalize(home.path()).unwrap();
         repo(root, "code/alpha", "ref: refs/heads/main\n");
         repo(
             root,
@@ -397,6 +434,45 @@ mod tests {
     }
 
     #[test]
+    fn reads_head_and_origin_from_plain_files() {
+        let home = TempDir::new().unwrap();
+        let root = &fs::canonicalize(home.path()).unwrap();
+        repo(root, "code/alpha", "ref: refs/heads/feature/one\n");
+        fs::write(
+            root.join("code/alpha/.git/config"),
+            "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://example.com/up/alpha.git\n[remote \"origin\"]\n\turl = git@example.com:owner/alpha.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+        )
+        .unwrap();
+        repo(root, "code/beta", "0123456789abcdef\n");
+        let linked = root.join("code/alpha/.git/worktrees/gamma");
+        fs::create_dir_all(&linked).unwrap();
+        fs::write(linked.join("HEAD"), "ref: refs/heads/topic\n").unwrap();
+        fs::write(linked.join("commondir"), "../..\n").unwrap();
+        fs::create_dir_all(root.join("work/gamma")).unwrap();
+        fs::write(
+            root.join("work/gamma/.git"),
+            format!("gitdir: {}\n", linked.display()),
+        )
+        .unwrap();
+
+        let alpha = describe(root.join("code/alpha"));
+        assert_eq!(alpha.branch.as_deref(), Some("feature/one"));
+        assert_eq!(
+            alpha.remote.as_deref(),
+            Some("git@example.com:owner/alpha.git")
+        );
+        let beta = describe(root.join("code/beta"));
+        assert_eq!(beta.branch.as_deref(), Some("0123456"));
+        assert_eq!(beta.remote, None);
+        let gamma = describe(root.join("work/gamma"));
+        assert_eq!(gamma.branch.as_deref(), Some("topic"));
+        assert_eq!(
+            gamma.remote.as_deref(),
+            Some("git@example.com:owner/alpha.git")
+        );
+    }
+
+    #[test]
     fn cache_round_trips() {
         let dir = TempDir::new().unwrap();
         let scan = RepoScan {
@@ -406,6 +482,7 @@ mod tests {
                 path: PathBuf::from("/repo"),
                 branch: Some("main".to_owned()),
                 active: Some(40),
+                remote: Some("https://example.com/owner/repo.git".to_owned()),
             }],
             known: Vec::new(),
         };

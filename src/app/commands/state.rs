@@ -12,24 +12,26 @@ use quark_ui::element::{Binding, ScrollHandle};
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
 use super::keymap;
+use super::launcher::{Launcher, LauncherChoice};
 use super::palette::{self, PaletteCommand, PaletteSource};
 use super::picker::{self, PickerCandidate, PickerChoice, PickerKind, PickerState};
 use super::platform::{self, PlatformRequest, ids};
 use super::ref_picker::{RefPicker, is_working_tree};
 use super::repo_picker::{RepoEntry, RepoView};
 use super::toasts::ToastHost;
-use crate::app::text_targets::{PICKER, SETTINGS, SETTINGS_SEARCH, TextCx, TextHost};
+use crate::app::text_targets::{LAUNCHER, PICKER, SETTINGS, SETTINGS_SEARCH, TextCx, TextHost};
 use crate::app::viewport::outline;
 use crate::contracts::commands::{
     CommandDescriptor, CommandsAction, CommandsEffect, CommandsEvent, ConfirmationRequest,
-    ContextMenuEntry, FileListRequest, RefCatalogRequest, RefPickerAction, RefPickerRequest,
-    SettingsSection, SettingsSnapshot, ToastUpdate,
+    ContextMenuEntry, FileListRequest, LauncherFolder, RefCatalogRequest, RefPickerAction,
+    RefPickerRequest, SettingsSection, SettingsSnapshot, ToastKind, ToastUpdate,
 };
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{
     CompareField, NavigationAction, RepositorySyncReason, SidebarTab,
 };
-use crate::contracts::shared::SharedContext;
+use crate::contracts::review::ReviewAction;
+use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{
     Action, Controller, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
 };
@@ -60,6 +62,8 @@ const RECENT_COMMANDS: usize = 8;
 const PROJECT_URL: &str = "https://github.com/seatedro/diffy";
 const QUIT_BINDING: &str = "mod+q";
 const REF_FRECENCY_PREFIX: &str = "ref:";
+// Toast job ids are shared with other streams' counters; keep clones clear of them.
+const CLONE_JOBS: u64 = 1 << 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerKind {
@@ -114,6 +118,9 @@ pub struct CommandsController {
     repo_scan: Option<Arc<RepoScan>>,
     repo_scanning: bool,
     repo_picker_current: Option<PathBuf>,
+    launcher: Option<Launcher>,
+    clones: Vec<(JobId, String)>,
+    next_clone: u64,
     file_picker: Option<FileListKey>,
     file_lists: Vec<FileList>,
     file_pending: Option<FileListKey>,
@@ -164,6 +171,9 @@ impl Default for CommandsController {
             repo_scan: None,
             repo_scanning: false,
             repo_picker_current: None,
+            launcher: Some(Launcher::default()),
+            clones: Vec::new(),
+            next_clone: 0,
             file_picker: None,
             file_lists: Vec::new(),
             file_pending: None,
@@ -256,6 +266,137 @@ impl CommandsController {
 
     pub(super) fn repo_scan_status(&self) -> (Option<&RepoScan>, bool) {
         (self.repo_scan.as_deref(), self.repo_scanning)
+    }
+
+    pub fn launcher_active(&self) -> bool {
+        self.launcher.is_some()
+    }
+
+    pub(super) fn launcher_mut(&mut self) -> Option<&mut Launcher> {
+        self.launcher.as_mut()
+    }
+
+    pub fn observe_account(&mut self, signed_in: bool) {
+        if let Some(launcher) = &mut self.launcher {
+            launcher.set_signed_in(signed_in);
+        }
+    }
+
+    fn launcher_recent(&self) -> Vec<PathBuf> {
+        recent_repo_paths(self.frecency.as_ref(), RECENT_REPOSITORIES)
+    }
+
+    fn refresh_launcher(&mut self) -> Reduction {
+        let recent = self.launcher_recent();
+        let scan = self.repo_scan.clone();
+        let Some(launcher) = &mut self.launcher else {
+            return Reduction::default();
+        };
+        launcher.set_entries(recent, scan.as_deref());
+        self.count_launcher_rows()
+    }
+
+    fn count_launcher_rows(&mut self) -> Reduction {
+        let Some(launcher) = &mut self.launcher else {
+            return Reduction::default();
+        };
+        let paths = launcher.take_count_requests();
+        let reduction = Reduction::changed();
+        if paths.is_empty() {
+            reduction
+        } else {
+            reduction.effect(CommandsEffect::CountChanges(paths))
+        }
+    }
+
+    fn confirm_launcher(&mut self, cx: &SharedContext) -> Reduction {
+        let Some(launcher) = &self.launcher else {
+            return Reduction::default();
+        };
+        let Some(choice) = launcher.selected_choice().cloned() else {
+            return Reduction::default();
+        };
+        let signed_in = launcher.signed_in;
+        match choice {
+            LauncherChoice::Repository(path) | LauncherChoice::Path(path) => {
+                self.request(PlatformRequest::Dispatch(
+                    NavigationAction::OpenRepository(path).into(),
+                ));
+                Reduction::changed()
+            }
+            LauncherChoice::PullRequest {
+                url,
+                local: Some(path),
+            } => {
+                self.open_pull_request_in(path, url);
+                Reduction::changed()
+            }
+            LauncherChoice::PullRequest { url, local: None } => Reduction::changed().effect(
+                ShellEffect::OpenLauncherDialog(LauncherFolder::LocateClone { url }),
+            ),
+            LauncherChoice::PullRequests if signed_in => {
+                self.reduce_action(CommandsAction::OpenPullRequestPicker, cx)
+            }
+            LauncherChoice::PullRequests => {
+                self.request(PlatformRequest::Dispatch(
+                    ReviewAction::OpenAuthModal.into(),
+                ));
+                Reduction::changed()
+            }
+            LauncherChoice::OpenFolder => {
+                self.reduce_action(CommandsAction::OpenRepositoryFolder, cx)
+            }
+            LauncherChoice::Clone(Some(source)) => Reduction::changed().effect(
+                ShellEffect::OpenLauncherDialog(LauncherFolder::CloneInto {
+                    url: source.url,
+                    name: source.repo.repo,
+                }),
+            ),
+            LauncherChoice::Clone(None) => {
+                self.toasts.apply(ToastUpdate::info(
+                    "Type owner/repo or a GitHub URL, then choose Clone",
+                ));
+                Reduction::changed()
+            }
+        }
+    }
+
+    fn open_pull_request_in(&self, path: PathBuf, url: String) {
+        self.request(PlatformRequest::Dispatch(
+            NavigationAction::OpenRepository(path).into(),
+        ));
+        self.request(PlatformRequest::Dispatch(
+            ReviewAction::LoadPullRequest { url }.into(),
+        ));
+    }
+
+    fn launcher_folder(&mut self, folder: LauncherFolder, path: PathBuf) -> Reduction {
+        match folder {
+            LauncherFolder::LocateClone { url } => {
+                self.open_pull_request_in(path, url);
+                Reduction::changed()
+            }
+            LauncherFolder::CloneInto { url, name } => {
+                self.next_clone += 1;
+                let job = JobId(CLONE_JOBS | self.next_clone);
+                self.toasts.apply(ToastUpdate::Progress {
+                    id: job,
+                    message: format!("Cloning {name}\u{2026}"),
+                    completed: 0,
+                    total: 0,
+                });
+                let dest = path.join(&name);
+                self.clones.push((job, name));
+                Reduction::changed().effect(CommandsEffect::CloneRepository { job, url, dest })
+            }
+        }
+    }
+
+    fn clone_name(&self, job: JobId) -> Option<&str> {
+        self.clones
+            .iter()
+            .find(|(id, _)| *id == job)
+            .map(|(_, name)| name.as_str())
     }
 
     pub(super) fn picker_browses_repos(&self) -> bool {
@@ -1184,6 +1325,9 @@ impl CommandsController {
             ShortcutCommand::ScrollHalfPageDown if prefixed => {
                 return self.run(SymbolsAction::GoToDefinition.into(), cx);
             }
+            ShortcutCommand::OpenRepository if self.launcher.is_some() => {
+                return self.reduce_action(CommandsAction::OpenRepositoryFolder, cx);
+            }
             _ => {}
         }
         if let Some(external) = self.external.iter().find(|d| d.shortcut == Some(command)) {
@@ -1294,10 +1438,15 @@ impl CommandsController {
         }
     }
 
-    fn startup(&mut self, snapshot: &Rc<SettingsSnapshot>) -> Reduction {
+    fn startup(&mut self, snapshot: &Rc<SettingsSnapshot>, launcher: bool) -> Reduction {
         #[cfg(not(test))]
         {
             self.frecency = crate::core::frecency::open_default_store();
+        }
+        if launcher {
+            self.focus(Some(LAUNCHER));
+        } else {
+            self.launcher = None;
         }
         let settings = &snapshot.settings;
         self.request(PlatformRequest::Theme(Box::new(
@@ -1306,7 +1455,7 @@ impl CommandsController {
         self.request(PlatformRequest::Fonts(settings.fonts.clone()));
         self.install_keymap(settings);
         self.settings = snapshot.clone();
-        let mut reduction = Reduction::changed();
+        let mut reduction = self.refresh_launcher();
         reduction.merge(self.scan_repositories());
         reduction
     }
@@ -1724,6 +1873,34 @@ impl Controller for CommandsController {
                 reduction.merge(self.scan_repositories());
                 reduction
             }
+            A::LauncherMove(delta) => match &mut self.launcher {
+                Some(launcher) => {
+                    launcher.move_selection(delta);
+                    Reduction::changed()
+                }
+                None => Reduction::default(),
+            },
+            A::LauncherSelect(index) => {
+                let Some(launcher) = &mut self.launcher else {
+                    return Reduction::default();
+                };
+                if index >= launcher.rows.len() {
+                    return Reduction::default();
+                }
+                launcher.selected = index;
+                self.focus(Some(LAUNCHER));
+                self.confirm_launcher(cx)
+            }
+            A::LauncherConfirm => self.confirm_launcher(cx),
+            A::LauncherClear => match &mut self.launcher {
+                Some(launcher) if !launcher.query.text().is_empty() => {
+                    launcher.query.set_text("");
+                    launcher.refilter();
+                    self.count_launcher_rows()
+                }
+                _ => Reduction::default(),
+            },
+            A::LauncherFolderChosen { folder, path } => self.launcher_folder(folder, path),
             A::OpenRepositoryFolder => {
                 self.pop_layer(LayerKind::Picker);
                 self.request(PlatformRequest::Dispatch(
@@ -2073,6 +2250,60 @@ impl Controller for CommandsController {
                 }
                 self.repo_scan = Some(scan);
                 self.apply_repo_scan();
+                self.refresh_launcher()
+            }
+            CommandsEvent::ChangesCounted { path, count } => {
+                let shown = self
+                    .launcher
+                    .as_mut()
+                    .is_some_and(|launcher| launcher.set_count(path, count));
+                if shown {
+                    Reduction::changed()
+                } else {
+                    Reduction::default()
+                }
+            }
+            CommandsEvent::CloneProgress {
+                job,
+                received,
+                total,
+            } => {
+                let Some(name) = self.clone_name(job) else {
+                    return Reduction::default();
+                };
+                let message = format!("Cloning {name}: {received}/{total} objects\u{2026}");
+                self.toasts.apply(ToastUpdate::Progress {
+                    id: job,
+                    message,
+                    completed: received as u64,
+                    total: total as u64,
+                });
+                Reduction::changed()
+            }
+            CommandsEvent::CloneFinished { job, path, result } => {
+                let Some(index) = self.clones.iter().position(|(id, _)| *id == job) else {
+                    return Reduction::default();
+                };
+                let (_, name) = self.clones.remove(index);
+                let (kind, message, description) = match result {
+                    Ok(()) => (ToastKind::Success, format!("Cloned {name}"), None),
+                    Err(error) => (
+                        ToastKind::Error,
+                        format!("Couldn't clone {name}"),
+                        Some(error),
+                    ),
+                };
+                if kind == ToastKind::Success && self.launcher.is_some() {
+                    self.request(PlatformRequest::Dispatch(
+                        NavigationAction::OpenRepository(path).into(),
+                    ));
+                }
+                self.toasts.apply(ToastUpdate::Show {
+                    id: Some(job),
+                    kind,
+                    message,
+                    description,
+                });
                 Reduction::changed()
             }
             CommandsEvent::FontCatalogReady { ui, mono } => {
@@ -2091,7 +2322,19 @@ impl Controller for CommandsController {
 
     fn apply_intent(&mut self, intent: &Intent, cx: &SharedContext) -> Reduction {
         match intent {
-            Intent::Startup(_) => self.startup(&cx.settings),
+            Intent::Startup(startup) => {
+                self.startup(&cx.settings, startup.options.args.repo.is_none())
+            }
+            Intent::ActivateWorkspace { .. } => {
+                if self.launcher.take().is_none() {
+                    return Reduction::default();
+                }
+                if self.layers.is_empty() && self.view_focus == Some(LAUNCHER) {
+                    self.view_focus = Some(crate::app::text_targets::SIDEBAR);
+                    self.focus(self.view_focus);
+                }
+                Reduction::changed()
+            }
             Intent::SettingsChanged(snapshot) => {
                 if Rc::ptr_eq(snapshot, &self.settings) || **snapshot == *self.settings {
                     return Reduction::default();
@@ -2157,12 +2400,18 @@ impl Controller for CommandsController {
 
 impl TextHost for CommandsController {
     fn owns_text(&self, target: FocusId) -> bool {
-        target == PALETTE_INPUT || target == PICKER || target == SETTINGS_SEARCH
+        target == PALETTE_INPUT
+            || target == PICKER
+            || target == SETTINGS_SEARCH
+            || (target == LAUNCHER && self.launcher.is_some())
     }
 
     fn after_edit(&mut self, target: FocusId, _cx: &SharedContext) -> Reduction {
         if target == PICKER && self.ref_picker.as_ref().is_some_and(|p| p.query_dirty) {
             return self.filter_refs();
+        }
+        if target == LAUNCHER {
+            return self.count_launcher_rows();
         }
         Reduction::default()
     }
@@ -2181,6 +2430,14 @@ impl TextHost for CommandsController {
             let outcome = page.search.apply_at(command, cx.now_ms);
             if outcome.text_changed {
                 page.scroll.set_offset(0.0, 0.0);
+            }
+            return Some(outcome);
+        }
+        if target == LAUNCHER {
+            let launcher = self.launcher.as_mut()?;
+            let outcome = launcher.query.apply_at(command, cx.now_ms);
+            if outcome.text_changed {
+                launcher.refilter();
             }
             return Some(outcome);
         }
@@ -2216,6 +2473,15 @@ impl TextHost for CommandsController {
                 None => false,
             };
         }
+        if target == LAUNCHER {
+            return match &mut self.launcher {
+                Some(launcher) => {
+                    launcher.query.set_preedit(text, cursor);
+                    true
+                }
+                None => false,
+            };
+        }
         if let Some(picker) = &mut self.ref_picker {
             picker.query.set_preedit(text, cursor);
             return true;
@@ -2246,6 +2512,19 @@ impl TextHost for CommandsController {
             let page = self.settings_page.as_mut()?;
             let changed = page.search.text() != value;
             page.search.set_text(value);
+            return Some(TextEditOutcome {
+                text_changed: changed,
+                selection_changed: true,
+                ..TextEditOutcome::default()
+            });
+        }
+        if target == LAUNCHER {
+            let launcher = self.launcher.as_mut()?;
+            let changed = launcher.query.text() != value;
+            launcher.query.set_text(value);
+            if changed {
+                launcher.refilter();
+            }
             return Some(TextEditOutcome {
                 text_changed: changed,
                 selection_changed: true,

@@ -9,9 +9,12 @@ use quark_ui::element::ScrollbarVisibility;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
 use super::rows::{self, Row, RowCache};
+use super::smart_sort::{Finish, SmartSort, SortStatus};
 
 use crate::app::text_targets::{SIDEBAR_FILTER, TextCx, TextHost};
-use crate::contracts::commands::{CommandsAction, RefPickerRequest, SettingsSnapshot, ToastUpdate};
+use crate::contracts::commands::{
+    CommandsAction, RefPickerRequest, SettingsSnapshot, ToastKind, ToastUpdate,
+};
 use crate::contracts::navigation::{
     CompareField, HistoryRequest, NavigationAction, NavigationEffect, NavigationEvent,
     RepositoryChangeKind, RepositoryContext, RepositoryRevision, RepositorySnapshot,
@@ -192,6 +195,7 @@ pub struct NavigationController {
     avatars_requested: HashSet<String>,
     scrollbars: [ScrollbarVisibility; 2],
     watched_worktree: Option<PathBuf>,
+    smart: SmartSort,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -239,6 +243,7 @@ impl Default for NavigationController {
             avatars_requested: HashSet::new(),
             scrollbars: Default::default(),
             watched_worktree: None,
+            smart: SmartSort::default(),
         }
     }
 }
@@ -296,6 +301,20 @@ impl NavigationController {
 
     pub fn mode(&self) -> SidebarMode {
         self.mode
+    }
+
+    pub fn smart_sort_active(&self) -> bool {
+        self.smart.enabled() && self.mode == SidebarMode::List
+    }
+
+    pub fn smart_sort_status(&self) -> SortStatus {
+        self.smart.status()
+    }
+
+    fn smart_order(&self) -> Option<&Rc<[u32]>> {
+        self.smart
+            .order()
+            .filter(|_| self.mode == SidebarMode::List)
     }
 
     pub fn history(&self) -> &HistoryState {
@@ -609,6 +628,7 @@ impl NavigationController {
     }
 
     fn ensure_rows(&mut self) {
+        self.rows.set_order(self.smart.order().cloned());
         match &self.manifest {
             Some(manifest) => self.rows.ensure(
                 &manifest.files,
@@ -753,7 +773,12 @@ impl NavigationController {
                 .find(|f| f.key == s.key)
                 .or_else(|| by_path(&s.path))
         });
-        let target = preferred.or(current).unwrap_or(&files[0]);
+        let first = self
+            .smart_order()
+            .and_then(|order| order.first())
+            .and_then(|&index| files.get(index as usize))
+            .unwrap_or(&files[0]);
+        let target = preferred.or(current).unwrap_or(first);
         let key = target.key;
         let unchanged = self.selection.as_ref().is_some_and(|s| s.key == key)
             && preferred.is_none()
@@ -979,6 +1004,7 @@ impl NavigationController {
         self.resolved = [None, None];
         self.compare_requested = false;
         self.filter.set_text("");
+        self.smart.reset();
         let mut reduction = Reduction::changed()
             .effect(NavigationEffect::SyncRepository(SyncRepositoryRequest {
                 path: path.to_path_buf(),
@@ -1098,6 +1124,7 @@ impl NavigationController {
             .is_none_or(|m| m.generation != manifest.generation);
         self.manifest = Some(manifest.clone());
         self.rows.invalidate();
+        let request = self.smart.refresh(manifest);
         if generation_changed {
             self.scroll_px = 0.0;
             self.marked.clear();
@@ -1109,7 +1136,63 @@ impl NavigationController {
                 ];
             }
         }
-        self.reconcile_selection(generation_changed)
+        let mut reduction = self.reconcile_selection(generation_changed);
+        if let Some(request) = request {
+            reduction = reduction.intent(Intent::RankFiles(Rc::new(request)));
+        }
+        reduction
+    }
+
+    fn toggle_smart_sort(&mut self) -> Reduction {
+        let enable = !self.smart_sort_active();
+        self.smart.set_enabled(enable);
+        self.mode = SidebarMode::List;
+        self.scroll_px = 0.0;
+        let mut reduction = Reduction::changed();
+        if let Some(manifest) = self.manifest.clone()
+            && let Some(request) = self.smart.refresh(&manifest)
+        {
+            reduction = reduction.intent(Intent::RankFiles(Rc::new(request)));
+        }
+        self.reveal_selected();
+        reduction
+    }
+
+    fn files_ranked(&mut self, job: JobId, ranking: Result<Vec<u32>, String>) -> Reduction {
+        match self.smart.finish(job, ranking, self.manifest.as_deref()) {
+            Finish::Stale | Finish::Cached => Reduction::default(),
+            Finish::Applied => {
+                self.reveal_selected();
+                Reduction::changed()
+            }
+            Finish::Failed(message) => {
+                tracing::warn!(%message, "smart sort ranking failed");
+                Reduction::changed().intent(Intent::Toast(ToastUpdate::Show {
+                    id: None,
+                    kind: ToastKind::Error,
+                    message: "Smart sort fell back to path ranking".to_owned(),
+                    description: Some(message),
+                }))
+            }
+        }
+    }
+
+    fn rank_unavailable(&mut self, job: JobId) -> Reduction {
+        if !self.smart.unavailable(job) {
+            return Reduction::default();
+        }
+        let reduction = Reduction::changed();
+        if !self.smart.first_notice() {
+            return reduction;
+        }
+        reduction.intent(Intent::Toast(ToastUpdate::Show {
+            id: None,
+            kind: ToastKind::Info,
+            message: "Smart sort is ranking by path".to_owned(),
+            description: Some(
+                "Add an AI key under Settings \u{2192} Clankers to rank files with AI.".to_owned(),
+            ),
+        }))
     }
 
     fn set_tab(&mut self, tab: SidebarTab) -> Reduction {
@@ -1440,6 +1523,7 @@ impl NavigationController {
                 self.reveal_selected();
                 Reduction::changed()
             }
+            A::ToggleSmartSort => self.toggle_smart_sort(),
             A::ToggleSidebar => {
                 self.visible = !self.visible;
                 Reduction::changed()
@@ -1543,6 +1627,7 @@ impl NavigationController {
                 }
                 self.compare_intent(cx)
             }
+            NavigationEvent::FilesRanked { job, ranking } => self.files_ranked(job, ranking),
         }
     }
 
@@ -1562,6 +1647,7 @@ impl NavigationController {
                 self.select(selected.key, SelectionOrigin::Viewport)
             }
             Intent::InvalidateRepository => self.sync(RepositorySyncReason::Dirty),
+            Intent::RankFilesUnavailable(job) => self.rank_unavailable(*job),
             Intent::SettingsChanged(settings) => match settings.settings.last_compare.as_ref() {
                 Some(last) if last.renderer != self.compare.renderer => {
                     self.compare.renderer = last.renderer;

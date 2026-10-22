@@ -13,6 +13,7 @@ use quark_ui::virtual_list::virtual_list_window;
 use super::NavigationController;
 use super::row_actions::{file_row_actions, group_action, selection_actions};
 use super::rows::{self, Row};
+use super::smart_sort::SortStatus;
 use super::state::{ListMetrics, RepoStatus};
 use crate::app::commands::keymap::WORKSPACE_CONTEXT;
 use crate::app::icons;
@@ -246,12 +247,57 @@ fn filter_field(
     } else {
         ShellAction::FocusLogical(Some(LogicalFocus::Sidebar)).into()
     };
+    let sort = (tab == SidebarTab::Files).then(|| smart_sort_toggle(nav, theme));
     view! {
-        <div class="w-full shrink-0" px={tokens::scaled(Sp::SM, scale)} py={tokens::scaled(Sp::XS, scale)}>
-            <div class="relative w-full" on:key:escape={escape}>
+        <div
+            class="flex-row items-center w-full shrink-0"
+            px={tokens::scaled(Sp::SM, scale)}
+            py={tokens::scaled(Sp::XS, scale)}
+            gap={tokens::scaled(Sp::XS, scale)}
+        >
+            <div class="relative flex-1" min_w={0.0} on:key:escape={escape}>
                 {field}
                 {?ring}
             </div>
+            {?sort}
+        </div>
+    }
+}
+
+fn smart_sort_toggle(nav: &NavigationController, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let active = nav.smart_sort_active();
+    let status = nav.smart_sort_status();
+    let tooltip = if active {
+        format!("Smart sort: {}", status.describe())
+    } else {
+        "Smart sort: most important files first".to_owned()
+    };
+    let (svg, color) = match (active, status) {
+        (true, SortStatus::Ranking) => (lucide::LOADER, tc.text_muted),
+        (true, _) => (lucide::SPARKLES, tc.accent),
+        (false, _) => (lucide::SPARKLES, tc.icon),
+    };
+    let control = tokens::scaled(Layout::CONTROL_SM_H, scale);
+    view! {
+        <div
+            class="flex-row items-center justify-center shrink-0"
+            w={control}
+            h={control}
+            rounded={theme.metrics.control_radius}
+            bg={if active { tc.ghost_element_selected } else { Color::TRANSPARENT }}
+            hover_bg={tc.ghost_element_hover}
+            cursor={CursorHint::Pointer}
+            id="sidebar.smart-sort"
+            test_id="sidebar.smart-sort"
+            role="checkbox"
+            aria-label="Smart sort"
+            aria-checked={active}
+            tooltip={tooltip}
+            on:click={NavigationAction::ToggleSmartSort}
+        >
+            <icon svg={svg} size={Ico::SM} color={color} />
         </div>
     }
 }

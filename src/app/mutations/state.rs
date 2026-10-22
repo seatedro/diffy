@@ -22,9 +22,9 @@ use crate::contracts::commands::{
 use crate::contracts::mutations::{
     ConfirmedMutation, FileOperationRequest, GenerateCommitMessageRequest, MutationSelection,
     MutationSource, MutationSourceKey, MutationsAction, MutationsEffect, MutationsEvent,
-    PatchOperationRequest, StagedDigest,
+    PatchOperationRequest, RankFilesJob, StagedDigest,
 };
-use crate::contracts::navigation::RepositoryContext;
+use crate::contracts::navigation::{RankFilesRequest, RepositoryContext};
 use crate::contracts::review::Secret;
 use crate::contracts::shared::{FileKey, FileRevision, JobId, SharedContext, Side, SourceTarget};
 use crate::contracts::shell::{Action, Controller, Intent, LogicalFocus, Reduction};
@@ -896,19 +896,7 @@ impl MutationsController {
         let Some(repo) = cx.repository.as_ref() else {
             return error("Open a repository before generating a commit message.");
         };
-        let key = |provider: Provider| {
-            match provider {
-                Provider::OpenAi => self.ai.openai.clone(),
-                Provider::Anthropic => self.ai.anthropic.clone(),
-            }
-            .filter(|key| !key.is_empty())
-            .map(|key| (provider, key))
-        };
-        let chosen = match cx.settings.settings.ai_provider {
-            Some(provider) => key(provider),
-            None => key(Provider::Anthropic).or_else(|| key(Provider::OpenAi)),
-        };
-        let Some((provider, api_key)) = chosen else {
+        let Some((provider, api_key)) = self.ai_credentials(cx) else {
             return error(match cx.settings.settings.ai_provider {
                 Some(provider) => format!(
                     "Add a {} key under Settings \u{2192} Clankers first.",
@@ -962,6 +950,34 @@ impl MutationsController {
                 subject_override,
             },
         )))
+    }
+
+    fn ai_credentials(&self, cx: &SharedContext) -> Option<(Provider, Secret)> {
+        let key = |provider: Provider| {
+            match provider {
+                Provider::OpenAi => self.ai.openai.clone(),
+                Provider::Anthropic => self.ai.anthropic.clone(),
+            }
+            .filter(|key| !key.is_empty())
+            .map(|key| (provider, key))
+        };
+        match cx.settings.settings.ai_provider {
+            Some(provider) => key(provider),
+            None => key(Provider::Anthropic).or_else(|| key(Provider::OpenAi)),
+        }
+    }
+
+    fn rank_files(&self, request: &RankFilesRequest, cx: &SharedContext) -> Reduction {
+        match self.ai_credentials(cx) {
+            Some((provider, api_key)) => {
+                Reduction::default().effect(MutationsEffect::RankFiles(Box::new(RankFilesJob {
+                    request: request.clone(),
+                    provider,
+                    api_key,
+                })))
+            }
+            None => Reduction::default().intent(Intent::RankFilesUnavailable(request.job)),
+        }
     }
 
     fn ai_current(&self, generation: u64) -> bool {
@@ -1980,6 +1996,7 @@ impl Controller for MutationsController {
                 self.sync_steering(&snapshot.settings.ai_steering_prompt);
                 Reduction::changed()
             }
+            Intent::RankFiles(request) => self.rank_files(request, cx),
             Intent::ActivateWorkspace { .. } => {
                 self.reset();
                 self.commit.set_text("");

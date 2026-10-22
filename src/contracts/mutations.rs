@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::ai::Provider;
-use crate::contracts::navigation::RepositoryRevision;
+use crate::contracts::navigation::{RankFilesRequest, RepositoryRevision};
 use crate::contracts::review::Secret;
 use crate::contracts::shared::{FileKey, FileRevision, HunkTarget, JobId, SourceTarget};
 use crate::core::vcs::model::{
@@ -233,6 +233,13 @@ pub struct GenerateCommitMessageRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankFilesJob {
+    pub request: RankFilesRequest,
+    pub provider: Provider,
+    pub api_key: Secret,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationsEffect {
     ApplyFileOperation(FileOperationRequest),
     LoadMutationSource(MutationSourceKey),
@@ -296,6 +303,7 @@ pub enum MutationsEffect {
         kind: AiKeyKind,
     },
     GenerateCommitMessage(Box<GenerateCommitMessageRequest>),
+    RankFiles(Box<RankFilesJob>),
     CheckStagedDiff {
         generation: u64,
         repo_path: PathBuf,

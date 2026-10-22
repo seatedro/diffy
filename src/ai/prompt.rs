@@ -12,6 +12,8 @@ Only return the commit message. Do not return anything else.";
 /// Upper bound on the diff payload sent to the model.
 pub const MAX_DIFF_BYTES: usize = 20_000;
 
+pub const COMMIT_MAX_TOKENS: u32 = 1_024;
+
 /// Assemble the single user-role message sent to the model: steering prompt,
 /// optional subject hint the user has already typed, then the diff.
 pub fn build_user_message(

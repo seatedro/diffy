@@ -1391,6 +1391,7 @@ fn command_detail(id: &str) -> Option<&'static str> {
         "review.open_pull_request" => "Load a GitHub pull request by URL",
         ids::TOGGLE_SIDEBAR => "Show or hide the file list",
         ids::TOGGLE_FILE_TREE => "Switch between a flat list and folders",
+        "view.smart_sort" => "List the most important changed files first",
         "view.expand_folders" => "Open every folder in the file tree",
         "view.collapse_folders" => "Close every folder in the file tree",
         "view.files_tab" => "Changed files in the sidebar",
@@ -1509,6 +1510,11 @@ pub fn builtin_commands(settings: &Settings) -> Vec<CommandDescriptor> {
             NavigationAction::ToggleSidebarMode,
         )
         .shortcut(S::ToggleFileTree),
+        D::new(
+            "view.smart_sort",
+            "Toggle Smart Sort",
+            NavigationAction::ToggleSmartSort,
+        ),
         D::new(
             "view.expand_folders",
             "Expand All Folders",

@@ -51,6 +51,7 @@ struct RowKey {
 #[derive(Debug, Default)]
 pub struct RowCache {
     key: Option<RowKey>,
+    order: Option<Rc<[u32]>>,
     rows: Vec<Row>,
     file_rows: Vec<usize>,
     sorted: Option<(usize, Vec<u32>)>,
@@ -62,6 +63,18 @@ pub struct RowCache {
 impl RowCache {
     pub fn invalidate(&mut self) {
         self.key = None;
+    }
+
+    pub fn set_order(&mut self, order: Option<Rc<[u32]>>) {
+        let same = match (&self.order, &order) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.order = order;
+            self.key = None;
+        }
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -99,11 +112,17 @@ impl RowCache {
             self.build_filtered(files, filter);
         } else if mode == SidebarMode::Tree {
             self.build_tree(files, key.files, expanded);
-        } else if files.iter().any(staged_bucket) {
-            self.build_sections(files);
         } else {
-            self.rows
-                .extend((0..files.len() as u32).map(|file| Row::File { file, depth: 0 }));
+            let order: Vec<u32> = match self.order.as_deref() {
+                Some(order) if order.len() == files.len() => order.to_vec(),
+                _ => (0..files.len() as u32).collect(),
+            };
+            if files.iter().any(staged_bucket) {
+                self.build_sections(files, &order);
+            } else {
+                self.rows
+                    .extend(order.into_iter().map(|file| Row::File { file, depth: 0 }));
+            }
         }
         if let Some(file) = selected
             && let Some(at) = self
@@ -163,17 +182,17 @@ impl RowCache {
         );
     }
 
-    fn build_sections(&mut self, files: &[ManifestFile]) {
+    fn build_sections(&mut self, files: &[ManifestFile], order: &[u32]) {
         let mut groups: [Vec<u32>; SECTION_ORDER.len()] = Default::default();
-        for (index, file) in files.iter().enumerate() {
-            let bucket = file
+        for &index in order {
+            let bucket = files[index as usize]
                 .buckets
                 .iter()
                 .copied()
                 .reduce(dominant)
                 .unwrap_or(ChangeBucket::WorkingCopy);
             let slot = SECTION_ORDER.iter().position(|b| *b == bucket).unwrap_or(0);
-            groups[slot].push(index as u32);
+            groups[slot].push(index);
         }
         for (bucket, group) in SECTION_ORDER.into_iter().zip(groups) {
             if group.is_empty() {

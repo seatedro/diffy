@@ -2,7 +2,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::ai::{self, GenerateRequest, StreamMessage};
-use crate::contracts::mutations::{GenerateCommitMessageRequest, MutationsEvent, StagedDigest};
+use crate::contracts::mutations::{
+    GenerateCommitMessageRequest, MutationsEvent, RankFilesJob, StagedDigest,
+};
 use crate::contracts::review::Secret;
 use crate::core::error::Result;
 use crate::core::vcs::discovery;
@@ -86,6 +88,7 @@ impl MutationsServices {
             provider,
             api_key: api_key.into_inner(),
             user_message,
+            max_tokens: ai::COMMIT_MAX_TOKENS,
         });
 
         let mut chunk_count: usize = 0;
@@ -147,6 +150,54 @@ impl MutationsServices {
 }
 
 impl MutationsServices {
+    pub fn rank_files(&self, job: RankFilesJob) -> std::result::Result<Vec<u32>, String> {
+        let RankFilesJob {
+            request,
+            provider,
+            api_key,
+        } = job;
+        let started = Instant::now();
+        let (user_message, sent) = ai::rank::build_rank_message(&request.files);
+        if sent == 0 {
+            return Err("No files to rank.".to_owned());
+        }
+        tracing::info!(
+            job = request.job.0,
+            provider = provider.label(),
+            files = request.files.len(),
+            sent,
+            bytes = user_message.len(),
+            "ai.rank: dispatch"
+        );
+        let rx = ai::run_streaming(GenerateRequest {
+            provider,
+            api_key: api_key.into_inner(),
+            user_message,
+            max_tokens: ai::rank::RANK_MAX_TOKENS,
+        });
+        let mut reply = String::new();
+        loop {
+            match rx.recv() {
+                Ok(StreamMessage::Chunk(chunk)) => reply.push_str(&chunk),
+                Ok(StreamMessage::Finished) => break,
+                Ok(StreamMessage::Failed(message)) => {
+                    tracing::warn!(job = request.job.0, %message, "ai.rank: request failed");
+                    return Err(message);
+                }
+                Err(_) => return Err("AI worker exited unexpectedly".to_owned()),
+            }
+        }
+        let ranking = ai::rank::parse_ranking(&reply, sent);
+        tracing::info!(
+            job = request.job.0,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            ranked = ranking.as_ref().map_or(0, Vec::len),
+            sent,
+            "ai.rank: finished"
+        );
+        ranking
+    }
+
     pub fn staged_digest(&self, repo_path: &Path, has_staged: bool) -> Result<StagedDigest> {
         Ok(StagedDigest::of(
             read_commit_diff(repo_path, has_staged)?.as_bytes(),

@@ -17,8 +17,8 @@ use crate::app::shell::Slot;
 use crate::app::text_targets::{self, SIDEBAR, SIDEBAR_FILTER, TextCx, TextHost};
 use crate::contracts::commands::CommandsEffect;
 use crate::contracts::navigation::{
-    NavigationAction, NavigationEffect, NavigationEvent, RepositorySyncReason, SelectedFile,
-    SelectionOrigin, SidebarTab,
+    NavigationAction, NavigationEffect, NavigationEvent, RankFilesRequest, RepositorySyncReason,
+    SelectedFile, SelectionOrigin, SidebarTab,
 };
 use crate::contracts::shared::{CompareGeneration, FileKey, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
@@ -763,4 +763,119 @@ fn history_requests_visible_avatars_once_and_names_the_parent() {
         ui.app().nav.compare_labels(),
         ("c3c3c3c".to_owned(), "d4".to_owned())
     );
+}
+
+fn row_order(ui: &Nav, keys: &[u64]) -> Vec<u64> {
+    let mut rows: Vec<(f32, u64)> = keys
+        .iter()
+        .map(|&key| (ui.find(file_node(key)).bounds.y, key))
+        .collect();
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rows.into_iter().map(|(_, key)| key).collect()
+}
+
+fn rank_requests(ui: &Nav) -> Vec<Rc<RankFilesRequest>> {
+    ui.app()
+        .intents
+        .iter()
+        .filter_map(|intent| match intent {
+            Intent::RankFiles(request) => Some(request.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn toasts(ui: &Nav) -> usize {
+    ui.app()
+        .intents
+        .iter()
+        .filter(|intent| matches!(intent, Intent::Toast(_)))
+        .count()
+}
+
+fn mixed_files() -> Vec<crate::contracts::viewport::pipeline::ManifestFile> {
+    vec![
+        fixtures::file(1, "README.md"),
+        fixtures::file(2, "src/view/panel.rs"),
+        fixtures::file(3, "Cargo.lock"),
+        fixtures::file(4, "src/main.rs"),
+        fixtures::file(5, "src/model/store.rs"),
+    ]
+}
+
+#[test]
+fn smart_sort_orders_by_role_then_by_the_model_and_caches_it() {
+    let mut ui = nav_harness();
+    open(&mut ui, mixed_files());
+    let keys = [1, 2, 3, 4, 5];
+    assert_eq!(row_order(&ui, &keys), [1, 2, 3, 4, 5]);
+    let control = ui.find(By::role_name(Role::CheckBox, "Smart sort")).bounds;
+    let field = ui
+        .find(By::role_name(Role::SearchInput, "Filter files"))
+        .bounds;
+    let row = ui.find(file_node(1)).bounds;
+    assert!(control.x >= field.x + field.width);
+    assert!(control.x + control.width <= 320.0);
+    assert!(control.y < field.y + field.height && field.y < control.y + control.height);
+    assert!(row.y >= control.y + control.height);
+    let toggle = By::test_id("sidebar.smart-sort");
+
+    ui.click_node(toggle.clone());
+    assert_eq!(row_order(&ui, &keys), [4, 5, 2, 1, 3]);
+    let requests = rank_requests(&ui);
+    assert_eq!(requests.len(), 1);
+    let sent: Vec<&str> = requests[0].files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        sent,
+        ["src/main.rs", "src/model/store.rs", "src/view/panel.rs"]
+    );
+
+    ui.app_mut().event(NavigationEvent::FilesRanked {
+        job: requests[0].job,
+        ranking: Ok(vec![2, 0]),
+    });
+    ui.frame();
+    assert_eq!(row_order(&ui, &keys), [2, 4, 5, 1, 3]);
+
+    ui.click_node(toggle.clone());
+    assert_eq!(row_order(&ui, &keys), [1, 2, 3, 4, 5]);
+    ui.click_node(toggle);
+    assert_eq!(row_order(&ui, &keys), [2, 4, 5, 1, 3]);
+    assert_eq!(
+        rank_requests(&ui).len(),
+        1,
+        "cached ranking skips the model"
+    );
+}
+
+#[test]
+fn smart_sort_without_ai_keeps_role_order_and_says_so_once() {
+    let mut ui = nav_harness();
+    open(&mut ui, mixed_files());
+    ui.click_node(By::test_id("sidebar.smart-sort"));
+    let job = rank_requests(&ui)[0].job;
+    ui.app_mut().inject(Intent::RankFilesUnavailable(job));
+    ui.frame();
+    assert_eq!(row_order(&ui, &[1, 2, 3, 4, 5]), [4, 5, 2, 1, 3]);
+    assert_eq!(toasts(&ui), 1);
+
+    publish(&mut ui, fixtures::manifest(2, mixed_files()[1..].to_vec()));
+    let job = rank_requests(&ui).last().map(|r| r.job).expect("request");
+    ui.app_mut().inject(Intent::RankFilesUnavailable(job));
+    assert_eq!(toasts(&ui), 1);
+}
+
+#[test]
+fn smart_sort_failure_toasts_and_keeps_role_order() {
+    let mut ui = nav_harness();
+    open(&mut ui, mixed_files());
+    ui.click_node(By::test_id("sidebar.smart-sort"));
+    let job = rank_requests(&ui)[0].job;
+    ui.app_mut().event(NavigationEvent::FilesRanked {
+        job,
+        ranking: Err("rate limited".to_owned()),
+    });
+    ui.frame();
+    assert_eq!(row_order(&ui, &[1, 2, 3, 4, 5]), [4, 5, 2, 1, 3]);
+    assert_eq!(toasts(&ui), 1);
 }

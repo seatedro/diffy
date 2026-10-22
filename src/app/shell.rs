@@ -287,7 +287,9 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             | Intent::GrammarAvailable(_)
             | Intent::ChooseDefinition(_)
             | Intent::RequestConfirmation(_)
-            | Intent::Toast(_) => false,
+            | Intent::Toast(_)
+            | Intent::RankFiles(_)
+            | Intent::RankFilesUnavailable(_) => false,
         }
     }
 

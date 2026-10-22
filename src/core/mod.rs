@@ -1,5 +1,6 @@
 pub mod compare;
 pub mod error;
+pub mod file_rank;
 pub mod forge;
 pub mod frecency;
 pub mod http;

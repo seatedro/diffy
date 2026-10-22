@@ -447,6 +447,30 @@ pub enum ReviewEvent {
     },
 }
 
+impl ReviewEvent {
+    pub fn account_scoped(&self) -> bool {
+        match self {
+            Self::GitHub { response, .. } => matches!(
+                **response,
+                GitHubResponse::UserFetched(_) | GitHubResponse::UserFetchFailed { .. }
+            ),
+            Self::DeviceFlowStarted { .. }
+            | Self::DeviceFlowStartFailed { .. }
+            | Self::DeviceFlowCompleted { .. }
+            | Self::DeviceFlowFailed { .. }
+            | Self::TokenLoaded { .. }
+            | Self::TokenLoadFailed { .. }
+            | Self::TokenSaveFailed { .. }
+            | Self::AvatarFetched { .. }
+            | Self::AvatarFetchFailed { .. } => true,
+            Self::SessionLoaded { .. }
+            | Self::SessionLoadFailed { .. }
+            | Self::SessionSaved { .. }
+            | Self::SessionSaveFailed { .. } => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReviewContext {
     pub account: AccountEpoch,

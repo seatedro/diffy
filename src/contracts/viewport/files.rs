@@ -30,8 +30,13 @@ pub fn head_revision(cx: &SharedContext) -> Option<(PathBuf, RevisionId)> {
         _ if snapshot.location.kind == VcsKind::JJ => "@".to_owned(),
         _ => "HEAD".to_owned(),
     };
+    let repo_path = cx
+        .manifest
+        .as_deref()
+        .and_then(|manifest| manifest.repo_path.clone())
+        .unwrap_or_else(|| snapshot.path.clone());
     Some((
-        snapshot.path.clone(),
+        repo_path,
         RevisionId {
             backend: snapshot.location.kind,
             id,

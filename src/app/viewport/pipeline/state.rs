@@ -216,6 +216,7 @@ impl PipelineController {
         }
         let mut manifest = (*result.manifest).clone();
         manifest.working_tree = matches!(active.intent.request.spec, VcsCompareSpec::WorkingCopy);
+        manifest.repo_path = Some(active.intent.repo_path.clone());
         if manifest.working_tree {
             tag_buckets(&mut manifest, cx);
         }

@@ -122,6 +122,7 @@ pub struct CompareManifestSnapshot {
     pub files: Arc<[ManifestFile]>,
     pub totals: FileStats,
     pub working_tree: bool,
+    pub repo_path: Option<PathBuf>,
 }
 
 impl CompareManifestSnapshot {

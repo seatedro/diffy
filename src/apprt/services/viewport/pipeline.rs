@@ -172,6 +172,7 @@ pub fn compare_result(
             files: files.into(),
             totals: output.totals(),
             working_tree: false,
+            repo_path: None,
         }),
         entries: output.entries.into(),
         positions,

@@ -16,7 +16,7 @@ use quark_ui::theme::Theme;
 
 use super::keys;
 use super::state::{InteractionController, Phase};
-use crate::app::commands::keymap::{self, WORKSPACE_CONTEXT};
+use crate::app::commands::keymap::{self, workspace_context};
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT};
 use crate::app::tokens::{self, Sp, TextStyle};
@@ -93,7 +93,8 @@ fn render(
     {
         welcome(slot, width, body_h, theme)
     } else {
-        diff_area(interaction, width, body_h, Some(decorator), cx)
+        let reviewing = slot.shared.review.is_some();
+        diff_area(interaction, width, body_h, Some(decorator), reviewing, cx)
     };
     let theme = cx.theme;
     view! {
@@ -242,6 +243,7 @@ fn diff_area(
     width: f32,
     height: f32,
     decorator: Option<Rc<dyn DiffDecorator>>,
+    reviewing: bool,
     cx: &mut ViewContext,
 ) -> AnyElement {
     let theme = cx.theme;
@@ -315,7 +317,7 @@ fn diff_area(
     let list_box = div()
         .w(width)
         .h(list_h)
-        .key_context(WORKSPACE_CONTEXT)
+        .key_context(workspace_context(reviewing))
         .on_key("escape", act(InteractionAction::ClearSelection))
         .test_id("diff.lines")
         .child(list);

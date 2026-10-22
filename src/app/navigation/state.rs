@@ -1231,6 +1231,27 @@ impl NavigationController {
         }))
     }
 
+    fn mark_viewed_and_next(&mut self) -> Reduction {
+        let Some(current) = self.selected_key().and_then(|key| self.file_index(key)) else {
+            return Reduction::default();
+        };
+        let path = |nav: &Self, index: usize| nav.files()[index].paths.display_path().into_owned();
+        self.viewed.insert(path(self, current));
+        let count = self.files().len();
+        let next = (1..count)
+            .map(|step| (current + step) % count)
+            .find(|&index| !self.viewed.contains(&path(self, index)));
+        match next {
+            Some(index) => {
+                let key = self.files()[index].key;
+                let mut reduction = self.select(key, SelectionOrigin::Command);
+                reduction.changed = true;
+                reduction
+            }
+            None => Reduction::changed(),
+        }
+    }
+
     fn move_history_selection(&mut self, delta: i32) -> Reduction {
         let query = self.filter.text().to_owned();
         let Some(all) = self.history_commits() else {
@@ -1527,6 +1548,7 @@ impl NavigationController {
                 }
                 Reduction::changed()
             }
+            A::MarkViewedAndNext => self.mark_viewed_and_next(),
             A::SetFilter(query) => {
                 self.filter.set_text(query);
                 self.scroll_px = 0.0;

@@ -42,6 +42,7 @@ pub enum InteractionAction {
     ScrollToTop,
     ScrollToBottom,
     MoveRowCursor(i32),
+    GoToThread(i32),
     GoToNextHunk,
     GoToPreviousHunk,
     GoToNextFile,

@@ -159,6 +159,7 @@ pub enum Intent {
     SetReviewTarget(Option<Rc<ReviewContext>>),
     OpenPullRequest { url: String },
     RequestAnnotation(SourceTarget),
+    FocusReviewCard(Option<crate::contracts::review::CardKey>),
     OpenTextCompare,
     AccountChanged,
     GrammarAvailable(GrammarAvailability),

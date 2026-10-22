@@ -643,6 +643,7 @@ pub struct CardModel {
     pub edit_node: Option<String>,
     pub delete_node: Option<String>,
     pub confirm_delete: bool,
+    pub focused: bool,
     pub failure: Option<String>,
     pub retry_draft: Option<crate::core::review::ReviewDraftId>,
     pub file_level: Option<FileKey>,
@@ -919,6 +920,7 @@ fn thread_model(
     };
     CardModel {
         id: annotation_id(&key),
+        focused: false,
         target: locate(thread.anchor.as_ref(), cx),
         path: thread.path().unwrap_or_default().to_owned(),
         accessible: format!(
@@ -967,6 +969,7 @@ fn draft_model(draft: &ReviewDraft, cx: &SharedContext) -> (CardModel, Vec<Comme
     };
     let model = CardModel {
         id: annotation_id(&key),
+        focused: false,
         target: locate(draft.anchor.as_ref(), cx),
         path: draft
             .anchor
@@ -1139,6 +1142,7 @@ impl ReviewPresentation {
             };
             cards.push(CardModel {
                 id: annotation_id(&key),
+                focused: false,
                 target,
                 path,
                 accessible,
@@ -1180,6 +1184,9 @@ impl ReviewPresentation {
                 })
             })
             .collect::<Vec<_>>();
+        for card in &mut cards {
+            card.focused = controller.focused_card.as_ref() == Some(&card.key);
+        }
         if let Some(target) = &controller.confirm_delete {
             for card in &mut cards {
                 card.confirm_delete = match (target, &card.key) {
@@ -1512,7 +1519,7 @@ fn card_view(
             class="flex-col"
             w={Px(width)}
             bg={if pending { tc.surface } else { tc.elevated_surface }}
-            border={if pending { tc.text_muted } else { tc.border }}
+            border={if card.focused { tc.accent } else if pending { tc.text_muted } else { tc.border }}
             rounded={Rad::LG}
             p={Sp::SM}
             gap={Sp::XS}

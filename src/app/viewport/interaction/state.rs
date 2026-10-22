@@ -28,6 +28,7 @@ use crate::app::text_targets::{
 use crate::contracts::commands::{CommandDescriptor, CommandSource};
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{SelectedFile, SelectionOrigin};
+use crate::contracts::review::CardKey;
 use crate::contracts::shared::{
     CompareGeneration, FileKey, FileRevision, HunkTarget, SharedContext, SourceTarget,
 };
@@ -80,6 +81,8 @@ pub struct InteractionController {
     pub(super) viewport_height: f32,
     pub(super) persisted: Option<PersistedViewport>,
     pub(super) review_revision: Option<(u64, u32)>,
+    review: Option<Rc<ReviewPresentation>>,
+    thread_cursor: Option<CardKey>,
     pub(super) viewport_width: f32,
     pub(super) continuous: bool,
     pub(super) source_requests: Vec<(FileKey, SourcePurpose)>,
@@ -139,6 +142,8 @@ impl Default for InteractionController {
             viewport_height: 0.0,
             persisted: None,
             review_revision: None,
+            review: None,
+            thread_cursor: None,
             viewport_width: 0.0,
             continuous: false,
             source_requests: Vec::new(),
@@ -244,7 +249,14 @@ impl InteractionController {
         Some(hunk_target(&self.sources.hunk_at(unit, hunk)?))
     }
 
-    pub fn sync_review(&mut self, review: &ReviewPresentation) {
+    pub fn sync_review(&mut self, review: &Rc<ReviewPresentation>) {
+        if !self
+            .review
+            .as_ref()
+            .is_some_and(|held| Rc::ptr_eq(held, review))
+        {
+            self.review = Some(review.clone());
+        }
         let width = self.viewport_width;
         let Some(diff) = &mut self.diff else {
             return;
@@ -903,6 +915,65 @@ impl InteractionController {
     }
 
     pub fn reveal_definition(&mut self, point: SourcePoint, len: u32) -> Option<Reduction> {
+        let reduction = self.reveal_source(point)?;
+        self.diff.as_mut()?.select_source(point, len);
+        Some(self.follow(reduction, false))
+    }
+
+    fn go_to_thread(&mut self, delta: i32, cx: &SharedContext) -> Reduction {
+        let Some(review) = self.review.clone() else {
+            return Reduction::default();
+        };
+        let order = |file: FileKey| {
+            cx.manifest
+                .as_ref()
+                .and_then(|manifest| manifest.files.iter().position(|f| f.key == file))
+                .unwrap_or(usize::MAX)
+        };
+        let mut threads: Vec<_> = review
+            .annotations()
+            .iter()
+            .filter(|annotation| matches!(annotation.card, CardKey::Thread(_)))
+            .collect();
+        threads.sort_by_key(|annotation| {
+            (order(annotation.target.file), annotation.target.lines.start)
+        });
+        let Ok(count) = i64::try_from(threads.len()) else {
+            return Reduction::default();
+        };
+        if count == 0 {
+            return Reduction::default();
+        }
+        let current = self.thread_cursor.as_ref().and_then(|card| {
+            threads
+                .iter()
+                .position(|annotation| &annotation.card == card)
+        });
+        let next = match current {
+            Some(index) => (index as i64 + i64::from(delta)).rem_euclid(count) as usize,
+            None if delta < 0 => threads.len() - 1,
+            None => 0,
+        };
+        let annotation = threads[next];
+        self.thread_cursor = Some(annotation.card.clone());
+        let lines = &annotation.target.lines;
+        let point = SourcePoint {
+            file: annotation.target.file,
+            side: annotation.target.side,
+            line: lines.end.saturating_sub(1).max(lines.start),
+            byte: 0,
+        };
+        let mut reduction = match self.reveal_source(point) {
+            Some(reduction) => self.follow(reduction, false),
+            None => Reduction::changed(),
+        };
+        reduction
+            .intents
+            .push(Intent::FocusReviewCard(Some(annotation.card.clone())));
+        reduction
+    }
+
+    fn reveal_source(&mut self, point: SourcePoint) -> Option<Reduction> {
         let live = self
             .diff
             .as_ref()
@@ -924,8 +995,7 @@ impl InteractionController {
         if !diff.reveal_target(DiffTarget::Source(point), RevealAlign::Center) {
             return None;
         }
-        diff.select_source(point, len);
-        Some(self.follow(reduction, false))
+        Some(reduction)
     }
 
     fn follow(&mut self, mut reduction: Reduction, select: bool) -> Reduction {
@@ -1119,7 +1189,7 @@ impl Controller for InteractionController {
     type Action = InteractionAction;
     type Event = InteractionEvent;
 
-    fn reduce_action(&mut self, action: Self::Action, _cx: &SharedContext) -> Reduction {
+    fn reduce_action(&mut self, action: Self::Action, cx: &SharedContext) -> Reduction {
         use InteractionAction as A;
         match action {
             A::Diff(DiffInput(DiffEvent::Key(
@@ -1187,6 +1257,7 @@ impl Controller for InteractionController {
             A::ScrollToTop => self.navigate(DiffKey::Home),
             A::ScrollToBottom => self.navigate(DiffKey::End),
             A::GoToNextHunk => self.navigate(DiffKey::NextHunk),
+            A::GoToThread(delta) => self.go_to_thread(delta, cx),
             A::AnnotateSelection => {
                 let outcome = self.key(DiffKey::Annotate);
                 self.outcome(outcome)

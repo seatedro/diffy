@@ -150,6 +150,7 @@ pub enum NavigationAction {
     ExpandAllFolders,
     CollapseAllFolders,
     ToggleFileViewed(FileKey),
+    MarkViewedAndNext,
     SetFilter(String),
     ClearFilter,
     EscapeFilter,

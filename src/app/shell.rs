@@ -293,6 +293,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 true
             }
             Intent::OpenPullRequest { .. }
+            | Intent::FocusReviewCard(_)
             | Intent::RequestAnnotation(_)
             | Intent::OpenTextCompare
             | Intent::RequestCompare(_)
@@ -349,6 +350,10 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             self.shell.window_title_dirty = false;
             cx.window.set_title(&self.shell.window_title());
         }
+        self.ensure_focus(cx);
+    }
+
+    fn ensure_focus(&mut self, cx: &mut UiContext) {
         if cx.focus().is_none()
             && self.shared.repository.is_some()
             && self.controllers.commands.top_layer().is_none()
@@ -976,6 +981,9 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn event(&mut self, event: &InputEvent, cx: &mut UiContext) -> bool {
         self.tick(cx);
+        if matches!(event, InputEvent::KeyPress(_)) {
+            self.ensure_focus(cx);
+        }
         self.hover_event(event, cx);
         let Some(action) = commands::key_action(&self.controllers, event, cx.focus()) else {
             return false;

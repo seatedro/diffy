@@ -16,7 +16,7 @@ use crate::contracts::commands::{
 };
 use crate::contracts::navigation::SelectionOrigin;
 use crate::contracts::review::{
-    ComposerFormat, GitHubRequest, GitHubResponse, PullRequestComparison, PullRequestRef,
+    CardKey, ComposerFormat, GitHubRequest, GitHubResponse, PullRequestComparison, PullRequestRef,
     ReviewAction, ReviewContext, ReviewEffect, ReviewEvent, ReviewScope, Secret,
 };
 use crate::contracts::shared::{AccountEpoch, JobId, SharedContext, SourceTarget};
@@ -27,7 +27,8 @@ use crate::core::forge::github::{DeviceFlowState, GitHubUser, parse_pr_url};
 use crate::core::forge::github::{PullRequestInfo, PullRequestOverview};
 use crate::core::review::{
     ReviewAnchor, ReviewDecision, ReviewDraftId, ReviewDraftKind, ReviewDraftState,
-    ReviewResolution, ReviewSession, ReviewSessionStatus, ReviewTarget, ReviewThreadId,
+    ReviewResolution, ReviewSession, ReviewSessionStatus, ReviewTarget, ReviewThread,
+    ReviewThreadId,
 };
 use crate::core::syntax::grammar::Grammars;
 use crate::core::vcs::git::WORKDIR_REF;
@@ -207,6 +208,7 @@ pub struct ReviewController {
     pub(super) expanded: HashMap<ReviewThreadId, bool>,
     pub(super) composer: Option<Composer>,
     focus_request: Option<LogicalFocus>,
+    pub(super) focused_card: Option<CardKey>,
     avatars: AvatarCache,
     peeks: HashMap<PullRequestRef, PeekState>,
     pub(super) file_comments: Option<String>,
@@ -233,6 +235,7 @@ impl Default for ReviewController {
             expanded: HashMap::new(),
             composer: None,
             focus_request: None,
+            focused_card: None,
             avatars: AvatarCache::default(),
             peeks: HashMap::new(),
             file_comments: None,
@@ -1786,6 +1789,25 @@ impl ReviewController {
             | ReviewAction::DeleteDraft(_)
             | ReviewAction::ToggleCommentMenu { .. } => Reduction::default(),
             ReviewAction::ToggleThread(id) => self.toggle_thread(id),
+            ReviewAction::ReplyToFocused => match self.focused_thread() {
+                Some(thread) => self.reply_to(thread.id.clone()),
+                None => Reduction::default(),
+            },
+            ReviewAction::ResolveFocused => {
+                let Some(thread) = self.focused_thread() else {
+                    return Reduction::default();
+                };
+                let resolved = thread.status.resolution != ReviewResolution::Resolved;
+                let id = thread.id.clone();
+                self.set_thread_resolved(id, resolved)
+            }
+            ReviewAction::ToggleFocused => match self.focused_thread() {
+                Some(thread) => {
+                    let id = thread.id.clone();
+                    self.toggle_thread(id)
+                }
+                None => Reduction::default(),
+            },
             ReviewAction::SetThreadResolved { id, resolved } => {
                 self.set_thread_resolved(id, resolved)
             }
@@ -2008,6 +2030,13 @@ impl ReviewController {
             }
             Intent::PublishManifest(_) => Reduction::changed(),
             Intent::OpenPullRequest { url } => self.open_pull_request(url.clone()),
+            Intent::FocusReviewCard(card) => {
+                if self.focused_card == *card {
+                    return Reduction::default();
+                }
+                self.focused_card = card.clone();
+                Reduction::changed()
+            }
             Intent::RequestAnnotation(target) => {
                 let mut reduction = self.close_overview();
                 reduction.merge(self.open_composer_at(target.clone(), cx));
@@ -2149,6 +2178,16 @@ impl ReviewController {
                 renderer: saved_renderer(cx),
             },
         }))
+    }
+
+    fn focused_thread(&self) -> Option<&ReviewThread> {
+        let Some(CardKey::Thread(id)) = &self.focused_card else {
+            return None;
+        };
+        self.session()?
+            .threads
+            .iter()
+            .find(|thread| &thread.id == id)
     }
 
     pub(super) fn refresh(&mut self, cx: &SharedContext) {

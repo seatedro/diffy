@@ -15,7 +15,7 @@ use super::row_actions::{file_row_actions, group_action, selection_actions};
 use super::rows::{self, Row};
 use super::smart_sort::SortStatus;
 use super::state::{ListMetrics, RepoStatus, commit_matches};
-use crate::app::commands::keymap::WORKSPACE_CONTEXT;
+use crate::app::commands::keymap::workspace_context;
 use crate::app::icons;
 use crate::app::mutations::{
     Chrome, Control, RowAction, Tone, change_actions, context_menu, operation_log_actions,
@@ -457,7 +457,7 @@ fn files(
             on:scroll={ScrollActionBuilder::new(|lines| Action::from(NavigationAction::ScrollFiles(lines)).into())
                 .with_to_px(|px| Action::from(NavigationAction::ScrollFilesTo(px)).into())}
             focus_ring={SIDEBAR}
-            key_context={WORKSPACE_CONTEXT}
+            key_context={workspace_context(cx.review.is_some())}
             on:key:arrowdown={NavigationAction::SelectNextFile}
             on:key:arrowup={NavigationAction::SelectPreviousFile}
             accessibility_role={if tree { AccessibilityRole::Tree } else { AccessibilityRole::ListBox }}
@@ -1064,7 +1064,7 @@ fn history(
             scrollbar_visibility={nav.history_scrollbar()}
             on:scroll={ScrollActionBuilder::new(|lines| Action::from(NavigationAction::ScrollHistory(lines)).into())}
             focus_ring={SIDEBAR}
-            key_context={WORKSPACE_CONTEXT}
+            key_context={workspace_context(review.active_pull_request().is_some())}
             on:key:arrowdown={NavigationAction::MoveSelection(1)}
             on:key:arrowup={NavigationAction::MoveSelection(-1)}
             accessibility_role={AccessibilityRole::ListBox}

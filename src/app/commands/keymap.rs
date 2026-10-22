@@ -16,10 +16,21 @@ pub type Override = keymap::KeymapOverride<ShortcutCommand>;
 pub type Entry = ShortcutEntry<ShortcutCommand>;
 
 pub const WORKSPACE_CONTEXT: &str = "surface=workspace";
+pub const REVIEW_WORKSPACE_CONTEXT: &str = "surface=workspace mode=review";
+
+pub fn workspace_context(reviewing: bool) -> &'static str {
+    if reviewing {
+        REVIEW_WORKSPACE_CONTEXT
+    } else {
+        WORKSPACE_CONTEXT
+    }
+}
 pub const SETTINGS_CONTEXT: &str = "surface=settings";
 pub const TEXT_CONTEXT: &str = "surface=text";
 
 const WORKSPACE: ShortcutScope = ShortcutScope("surface == workspace");
+const TREE: ShortcutScope = ShortcutScope("surface == workspace && mode != review");
+const REVIEW: ShortcutScope = ShortcutScope("surface == workspace && mode == review");
 const SETTINGS: ShortcutScope = ShortcutScope("surface == settings");
 const TEXT: ShortcutScope = ShortcutScope("surface == text");
 const GLOBAL: ShortcutScope = ShortcutScope::GLOBAL;
@@ -105,7 +116,7 @@ const VIEW: &[Entry] = &[
     Entry::new(WORKSPACE, C::UnifiedView, &["1"], "Unified diff view"),
     Entry::new(WORKSPACE, C::SplitView, &["2"], "Split diff view"),
     Entry::new(WORKSPACE, C::OpenCompareMenu, &["m"], "Open compare menu"),
-    Entry::new(WORKSPACE, C::RefreshView, &["r"], "Refresh current view"),
+    Entry::new(TREE, C::RefreshView, &["r"], "Refresh current view"),
     Entry::new(WORKSPACE, C::ToggleFileTree, &["t"], "Toggle file tree"),
     Entry::new(
         WORKSPACE,
@@ -170,46 +181,31 @@ const SETTINGS_ENTRIES: &[Entry] = &[
 ];
 
 const WORKING_TREE: &[Entry] = &[
+    Entry::new(TREE, C::Stage, &["s"], "Stage file / hunk / selected lines"),
     Entry::new(
-        WORKSPACE,
-        C::Stage,
-        &["s"],
-        "Stage file / hunk / selected lines",
-    ),
-    Entry::new(
-        WORKSPACE,
+        TREE,
         C::Unstage,
         &["shift+s", "shift+u"],
         "Unstage file / hunk / selected lines",
     ),
     Entry::new(
-        WORKSPACE,
+        TREE,
         C::Discard,
         &["x"],
         "Discard file / hunk / selected lines",
     ),
-    Entry::new(WORKSPACE, C::StageAll, &["a"], "Stage all"),
-    Entry::new(WORKSPACE, C::UnstageAll, &["shift+a"], "Unstage all"),
-    Entry::new(
-        WORKSPACE,
-        C::FocusCommitMessage,
-        &["c"],
-        "Focus commit message",
-    ),
+    Entry::new(TREE, C::StageAll, &["a"], "Stage all"),
+    Entry::new(TREE, C::UnstageAll, &["shift+a"], "Unstage all"),
+    Entry::new(TREE, C::FocusCommitMessage, &["c"], "Focus commit message"),
     Entry::new(
         TEXT,
         C::SubmitCommit,
         &["mod+enter"],
         "Create commit from message",
     ),
+    Entry::new(TREE, C::ToggleLineSelection, &["v"], "Select changed line"),
     Entry::new(
-        WORKSPACE,
-        C::ToggleLineSelection,
-        &["v"],
-        "Select changed line",
-    ),
-    Entry::new(
-        WORKSPACE,
+        TREE,
         C::ToggleLineSelectionRange,
         &["shift+v"],
         "Select changed line range",
@@ -265,6 +261,48 @@ const REPOSITORY: &[Entry] = &[
     ),
 ];
 
+const REVIEW_KEYS: &[Entry] = &[
+    Entry::new(
+        REVIEW,
+        C::ReviewComment,
+        &["c"],
+        "Comment on line or selection",
+    ),
+    Entry::new(
+        REVIEW,
+        C::ReviewReply,
+        &["r"],
+        "Reply to the current thread",
+    ),
+    Entry::new(
+        REVIEW,
+        C::ReviewResolve,
+        &["e"],
+        "Resolve or reopen the current thread",
+    ),
+    Entry::new(
+        REVIEW,
+        C::ReviewToggleThread,
+        &["z"],
+        "Expand or collapse the current thread",
+    ),
+    Entry::new(
+        REVIEW,
+        C::ReviewMarkViewed,
+        &["x"],
+        "Mark viewed, go to the next unviewed file",
+    ),
+    Entry::new(REVIEW, C::NextThread, &["shift+]"], "Next thread"),
+    Entry::new(REVIEW, C::PreviousThread, &["shift+["], "Previous thread"),
+    Entry::new(REVIEW, C::ToggleOverview, &["o"], "Pull request overview"),
+    Entry::new(
+        REVIEW,
+        C::SubmitReview,
+        &["mod+shift+enter"],
+        "Submit review",
+    ),
+];
+
 const AREAS: &[Entry] = &[
     Entry::new(GLOBAL, C::JumpToElement, &["f"], "Jump to any control"),
     Entry::new(
@@ -298,6 +336,10 @@ const GROUPS: &[ShortcutGroup<ShortcutCommand>] = &[
     ShortcutGroup {
         title: "Areas",
         entries: AREAS,
+    },
+    ShortcutGroup {
+        title: "Review",
+        entries: REVIEW_KEYS,
     },
     ShortcutGroup {
         title: "Scrolling",
@@ -532,6 +574,15 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::OpenPublishMenu => MutationsAction::OpenPublishMenu.into(),
         C::ToggleDebugOverlay => ShellAction::ToggleDebugOverlay.into(),
         C::JumpToElement => ShellAction::StartJump.into(),
+        C::ReviewComment => interaction(InteractionAction::AnnotateSelection),
+        C::ReviewReply => ReviewAction::ReplyToFocused.into(),
+        C::ReviewResolve => ReviewAction::ResolveFocused.into(),
+        C::ReviewToggleThread => ReviewAction::ToggleFocused.into(),
+        C::ReviewMarkViewed => NavigationAction::MarkViewedAndNext.into(),
+        C::NextThread => interaction(InteractionAction::GoToThread(1)),
+        C::PreviousThread => interaction(InteractionAction::GoToThread(-1)),
+        C::ToggleOverview => ReviewAction::ToggleOverview.into(),
+        C::SubmitReview => ReviewAction::OpenSubmitMenu.into(),
         C::FocusAreaLeft => ShellAction::FocusArea(AreaDirection::Left).into(),
         C::FocusAreaRight => ShellAction::FocusArea(AreaDirection::Right).into(),
         C::FocusAreaUp => ShellAction::FocusArea(AreaDirection::Up).into(),

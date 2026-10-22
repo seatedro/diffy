@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use quark_components::AvatarImage;
 use quark_ui::FocusId;
+use quark_ui::element::ScrollHandle;
 use quark_ui::text_input::{InlineStyle, TextEditCommand, TextEditOutcome};
 
 use super::composer::ComposerTarget;
@@ -13,6 +14,7 @@ use crate::app::text_targets::{REVIEW_COMPOSER, TextCx, TextHost};
 use crate::contracts::commands::{
     CommandDescriptor, CommandSource, CommandsAction, SettingsSnapshot, ToastKind, ToastUpdate,
 };
+use crate::contracts::navigation::SelectionOrigin;
 use crate::contracts::review::{
     ComposerFormat, GitHubRequest, GitHubResponse, PullRequestComparison, PullRequestRef,
     ReviewAction, ReviewContext, ReviewEffect, ReviewEvent, ReviewScope, Secret,
@@ -21,8 +23,8 @@ use crate::contracts::shared::{AccountEpoch, JobId, SharedContext, SourceTarget}
 use crate::contracts::shell::{Controller, Intent, LogicalFocus, Reduction, ShellEffect};
 use crate::contracts::viewport::CompareIntent;
 use crate::core::compare::RendererKind;
-use crate::core::forge::github::PullRequestInfo;
 use crate::core::forge::github::{DeviceFlowState, GitHubUser, parse_pr_url};
+use crate::core::forge::github::{PullRequestInfo, PullRequestOverview};
 use crate::core::review::{
     ReviewAnchor, ReviewDecision, ReviewDraftId, ReviewDraftKind, ReviewDraftState,
     ReviewResolution, ReviewSession, ReviewSessionStatus, ReviewTarget, ReviewThreadId,
@@ -128,6 +130,8 @@ enum Pending {
     SubmitDrafts,
     Session,
     Peek,
+    Overview,
+    Comment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,13 +168,32 @@ impl ActivePullRequest {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct OverviewState {
+    pub open: bool,
+    pub data: Option<Rc<PullRequestOverview>>,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub checks_expanded: bool,
+    pub scroll: ScrollHandle,
+    request: Option<JobId>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Composer {
     pub target: ComposerTarget,
     pub preview: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteTarget {
+    Comment(String),
+    Draft(ReviewDraftId),
+}
+
 pub struct ReviewController {
+    pub(super) confirm_delete: Option<DeleteTarget>,
+    pub(super) comment_menu: Option<String>,
     epoch: AccountEpoch,
     client_id: String,
     pub(super) account: Account,
@@ -186,6 +209,7 @@ pub struct ReviewController {
     avatars: AvatarCache,
     peeks: HashMap<PullRequestRef, PeekState>,
     pub(super) file_comments: Option<String>,
+    pub(super) overview: OverviewState,
     pub(super) host: CardHost,
     presentation: Rc<ReviewPresentation>,
 }
@@ -194,6 +218,8 @@ impl Default for ReviewController {
     fn default() -> Self {
         let host = CardHost::default();
         Self {
+            confirm_delete: None,
+            comment_menu: None,
             epoch: AccountEpoch::default(),
             client_id: String::new(),
             account: Account::default(),
@@ -209,6 +235,7 @@ impl Default for ReviewController {
             avatars: AvatarCache::default(),
             peeks: HashMap::new(),
             file_comments: None,
+            overview: OverviewState::default(),
             presentation: Rc::new(ReviewPresentation::empty(host.clone())),
             host,
         }
@@ -255,6 +282,15 @@ fn author_face_key(email: &str) -> Option<String> {
         Some(local) => local.rsplit('+').next().unwrap_or(local).to_owned(),
         None => format!("email:{email}"),
     })
+}
+
+fn saved_renderer(cx: &SharedContext) -> RendererKind {
+    cx.settings
+        .settings
+        .last_compare
+        .as_ref()
+        .map(|compare| compare.renderer)
+        .unwrap_or_default()
 }
 
 fn author_avatar_url(key: &str) -> Option<String> {
@@ -342,6 +378,27 @@ impl ReviewController {
         Some((session.unresolved_thread_count(), pending, failed))
     }
 
+    pub fn summary_staged(&self) -> bool {
+        self.session().is_some_and(|session| {
+            session.drafts.values().any(|draft| {
+                matches!(draft.kind, ReviewDraftKind::General)
+                    && matches!(draft.state, ReviewDraftState::Pending)
+                    && !draft.body.trim().is_empty()
+            })
+        })
+    }
+
+    pub fn viewer_is_author(&self) -> bool {
+        let user = self.account.user.as_ref();
+        let author = self
+            .pr
+            .as_ref()
+            .and_then(|pr| pr.comparison.as_ref())
+            .map(|comparison| comparison.info.author_login.as_str());
+        user.zip(author)
+            .is_some_and(|(user, author)| user.login.eq_ignore_ascii_case(author))
+    }
+
     pub fn peek(&self, pr: &PullRequestRef) -> Option<&PeekState> {
         self.peeks.get(pr)
     }
@@ -398,6 +455,85 @@ impl ReviewController {
 
     pub fn composer(&self) -> Option<&Composer> {
         self.composer.as_ref()
+    }
+
+    pub fn overview(&self) -> &OverviewState {
+        &self.overview
+    }
+
+    pub fn overview_open(&self) -> bool {
+        self.overview.open && self.pr.is_some()
+    }
+
+    fn fetch_overview(&mut self) -> Option<ReviewEffect> {
+        let pr = self.pr.as_ref()?.pr.clone();
+        let token = self.token();
+        let scope = self.job(Some(pr.clone()), Pending::Overview);
+        self.overview.loading = true;
+        self.overview.error = None;
+        self.overview.request = Some(scope.request);
+        Some(ReviewEffect::GitHub {
+            scope,
+            request: Box::new(GitHubRequest::FetchPullRequestOverview { pr, token }),
+        })
+    }
+
+    fn refresh_overview(&mut self) -> Reduction {
+        match self.fetch_overview() {
+            Some(effect) => Reduction::changed().effect(effect),
+            None => Reduction::default(),
+        }
+    }
+
+    fn open_overview(&mut self) -> Reduction {
+        if self.pr.is_none() {
+            return Reduction::default();
+        }
+        if !self.overview.open {
+            self.overview.open = true;
+            self.overview.scroll.set_offset(0.0, 0.0);
+        }
+        self.focus_request = Some(LogicalFocus::ReviewOverview);
+        if self.overview.loading || self.overview.data.is_some() {
+            return Reduction::changed();
+        }
+        self.refresh_overview()
+    }
+
+    fn close_overview(&mut self) -> Reduction {
+        if !self.overview.open {
+            return Reduction::default();
+        }
+        self.overview.open = false;
+        if self
+            .composer
+            .as_ref()
+            .is_some_and(|c| c.target == ComposerTarget::Conversation)
+        {
+            self.composer = None;
+            self.host.clear_composer();
+        }
+        self.focus_request = Some(LogicalFocus::Viewport);
+        Reduction::changed()
+    }
+
+    fn open_conversation_composer(&mut self) -> Reduction {
+        if let Err(reduction) = self.require_token("Sign in to comment on this pull request.") {
+            return reduction;
+        }
+        if !self.overview_open() {
+            return Reduction::default();
+        }
+        if self
+            .composer
+            .as_ref()
+            .is_some_and(|c| c.target == ComposerTarget::Conversation)
+        {
+            self.focus_request = Some(LogicalFocus::ReviewComposer);
+            return Reduction::changed();
+        }
+        self.overview.scroll.set_offset(0.0, f64::MAX);
+        self.open_composer(ComposerTarget::Conversation, "")
     }
 
     pub(super) fn signed_in(&self) -> bool {
@@ -459,6 +595,8 @@ impl ReviewController {
     fn bump_account(&mut self) -> Intent {
         self.epoch = AccountEpoch(self.epoch.0 + 1);
         self.in_flight.clear();
+        self.overview.loading = false;
+        self.overview.request = None;
         Intent::AccountChanged
     }
 
@@ -587,6 +725,7 @@ impl ReviewController {
         }
         self.pr = None;
         self.composer = None;
+        self.overview = OverviewState::default();
         self.expanded.clear();
         self.in_flight.retain(|_, entry| entry.pr.is_none());
         reduction.intent(Intent::SetReviewTarget(None))
@@ -616,7 +755,7 @@ impl ReviewController {
                         head: comparison.right_ref.clone(),
                     },
                     layout: cx.settings.settings.viewport.layout,
-                    renderer: RendererKind::default(),
+                    renderer: saved_renderer(cx),
                 },
             }));
         }
@@ -676,6 +815,11 @@ impl ReviewController {
         if let Some(effect) = self.fetch_review() {
             reduction = reduction.effect(effect);
         }
+        if !self.overview.loading
+            && let Some(effect) = self.fetch_overview()
+        {
+            reduction = reduction.effect(effect);
+        }
         reduction
     }
 
@@ -722,7 +866,11 @@ impl ReviewController {
     fn close_composer(&mut self) {
         self.composer = None;
         self.host.clear_composer();
-        self.focus_request = Some(LogicalFocus::Viewport);
+        self.focus_request = Some(if self.overview_open() {
+            LogicalFocus::ReviewOverview
+        } else {
+            LogicalFocus::Viewport
+        });
     }
 
     fn open_composer_at(&mut self, target: SourceTarget, cx: &SharedContext) -> Reduction {
@@ -848,7 +996,9 @@ impl ReviewController {
         let fresh = match &target {
             ComposerTarget::Reply { draft, .. } => Some(*draft),
             ComposerTarget::Inline { draft, .. } | ComposerTarget::General { draft } => *draft,
-            ComposerTarget::Draft(_) | ComposerTarget::Edit { .. } => None,
+            ComposerTarget::Draft(_)
+            | ComposerTarget::Edit { .. }
+            | ComposerTarget::Conversation => None,
         };
         if let Some(draft) = fresh
             && let Some(session) = self.session_mut()
@@ -949,6 +1099,18 @@ impl ReviewController {
                         body,
                     },
                 ));
+            }
+            ComposerTarget::Conversation => {
+                reduction = reduction.effect(self.github(
+                    Pending::Comment,
+                    GitHubRequest::AddPullRequestComment {
+                        pr,
+                        token: Some(token),
+                        body,
+                    },
+                ));
+                self.close_composer();
+                return reduction;
             }
         }
         self.close_composer();
@@ -1188,7 +1350,9 @@ impl ReviewController {
                     *draft.insert(session.create_general_draft(""))
                 }
             },
-            ComposerTarget::Draft(_) | ComposerTarget::Edit { .. } => return,
+            ComposerTarget::Draft(_)
+            | ComposerTarget::Edit { .. }
+            | ComposerTarget::Conversation => return,
         };
         if let Some(active) = self.pr.as_mut()
             && let Some(session) = active.session.as_mut()
@@ -1374,10 +1538,15 @@ impl ReviewController {
                 self.expanded.remove(&id);
                 self.after_mutation(false)
             }
+            GitHubResponse::ReviewCommentReplied { comment, .. } => {
+                if let Some(session) = self.session_mut() {
+                    session.append_reply(&comment);
+                }
+                self.after_mutation(true)
+            }
             GitHubResponse::CommentGraphqlUpdated { .. }
             | GitHubResponse::CommentGraphqlDeleted { .. }
             | GitHubResponse::ReviewCommentCreated { .. }
-            | GitHubResponse::ReviewCommentReplied { .. }
             | GitHubResponse::ReviewCommentUpdated { .. }
             | GitHubResponse::ReviewCommentDeleted { .. }
             | GitHubResponse::ReviewCreated { .. }
@@ -1401,6 +1570,40 @@ impl ReviewController {
                 self.peeks.insert(pr, PeekState::Failed(message));
                 Reduction::changed()
             }
+            GitHubResponse::PullRequestOverviewLoaded { overview, .. } => {
+                if self.overview.request != Some(scope.request) {
+                    return Reduction::default();
+                }
+                self.overview.request = None;
+                self.overview.loading = false;
+                self.overview.error = None;
+                self.overview.data = Some(Rc::new(*overview));
+                Reduction::changed()
+            }
+            GitHubResponse::PullRequestOverviewLoadFailed { message, .. } => {
+                if self.overview.request != Some(scope.request) {
+                    return Reduction::default();
+                }
+                tracing::warn!("failed to fetch pull request overview: {message}");
+                self.overview.request = None;
+                self.overview.loading = false;
+                self.overview.error = Some(message);
+                Reduction::changed()
+            }
+            GitHubResponse::PullRequestCommentAdded { .. } => {
+                let mut reduction = Reduction::changed().intent(info("Comment posted."));
+                if let Some(effect) = self.fetch_overview() {
+                    reduction = reduction.effect(effect);
+                }
+                reduction
+            }
+            GitHubResponse::PullRequestCommentAddFailed { body, message, .. } => {
+                let mut reduction = Reduction::changed().intent(error(message));
+                if self.overview_open() && self.composer.is_none() {
+                    reduction.merge(self.open_composer(ComposerTarget::Conversation, &body));
+                }
+                reduction
+            }
         }
     }
 
@@ -1412,10 +1615,66 @@ impl ReviewController {
         if refetch && let Some(effect) = self.fetch_review() {
             reduction = reduction.effect(effect);
         }
+        if refetch
+            && !self.overview.loading
+            && let Some(effect) = self.fetch_overview()
+        {
+            reduction = reduction.effect(effect);
+        }
         reduction
     }
 
     fn reduce(&mut self, action: ReviewAction, cx: &SharedContext) -> Reduction {
+        let confirming = match &action {
+            ReviewAction::CardDocument { .. }
+            | ReviewAction::ScrollComposer(_)
+            | ReviewAction::CopyCardSelection(_) => None,
+            _ => self.confirm_delete.take(),
+        };
+        let keeps_menu = matches!(
+            &action,
+            ReviewAction::ToggleCommentMenu { .. }
+                | ReviewAction::DeleteComment { .. }
+                | ReviewAction::CardDocument { .. }
+                | ReviewAction::ScrollComposer(_)
+                | ReviewAction::CopyCardSelection(_)
+        );
+        let cleared = confirming.is_some() || (!keeps_menu && self.comment_menu.take().is_some());
+        let mut reduction = match action {
+            ReviewAction::ToggleCommentMenu { comment_node_id } => {
+                self.comment_menu =
+                    if self.comment_menu.as_deref() == Some(comment_node_id.as_str()) {
+                        None
+                    } else {
+                        Some(comment_node_id)
+                    };
+                Reduction::changed()
+            }
+            ReviewAction::DeleteComment { comment_node_id } => {
+                if matches!(&confirming, Some(DeleteTarget::Comment(node)) if *node == comment_node_id)
+                {
+                    self.comment_menu = None;
+                    self.delete_comment(comment_node_id)
+                } else {
+                    self.confirm_delete = Some(DeleteTarget::Comment(comment_node_id));
+                    Reduction::changed()
+                }
+            }
+            ReviewAction::DeleteDraft(id) => {
+                if confirming == Some(DeleteTarget::Draft(id)) {
+                    self.delete_draft(id)
+                } else {
+                    self.confirm_delete = Some(DeleteTarget::Draft(id));
+                    Reduction::changed()
+                }
+            }
+            action => self.reduce_other(action, cx),
+        };
+        reduction.changed |= cleared;
+        reduction
+    }
+
+    fn reduce_other(&mut self, action: ReviewAction, cx: &SharedContext) -> Reduction {
         match action {
             ReviewAction::OpenAuthModal => {
                 self.open_overlay(ReviewOverlay::Auth);
@@ -1492,15 +1751,16 @@ impl ReviewController {
             },
             ReviewAction::ReplyToThread(thread) => self.reply_to(thread),
             ReviewAction::EditComment { comment_node_id } => self.edit_comment(comment_node_id),
-            ReviewAction::DeleteComment { comment_node_id } => self.delete_comment(comment_node_id),
             ReviewAction::SubmitReview { decision } => self.submit_review(decision),
             ReviewAction::DiscardDrafts => self.discard_drafts(),
+            ReviewAction::DeleteComment { .. }
+            | ReviewAction::DeleteDraft(_)
+            | ReviewAction::ToggleCommentMenu { .. } => Reduction::default(),
             ReviewAction::ToggleThread(id) => self.toggle_thread(id),
             ReviewAction::SetThreadResolved { id, resolved } => {
                 self.set_thread_resolved(id, resolved)
             }
             ReviewAction::EditDraft(id) => self.edit_draft(id),
-            ReviewAction::DeleteDraft(id) => self.delete_draft(id),
             ReviewAction::CardDocument { card, event } => {
                 if self.host.handle_document(&card, event) {
                     Reduction::changed()
@@ -1515,6 +1775,34 @@ impl ReviewController {
             ReviewAction::ScrollComposer(lines) => {
                 self.host.scroll_composer(lines);
                 Reduction::changed()
+            }
+            ReviewAction::OpenOverview => self.open_overview(),
+            ReviewAction::CloseOverview => self.close_overview(),
+            ReviewAction::ToggleOverview => {
+                if self.overview_open() {
+                    self.close_overview()
+                } else {
+                    self.open_overview()
+                }
+            }
+            ReviewAction::RefreshOverview => {
+                if self.overview.loading {
+                    Reduction::default()
+                } else {
+                    self.refresh_overview()
+                }
+            }
+            ReviewAction::ToggleOverviewChecks => {
+                self.overview.checks_expanded = !self.overview.checks_expanded;
+                Reduction::changed()
+            }
+            ReviewAction::OpenConversationComposer => self.open_conversation_composer(),
+            ReviewAction::OpenLink(url) => {
+                if url.starts_with("https://") {
+                    Reduction::default().effect(ShellEffect::OpenBrowser { url })
+                } else {
+                    Reduction::default()
+                }
             }
         }
     }
@@ -1566,6 +1854,11 @@ impl ReviewController {
                 reduction.merge(self.load_pending());
                 if self.pr.as_ref().is_some_and(|pr| pr.comparison.is_some())
                     && let Some(effect) = self.fetch_review()
+                {
+                    reduction = reduction.effect(effect);
+                }
+                if self.pr.is_some()
+                    && let Some(effect) = self.fetch_overview()
                 {
                     reduction = reduction.effect(effect);
                 }
@@ -1686,7 +1979,18 @@ impl ReviewController {
             }
             Intent::PublishManifest(_) => Reduction::changed(),
             Intent::OpenPullRequest { url } => self.open_pull_request(url.clone()),
-            Intent::RequestAnnotation(target) => self.open_composer_at(target.clone(), cx),
+            Intent::RequestAnnotation(target) => {
+                let mut reduction = self.close_overview();
+                reduction.merge(self.open_composer_at(target.clone(), cx));
+                reduction
+            }
+            Intent::SelectFile(Some(selected))
+                if self.overview.open && selected.origin != SelectionOrigin::Viewport =>
+            {
+                let reduction = self.close_overview();
+                self.focus_request = None;
+                reduction
+            }
             Intent::GrammarAvailable(_) => {
                 self.host.grammars_changed();
                 Reduction::changed()
@@ -1714,17 +2018,33 @@ impl ReviewController {
     }
 
     fn avatar_requests(&mut self) -> Vec<ReviewEffect> {
-        let Some(session) = self.session() else {
-            return Vec::new();
-        };
+        let comments = self
+            .session()
+            .into_iter()
+            .flat_map(|session| session.threads.iter().flat_map(|thread| &thread.comments))
+            .filter_map(|comment| {
+                Some((
+                    comment.author_login.as_deref()?,
+                    comment.author_avatar_url.as_deref()?,
+                ))
+            });
+        let overview = self
+            .overview
+            .data
+            .as_deref()
+            .filter(|_| self.overview.open)
+            .into_iter()
+            .flat_map(|overview| {
+                std::iter::once(&overview.author)
+                    .chain(overview.reviewers.iter().map(|reviewer| &reviewer.actor))
+                    .chain(overview.timeline.iter().map(|item| &item.author))
+            })
+            .map(|actor| (actor.login.as_str(), actor.avatar_url.as_str()));
         let mut wanted: Vec<(String, String)> = Vec::new();
-        for comment in session.threads.iter().flat_map(|thread| &thread.comments) {
-            let (Some(login), Some(raw)) = (
-                comment.author_login.as_deref(),
-                comment.author_avatar_url.as_deref(),
-            ) else {
+        for (login, raw) in comments.chain(overview) {
+            if login.is_empty() {
                 continue;
-            };
+            }
             let Some(url) = avatar_url_sized(raw, REVIEW_AVATAR_PX) else {
                 continue;
             };
@@ -1797,7 +2117,7 @@ impl ReviewController {
                     head: WORKDIR_REF.to_owned(),
                 },
                 layout: cx.settings.settings.viewport.layout,
-                renderer: RendererKind::default(),
+                renderer: saved_renderer(cx),
             },
         }))
     }
@@ -2028,6 +2348,22 @@ impl CommandSource for ReviewController {
             )
             .enabled(reviewing && signed_in),
         );
+        out.push(if self.overview_open() {
+            CommandDescriptor::new(
+                "review.overview",
+                "Show changed files",
+                ReviewAction::CloseOverview,
+            )
+            .detail("Return from the pull request overview to the diff")
+        } else {
+            CommandDescriptor::new(
+                "review.overview",
+                "Pull request overview",
+                ReviewAction::OpenOverview,
+            )
+            .detail("Description, checks, reviewers and conversation")
+            .enabled(self.pr.is_some())
+        });
         out.push(
             CommandDescriptor::new(
                 "review.open_in_browser",

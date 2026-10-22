@@ -513,6 +513,28 @@ impl GitHubBackend for LiveGitHub {
                     message: error.user_message(),
                 },
             },
+            GitHubRequest::FetchPullRequestOverview { pr, token } => match public_api(token)
+                .fetch_pull_request_overview(&pr.owner, &pr.repo, pr.number)
+            {
+                Ok(overview) => GitHubResponse::PullRequestOverviewLoaded {
+                    pr,
+                    overview: Box::new(overview),
+                },
+                Err(error) => GitHubResponse::PullRequestOverviewLoadFailed {
+                    pr,
+                    message: error.user_message(),
+                },
+            },
+            GitHubRequest::AddPullRequestComment { pr, token, body } => {
+                match api(token).add_pull_request_comment(&pr.owner, &pr.repo, pr.number, &body) {
+                    Ok(()) => GitHubResponse::PullRequestCommentAdded { pr },
+                    Err(error) => GitHubResponse::PullRequestCommentAddFailed {
+                        pr,
+                        body,
+                        message: error.user_message(),
+                    },
+                }
+            }
         };
         emit(response);
     }

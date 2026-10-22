@@ -1,5 +1,6 @@
 pub mod api;
 pub mod device_flow;
+pub mod overview;
 pub mod pull_request;
 
 pub use api::{
@@ -13,4 +14,8 @@ pub use api::{
     SubmitPullRequestReview, UpdatePullRequestReviewComment,
 };
 pub use device_flow::{DeviceFlowState, poll_for_token, start_device_flow};
+pub use overview::{
+    PullRequestActor, PullRequestOverview, PullRequestReviewer, PullRequestTimelineItem,
+    PullRequestTimelineKind,
+};
 pub use pull_request::{GitHubPullRequest, parse_pr_url};

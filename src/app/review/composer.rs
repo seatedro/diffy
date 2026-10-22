@@ -23,6 +23,7 @@ pub enum ComposerTarget {
         thread: ReviewThreadId,
         comment_node_id: String,
     },
+    Conversation,
 }
 
 impl ComposerTarget {
@@ -30,7 +31,7 @@ impl ComposerTarget {
         match self {
             Self::Draft(id) | Self::Reply { draft: id, .. } => Some(*id),
             Self::Inline { draft, .. } | Self::General { draft } => *draft,
-            Self::Edit { .. } => None,
+            Self::Edit { .. } | Self::Conversation => None,
         }
     }
 
@@ -41,15 +42,18 @@ impl ComposerTarget {
             Self::Reply { thread, .. } | Self::Edit { thread, .. } => {
                 CardKey::Thread(thread.clone())
             }
+            Self::Conversation => CardKey::Conversation,
         }
     }
 
     pub fn submit_label(&self) -> &'static str {
         match self {
-            Self::Inline { .. } | Self::General { .. } => "Add review comment",
+            Self::Inline { .. } => "Add to review",
+            Self::General { .. } => "Save summary",
             Self::Draft(_) => "Update comment",
             Self::Reply { .. } => "Reply",
             Self::Edit { .. } => "Save",
+            Self::Conversation => "Comment",
         }
     }
 
@@ -62,6 +66,7 @@ impl ComposerTarget {
             Self::Edit {
                 comment_node_id, ..
             } => format!("review.composer.edit.{comment_node_id}"),
+            Self::Conversation => "review.composer.conversation".to_owned(),
         }
     }
 }

@@ -267,7 +267,7 @@ impl InteractionController {
             diff.set_annotations(annotations);
         }
         for annotation in review.annotations() {
-            if let Some(height) = review.card_height(&annotation.card, width) {
+            if let Some(height) = review.inline_height(&annotation.card, width) {
                 diff.set_annotation_height(annotation.id, annotation.revision, height);
             }
         }
@@ -1187,6 +1187,10 @@ impl Controller for InteractionController {
             A::ScrollToTop => self.navigate(DiffKey::Home),
             A::ScrollToBottom => self.navigate(DiffKey::End),
             A::GoToNextHunk => self.navigate(DiffKey::NextHunk),
+            A::AnnotateSelection => {
+                let outcome = self.key(DiffKey::Annotate);
+                self.outcome(outcome)
+            }
             A::GoToPreviousHunk => self.navigate(DiffKey::PrevHunk),
             A::GoToNextFile => self.navigate(DiffKey::NextFile),
             A::GoToPreviousFile => self.navigate(DiffKey::PrevFile),
@@ -1454,6 +1458,9 @@ impl CommandSource for InteractionController {
                 .enabled(has_files),
             CommandDescriptor::new("diff.copy", "Copy Selection", A::CopySelection)
                 .enabled(selected),
+            CommandDescriptor::new("diff.comment", "Comment on Selection", A::AnnotateSelection)
+                .shortcut(S::ReviewSelectedLines)
+                .enabled(has_files),
             CommandDescriptor::new(
                 "diff.text_compare",
                 "New Text Compare",

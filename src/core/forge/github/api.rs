@@ -15,6 +15,10 @@ pub struct GitHubUser {
 pub struct PullRequestInfo {
     pub title: String,
     pub state: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub merged: bool,
     pub author_login: String,
     pub number: i32,
     pub additions: i32,
@@ -380,6 +384,8 @@ impl GitHubApi {
         let result = PullRequestInfo {
             title: string_field(&json, "title"),
             state: string_field(&json, "state"),
+            draft: bool_field(&json, "draft"),
+            merged: bool_field(&json, "merged"),
             author_login: string_field(&user, "login"),
             number: int_field(&json, "number") as i32,
             additions: int_field(&json, "additions") as i32,
@@ -816,7 +822,49 @@ impl GitHubApi {
         })
     }
 
-    fn graphql_request(&self, query: &str, variables: Value) -> Result<Value> {
+    pub(super) fn get_json(&self, url: &str, context: &str) -> Result<Value> {
+        let body = http::block_on(async {
+            let mut request = crate::core::http::client()
+                .get(url)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2026-03-10")
+                .header("User-Agent", "diffy/0.1");
+            if !self.token.is_empty() {
+                request = request.header("Authorization", &format!("Bearer {}", self.token));
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|error| DiffyError::network(format!("{context} failed: {error}")))?;
+            http::response_text(response, context).await
+        })?;
+        serde_json::from_str(&body).map_err(Into::into)
+    }
+
+    pub(super) fn post_json(&self, url: &str, body: &Value, context: &str) -> Result<Value> {
+        let request_body = body.to_string();
+        let body = http::block_on(async {
+            let response = crate::core::http::client()
+                .post(url)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2026-03-10")
+                .header("User-Agent", "diffy/0.1")
+                .header("Authorization", &format!("Bearer {}", self.token))
+                .header("Content-Type", "application/json")
+                .body(request_body)
+                .send()
+                .await
+                .map_err(|error| DiffyError::network(format!("{context} failed: {error}")))?;
+            http::response_text(response, context).await
+        })?;
+        serde_json::from_str(&body).map_err(Into::into)
+    }
+
+    pub(super) fn has_token(&self) -> bool {
+        !self.token.trim().is_empty()
+    }
+
+    pub(super) fn graphql_request(&self, query: &str, variables: Value) -> Result<Value> {
         let request_body = json!({
             "query": query,
             "variables": variables,
@@ -1075,7 +1123,7 @@ fn parse_pull_request_review_metadata(value: &Value) -> PullRequestReviewMetadat
     }
 }
 
-fn parse_labels(value: Option<&Value>) -> Vec<PullRequestLabel> {
+pub(super) fn parse_labels(value: Option<&Value>) -> Vec<PullRequestLabel> {
     value
         .and_then(Value::as_array)
         .into_iter()
@@ -1110,7 +1158,7 @@ fn parse_review_requests(value: Option<&Value>) -> Vec<PullRequestReviewRequest>
         .collect()
 }
 
-fn parse_check_summary(value: &Value) -> PullRequestCheckSummary {
+pub(super) fn parse_check_summary(value: &Value) -> PullRequestCheckSummary {
     let contexts = value.pointer("/contexts/nodes");
     let mut summary = PullRequestCheckSummary {
         state: optional_string_field(value, "state"),
@@ -1265,7 +1313,7 @@ fn parse_thread_comment(value: &Value) -> GitHubPullRequestReviewThreadComment {
     }
 }
 
-fn string_field(value: &Value, key: &str) -> String {
+pub(super) fn string_field(value: &Value, key: &str) -> String {
     value
         .get(key)
         .and_then(Value::as_str)
@@ -1273,7 +1321,7 @@ fn string_field(value: &Value, key: &str) -> String {
         .to_owned()
 }
 
-fn optional_string_field(value: &Value, key: &str) -> Option<String> {
+pub(super) fn optional_string_field(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)
         .and_then(Value::as_str)
@@ -1281,7 +1329,7 @@ fn optional_string_field(value: &Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn int_field(value: &Value, key: &str) -> i64 {
+pub(super) fn int_field(value: &Value, key: &str) -> i64 {
     value.get(key).and_then(Value::as_i64).unwrap_or_default()
 }
 
@@ -1302,7 +1350,7 @@ fn value_to_i64(value: &Value) -> Option<i64> {
         .or_else(|| value.as_str().and_then(|value| value.parse::<i64>().ok()))
 }
 
-fn bool_field(value: &Value, key: &str) -> bool {
+pub(super) fn bool_field(value: &Value, key: &str) -> bool {
     value.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 

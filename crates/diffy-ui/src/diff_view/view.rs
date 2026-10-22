@@ -12,7 +12,7 @@ use accesskit::Role;
 use diffy_diff::{FileStatus, GapId, Mode, Reveal, RowKind, Side, SlotState};
 use quark::view;
 use quark_render::scene::{Rect, RichTextPrimitive, ShapedText};
-use quark_render::{FontKind, RectPrimitive, Scene};
+use quark_render::{FontKind, RectPrimitive, RoundedRectPrimitive, Scene};
 use quark_text::{TextParams, TextStyle};
 use quark_ui::Action;
 use quark_ui::element::{
@@ -95,6 +95,18 @@ impl Deco {
 
     fn file(&self, unit: u32) -> Option<super::decorator::FileSource> {
         self.sources.as_ref()?.file(unit)
+    }
+
+    fn badge(&self, paint: &RowPaint, kind: RowKind, side: Side) -> Option<u32> {
+        let decorator = self.decorator.as_ref()?;
+        let line = paint.source_lines[side as usize]?;
+        decorator.line_badge(&LineContext {
+            file: paint.file,
+            source: self.file(paint.file),
+            side,
+            line,
+            kind,
+        })
     }
 
     fn mark(&self, paint: &RowPaint, kind: RowKind, side: Side) -> Option<LineMark> {
@@ -222,6 +234,7 @@ fn build(
     let split = frame.columns.mode == Mode::Split;
     let sticky = frame.sticky_header.as_ref().map(|row| row.key);
     let picks = [Side::Old, Side::New].map(|side| picked_rows(frame, side, deco));
+    let badges = [Side::Old, Side::New].map(|side| line_badges(frame, side, deco));
     // Split rows with no line on a side: one fill across that side's
     // gutter and text, outside the sideways scroll.
     let empty_sides = frame
@@ -293,7 +306,7 @@ fn build(
                     >
                         <div w={column.gutter_w} class="flex-col" translate={(0.0, first_top)}>
                             for (i, row) in frame.rows.iter().enumerate() {
-                                {gutter_cell(frame, row, side, column.gutter_w, look, picks[slot][i])}
+                                {gutter_cell(frame, row, side, column.gutter_w, look, picks[slot][i], badges[slot][i])}
                             }
                         </div>
                     </div>
@@ -469,6 +482,21 @@ fn picked_rows(frame: &ViewFrame, side: Side, deco: &Deco) -> Vec<Pick> {
         .collect()
 }
 
+fn line_badges(frame: &ViewFrame, side: Side, deco: &Deco) -> Vec<Option<u32>> {
+    let mode = frame.columns.mode;
+    frame
+        .rows
+        .iter()
+        .map(|row| {
+            row.paint
+                .kind
+                .diff()
+                .filter(|k| k.is_line())
+                .and_then(|kind| deco.badge(&row.paint, kind, shown_side(mode, kind, side)))
+        })
+        .collect()
+}
+
 fn pick_rules(scene: &mut Scene, bounds: Bounds, pick: Pick, color: Color, scale: f32) {
     let rule = paint::whole_pixels(1.0, scale);
     let mut draw = |y: f32| {
@@ -497,6 +525,7 @@ fn gutter_cell(
     width: f32,
     look: Look,
     pick: Pick,
+    badge: Option<u32>,
 ) -> AnyElement {
     let height = row.height;
     let Some(kind) = row.paint.kind.diff().filter(|k| k.is_line()) else {
@@ -523,6 +552,7 @@ fn gutter_cell(
         look.colors_key,
         presentation.markers,
         pick,
+        badge,
     ));
     let quiet = row.paint.quiet;
     let build = move || {
@@ -559,6 +589,7 @@ fn gutter_cell(
                                 !quiet || matches!(kind, RowKind::Removed | RowKind::Moved)
                             }),
                             pick.on,
+                            badge,
                             colors,
                         );
                         pick_rules(scene, bounds, pick, colors.accent, cx.scale_factor);
@@ -585,6 +616,7 @@ fn paint_gutter(
     numbers: &[u32],
     cue: Option<Cue>,
     picked: bool,
+    badge: Option<u32>,
     colors: DiffColors,
 ) {
     let style = TextStyle::new(m.font_size)
@@ -619,7 +651,46 @@ fn paint_gutter(
         Some(Cue::Moved) => colors.tone(HighlightKind::Keyword),
         None => colors.gutter_text,
     };
-    for &number in numbers {
+    let skip = usize::from(badge.is_some() && numbers.len() > 1);
+    if let Some(count) = badge {
+        let small = TextStyle::new(m.font_size * 0.8)
+            .kind(FontKind::Mono)
+            .line_height(m.line_h);
+        if let Some(layout) = cx.layout_text(&TextParams::new(count.to_string(), small)) {
+            let (w, _) = layout.size();
+            let h = (m.line_h * 0.72).round();
+            let pad = (m.char_w * 0.4).round();
+            let box_w = (w + pad * 2.0).max(h);
+            let left = bounds.x + m.char_w * 0.5;
+            let top = bounds.y + ((m.line_h - h) / 2.0).round();
+            scene.rounded_rect(RoundedRectPrimitive::uniform(
+                Rect {
+                    x: left,
+                    y: top,
+                    width: box_w,
+                    height: h,
+                },
+                (h * 0.3).round(),
+                colors.accent,
+            ));
+            scene.rich_text(RichTextPrimitive {
+                rect: Rect {
+                    x: left + (box_w - w) / 2.0,
+                    y: bounds.y,
+                    width: w + 1.0,
+                    height: m.line_h,
+                },
+                layout: ShapedText::new(layout),
+                default_color: colors.surface,
+                span_colors: Arc::from([]),
+            });
+        }
+    }
+    for (index, &number) in numbers.iter().enumerate() {
+        if index < skip {
+            x += m.number_w;
+            continue;
+        }
         if number != 0
             && let Some(layout) = cx.layout_text(&TextParams::new(number.to_string(), style))
         {
@@ -1157,6 +1228,7 @@ fn band(
             }
         }
         PreparedKind::Annotation(slot) => {
+            let indent = columns.sides[slot.side as usize].map_or(pad, |c| c.text_x);
             let content = deco.decorator.as_ref().and_then(|d| {
                 d.annotation(&AnnotationContext {
                     id: slot.id,
@@ -1164,6 +1236,7 @@ fn band(
                     lines: &slot.lines,
                     outdated: slot.outdated,
                     width,
+                    indent,
                 })
             });
             view! {

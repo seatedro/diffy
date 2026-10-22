@@ -386,6 +386,7 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::OpenSettings => CommandsAction::OpenSettings.into(),
         C::ShowKeymaps => CommandsAction::OpenKeymaps.into(),
         C::NextHunk => interaction(InteractionAction::GoToNextHunk),
+        C::ReviewSelectedLines => interaction(InteractionAction::AnnotateSelection),
         C::PreviousHunk => interaction(InteractionAction::GoToPreviousHunk),
         C::FocusFileList => ShellAction::FocusLogical(Some(LogicalFocus::Sidebar)).into(),
         C::FocusEditor => ShellAction::FocusLogical(Some(LogicalFocus::Viewport)).into(),
@@ -444,7 +445,6 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         | C::Stage
         | C::Unstage
         | C::Discard
-        | C::ReviewSelectedLines
         | C::ConfirmOverlay
         | C::CloseOverlay => return None,
     })

@@ -8,8 +8,9 @@ use crate::contracts::shared::{AccountEpoch, JobId, SourceTarget};
 use crate::core::forge::github::{
     CreatePullRequestReview, CreatePullRequestReviewComment, CreatePullRequestReviewReply,
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThreadComment,
-    GitHubReviewThreadResolution, GitHubUser, PullRequestInfo, PullRequestReview,
-    PullRequestReviewComment, SubmitPullRequestReview, UpdatePullRequestReviewComment,
+    GitHubReviewThreadResolution, GitHubUser, PullRequestInfo, PullRequestOverview,
+    PullRequestReview, PullRequestReviewComment, SubmitPullRequestReview,
+    UpdatePullRequestReviewComment,
 };
 use crate::core::review::{
     ReviewDecision, ReviewDraftId, ReviewSession, ReviewSessionKey, ReviewTarget, ReviewThreadId,
@@ -56,6 +57,8 @@ pub enum CardKey {
     Thread(ReviewThreadId),
     Draft(ReviewDraftId),
     NewComment,
+    Conversation,
+    Overview(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +80,7 @@ pub enum ReviewAction {
     SetComposerPreview(bool),
     ReplyToThread(ReviewThreadId),
     EditComment { comment_node_id: String },
+    ToggleCommentMenu { comment_node_id: String },
     DeleteComment { comment_node_id: String },
     SubmitReview { decision: ReviewDecision },
     DiscardDrafts,
@@ -91,6 +95,13 @@ pub enum ReviewAction {
     RequestAuthorAvatars(Vec<String>),
     PeekPullRequest { url: String },
     ToggleFileComments(String),
+    OpenOverview,
+    CloseOverview,
+    ToggleOverview,
+    RefreshOverview,
+    ToggleOverviewChecks,
+    OpenConversationComposer,
+    OpenLink(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -190,6 +201,15 @@ pub enum GitHubRequest {
         review_id: i64,
         token: Option<Secret>,
         submit: SubmitPullRequestReview,
+    },
+    FetchPullRequestOverview {
+        pr: PullRequestRef,
+        token: Option<Secret>,
+    },
+    AddPullRequestComment {
+        pr: PullRequestRef,
+        token: Option<Secret>,
+        body: String,
     },
 }
 
@@ -339,6 +359,22 @@ pub enum GitHubResponse {
     ThreadResolutionChangeFailed {
         pr: PullRequestRef,
         thread_node_id: String,
+        message: String,
+    },
+    PullRequestOverviewLoaded {
+        pr: PullRequestRef,
+        overview: Box<PullRequestOverview>,
+    },
+    PullRequestOverviewLoadFailed {
+        pr: PullRequestRef,
+        message: String,
+    },
+    PullRequestCommentAdded {
+        pr: PullRequestRef,
+    },
+    PullRequestCommentAddFailed {
+        pr: PullRequestRef,
+        body: String,
         message: String,
     },
 }

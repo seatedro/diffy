@@ -500,13 +500,18 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             width: main_w,
             height: body_h,
         };
-        let file =
-            viewport::files::file_view(&mut self.controllers.viewport.files, main_w, body_h, cx);
-        let showing_file = file.is_some();
+        let overview = self.controllers.review.overview_open();
+        let file = if overview {
+            None
+        } else {
+            viewport::files::file_view(&mut self.controllers.viewport.files, main_w, body_h, cx)
+        };
+        let showing_file = overview || file.is_some();
         let main = match (
             file,
             navigation::merge_base_empty(&self.controllers.navigation, theme),
         ) {
+            _ if overview => review::overview(&self.controllers.review, &slot, cx),
             (Some(file), _) => file,
             (None, Some(empty)) => empty,
             (None, None) => viewport::interaction::view_shared(
@@ -722,8 +727,11 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             .metrics
             .status_bar_height
             .min((height - title_h).max(0.0));
-        let body_h = (height - title_h - status_h).max(0.0);
+        let pr_h = review::pull_request_bar_height(&self.controllers.review, theme)
+            .min((height - title_h - status_h).max(0.0));
+        let body_h = (height - title_h - pr_h - status_h).max(0.0);
         let title = self.title_bar(width, title_h, cx);
+        let pr_bar = review::pull_request_bar(&self.controllers.review, width, pr_h, cx.theme);
         let body = self.body(width, body_h, cx);
         let status = self.status_bar(width, status_h, cx);
         let slot = Slot {
@@ -761,6 +769,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         view! {
             <div w={width} h={height} class="flex-col relative overflow-hidden" bg={theme.colors.app_bg}>
                 {title}
+                {?pr_bar}
                 {body}
                 {status}
                 {?mutation_panel}

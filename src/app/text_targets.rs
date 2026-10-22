@@ -23,6 +23,7 @@ pub const SETTINGS_ANTHROPIC_KEY: FocusId = FocusId::from_key("diffy.settings.an
 pub const SETTINGS_STEERING_PROMPT: FocusId = FocusId::from_key("diffy.settings.steering_prompt");
 pub const REVIEW_ACCOUNT: FocusId = FocusId::from_key("diffy.review.account");
 pub const REVIEW_DIALOG: FocusId = FocusId::from_key("diffy.review.dialog");
+pub const REVIEW_OVERVIEW: FocusId = FocusId::from_key("diffy.review.overview");
 
 pub fn focus_id(focus: LogicalFocus) -> FocusId {
     match focus {
@@ -42,6 +43,7 @@ pub fn focus_id(focus: LogicalFocus) -> FocusId {
         LogicalFocus::SettingsSteeringPrompt => SETTINGS_STEERING_PROMPT,
         LogicalFocus::ReviewAccount => REVIEW_ACCOUNT,
         LogicalFocus::ReviewDialog => REVIEW_DIALOG,
+        LogicalFocus::ReviewOverview => REVIEW_OVERVIEW,
         LogicalFocus::DeliveryLanguages => crate::app::delivery::LANGUAGES_TOGGLE,
     }
 }

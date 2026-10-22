@@ -52,6 +52,7 @@ pub enum LogicalFocus {
     SettingsSteeringPrompt,
     ReviewAccount,
     ReviewDialog,
+    ReviewOverview,
     DeliveryLanguages,
 }
 

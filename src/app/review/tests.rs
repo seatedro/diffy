@@ -39,7 +39,9 @@ use crate::core::compare::stats::CompareFilePaths;
 use crate::core::forge::github::{
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThread,
     GitHubPullRequestReviewThreadComment, GitHubReviewSide, GitHubReviewThreadResolution,
-    GitHubUser, PullRequestInfo, PullRequestReview,
+    GitHubUser, PullRequestActor, PullRequestCheckContext, PullRequestCheckSummary,
+    PullRequestInfo, PullRequestLabel, PullRequestOverview, PullRequestReview, PullRequestReviewer,
+    PullRequestTimelineItem, PullRequestTimelineKind,
 };
 use crate::core::review::{
     ReviewAnchor, ReviewComment, ReviewCommentId, ReviewDecision, ReviewDraftKind,
@@ -58,6 +60,8 @@ fn info(number: i32) -> PullRequestInfo {
     PullRequestInfo {
         title: "Tidy the widget".to_owned(),
         state: "open".to_owned(),
+        draft: false,
+        merged: false,
         author_login: "author".to_owned(),
         number,
         additions: 3,
@@ -200,6 +204,7 @@ struct Script {
     cached: bool,
     fail_replies: bool,
     fail_submit: bool,
+    fail_overview: bool,
     requests: Vec<GitHubRequest>,
 }
 
@@ -215,9 +220,15 @@ impl FakeGitHub {
 
 impl GitHubBackend for FakeGitHub {
     fn execute(&self, request: GitHubRequest, emit: &mut dyn FnMut(GitHubResponse)) {
-        let (data, cached, fail_replies, fail_submit) = self.with(|s| {
+        let (data, cached, fail_replies, fail_submit, fail_overview) = self.with(|s| {
             s.requests.push(request.clone());
-            (s.data.clone(), s.cached, s.fail_replies, s.fail_submit)
+            (
+                s.data.clone(),
+                s.cached,
+                s.fail_replies,
+                s.fail_submit,
+                s.fail_overview,
+            )
         });
         let pr_number = |url: &str| if url == OTHER_URL { 7 } else { 42 };
         match request {
@@ -319,8 +330,130 @@ impl GitHubBackend for FakeGitHub {
                 info: info(pr.number),
                 pr,
             }),
+            GitHubRequest::FetchPullRequestOverview { pr, token } => emit(if fail_overview {
+                GitHubResponse::PullRequestOverviewLoadFailed {
+                    pr,
+                    message: "overview unavailable".to_owned(),
+                }
+            } else {
+                GitHubResponse::PullRequestOverviewLoaded {
+                    pr,
+                    overview: Box::new(overview_fixture(token.is_some())),
+                }
+            }),
+            GitHubRequest::AddPullRequestComment { pr, .. } => {
+                emit(GitHubResponse::PullRequestCommentAdded { pr })
+            }
             other => panic!("unexpected request {other:?}"),
         }
+    }
+}
+
+fn actor(login: &str) -> PullRequestActor {
+    PullRequestActor {
+        login: login.to_owned(),
+        avatar_url: format!("https://avatars.test/u/{login}"),
+    }
+}
+
+fn overview_fixture(detailed: bool) -> PullRequestOverview {
+    let item = |id: &str, kind: PullRequestTimelineKind, login: &str, body: &str| {
+        PullRequestTimelineItem {
+            id: id.to_owned(),
+            kind,
+            author: actor(login),
+            body: body.to_owned(),
+            created_at: "2026-01-02T00:00:00Z".to_owned(),
+            url: format!("https://github.com/owner/repo/pull/42#{id}"),
+        }
+    };
+    let mut timeline = vec![item(
+        "comment-1",
+        PullRequestTimelineKind::Comment,
+        "bravo",
+        "Looks *reasonable* overall.",
+    )];
+    if detailed {
+        timeline.insert(
+            0,
+            item(
+                "commit-1",
+                PullRequestTimelineKind::Commit {
+                    short_oid: "abc1234".to_owned(),
+                },
+                "author",
+                "Add widget cache",
+            ),
+        );
+        timeline.push(item(
+            "review-1",
+            PullRequestTimelineKind::Review {
+                state: "APPROVED".to_owned(),
+                comments: 0,
+            },
+            "alpha",
+            "",
+        ));
+    }
+    PullRequestOverview {
+        title: "Tidy the widget".to_owned(),
+        body: "Adds a `cache()` for widget heights.".to_owned(),
+        url: URL.to_owned(),
+        state: "OPEN".to_owned(),
+        author: actor("author"),
+        created_at: "2026-01-01T00:00:00Z".to_owned(),
+        base_branch: "main".to_owned(),
+        head_branch: "feature".to_owned(),
+        additions: 3,
+        deletions: 1,
+        changed_files: 1,
+        commit_count: 1,
+        mergeable: "MERGEABLE".to_owned(),
+        merge_state_status: "CLEAN".to_owned(),
+        labels: vec![PullRequestLabel {
+            name: "bug".to_owned(),
+            color: "d73a4a".to_owned(),
+        }],
+        reviewers: if detailed {
+            vec![
+                PullRequestReviewer {
+                    actor: actor("alpha"),
+                    state: "APPROVED".to_owned(),
+                },
+                PullRequestReviewer {
+                    actor: actor("bravo"),
+                    state: "REQUESTED".to_owned(),
+                },
+            ]
+        } else {
+            Vec::new()
+        },
+        checks: if detailed {
+            PullRequestCheckSummary {
+                total_count: 2,
+                success_count: 1,
+                failure_count: 1,
+                contexts: vec![
+                    PullRequestCheckContext {
+                        name: "build".to_owned(),
+                        state: "SUCCESS".to_owned(),
+                        details_url: "https://ci.test/build".to_owned(),
+                    },
+                    PullRequestCheckContext {
+                        name: "lint".to_owned(),
+                        state: "FAILURE".to_owned(),
+                        details_url: String::new(),
+                    },
+                ],
+                ..PullRequestCheckSummary::default()
+            }
+        } else {
+            PullRequestCheckSummary::default()
+        },
+        timeline_total: timeline.len(),
+        timeline,
+        detailed,
+        ..PullRequestOverview::default()
     }
 }
 
@@ -649,7 +782,8 @@ fn startup_loads_the_token_then_the_handed_off_pull_request() {
         [
             GitHubRequest::FetchUser { .. },
             GitHubRequest::LoadPullRequest { .. },
-            GitHubRequest::FetchReviewData { .. }
+            GitHubRequest::FetchReviewData { .. },
+            GitHubRequest::FetchPullRequestOverview { .. }
         ]
     ));
 }
@@ -970,9 +1104,18 @@ fn edit_and_delete_go_through_graphql_and_refetch() {
     assert_eq!(driver.review.host.composer_text(), "Consider caching this.");
     driver.type_text(" Please.");
     driver.act(ReviewAction::SubmitComment);
-    driver.act(ReviewAction::DeleteComment {
+    let delete = || ReviewAction::DeleteComment {
         comment_node_id: "comment-1".to_owned(),
-    });
+    };
+    driver.act(delete());
+    assert!(
+        !driver
+            .fake
+            .requests()
+            .iter()
+            .any(|r| matches!(r, GitHubRequest::DeleteCommentGraphql { .. }))
+    );
+    driver.act(delete());
 
     let requests = driver.fake.requests();
     assert!(requests.iter().any(|r| matches!(r,
@@ -1073,6 +1216,8 @@ impl UiApp for App {
             height: title_height,
         };
         let title = title_view(&mut self.driver.review, &slot, cx);
+        let bar_height = super::pull_request_bar_height(&self.driver.review, cx.theme);
+        let bar = super::pull_request_bar(&self.driver.review, width, bar_height, cx.theme);
         let presentation = self.driver.review.presentation();
         let card_width = default_card_width(width, cx.theme);
         let cards: Vec<AnyElement> = presentation
@@ -1091,15 +1236,27 @@ impl UiApp for App {
             height,
         };
         let overlay = overlay(&self.driver.review, &full, cx);
+        let page = self.driver.review.overview_open().then(|| {
+            let slot = Slot {
+                shared: &shared,
+                width,
+                height: (height - title_height - bar_height).max(0.0),
+            };
+            super::overview(&self.driver.review, &slot, cx)
+        });
         let accounts = self
             .accounts
             .then(|| super::accounts_settings(&self.driver.review, cx.theme));
         view! {
             <div w={width} h={height} class="flex-col relative overflow-hidden">
                 <div w={width} h={title_height} class="flex-row items-center">{title}</div>
+                {?bar}
                 {?accounts}
-                <div class="flex-row p-2">{?header}</div>
-                <div class="flex-col gap-2 p-2">{...cards}</div>
+                {?page}
+                if !self.driver.review.overview_open() {
+                    <div class="flex-row p-2">{?header}</div>
+                    <div class="flex-col gap-2 p-2">{...cards}</div>
+                }
                 {?overlay}
             </div>
         }
@@ -1205,7 +1362,7 @@ fn review_card_fixture_content() {
     let author = painted.find("@alpha").expect("author header");
     let body = painted.find("This recomputes").expect("first body");
     assert!(author < body, "header precedes body: {painted}");
-    assert!(painted.contains("@bravo replied"));
+    assert!(painted.contains("@bravo") && painted.contains(" replied"));
     assert!(painted.contains("fn cached_height"));
     assert_eq!(tree, harness(sample_driver()).accessibility_tree());
 }
@@ -1313,10 +1470,7 @@ fn staged_drafts_render_cards_and_submit_review() {
     assert!(ui.painted_text().contains("Pending"));
     ui.click_node(By::role_name(Role::Button, "Submit review"));
     ui.find(By::role_name(Role::Dialog, "Submit review"));
-    assert!(
-        ui.painted_text()
-            .contains("1 pending comments will be submitted")
-    );
+    assert!(ui.painted_text().contains("1 comment will be submitted"));
     ui.click_node(By::role_name(Role::Button, "Comment"));
 
     assert!(ui.try_find(By::test_id("review.draft.1")).is_none());
@@ -1673,7 +1827,7 @@ fn author_avatars_show_initials_until_loaded() {
         }),
     });
 
-    assert_eq!(images(&ui), before + 1);
+    assert_eq!(images(&ui), before + 2);
 }
 
 #[test]
@@ -1853,8 +2007,8 @@ fn comment_headers_precede_their_bodies() {
     };
 
     assert!(bottom(find("@alpha")) <= find("This recomputes").y + 0.5);
-    assert!(bottom(find("@bravo replied")) <= find("memoize_height()").y + 0.5);
-    assert!(find("This recomputes").y < find("@bravo replied").y);
+    assert!(bottom(find("@bravo")) <= find("memoize_height()").y + 0.5);
+    assert!(find("This recomputes").y < find("@bravo").y);
 }
 
 #[test]
@@ -2055,9 +2209,14 @@ fn title_bar_shows_the_loaded_pull_request_and_account() {
         ui.try_find(By::role_name(Role::Button, "Review PR"))
             .is_none()
     );
-    ui.find(By::test_id("review.pull_request"));
+    let bar = ui.find(By::test_id("review.pull_request")).bounds;
+    let open = ui
+        .find(By::role_name(Role::Button, "Open on GitHub"))
+        .bounds;
+    let submit = ui.find(By::role_name(Role::Button, "Submit review")).bounds;
     ui.find(By::role_name(Role::Button, "GitHub account"));
-    same_height(&ui, &["Submit review", "Open on GitHub"]);
+    assert!(submit.y + submit.height <= bar.y);
+    assert!(open.y >= bar.y && open.y + open.height <= bar.y + bar.height);
 }
 
 #[test]
@@ -2118,6 +2277,7 @@ fn accounts_settings_show_the_github_account() {
     assert!(contains(row, sign_out));
     ui.click_node(By::role_name(Role::Button, "Sign out"));
     assert!(!ui.app().driver.review.signed_in());
+    let row = ui.find(By::role_name(Role::Group, "GitHub account")).bounds;
     let sign_in = ui.find(By::role_name(Role::Button, "Sign in"));
     assert!(contains(row, sign_in.bounds));
     assert!(ui.painted_text().contains("Sign in to load pull requests"));
@@ -2159,4 +2319,228 @@ fn commit_authors_share_the_avatar_cache() {
         "dev@example.com".to_owned(),
     ]));
     assert_eq!(signed_out.fake.effects.len(), before);
+}
+
+fn overview_requests(driver: &Driver) -> usize {
+    driver
+        .fake
+        .requests()
+        .iter()
+        .filter(|r| matches!(r, GitHubRequest::FetchPullRequestOverview { .. }))
+        .count()
+}
+
+#[test]
+fn overview_opens_from_the_pull_request_bar_and_escape_returns_to_the_diff() {
+    let mut ui = harness(Driver::signed_in_with_pr());
+    assert!(ui.try_find(By::test_id("review.overview")).is_none());
+
+    ui.click_node(By::test_id("review.pull_request.title"));
+
+    let page = ui.find(By::role_name(Role::Region, "Pull request overview"));
+    assert!(page.bounds.height > 0.0);
+    assert_eq!(ui.focus(), Some(focus_id(LogicalFocus::ReviewOverview)));
+    ui.find(By::test_id("review.pull_request.state"));
+    ui.find(By::test_id("review.overview.state"));
+    ui.find(By::role_name(Role::Heading, "Tidy the widget"));
+    for row in ["Reviewers", "Labels", "Checks", "Merge", "Changes"] {
+        ui.find(By::role_name(Role::Group, row));
+    }
+    ui.find(By::role_name(Role::Label, "@alpha: Approved"));
+    ui.find(By::role_name(Role::Label, "@bravo: Awaiting review"));
+    ui.find(By::role_name(Role::Label, "Label bug"));
+    ui.find(By::role_name(Role::Group, "Description"));
+    ui.find(By::role_name(Role::List, "Timeline"));
+    ui.find(By::role_name(
+        Role::Link,
+        "Commit abc1234: Add widget cache",
+    ));
+    ui.find(By::role_name(Role::Group, "Comment by @bravo"));
+    ui.find(By::role_name(Role::Group, "@alpha approved these changes"));
+    let painted = ui.painted_text();
+    assert!(painted.contains("cache()"), "{painted}");
+    assert!(!painted.contains("`cache()`"), "{painted}");
+    assert!(painted.contains("Looks reasonable overall."), "{painted}");
+    assert!(painted.contains("Ready to merge"), "{painted}");
+    assert!(painted.contains("1 failed"), "{painted}");
+    assert!(ui.try_find(By::role_name(Role::Button, "Reply")).is_none());
+    assert_eq!(overview_requests(&ui.app().driver), 1);
+
+    ui.key("escape");
+
+    assert!(ui.try_find(By::test_id("review.overview")).is_none());
+    assert_eq!(ui.focus(), Some(focus_id(LogicalFocus::Viewport)));
+    ui.find(By::role_name(Role::Button, "Reply"));
+}
+
+#[test]
+fn overview_tabs_switch_between_overview_and_files() {
+    let mut ui = harness(Driver::signed_in_with_pr());
+    ui.click_node(By::role_name(Role::Button, "Overview"));
+    ui.find(By::test_id("review.overview"));
+
+    ui.click_node(By::test_id("review.overview.back"));
+    assert!(ui.try_find(By::test_id("review.overview")).is_none());
+
+    ui.click_node(By::role_name(Role::Button, "Overview"));
+    ui.click_node(By::test_id("review.pull_request.files"));
+    assert!(ui.try_find(By::test_id("review.overview")).is_none());
+    assert_eq!(overview_requests(&ui.app().driver), 1);
+}
+
+#[test]
+fn checks_expand_to_list_each_check() {
+    let mut ui = harness(Driver::signed_in_with_pr());
+    ui.click_node(By::test_id("review.pull_request.title"));
+    assert!(ui.try_find(By::role_name(Role::List, "Checks")).is_none());
+
+    ui.click_node(By::role_name(Role::Button, "Show checks"));
+
+    let list = ui.find(By::role_name(Role::List, "Checks")).bounds;
+    let lint = ui
+        .find(By::role_name(Role::ListItem, "lint: failure"))
+        .bounds;
+    let build = ui.find(By::role_name(Role::Link, "build: success")).bounds;
+    assert!(lint.y < build.y, "failures sort first");
+    assert!(contains(list, build));
+    ui.click_node(By::role_name(Role::Link, "build: success"));
+    assert_eq!(
+        ui.app().driver.browser,
+        vec!["https://ci.test/build".to_owned()]
+    );
+    ui.click_node(By::role_name(Role::Button, "Hide checks"));
+    assert!(ui.try_find(By::role_name(Role::List, "Checks")).is_none());
+}
+
+#[test]
+fn overview_shows_loading_then_error_with_retry() {
+    let mut driver = Driver::new(Fake::new());
+    driver.fake.github.with(|s| s.fail_overview = true);
+    driver.startup(Some(URL));
+    driver.open_repository();
+    driver.fake.hold = true;
+    let mut ui = harness(driver);
+    ui.click_node(By::test_id("review.pull_request.title"));
+    ui.find(By::test_id("review.overview.loading"));
+    ui.find(By::role_name(Role::Heading, "Tidy the widget"));
+
+    ui.app_mut().driver.release();
+    ui.send_message(ReviewEvent::TokenSaveFailed {
+        message: "redraw".to_owned(),
+    });
+
+    ui.find(By::role_name(
+        Role::Alert,
+        "Couldn't load the pull request overview",
+    ));
+    assert!(ui.painted_text().contains("overview unavailable"));
+    ui.app_mut()
+        .driver
+        .fake
+        .github
+        .with(|s| s.fail_overview = false);
+    ui.click_node(By::role_name(Role::Button, "Retry"));
+    assert!(ui.try_find(By::test_id("review.overview.error")).is_none());
+    ui.find(By::role_name(Role::Group, "Description"));
+}
+
+#[test]
+fn stale_overview_results_are_dropped_after_switching_pull_requests() {
+    let mut driver = Driver::signed_in_with_pr();
+    driver.act(ReviewAction::OpenOverview);
+    driver.fake.hold = true;
+    driver.act(ReviewAction::RefreshOverview);
+    let held = std::mem::take(&mut driver.fake.held);
+    driver.fake.hold = false;
+    driver.act(ReviewAction::LoadPullRequest {
+        url: OTHER_URL.to_owned(),
+    });
+    let current = driver.review.overview().data.clone().unwrap();
+    driver.fake.held = held;
+    driver.release();
+
+    assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 7);
+    assert!(!driver.review.overview_open());
+    let after = driver.review.overview().data.clone().unwrap();
+    assert!(Rc::ptr_eq(&current, &after));
+}
+
+#[test]
+fn signed_out_overview_shows_the_description_and_prompts_sign_in() {
+    let mut driver = signed_out();
+    driver.open_repository();
+    driver.act(ReviewAction::LoadPullRequest {
+        url: URL.to_owned(),
+    });
+    let mut ui = harness(driver);
+    ui.click_node(By::test_id("review.pull_request.title"));
+
+    assert!(ui.painted_text().contains("cache()"));
+    ui.find(By::role_name(Role::Group, "Comment by @bravo"));
+    assert!(ui.painted_text().contains("Sign in to see checks"));
+    assert!(
+        ui.try_find(By::role_name(Role::Button, "Show checks"))
+            .is_none()
+    );
+    ui.click_node(By::role_name(Role::Button, "Comment"));
+    ui.find(By::role_name(Role::Dialog, "Sign in to GitHub"));
+}
+
+#[test]
+fn conversation_comment_posts_and_refreshes_the_timeline() {
+    let mut ui = harness(Driver::signed_in_with_pr());
+    ui.click_node(By::test_id("review.pull_request.title"));
+    ui.click_node(By::role_name(Role::Button, "Comment"));
+
+    ui.find(By::role_name(Role::Group, "New pull request comment"));
+    assert_eq!(ui.focus(), Some(REVIEW_COMPOSER));
+    ui.type_text("Thanks, merging after CI.");
+    ui.key("escape");
+    assert!(
+        ui.try_find(By::role_name(Role::Group, "New pull request comment"))
+            .is_none()
+    );
+    ui.find(By::test_id("review.overview"));
+
+    ui.click_node(By::role_name(Role::Button, "Comment"));
+    ui.type_text("Thanks, merging after CI.");
+    ui.key("mod+enter");
+
+    let driver = &ui.app().driver;
+    assert!(driver.fake.requests().iter().any(|r| matches!(r,
+        GitHubRequest::AddPullRequestComment { body, .. } if body == "Thanks, merging after CI.")));
+    assert_eq!(overview_requests(driver), 2);
+    assert!(driver.toasts.iter().any(|toast| matches!(toast,
+        ToastUpdate::Show { message, .. } if message == "Comment posted.")));
+    assert_eq!(ui.focus(), Some(focus_id(LogicalFocus::ReviewOverview)));
+    assert!(
+        ui.try_find(By::role_name(Role::Group, "New pull request comment"))
+            .is_none()
+    );
+}
+
+#[test]
+fn sidebar_selection_closes_the_overview_and_the_palette_offers_it() {
+    let mut driver = Driver::signed_in_with_pr();
+    let mut commands = Vec::new();
+    crate::contracts::commands::CommandSource::commands(
+        &driver.review,
+        &driver.shared,
+        &mut commands,
+    );
+    let entry = commands
+        .iter()
+        .find(|command| command.id == "review.overview")
+        .unwrap();
+    assert_eq!(entry.action, Action::from(ReviewAction::OpenOverview));
+
+    driver.act(ReviewAction::OpenOverview);
+    assert!(driver.review.overview_open());
+    driver.intent(Intent::SelectFile(Some(
+        crate::contracts::navigation::SelectedFile {
+            key: FileKey(5),
+            origin: crate::contracts::navigation::SelectionOrigin::Sidebar,
+        },
+    )));
+    assert!(!driver.review.overview_open());
 }

@@ -309,6 +309,10 @@ impl DiffDecorator for Decorations {
         self.inner.line_mark(cx)
     }
 
+    fn line_badge(&self, cx: &LineContext) -> Option<u32> {
+        self.inner.line_badge(cx)
+    }
+
     fn file_state(&self, cx: &HeaderContext) -> Option<String> {
         self.inner.file_state(cx)
     }

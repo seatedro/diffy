@@ -683,6 +683,33 @@ impl ReviewSession {
         self.threads.sort_by(|a, b| a.id.cmp(&b.id));
     }
 
+    pub fn append_reply(&mut self, comment: &PullRequestReviewComment) -> bool {
+        let Some(root) = comment.in_reply_to_id else {
+            return false;
+        };
+        let Some(thread) = self.threads.iter_mut().find(|thread| {
+            thread
+                .comments
+                .iter()
+                .any(|existing| existing.backend_id == Some(root))
+        }) else {
+            return false;
+        };
+        if thread
+            .comments
+            .iter()
+            .any(|existing| existing.backend_id == Some(comment.id))
+        {
+            return false;
+        }
+        let mut reply = ReviewComment::from_github_comment(comment);
+        reply.thread_id = thread.id.clone();
+        reply.viewer_can_update = true;
+        reply.viewer_can_delete = true;
+        thread.comments.push(reply);
+        true
+    }
+
     pub fn mark_thread_resolution(
         &mut self,
         thread_id: &ReviewThreadId,
@@ -696,6 +723,11 @@ impl ReviewSession {
             return false;
         };
         thread.status.resolution = resolution;
+        match resolution {
+            ReviewResolution::Resolved => thread.permissions.can_unresolve = true,
+            ReviewResolution::Unresolved => thread.permissions.can_resolve = true,
+            ReviewResolution::Unknown => {}
+        }
         true
     }
 
@@ -1039,6 +1071,8 @@ mod tests {
         PullRequestInfo {
             title: "Review me".to_owned(),
             state: "open".to_owned(),
+            draft: false,
+            merged: false,
             author_login: "author".to_owned(),
             number: 42,
             additions: 10,

@@ -215,6 +215,7 @@ pub struct AnnotationContext<'a> {
     pub outdated: bool,
     /// The row's width in points; the content decides its height.
     pub width: f32,
+    pub indent: f32,
 }
 
 /// A hunk header or collapsed gap row.
@@ -290,6 +291,10 @@ pub trait DiffDecorator {
     }
 
     fn line_mark(&self, _cx: &LineContext) -> Option<LineMark> {
+        None
+    }
+
+    fn line_badge(&self, _cx: &LineContext) -> Option<u32> {
         None
     }
 

@@ -135,6 +135,10 @@ impl DiffDecorator for AppDiffDecorator {
             .or_else(|| self.review.line_mark(cx))
     }
 
+    fn line_badge(&self, cx: &LineContext) -> Option<u32> {
+        self.review.line_badge(cx)
+    }
+
     fn file_state(&self, cx: &HeaderContext) -> Option<String> {
         self.mutations
             .file_state(cx)

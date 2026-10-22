@@ -1,6 +1,6 @@
 use quark::{Px, view};
 use quark_app::ViewContext;
-use quark_components::{Avatar, Modal, avatar};
+use quark_components::{Avatar, Modal, avatar, badge};
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
 use quark_ui::icons::lucide;
@@ -9,17 +9,20 @@ use quark_ui::theme::{Color, Theme};
 
 use super::ReviewController;
 use super::controls::{self, GhostChip, Tone};
+use super::overview::{CheckTone, check_icon, info_state, reviewer_state, state_badge};
 use super::state::{AuthStatus, ReviewOverlay};
 use crate::app::shell::Slot;
 use crate::app::text_targets::{REVIEW_ACCOUNT, REVIEW_DIALOG};
-use crate::app::tokens::{self, Ico, Rad, Shadow, Sp, Sz, TextStyle};
+use crate::app::tokens::{self, Bp, Ico, Layout, Rad, Shadow, Sp, Sz, TextStyle};
 use crate::contracts::commands::CommandsAction;
 use crate::contracts::review::ReviewAction;
 use crate::contracts::shell::ShellAction;
+use crate::core::forge::github::{PullRequestCheckSummary, PullRequestOverview};
 use crate::core::review::ReviewDecision;
 
-const CARD_MAX_WIDTH: f32 = 760.0;
+const CARD_MAX_WIDTH: f32 = 600.0;
 const ACCOUNT_MENU_WIDTH: f32 = 260.0;
+const REVIEWER_STACK_MAX: usize = 4;
 
 fn action(action: ReviewAction) -> quark_ui::Action {
     action.into()
@@ -48,65 +51,22 @@ pub fn prepare(review: &mut ReviewController, width: f32, cx: &mut ViewContext) 
 pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) -> AnyElement {
     prepare(review, slot.width, cx);
     let theme = cx.theme;
-    let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
-    let small = TextStyle::BodySmall.font_size(theme);
-    let pull_request = review.active_pull_request().map(|active| {
-        let (label, color) = match (&active.comparison, &active.error) {
-            (_, Some(_)) => (format!("Couldn't load #{}", active.pr.number), tc.status_error),
-            (Some(comparison), None) => (
-                format!("#{} {}", comparison.info.number, comparison.info.title),
-                tc.text,
-            ),
-            (None, None) => ("Loading pull request\u{2026}".to_owned(), tc.text_muted),
-        };
-        let counts = review.review_counts();
-        let detail = counts.map(|(unresolved, pending, failed)| {
-            let mut parts = vec![format!("{unresolved} unresolved")];
-            if pending > 0 {
-                parts.push(format!("{pending} pending"));
-            }
-            if failed > 0 {
-                parts.push(format!("{failed} failed"));
-            }
-            parts.join(" \u{b7} ")
-        });
-        let submit = counts.filter(|_| review.signed_in()).map(|(_, pending, failed)| {
+    let submit = review
+        .active_pull_request()
+        .and(review.review_counts())
+        .filter(|_| review.signed_in())
+        .map(|(_, pending, failed)| {
             let tone = if pending + failed > 0 {
                 Tone::Primary
             } else {
                 Tone::Secondary
             };
-            let button = controls::button(
-                "Submit review",
-                action(ReviewAction::OpenSubmitMenu),
-                tone,
-            );
-            view! { <div test_id="review.submit">{button}</div> }
+            let button =
+                controls::button("Submit review", action(ReviewAction::OpenSubmitMenu), tone);
+            view! { <div class="shrink-0" test_id="review.submit">{button}</div> }
         });
-        let open = controls::icon_button(
-            lucide::EXTERNAL_LINK,
-            "Open on GitHub",
-            action(ReviewAction::OpenPullRequestInBrowser),
-            theme,
-        );
-        view! { scale,
-            <div class="flex-row items-center overflow-hidden" gap={Sp::SM} min_w={0.0} test_id="review.pull_request">
-                <icon svg={lucide::GIT_PULL_REQUEST} size={Px(small)} color={tc.text_muted} />
-                <div class="flex-row items-center overflow-hidden" gap={Sp::SM} min_w={0.0}>
-                    <text size={Px(small)} class="truncate font-medium" color={color}>{label}</text>
-                    if let Some(detail) = detail {
-                        <text size={Px(small)} class="truncate" color={tc.text_muted}>{detail}</text>
-                    }
-                </div>
-                <div class="flex-row items-center shrink-0" gap={Sp::SM}>
-                    {open}
-                    {?submit}
-                </div>
-            </div>
-        }
-    });
-    let review_pr = pull_request.is_none().then(|| {
+    let review_pr = review.active_pull_request().is_none().then(|| {
         let button = controls::button(
             "Review PR",
             commands(CommandsAction::OpenPullRequestPicker),
@@ -119,11 +79,241 @@ pub fn view(review: &mut ReviewController, slot: &Slot, cx: &mut ViewContext) ->
     view! { scale,
         <div h={Px(slot.height)} class="flex-row items-center justify-end overflow-hidden" min_w={0.0} gap={Sp::SM} test_id="title.review"
              on:key:escape={action(ReviewAction::CloseOverlay)}>
-            {?pull_request}
+            {?submit}
             {?review_pr}
             <div class="flex-row items-center shrink-0">{account}</div>
         </div>
     }
+}
+
+pub fn pull_request_bar_height(review: &ReviewController, theme: &Theme) -> f32 {
+    if review.active_pull_request().is_some() {
+        tokens::scaled(Layout::COMPARE_BAR_H, tokens::ui_scale(theme))
+    } else {
+        0.0
+    }
+}
+
+pub fn pull_request_bar(
+    review: &ReviewController,
+    width: f32,
+    height: f32,
+    theme: &Theme,
+) -> Option<AnyElement> {
+    let active = review.active_pull_request()?;
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let info = active
+        .comparison
+        .as_ref()
+        .map(|comparison| &comparison.info);
+    let overview_data = review.overview().data.as_deref();
+    let (number, title, color) = match (info, &active.error) {
+        (_, Some(_)) => (
+            format!("#{}", active.pr.number),
+            "Couldn\u{2019}t load this pull request".to_owned(),
+            tc.status_error,
+        ),
+        (Some(info), None) => (
+            format!("#{}", info.number),
+            info.title.clone(),
+            tc.text_strong,
+        ),
+        (None, None) => (
+            format!("#{}", active.pr.number),
+            "Loading pull request\u{2026}".to_owned(),
+            tc.text_muted,
+        ),
+    };
+    let state = match (overview_data, info) {
+        (Some(overview), _) => Some((overview.state.clone(), overview.is_draft)),
+        (None, Some(info)) => Some((info_state(info), info.draft)),
+        (None, None) => None,
+    }
+    .map(|(state, draft)| {
+        let (label, icon, variant) = state_badge(&state, draft);
+        view! {
+            <div class="shrink-0" accessibility_role={AccessibilityRole::Label}
+                 aria-label={format!("State: {label}")}
+                 test_id="review.pull_request.state">
+                {badge(label).icon(icon).variant(variant)}
+            </div>
+        }
+    });
+    let roomy = width >= Bp::NARROW * scale;
+    let fits = width >= Bp::COMPACT * scale;
+    let branches = info.filter(|_| roomy).map(|info| {
+        let label = format!("{} \u{2192} {}", info.head_branch, info.base_branch);
+        view! { scale,
+            <div class="flex-row items-center overflow-hidden" min_w={0.0} px={Sp::XS} py={Sp::XXS}
+                 rounded={Rad::SM} bg={tc.element_background}
+                 accessibility_role={AccessibilityRole::Label}
+                 aria-label={label.clone()}
+                 tooltip={label.clone()}
+                 test_id="review.pull_request.branches">
+                <text size={Px(small)} class="truncate font-mono" color={tc.text}>{label}</text>
+            </div>
+        }
+    });
+    let reviewers = overview_data
+        .filter(|overview| roomy && !overview.reviewers.is_empty())
+        .map(|overview| reviewer_stack(review, overview, theme));
+    let checks = overview_data
+        .filter(|_| fits)
+        .and_then(|overview| checks_status(&overview.checks, theme));
+    let counts = review.review_counts().map(|(unresolved, pending, failed)| {
+        let mut parts = vec![format!("{unresolved} unresolved")];
+        if pending > 0 {
+            parts.push(format!("{pending} pending"));
+        }
+        if failed > 0 {
+            parts.push(format!("{failed} failed"));
+        }
+        parts.join(" \u{b7} ")
+    });
+    let open = controls::icon_button(
+        lucide::EXTERNAL_LINK,
+        "Open on GitHub",
+        action(ReviewAction::OpenPullRequestInBrowser),
+        theme,
+    );
+    let overview = review.overview_open();
+    let tab = |label: &str, active: bool, on_click: ReviewAction| {
+        controls::button(label, action(on_click), Tone::Ghost).active(active)
+    };
+    let overview_tab = tab("Overview", overview, ReviewAction::OpenOverview);
+    let files_tab = tab("Files changed", !overview, ReviewAction::CloseOverview);
+    Some(view! { scale,
+        <div w={Px(width)} h={Px(height)} class="flex-row items-center shrink-0 overflow-hidden"
+             px={Sp::MD} gap={Sp::SM}
+             bg={tc.title_bar_background} border_b={tc.border_variant}
+             accessibility_role={AccessibilityRole::Toolbar}
+             aria-label="Pull request"
+             test_id="review.pull_request">
+            {?state}
+            <div class="flex-row items-center overflow-hidden" min_w={0.0} gap={Sp::SM}
+                 px={Sp::XS} py={Sp::XXS} rounded={Rad::MD}
+                 hover_bg={tc.ghost_element_hover}
+                 cursor={CursorHint::Pointer}
+                 accessibility_role={AccessibilityRole::Button}
+                 aria-label="Pull request overview"
+                 tooltip={if overview { "Back to changed files" } else { "Open the overview" }}
+                 test_id="review.pull_request.title"
+                 on:click={action(ReviewAction::ToggleOverview)}>
+                <text size={Px(small)} color={tc.text_muted}>{number}</text>
+                <text size={Px(small)} class="truncate font-medium" color={color}>{title}</text>
+            </div>
+            {?branches}
+            <spacer />
+            {?reviewers}
+            {?checks}
+            if let Some(counts) = counts {
+                <text size={Px(small)} color={tc.text_muted}>{counts}</text>
+            }
+            <div class="flex-row items-center shrink-0" gap={Sp::XXS}
+                 accessibility_role={AccessibilityRole::Group}
+                 aria-label="Pull request views">
+                <div test_id="review.pull_request.overview">{overview_tab}</div>
+                <div test_id="review.pull_request.files">{files_tab}</div>
+            </div>
+            <div class="shrink-0">{open}</div>
+        </div>
+    })
+}
+
+fn reviewer_stack(
+    review: &ReviewController,
+    overview: &PullRequestOverview,
+    theme: &Theme,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let size = tokens::scaled(Ico::MD, scale);
+    let overlap = -(size * 0.25).round();
+    let shown = overview.reviewers.len().min(REVIEWER_STACK_MAX);
+    let extra = overview.reviewers.len() - shown;
+    let label = overview
+        .reviewers
+        .iter()
+        .map(|reviewer| {
+            let (state, _, _) = reviewer_state(&reviewer.state, theme);
+            format!("@{}: {state}", reviewer.actor.login)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let faces = overview.reviewers[..shown]
+        .iter()
+        .enumerate()
+        .map(|(index, reviewer)| {
+            let login = reviewer.actor.login.clone();
+            let ring = match reviewer.state.as_str() {
+                "APPROVED" => tc.line_add_text,
+                "CHANGES_REQUESTED" => tc.line_del_text,
+                _ => tc.title_bar_background,
+            };
+            let face = review.host.face(&login);
+            let margin = if index == 0 { 0.0 } else { overlap };
+            view! {
+                <div class="shrink-0" border={ring} rounded={size} margin_left={margin}>
+                    {avatar(login).size(Ico::MD).image(face)}
+                </div>
+            }
+        })
+        .collect::<Vec<_>>();
+    let small = TextStyle::BodySmall.font_size(theme);
+    view! { scale,
+        <div class="flex-row items-center shrink-0" gap={Sp::XXS}
+             accessibility_role={AccessibilityRole::Label}
+             aria-label={format!("Reviewers: {}", label.replace('\n', ", "))}
+             tooltip={label}
+             test_id="review.pull_request.reviewers">
+            <div class="flex-row items-center shrink-0">{...faces}</div>
+            if extra > 0 {
+                <text size={Px(small)} color={tc.text_muted}>{format!("+{extra}")}</text>
+            }
+        </div>
+    }
+}
+
+fn checks_status(checks: &PullRequestCheckSummary, theme: &Theme) -> Option<AnyElement> {
+    if checks.total_count == 0 {
+        return None;
+    }
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let (tone, label) = if checks.failure_count > 0 {
+        (
+            CheckTone::Failed,
+            format!("{} failing", checks.failure_count),
+        )
+    } else if checks.pending_count > 0 {
+        (
+            CheckTone::Pending,
+            format!("{} pending", checks.pending_count),
+        )
+    } else {
+        (CheckTone::Passed, "Checks passed".to_owned())
+    };
+    let (icon, color) = check_icon(tone, theme);
+    let detail = format!(
+        "{} passed \u{b7} {} failed \u{b7} {} pending",
+        checks.success_count, checks.failure_count, checks.pending_count
+    );
+    Some(view! { scale,
+        <div class="flex-row items-center shrink-0" gap={Sp::XS} px={Sp::XS} py={Sp::XXS}
+             rounded={Rad::MD} hover_bg={tc.ghost_element_hover}
+             cursor={CursorHint::Pointer}
+             accessibility_role={AccessibilityRole::Button}
+             aria-label={format!("Checks: {detail}")}
+             tooltip={detail}
+             test_id="review.pull_request.checks"
+             on:click={action(ReviewAction::OpenOverview)}>
+            <icon svg={icon} size={Ico::SM} color={color} />
+            <text size={Px(small)} color={tc.text_muted}>{label}</text>
+        </div>
+    })
 }
 
 fn account_view(review: &ReviewController, theme: &Theme) -> AnyElement {
@@ -357,11 +547,17 @@ fn submit_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElem
     let (pending, failed) = review
         .review_counts()
         .map_or((0, 0), |(_, pending, failed)| (pending, failed));
-    let summary = match (pending, failed) {
-        (0, 0) => "No pending comments".to_owned(),
-        (pending, 0) => format!("{pending} pending comments will be submitted"),
-        (pending, failed) => format!("{pending} pending, {failed} to retry"),
+    let staged = review.summary_staged();
+    let comments = pending.saturating_sub(usize::from(staged));
+    let noun = if comments == 1 { "comment" } else { "comments" };
+    let summary = match (comments, staged, failed) {
+        (_, _, 1..) => format!("{pending} pending, {failed} to retry"),
+        (0, false, _) => "No pending comments".to_owned(),
+        (0, true, _) => "The summary will be submitted".to_owned(),
+        (n, false, _) => format!("{n} {noun} will be submitted"),
+        (n, true, _) => format!("{n} {noun} and the summary will be submitted"),
     };
+    let own = review.viewer_is_author();
     let presentation = review.presentation();
     let summary_card = presentation.general_composer().and_then(|card| {
         presentation.card_element(&card.key, width - tokens::scaled(Sp::MD, scale))
@@ -374,7 +570,14 @@ fn submit_menu(review: &ReviewController, slot: &Slot, theme: &Theme) -> AnyElem
         )
     });
     let decision = |label: &str, decision: ReviewDecision, tone: Tone| {
-        controls::button(label, action(ReviewAction::SubmitReview { decision }), tone)
+        let button = controls::button(label, action(ReviewAction::SubmitReview { decision }), tone);
+        if own && decision != ReviewDecision::Comment {
+            button
+                .disabled(true)
+                .tooltip("You can't approve or request changes on your own pull request")
+        } else {
+            button
+        }
     };
     view! { scale,
         <div class="absolute" left={0.0} top={0.0} w={Px(slot.width)} h={Px(slot.height)}

@@ -192,6 +192,7 @@ pub struct NavigationController {
     avatars_requested: HashSet<String>,
     scrollbars: [ScrollbarVisibility; 2],
     watched_worktree: Option<PathBuf>,
+    review_labels: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -239,6 +240,7 @@ impl Default for NavigationController {
             avatars_requested: HashSet::new(),
             scrollbars: Default::default(),
             watched_worktree: None,
+            review_labels: None,
         }
     }
 }
@@ -462,6 +464,9 @@ impl NavigationController {
     }
 
     pub fn compare_labels(&self) -> (String, String) {
+        if let Some(labels) = &self.review_labels {
+            return labels.clone();
+        }
         if self.compare.working_copy {
             let base = self
                 .repository
@@ -1562,6 +1567,20 @@ impl NavigationController {
                 self.select(selected.key, SelectionOrigin::Viewport)
             }
             Intent::InvalidateRepository => self.sync(RepositorySyncReason::Dirty),
+            Intent::SetReviewTarget(Some(review)) => {
+                self.compare.left = review.left_ref.clone();
+                self.compare.right = review.right_ref.clone();
+                self.compare.mode = CompareMode::ThreeDot;
+                self.compare.working_copy = false;
+                self.review_labels = Some((
+                    review.pull_request.base_branch.clone(),
+                    review.pull_request.head_branch.clone(),
+                ));
+                Reduction::changed()
+            }
+            Intent::SetReviewTarget(None) if self.review_labels.take().is_some() => {
+                Reduction::changed()
+            }
             Intent::SettingsChanged(settings) => match settings.settings.last_compare.as_ref() {
                 Some(last) if last.renderer != self.compare.renderer => {
                     self.compare.renderer = last.renderer;

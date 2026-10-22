@@ -135,4 +135,5 @@ impl Layout {
     pub const AVATAR_MD: f32 = 28.0;
     pub const STATUS_BADGE: f32 = 15.0;
     pub const PROGRESS_H: f32 = 4.0;
+    pub const OVERVIEW_LABEL_W: f32 = 104.0;
 }

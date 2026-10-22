@@ -12,6 +12,7 @@ use crate::app::text_targets::{
 };
 use crate::contracts::commands::{CommandDescriptor, CommandsAction, RefPickerAction};
 use crate::contracts::navigation::NavigationAction;
+use crate::contracts::review::ReviewAction;
 use crate::contracts::shell::Action;
 use crate::fonts::FontSettings;
 
@@ -106,15 +107,23 @@ pub fn key_action(
     if let Some(action) = controllers.commands.key_action(&binding) {
         return Some(action);
     }
-    let leaves_commit = binding == "escape"
-        && controllers.navigation.viewing_commit()
-        && controllers.commands.top_layer().is_none()
+    let quiet = controllers.commands.top_layer().is_none()
         && !controllers.commands.settings_open()
         && !controllers.review.is_modal_open()
+        && !focus.is_some_and(|f| TEXT_FIELDS.contains(&f));
+    if binding == "escape"
+        && quiet
+        && controllers.review.overview_open()
+        && controllers.review.composer().is_none()
+    {
+        return Some(ReviewAction::CloseOverview.into());
+    }
+    let leaves_commit = binding == "escape"
+        && quiet
+        && controllers.navigation.viewing_commit()
         && !controllers.viewport.interaction.search().open
         && !controllers.viewport.interaction.has_text_selection()
-        && controllers.mutations.selected_lines().is_empty()
-        && !focus.is_some_and(|f| TEXT_FIELDS.contains(&f));
+        && controllers.mutations.selected_lines().is_empty();
     leaves_commit.then(|| NavigationAction::ClearHistoryCommit.into())
 }
 

@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use diffy_ui::diff_view::AnnotationId;
-use diffy_ui::diff_view::decorator::{AnnotationContext, DiffDecorator, HeaderContext, HeaderSlot};
+use diffy_ui::diff_view::decorator::{
+    AnnotationContext, DiffDecorator, HeaderContext, HeaderSlot, LineContext,
+};
 use quark::{Px, view};
 use quark_app::ViewContext;
 use quark_components::{AvatarImage, PopoverSide, anchored, avatar, popover_panel};
@@ -25,11 +27,12 @@ use quark_ui::virtual_list::RowKey;
 use super::code_highlighter::ReviewCodeHighlighter;
 use super::composer::{ComposerEditor, ComposerTarget};
 use super::controls::{self, Tone};
-use super::state::ReviewController;
+use super::state::{DeleteTarget, ReviewController};
 use crate::app::text_targets::REVIEW_COMPOSER;
-use crate::app::tokens::{self, Ico, Rad, Sp, TextStyle};
+use crate::app::tokens::{self, Alpha, Ico, Rad, Sp, TextStyle};
 use crate::contracts::review::{CardKey, ComposerFormat, ReviewAction};
 use crate::contracts::shared::{FileKey, SharedContext, SourceTarget};
+use crate::core::forge::github::PullRequestTimelineKind;
 use crate::core::review::{
     ReviewDraft, ReviewDraftKind, ReviewDraftState, ReviewResolution, ReviewSession, ReviewSide,
     ReviewThread,
@@ -37,6 +40,7 @@ use crate::core::review::{
 use crate::core::syntax::grammar::Grammars;
 
 const MEASURE_HEIGHT: f32 = 100_000.0;
+pub const OVERVIEW_DESCRIPTION: &str = "description";
 const COMPOSER_MIN_LINES: f32 = 3.0;
 const COMPOSER_MAX_LINES: f32 = 12.0;
 
@@ -50,10 +54,21 @@ struct CardDoc {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CommentActions {
+    pub node: String,
+    pub edit: bool,
+    pub delete: bool,
+    pub url: Option<String>,
+    pub open: bool,
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CommentRow {
     pub label: String,
     pub markdown: String,
     pub face: bool,
+    pub actions: Option<CommentActions>,
 }
 
 type Faces = Rc<RefCell<HashMap<String, AvatarImage>>>;
@@ -116,10 +131,11 @@ pub struct CardHost(Rc<RefCell<HostInner>>);
 
 struct CommentChrome {
     faces: Faces,
+    actions: Vec<Option<CommentActions>>,
 }
 
 impl RowDecorator for CommentChrome {
-    fn header(&self, chrome: &RowChrome, _width: f32, theme: &Theme) -> Option<AnyElement> {
+    fn header(&self, chrome: &RowChrome, width: f32, theme: &Theme) -> Option<AnyElement> {
         let label = chrome.label.as_deref()?.to_owned();
         let login = label
             .trim_start_matches('@')
@@ -135,14 +151,84 @@ impl RowDecorator for CommentChrome {
             .ok()
             .and_then(|faces| faces.get(&login).cloned());
         let test_id = format!("review.avatar.{login}");
+        let actions = self
+            .actions
+            .get((chrome.kind >> 1) as usize)
+            .cloned()
+            .flatten()
+            .map(|actions| comment_menu(actions, theme));
+        let (name, rest) = match label.split_once(' ') {
+            Some((name, rest)) => (name.to_owned(), format!(" {rest}")),
+            None => (label, String::new()),
+        };
         Some(view! { scale,
-            <div class="flex-row items-center" gap={Sp::XS}>
+            <div class="flex-row items-center" w={Px(width)} gap={Sp::XS}>
                 <div test_id={test_id}>{avatar(login).size(Ico::LG).image(face)}</div>
-                <text size={Px(size)} class="font-medium truncate" color={theme.colors.text_strong}>
-                    {label}
-                </text>
+                <div class="flex-row items-center flex-1 overflow-hidden" min_w={0.0}>
+                    <text size={Px(size)} class="font-medium" color={theme.colors.text_strong}>{name}</text>
+                    <text size={Px(size)} class="truncate" color={theme.colors.text_muted}>{rest}</text>
+                </div>
+                {?actions}
             </div>
         })
+    }
+}
+
+fn comment_menu(actions: CommentActions, theme: &Theme) -> AnyElement {
+    let node = actions.node.clone();
+    if !actions.open {
+        let toggle = controls::icon_button(
+            lucide::MORE_HORIZONTAL,
+            "Comment actions",
+            action(ReviewAction::ToggleCommentMenu {
+                comment_node_id: node.clone(),
+            }),
+            theme,
+        );
+        return view! { <div test_id={format!("review.comment.menu.{node}")}>{toggle}</div> };
+    }
+    let edit = actions.edit.then(|| {
+        button(
+            "Edit",
+            ReviewAction::EditComment {
+                comment_node_id: node.clone(),
+            },
+            Tone::Ghost,
+            format!("review.comment.edit.{node}"),
+        )
+    });
+    let delete = actions.delete.then(|| {
+        delete_button(
+            actions.confirm,
+            ReviewAction::DeleteComment {
+                comment_node_id: node.clone(),
+            },
+            format!("review.comment.delete.{node}"),
+        )
+    });
+    let copy = actions.url.map(|url| {
+        let copy: quark_ui::Action = crate::contracts::shell::Action::from(
+            crate::contracts::shell::ShellAction::CopyText(url),
+        )
+        .into();
+        let button = controls::button("Copy link", copy, Tone::Ghost);
+        view! { <div test_id={format!("review.comment.copy.{node}")}>{button}</div> }
+    });
+    let close = controls::icon_button(
+        lucide::X,
+        "Close actions",
+        action(ReviewAction::ToggleCommentMenu {
+            comment_node_id: node.clone(),
+        }),
+        theme,
+    );
+    view! {
+        <div class="flex-row items-center gap-1">
+            {?copy}
+            {?edit}
+            {?delete}
+            {close}
+        </div>
     }
 }
 
@@ -157,6 +243,7 @@ fn new_doc(inner: &mut HostInner, theme_font: f32, rows: &[CommentRow]) -> CardD
     });
     doc.set_decorator(CommentChrome {
         faces: Rc::clone(&inner.faces),
+        actions: rows.iter().map(|row| row.actions.clone()).collect(),
     });
     let grammars: &Grammars = match inner.grammars.as_deref() {
         Some(grammars) => grammars,
@@ -173,7 +260,7 @@ fn new_doc(inner: &mut HostInner, theme_font: f32, rows: &[CommentRow]) -> CardD
         chrome: RowChrome {
             header_height: if row.label.is_empty() { 0.0 } else { header },
             label: (!row.label.is_empty()).then(|| Arc::from(row.label.as_str())),
-            kind: u32::from(row.face),
+            kind: ((index as u32) << 1) | u32::from(row.face),
             ..RowChrome::default()
         },
         markdown: row.markdown.clone(),
@@ -336,6 +423,10 @@ impl CardHost {
             inner
                 .docs
                 .retain(|key, _| cards.iter().any(|(card, _)| card == key));
+            let docs = &inner.docs;
+            inner
+                .widths
+                .retain(|key, _| !matches!(key, CardKey::Overview(_)) || docs.contains_key(key));
             for (key, rows) in cards {
                 if inner.docs.get(key).is_some_and(|doc| doc.rows == *rows) {
                     continue;
@@ -348,6 +439,7 @@ impl CardHost {
                     let row = [CommentRow {
                         face: false,
                         label: String::new(),
+                        actions: None,
                         markdown: if markdown.trim().is_empty() {
                             "Nothing to preview".to_owned()
                         } else {
@@ -545,10 +637,12 @@ pub struct CardModel {
     pub tone: CardTone,
     pub expanded: bool,
     pub summary: String,
+    pub comments: usize,
     pub can_reply: bool,
     pub resolution: Option<(bool, &'static str)>,
     pub edit_node: Option<String>,
     pub delete_node: Option<String>,
+    pub confirm_delete: bool,
     pub failure: Option<String>,
     pub retry_draft: Option<crate::core::review::ReviewDraftId>,
     pub file_level: Option<FileKey>,
@@ -595,6 +689,8 @@ pub fn card_test_id(key: &CardKey) -> String {
         CardKey::Thread(id) => format!("review.thread.{}", id.0),
         CardKey::Draft(id) => format!("review.draft.{}", id.0),
         CardKey::NewComment => "review.new".to_owned(),
+        CardKey::Conversation => "review.conversation.new".to_owned(),
+        CardKey::Overview(id) => format!("review.overview.doc.{id}"),
     }
 }
 
@@ -641,7 +737,7 @@ pub fn thread_line_label(anchor: Option<&crate::core::review::ReviewAnchor>) -> 
     let Some(anchor) = anchor else {
         return "Comment on file".to_owned();
     };
-    let Some(line) = anchor.active_line_range().map(|range| range.github_line()) else {
+    let Some(range) = anchor.active_line_range() else {
         return "Comment on file".to_owned();
     };
     let side = match anchor.side {
@@ -649,7 +745,11 @@ pub fn thread_line_label(anchor: Option<&crate::core::review::ReviewAnchor>) -> 
         Some(ReviewSide::Old) => "L",
         None => "",
     };
-    format!("Comment on line {side}{line}")
+    let line = range.github_line();
+    match range.github_start_line() {
+        Some(start) => format!("Comment on lines {side}{start}\u{2013}{side}{line}"),
+        None => format!("Comment on line {side}{line}"),
+    }
 }
 
 pub fn thread_status_parts(thread: &ReviewThread) -> (&'static str, String) {
@@ -695,7 +795,12 @@ fn first_line(body: &str) -> String {
         .to_owned()
 }
 
-fn comment_rows(thread: &ReviewThread, faces: &HashMap<String, AvatarImage>) -> Vec<CommentRow> {
+fn comment_rows(
+    thread: &ReviewThread,
+    faces: &HashMap<String, AvatarImage>,
+    menu: Option<&str>,
+    confirm: Option<&DeleteTarget>,
+) -> Vec<CommentRow> {
     thread
         .comments
         .iter()
@@ -718,13 +823,57 @@ fn comment_rows(thread: &ReviewThread, faces: &HashMap<String, AvatarImage>) -> 
             } else {
                 comment.body.clone()
             };
+            let actions = comment
+                .backend_node_id
+                .clone()
+                .filter(|_| {
+                    comment.viewer_can_update
+                        || comment.viewer_can_delete
+                        || comment.html_url.is_some()
+                })
+                .map(|node| CommentActions {
+                    open: menu == Some(node.as_str()),
+                    confirm: matches!(confirm, Some(DeleteTarget::Comment(target)) if *target == node),
+                    edit: comment.viewer_can_update,
+                    delete: comment.viewer_can_delete,
+                    url: comment.html_url.clone(),
+                    node,
+                });
             CommentRow {
                 face: faces.contains_key(author),
                 label,
                 markdown,
+                actions,
             }
         })
         .collect()
+}
+
+fn sending_replies<'a>(
+    session: &'a ReviewSession,
+    thread: &'a crate::core::review::ReviewThreadId,
+    viewer: Option<&'a str>,
+    faces: &'a HashMap<String, AvatarImage>,
+) -> impl Iterator<Item = CommentRow> + 'a {
+    session
+        .drafts
+        .values()
+        .filter_map(move |draft| match (&draft.kind, &draft.state) {
+            (ReviewDraftKind::Reply { thread_id }, ReviewDraftState::Submitting)
+                if thread_id == thread =>
+            {
+                Some(CommentRow {
+                    actions: None,
+                    face: viewer.is_some_and(|login| faces.contains_key(login)),
+                    label: format!(
+                        "@{} replied \u{b7} sending\u{2026}",
+                        viewer.unwrap_or("you")
+                    ),
+                    markdown: draft.body.clone(),
+                })
+            }
+            _ => None,
+        })
 }
 
 fn thread_model(
@@ -785,6 +934,7 @@ fn thread_model(
         },
         expanded,
         summary: format!("@{author}: {snippet}"),
+        comments: thread.comments.len(),
         can_reply: thread.permissions.can_reply,
         resolution: resolution_action(thread),
         edit_node: first
@@ -793,6 +943,7 @@ fn thread_model(
         delete_node: first
             .filter(|c| c.viewer_can_delete)
             .and_then(|c| c.backend_node_id.clone()),
+        confirm_delete: false,
         failure: failed.as_ref().map(|(_, message)| message.clone()),
         retry_draft: failed.map(|(id, _)| id),
         file_level: file_level(thread.anchor.as_ref(), cx),
@@ -828,10 +979,12 @@ fn draft_model(draft: &ReviewDraft, cx: &SharedContext) -> (CardModel, Vec<Comme
         tone,
         expanded: true,
         summary: first_line(&draft.body),
+        comments: 0,
         can_reply: false,
         resolution: None,
         edit_node: None,
         delete_node: None,
+        confirm_delete: false,
         failure,
         retry_draft: None,
         file_level: file_level(draft.anchor.as_ref(), cx),
@@ -841,6 +994,7 @@ fn draft_model(draft: &ReviewDraft, cx: &SharedContext) -> (CardModel, Vec<Comme
     let rows = vec![CommentRow {
         face: false,
         label: String::new(),
+        actions: None,
         markdown: if draft.body.trim().is_empty() {
             "(empty comment)".to_owned()
         } else {
@@ -891,11 +1045,23 @@ impl ReviewPresentation {
             ComposerTarget::Inline { draft, .. } | ComposerTarget::General { draft } => *draft,
             _ => None,
         });
+        let viewer = controller
+            .account
+            .user
+            .as_ref()
+            .map(|user| user.login.as_str());
         if let Some(session) = controller.session() {
             for thread in &session.threads {
                 let expanded = controller.thread_expanded(&thread.id);
                 let model = thread_model(thread, session, expanded, cx);
-                docs.push((model.key.clone(), comment_rows(thread, &faces)));
+                let mut rows = comment_rows(
+                    thread,
+                    &faces,
+                    controller.comment_menu.as_deref(),
+                    controller.confirm_delete.as_ref(),
+                );
+                rows.extend(sending_replies(session, &thread.id, viewer, &faces));
+                docs.push((model.key.clone(), rows));
                 cards.push(model);
             }
             for draft in session.drafts.values() {
@@ -909,6 +1075,34 @@ impl ReviewPresentation {
                 cards.push(model);
             }
         }
+        if let Some(overview) = controller
+            .overview
+            .data
+            .as_deref()
+            .filter(|_| controller.overview.open)
+        {
+            let row = |markdown: &str| {
+                vec![CommentRow {
+                    face: false,
+                    label: String::new(),
+                    actions: None,
+                    markdown: markdown.to_owned(),
+                }]
+            };
+            if !overview.body.trim().is_empty() {
+                docs.push((
+                    CardKey::Overview(OVERVIEW_DESCRIPTION.to_owned()),
+                    row(&overview.body),
+                ));
+            }
+            for item in &overview.timeline {
+                if !item.body.trim().is_empty()
+                    && !matches!(item.kind, PullRequestTimelineKind::Commit { .. })
+                {
+                    docs.push((CardKey::Overview(item.id.clone()), row(&item.body)));
+                }
+            }
+        }
         let fresh = controller
             .composer
             .as_ref()
@@ -917,32 +1111,48 @@ impl ReviewPresentation {
                     let anchor =
                         crate::core::review::ReviewAnchor::from_source_target(path.clone(), target);
                     Some((
+                        CardKey::NewComment,
                         thread_line_label(Some(&anchor)),
                         Some(target.clone()),
                         path.clone(),
                     ))
                 }
-                ComposerTarget::General { .. } => {
-                    Some(("Review summary".to_owned(), None, String::new()))
-                }
+                ComposerTarget::General { .. } => Some((
+                    CardKey::NewComment,
+                    "Review summary".to_owned(),
+                    None,
+                    String::new(),
+                )),
+                ComposerTarget::Conversation => Some((
+                    CardKey::Conversation,
+                    "Add a comment".to_owned(),
+                    None,
+                    String::new(),
+                )),
                 _ => None,
             });
-        if let Some((title, target, path)) = fresh {
-            let key = CardKey::NewComment;
+        if let Some((key, title, target, path)) = fresh {
+            let accessible = if key == CardKey::Conversation {
+                "New pull request comment".to_owned()
+            } else {
+                format!("New review comment, {title}")
+            };
             cards.push(CardModel {
                 id: annotation_id(&key),
                 target,
                 path,
-                accessible: format!("New review comment, {title}"),
+                accessible,
                 title,
-                status: "New".to_owned(),
+                status: String::new(),
                 tone: CardTone::New,
                 expanded: true,
                 summary: String::new(),
+                comments: 0,
                 can_reply: false,
                 resolution: None,
                 edit_node: None,
                 delete_node: None,
+                confirm_delete: false,
                 failure: None,
                 retry_draft: None,
                 file_level: None,
@@ -970,6 +1180,15 @@ impl ReviewPresentation {
                 })
             })
             .collect::<Vec<_>>();
+        if let Some(target) = &controller.confirm_delete {
+            for card in &mut cards {
+                card.confirm_delete = match (target, &card.key) {
+                    (DeleteTarget::Comment(node), _) => card.delete_node.as_ref() == Some(node),
+                    (DeleteTarget::Draft(id), CardKey::Draft(draft)) => id == draft,
+                    (DeleteTarget::Draft(_), _) => false,
+                };
+            }
+        }
         let mut files: Vec<(String, FileKey, Vec<CardKey>)> = Vec::new();
         for card in &cards {
             let Some(file) = card.file_level else {
@@ -1026,6 +1245,20 @@ impl ReviewPresentation {
         self.host.measure(&self.cards, self.composer.as_ref(), cx)
     }
 
+    fn theme(&self) -> Theme {
+        self.host
+            .with(|inner| inner.theme.clone())
+            .flatten()
+            .unwrap_or_else(crate::app::theme::default_dark)
+    }
+
+    pub fn inline_height(&self, key: &CardKey, row_width: f32) -> Option<f32> {
+        let theme = self.theme();
+        let width = super::view::default_card_width(row_width, &theme);
+        self.card_height(key, width)
+            .map(|height| height + inline_gap(&theme) * 2.0)
+    }
+
     pub fn card_height(&self, key: &CardKey, width: f32) -> Option<f32> {
         let card = self.card(key)?;
         let composer = self.composer.as_ref();
@@ -1044,6 +1277,39 @@ impl ReviewPresentation {
             }
         }
         height
+    }
+
+    pub fn document_element(
+        &self,
+        key: &CardKey,
+        width: f32,
+        label: &str,
+    ) -> Option<(AnyElement, bool)> {
+        let mut inner = self.host.0.try_borrow_mut().ok()?;
+        let inner = &mut *inner;
+        let theme = inner
+            .theme
+            .clone()
+            .unwrap_or_else(crate::app::theme::default_dark);
+        let pad = (Sp::SM * tokens::ui_scale(&theme)).round();
+        inner.widths.insert(key.clone(), width + pad * 2.0);
+        let doc = inner.docs.get_mut(key)?;
+        let stale = (doc.width - width).abs() > 0.5;
+        let height = doc.height;
+        let card = key.clone();
+        let element = doc
+            .doc
+            .element(&theme, move |event| {
+                action(ReviewAction::CardDocument {
+                    card: card.clone(),
+                    event,
+                })
+            })
+            .label(label.to_owned());
+        Some((
+            view! { <div w={doc.width} h={height}>{element}</div> },
+            stale,
+        ))
     }
 
     pub fn card_element(&self, key: &CardKey, width: f32) -> Option<AnyElement> {
@@ -1073,7 +1339,32 @@ impl DiffDecorator for ReviewPresentation {
 
     fn annotation(&self, cx: &AnnotationContext) -> Option<AnyElement> {
         let key = self.cards.iter().find(|card| card.id == cx.id)?.key.clone();
-        self.card_element(&key, cx.width)
+        let theme = self.theme();
+        let width = super::view::default_card_width(cx.width, &theme);
+        let left = cx.indent.min(cx.width - width).max(0.0);
+        let gap = inline_gap(&theme);
+        let card = self.card_element(&key, width)?;
+        Some(view! {
+            <div w={cx.width} class="flex-col" pl={left} pt={gap} pb={gap}>{card}</div>
+        })
+    }
+
+    fn line_badge(&self, cx: &LineContext) -> Option<u32> {
+        let source = cx.source?;
+        let count: usize = self
+            .annotations
+            .iter()
+            .filter(|annotation| {
+                annotation.target.file == source.id
+                    && annotation.target.side == cx.side
+                    && annotation.target.lines.end.checked_sub(1) == Some(cx.line)
+            })
+            .map(|annotation| {
+                self.card(&annotation.card)
+                    .map_or(0, |card| card.comments.max(1))
+            })
+            .sum();
+        (count > 0).then(|| u32::try_from(count).unwrap_or(u32::MAX))
     }
 
     fn header_slot(&self, slot: HeaderSlot, cx: &HeaderContext) -> Option<AnyElement> {
@@ -1132,6 +1423,10 @@ impl ReviewPresentation {
     }
 }
 
+fn inline_gap(theme: &Theme) -> f32 {
+    tokens::scaled(Sp::XS, tokens::ui_scale(theme))
+}
+
 fn action(action: ReviewAction) -> quark_ui::Action {
     action.into()
 }
@@ -1165,12 +1460,10 @@ fn card_view(
     let key = card.key.clone();
     let status_color = tone_color(card.tone, theme);
     let header = header_view(card, theme, status_color);
+    let pending = matches!(card.tone, CardTone::Pending | CardTone::Submitting);
+    let dash = tokens::scaled(Sp::XS, scale);
     let body = if !card.expanded {
-        Some(view! { scale,
-            <div class="flex-row" pl={Sp::MD} min_w={0.0}>
-                <text size={Px(small)} class="truncate" color={tc.text_muted}>{card.summary.clone()}</text>
-            </div>
-        })
+        None
     } else {
         inner.docs.get_mut(&card.key).map(|doc| {
             let height = doc.height;
@@ -1211,18 +1504,21 @@ fn card_view(
         .map(|composer| composer_view(composer, inner, theme));
     let footer = card
         .expanded
-        .then(|| footer_view(card, composer.is_some()))
+        .then(|| footer_view(card, composer.is_some(), theme))
         .flatten();
     let label = card.accessible.clone();
     view! { scale,
         <div
             class="flex-col"
             w={Px(width)}
-            bg={tc.elevated_surface}
-            border={tc.border}
+            bg={if pending { tc.surface } else { tc.elevated_surface }}
+            border={if pending { tc.text_muted } else { tc.border }}
             rounded={Rad::LG}
             p={Sp::SM}
             gap={Sp::XS}
+            @when {pending} {
+                border_style={quark::style::BorderStyle::Dashed { dash, gap: dash, offset: 0.0 }}
+            }
             accessibility_role={AccessibilityRole::Group}
             aria-label={label}
             test_id={card.test_id.clone()}
@@ -1267,35 +1563,93 @@ fn header_view(
         }
         _ => None,
     };
+    let caption = TextStyle::Caption.font_size(theme);
+    let detail = if !card.expanded {
+        Some(card.summary.clone())
+    } else if card.comments > 1 {
+        Some(format!("{} comments", card.comments))
+    } else {
+        None
+    };
+    let replies = (!card.expanded && card.comments > 1).then(|| match card.comments - 1 {
+        1 => "1 reply".to_owned(),
+        n => format!("{n} replies"),
+    });
+    let resolved = card.tone == CardTone::Resolved && !card.expanded;
+    let pill = (!card.status.is_empty() && !resolved).then(|| {
+        view! { scale,
+            <div class="flex-row items-center shrink-0" px={Sp::SM} py={Sp::XXS} rounded={Rad::PILL}
+                 bg={status_color.with_alpha(Alpha::TINT)}>
+                <text size={Px(caption)} class="font-medium" color={status_color}>{card.status.clone()}</text>
+            </div>
+        }
+    });
     view! { scale,
         <div class="flex-row items-center" gap={Sp::XS}>
             {?toggle}
-            <div class="flex-1" min_w={0.0}>
-                <text size={Px(small)} class="font-medium truncate" color={tc.text_strong}>
-                    {card.title.clone()}
-                </text>
+            if resolved {
+                <icon svg={lucide::CHECK} size={Px(small)} color={status_color} />
+                <text size={Px(small)} class="font-medium" color={status_color}>"Resolved"</text>
+            }
+            <text size={Px(small)} class="font-medium" color={if resolved { tc.text_muted } else { tc.text_strong }}>
+                {card.title.clone()}
+            </text>
+            <div class="flex-1 flex-row items-center overflow-hidden" min_w={0.0}>
+                if let Some(detail) = detail {
+                    <text size={Px(small)} class="truncate" color={tc.text_muted}>{format!("\u{b7} {detail}")}</text>
+                }
             </div>
-            <div class="flex-row items-center" px={Sp::SM} py={Sp::XXS} rounded={Rad::SM} bg={tc.element_background}>
-                <text size={Px(TextStyle::Caption.font_size(theme))} class="font-medium" color={status_color}>{card.status.clone()}</text>
-            </div>
+            if let Some(replies) = replies {
+                <text size={Px(caption)} color={tc.text_muted}>{replies}</text>
+            }
+            {?pill}
         </div>
     }
 }
 
-fn footer_view(card: &CardModel, composing: bool) -> Option<AnyElement> {
+fn reply_field(id: &crate::core::review::ReviewThreadId, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    view! { scale,
+        <div
+            class="flex-1 flex-row items-center"
+            h={Px(controls::control_height(theme))}
+            px={Sp::SM}
+            rounded={theme.metrics.control_radius}
+            bg={tc.editor_surface}
+            border={tc.control_border}
+            cursor={CursorHint::Text}
+            role="button"
+            aria-label="Reply"
+            test_id={format!("review.reply.{}", id.0)}
+            on:click={action(ReviewAction::ReplyToThread(id.clone()))}
+        >
+            <text size={Px(small)} color={tc.placeholder}>"Reply\u{2026}"</text>
+        </div>
+    }
+}
+
+fn delete_button(confirm: bool, action: ReviewAction, test_id: String) -> AnyElement {
+    if confirm {
+        button("Confirm delete?", action, Tone::Destructive, test_id)
+    } else {
+        button("Delete", action, Tone::Ghost, test_id)
+    }
+}
+
+fn footer_view(card: &CardModel, composing: bool, theme: &Theme) -> Option<AnyElement> {
     let mut buttons = Vec::new();
+    let mut trailing = Vec::new();
+    let mut fill = false;
     match &card.key {
         CardKey::Thread(id) => {
             if card.can_reply && !composing {
-                buttons.push(button(
-                    "Reply",
-                    ReviewAction::ReplyToThread(id.clone()),
-                    Tone::Secondary,
-                    format!("review.reply.{}", id.0),
-                ));
+                buttons.push(reply_field(id, theme));
+                fill = true;
             }
             if let Some((resolved, label)) = card.resolution {
-                buttons.push(button(
+                trailing.push(button(
                     label,
                     ReviewAction::SetThreadResolved {
                         id: id.clone(),
@@ -1305,50 +1659,32 @@ fn footer_view(card: &CardModel, composing: bool) -> Option<AnyElement> {
                     format!("review.resolve.{}", id.0),
                 ));
             }
-            if let Some(node) = card.edit_node.clone().filter(|_| !composing) {
-                buttons.push(button(
-                    "Edit",
-                    ReviewAction::EditComment {
-                        comment_node_id: node,
-                    },
-                    Tone::Ghost,
-                    format!("review.edit.{}", id.0),
-                ));
-            }
-            if let Some(node) = card.delete_node.clone() {
-                buttons.push(button(
-                    "Delete",
-                    ReviewAction::DeleteComment {
-                        comment_node_id: node,
-                    },
-                    Tone::Destructive,
-                    format!("review.delete.{}", id.0),
-                ));
-            }
         }
         CardKey::Draft(id) if !composing && card.tone != CardTone::Submitting => {
-            buttons.push(button(
+            trailing.push(button(
                 "Edit",
                 ReviewAction::EditDraft(*id),
-                Tone::Secondary,
+                Tone::Ghost,
                 format!("review.draft.edit.{}", id.0),
             ));
-            buttons.push(button(
-                "Delete",
+            trailing.push(delete_button(
+                card.confirm_delete,
                 ReviewAction::DeleteDraft(*id),
-                Tone::Destructive,
                 format!("review.draft.delete.{}", id.0),
             ));
         }
-        CardKey::Draft(_) | CardKey::NewComment => {}
+        CardKey::Draft(_) | CardKey::NewComment | CardKey::Conversation | CardKey::Overview(_) => {}
     }
-    if buttons.is_empty() {
+    if buttons.is_empty() && trailing.is_empty() {
         return None;
     }
     Some(view! {
         <div class="flex-row items-center gap-1">
             {...buttons}
-            <spacer />
+            if !fill {
+                <spacer />
+            }
+            {...trailing}
         </div>
     })
 }
@@ -1365,13 +1701,13 @@ fn composer_view(composer: &ComposerView, inner: &mut HostInner, theme: &Theme) 
         )
         .active(composer.preview == preview)
     };
-    let format = |label: &str, tooltip: &str, format: ComposerFormat| {
-        controls::button(
-            label,
+    let format = |icon: &'static str, tooltip: &str, format: ComposerFormat| {
+        controls::icon_button(
+            icon,
+            tooltip,
             action(ReviewAction::FormatComment(format)),
-            Tone::Ghost,
+            theme,
         )
-        .tooltip(tooltip.to_owned())
         .disabled(composer.preview)
     };
     let content = if composer.preview {
@@ -1399,7 +1735,9 @@ fn composer_view(composer: &ComposerView, inner: &mut HostInner, theme: &Theme) 
             .placeholder("Leave a comment")
             .focused(editor.focused)
             .font_size(small)
-            .text_color(tc.text);
+            .text_color(tc.text)
+            .w_full()
+            .h_full();
             view! { scale,
                 <div
                     class="w-full"
@@ -1435,14 +1773,17 @@ fn composer_view(composer: &ComposerView, inner: &mut HostInner, theme: &Theme) 
                 {tab("Write", false)}
                 {tab("Preview", true)}
                 <spacer />
-                {format("B", "Bold", ComposerFormat::Bold)}
-                {format("I", "Italic", ComposerFormat::Italic)}
-                {format("<>", "Code", ComposerFormat::Code)}
-                {format("Link", "Link", ComposerFormat::Link)}
-                {format("List", "Bulleted list", ComposerFormat::BulletList)}
+                {format(lucide::BOLD, "Bold", ComposerFormat::Bold)}
+                {format(lucide::ITALIC, "Italic", ComposerFormat::Italic)}
+                {format(lucide::CODE, "Code", ComposerFormat::Code)}
+                {format(lucide::LINK, "Link (\u{2318}K)", ComposerFormat::Link)}
+                {format(lucide::LIST, "Bulleted list", ComposerFormat::BulletList)}
             </div>
             {?content}
             <div class="flex-row items-center" gap={Sp::XS}>
+                <text size={Px(TextStyle::Caption.font_size(theme))} color={tc.text_muted}>
+                    "Markdown \u{b7} \u{2318}\u{21a9} to submit \u{b7} Esc to cancel"
+                </text>
                 <spacer />
                 {cancel}
                 {submit}

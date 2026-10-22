@@ -51,6 +51,7 @@ pub enum InteractionAction {
     SearchNext,
     SearchPrevious,
     CopySelection,
+    AnnotateSelection,
     SetSourceSelection(Option<SourceTarget>),
     ExpandContext {
         file: FileKey,

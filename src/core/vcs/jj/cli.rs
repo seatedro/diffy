@@ -51,6 +51,7 @@ impl JjCli {
 
     fn run_inner_bytes(&self, args: &[OsString], ignore_working_copy: bool) -> Result<Vec<u8>> {
         let started = Instant::now();
+        crate::platform::energy::count_process();
         let mut command = Command::new(&self.binary);
         command
             .arg("--no-pager")

@@ -268,6 +268,7 @@ fn run_system_git_progress(
     on_progress: &mut dyn FnMut(usize, usize, usize),
 ) -> Result<()> {
     use std::io::BufReader;
+    crate::platform::energy::count_process();
     let mut child = Command::new("git")
         .args(args)
         .current_dir(repo_path)
@@ -385,6 +386,7 @@ fn failure_line<'a>(lines: impl Iterator<Item = &'a str>) -> Option<&'a str> {
 }
 
 pub fn mentions(repo_path: &Path, rev: &str, word: &str) -> Option<bool> {
+    crate::platform::energy::count_process();
     let mut command = Command::new("git");
     command
         .current_dir(repo_path)
@@ -432,6 +434,7 @@ fn run_system_git_inner(
     args: &[OsString],
     allow_diff_exit: bool,
 ) -> Result<GitOutput> {
+    crate::platform::energy::count_process();
     let output = Command::new("git")
         .args(args)
         .current_dir(repo_path)
@@ -481,6 +484,7 @@ pub fn has_uncommitted_changes(repo_path: &Path) -> bool {
 pub fn all_ignored(repo_path: &Path, paths: &[PathBuf]) -> bool {
     use std::io::Write;
     use std::process::Stdio;
+    crate::platform::energy::count_process();
     let Ok(mut child) = Command::new("git")
         .args(["check-ignore", "-z", "--stdin"])
         .current_dir(repo_path)
@@ -1938,6 +1942,7 @@ impl GitService {
         if application.reverse {
             args.push("--reverse");
         }
+        crate::platform::energy::count_process();
         let mut child = Command::new("git")
             .args(&args)
             .current_dir(self.repo_path_ref()?)

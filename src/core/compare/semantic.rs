@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -79,7 +80,7 @@ pub fn compare(
         r.phase(ComparePhase::EnumeratingChanges);
     }
     let entries = git.diff_name_status(&left, &right, None)?;
-    if right != WORKDIR_REF && entries.len() > COMPARE_SUMMARY_FILE_LIMIT {
+    if entries.len() > COMPARE_SUMMARY_FILE_LIMIT {
         return Ok(CompareOutput::deferred(
             entries
                 .iter()
@@ -161,15 +162,50 @@ fn rename_vet<'g>(
     left: &'g str,
     right: &'g str,
 ) -> impl Fn(&[(&str, &str)]) -> Vec<bool> + Sync + 'g {
+    static SLOW_REPOS: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
     let repo = std::path::PathBuf::from(git.repo_path());
+    let known: Mutex<HashMap<(bool, String), bool>> = Mutex::default();
     move |pairs| {
+        let absent = |in_right: bool, word: &str| {
+            let key = (in_right, word.to_owned());
+            if let Some(&absent) = known
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&key)
+            {
+                return absent;
+            }
+            let slow = SLOW_REPOS.lock().unwrap_or_else(PoisonError::into_inner);
+            if slow.contains(&repo) {
+                return false;
+            }
+            drop(slow);
+            let rev = if in_right { right } else { left };
+            match mentions(&repo, rev, word) {
+                Some(found) => {
+                    known
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(key, !found);
+                    !found
+                }
+                None => {
+                    let mut slow = SLOW_REPOS.lock().unwrap_or_else(PoisonError::into_inner);
+                    if !slow.contains(&repo) {
+                        tracing::info!(target: "diffy::energy", repo = %repo.display(), "rename vetting disabled after a failed lookup");
+                        slow.push(repo.clone());
+                    }
+                    false
+                }
+            }
+        };
+        let absent = &absent;
         std::thread::scope(|scope| {
             let lookups: Vec<_> = pairs
                 .iter()
                 .map(|&(old, new)| {
-                    let repo = &repo;
-                    let gone = scope.spawn(move || mentions(repo, right, old) == Some(false));
-                    let fresh = scope.spawn(move || mentions(repo, left, new) == Some(false));
+                    let gone = scope.spawn(move || absent(true, old));
+                    let fresh = scope.spawn(move || absent(false, new));
                     (gone, fresh)
                 })
                 .collect();
@@ -234,6 +270,10 @@ fn load_parallel(
                             let Some(item) = changed.get(at) else {
                                 return done;
                             };
+                            let _work = crate::platform::energy::work(
+                                crate::platform::energy::Kind::Semantic,
+                            )
+                            .detail(item.display_path().to_string());
                             done.push((at, load(item)));
                         }
                     })

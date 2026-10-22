@@ -375,7 +375,10 @@ pub fn entry_stats(
             .chunks(chunk_size)
             .map(|chunk| {
                 let (left, right) = (left.as_str(), right.as_str());
-                scope.spawn(move || entry_stats_chunk(repo_path, left, right, chunk))
+                scope.spawn(move || {
+                    crate::platform::energy::background_thread();
+                    entry_stats_chunk(repo_path, left, right, chunk)
+                })
             })
             .collect();
         for (handle, chunk) in handles.into_iter().zip(entries.chunks(chunk_size)) {
@@ -557,6 +560,8 @@ fn entry_stats_chunk(
     right: &str,
     entries: &[CompareEntry],
 ) -> Vec<Option<DiffStats>> {
+    let _work = crate::platform::energy::work(crate::platform::energy::Kind::LineStats)
+        .detail(format!("{} files", entries.len()));
     let Ok(repo) = open_gix_repo_path(repo_path) else {
         return vec![None; entries.len()];
     };

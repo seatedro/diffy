@@ -26,7 +26,10 @@ impl Default for SymbolsRuntime {
         let worker_latest = latest.clone();
         let spawned = thread::Builder::new()
             .name("diffy-symbols".to_owned())
-            .spawn(move || run(&queue, &worker_latest));
+            .spawn(move || {
+                crate::platform::energy::background_thread();
+                run(&queue, &worker_latest)
+            });
         if let Err(error) = spawned {
             tracing::warn!(%error, "symbol indexer unavailable");
         }
@@ -57,6 +60,8 @@ impl SymbolsRuntime {
             }
             SymbolsEffect::Resolve(request) => {
                 thread::spawn(move || {
+                    let _work =
+                        crate::platform::energy::work(crate::platform::energy::Kind::Resolve);
                     let result = resolve(
                         &Grammars::shared().store(),
                         &request.repo_path,
@@ -81,6 +86,7 @@ fn describe_loop(requests: &Receiver<Description>) {
             request = newer;
         }
         let (request, events) = request;
+        let _work = crate::platform::energy::work(crate::platform::energy::Kind::Resolve);
         let description = describe(
             &Grammars::shared().store(),
             &request.repo_path,
@@ -119,6 +125,8 @@ fn run(queue: &Receiver<Job>, latest: &AtomicU64) {
             });
         };
         let started = Instant::now();
+        let _work = crate::platform::energy::work(crate::platform::energy::Kind::Index)
+            .detail(request.revision.id.clone());
         let indexer =
             indexer.get_or_insert_with(|| Indexer::new(Grammars::shared().store(), open_cache()));
         let event = match indexer.run(

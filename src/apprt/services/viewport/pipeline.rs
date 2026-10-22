@@ -232,6 +232,7 @@ impl PipelineServices {
         job: &CompareJob,
         progress: &dyn ProgressSink,
     ) -> Result<CompareResult, PipelineFailure> {
+        let _work = crate::platform::energy::work(crate::platform::energy::Kind::Compare);
         progress.phase(ComparePhase::OpeningRepo);
         let request = &job.intent.request;
         let mut repo =
@@ -766,6 +767,7 @@ mod tests {
         let commit = crate::core::compare::service::tests::commit_file;
         commit(&repo, "a.rs", "one\n", "a");
         let linked = dir.path().join("linked");
+        crate::platform::energy::count_process();
         let status = std::process::Command::new("git")
             .args(["worktree", "add", "-q", "-b", "feature"])
             .arg(&linked)

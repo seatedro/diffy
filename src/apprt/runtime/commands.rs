@@ -98,6 +98,7 @@ impl CommandsRuntime {
             }
             CommandsEffect::ListFiles(request) => {
                 thread::spawn(move || {
+                    let _work = crate::platform::energy::work(crate::platform::energy::Kind::Files);
                     let files =
                         open_compare_repository(&request.repo_path, [request.revision.id.as_str()])
                             .and_then(|mut repo| repo.list_files(&request.revision))

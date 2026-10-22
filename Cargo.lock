@@ -1215,6 +1215,7 @@ dependencies = [
  "ignore",
  "image",
  "keyring",
+ "libc",
  "mimalloc",
  "neo_frizbee",
  "notify",

@@ -1313,6 +1313,7 @@ impl VcsRepository for JjRepository {
 fn apply_worktree_patch(root: &Path, patch: &[u8], reverse: bool) -> Result<()> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    crate::platform::energy::count_process();
     let mut command = Command::new("git");
     command
         .arg("apply")

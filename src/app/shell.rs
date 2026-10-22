@@ -111,6 +111,7 @@ pub struct DiffyApp<D> {
     deferred: Vec<ShellEffect>,
     startup: Option<Rc<AppStartup>>,
     clock_ms: u64,
+    energy_hud: crate::app::energy_hud::EnergyHud,
 }
 
 impl<D: EffectDispatcher> DiffyApp<D> {
@@ -124,6 +125,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             deferred: Vec::new(),
             startup: None,
             clock_ms: 0,
+            energy_hud: Default::default(),
         }
     }
 
@@ -338,7 +340,10 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         match action {
             ShellAction::FocusLogical(focus) => cx.set_focus(focus.map(text_targets::focus_id)),
             ShellAction::CopyText(text) => self.copy(text, cx),
-            ShellAction::ToggleDebugOverlay => self.shell.debug_overlay = !self.shell.debug_overlay,
+            ShellAction::ToggleDebugOverlay => {
+                self.shell.debug_overlay = !self.shell.debug_overlay;
+                self.energy_hud = Default::default();
+            }
             ShellAction::Minimize => cx.window.minimize(),
             ShellAction::ToggleMaximize => cx.window.toggle_maximized(),
             ShellAction::Close => {
@@ -691,6 +696,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
     }
 
     fn view(&mut self, cx: &mut ViewContext) -> AnyElement {
+        let _work = crate::platform::energy::work(crate::platform::energy::Kind::Render);
         self.clock_ms = cx.frame.elapsed().as_millis() as u64;
         if self.shared.copied.is_some() {
             match self.shell.copied_until.checked_sub(self.clock_ms) {
@@ -740,6 +746,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
         let tooltip = tooltip(cx, width, height);
+        let energy = self.shell.debug_overlay.then(|| self.energy_hud.view(cx));
         view! {
             <div w={width} h={height} class="flex-col relative overflow-hidden" bg={theme.colors.app_bg}>
                 {title}
@@ -752,6 +759,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 {?languages}
                 {?toasts}
                 {?tooltip}
+                {?energy}
             </div>
         }
     }

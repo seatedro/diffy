@@ -197,6 +197,8 @@ fn parse_misses(
             let queue = &queue;
             let parsed = &parsed;
             scope.spawn(move || {
+                crate::platform::energy::background_thread();
+                let _work = crate::platform::energy::work(crate::platform::energy::Kind::Index);
                 loop {
                     let job = queue.lock().unwrap_or_else(PoisonError::into_inner).recv();
                     let Ok(job) = job else {

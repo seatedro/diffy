@@ -873,17 +873,18 @@ impl NavigationController {
     }
 
     fn history_range(&self) -> Option<(String, String)> {
-        if self.compare.working_copy || self.history.pre_drill.is_some() {
+        let compare = self.history.pre_drill.as_ref().unwrap_or(&self.compare);
+        if compare.working_copy {
             return None;
         }
-        match self.compare.mode {
-            CompareMode::TwoDot | CompareMode::ThreeDot if self.compare.refs_valid() => {
-                let right = if is_working_copy_ref(&self.compare.right) {
+        match compare.mode {
+            CompareMode::TwoDot | CompareMode::ThreeDot if compare.refs_valid() => {
+                let right = if is_working_copy_ref(&compare.right) {
                     "HEAD".to_owned()
                 } else {
-                    self.compare.right.clone()
+                    compare.right.clone()
                 };
-                Some((self.compare.left.clone(), right))
+                Some((compare.left.clone(), right))
             }
             _ => None,
         }

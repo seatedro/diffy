@@ -1200,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "diffy"
-version = "0.2.10"
+version = "0.3.0"
 dependencies = [
  "arboard",
  "clap",
@@ -1245,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "diffy-diff"
-version = "0.2.10"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "unicode-segmentation",
@@ -1253,7 +1253,7 @@ dependencies = [
 
 [[package]]
 name = "diffy-semantic"
-version = "0.2.10"
+version = "0.3.0"
 dependencies = [
  "diffy-diff",
  "tree-sitter",
@@ -1261,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "diffy-syntax"
-version = "0.2.10"
+version = "0.3.0"
 dependencies = [
  "diffy-syntax",
  "libloading",
@@ -1279,7 +1279,7 @@ dependencies = [
 
 [[package]]
 name = "diffy-ui"
-version = "0.2.10"
+version = "0.3.0"
 dependencies = [
  "accesskit",
  "diffy-diff",
@@ -5705,7 +5705,7 @@ checksum = "b12e76d157a900eb52e81bc6e9f3069344290341720e9178cde2407113ac8d89"
 
 [[package]]
 name = "semantic-eval"
-version = "0.2.10"
+version = "0.3.0"
 dependencies = [
  "clap",
  "diffy",
@@ -6202,7 +6202,7 @@ dependencies = [
 
 [[package]]
 name = "syntax-pack"
-version = "0.2.10"
+version = "0.3.0"
 dependencies = [
  "cc",
  "diffy-syntax",

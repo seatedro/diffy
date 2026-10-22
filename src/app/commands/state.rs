@@ -72,6 +72,7 @@ pub enum LayerKind {
     Confirmation,
     ContextMenu,
     RefPicker,
+    Shortcuts,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -126,6 +127,7 @@ pub struct CommandsController {
     file_pending: Option<FileListKey>,
     file_generation: u64,
     go_prefix: bool,
+    shortcuts_reviewing: bool,
     go_since: Cell<Option<u64>>,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
@@ -180,6 +182,7 @@ impl Default for CommandsController {
             file_pending: None,
             file_generation: 0,
             go_prefix: false,
+            shortcuts_reviewing: false,
             go_since: Cell::new(None),
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
@@ -482,6 +485,22 @@ impl CommandsController {
         self.request(PlatformRequest::Focus(focus));
     }
 
+    fn open_shortcuts(&mut self, cx: &SharedContext) -> Reduction {
+        if self.top_layer() == Some(LayerKind::Shortcuts) {
+            return self.close_top();
+        }
+        let Some(return_focus) = self.admit(LayerKind::Shortcuts) else {
+            return Reduction::default();
+        };
+        self.shortcuts_reviewing = cx.review.is_some();
+        self.push_layer(LayerKind::Shortcuts, return_focus);
+        Reduction::changed()
+    }
+
+    pub(super) fn shortcuts_reviewing(&self) -> bool {
+        self.shortcuts_reviewing
+    }
+
     fn current_focus(&self) -> Option<FocusId> {
         match self.layers.last() {
             Some(layer) => Some(layer_focus(layer.kind)),
@@ -519,6 +538,7 @@ impl CommandsController {
             LayerKind::Picker => self.picker = None,
             LayerKind::RefPicker => self.ref_picker = None,
             LayerKind::Confirmation => self.confirmation = None,
+            LayerKind::Shortcuts => {}
             LayerKind::ContextMenu => {
                 self.context_menu.close();
                 self.context_entries.clear();
@@ -1515,6 +1535,7 @@ fn layer_focus(kind: LayerKind) -> FocusId {
         LayerKind::Picker | LayerKind::RefPicker => PICKER,
         LayerKind::Confirmation => CONFIRM_CANCEL,
         LayerKind::ContextMenu => crate::app::text_targets::VIEWPORT,
+        LayerKind::Shortcuts => crate::app::text_targets::SHORTCUTS,
     }
 }
 
@@ -1955,9 +1976,8 @@ impl Controller for CommandsController {
             A::OpenThemePicker => self.open_theme_picker(),
             A::OpenUiFontPicker => self.open_font_picker(FontRole::Ui),
             A::OpenMonoFontPicker => self.open_font_picker(FontRole::Mono),
-            A::ShowKeyboardShortcuts | A::OpenKeymaps => {
-                self.open_settings(Some(SettingsSection::Keymaps))
-            }
+            A::ShowKeyboardShortcuts => self.open_shortcuts(cx),
+            A::OpenKeymaps => self.open_settings(Some(SettingsSection::Keymaps)),
             A::CloseOverlay => self.close_top(),
             A::BackdropDismiss => {
                 if self.activation_click.replace(false) {

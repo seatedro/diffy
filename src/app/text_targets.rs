@@ -26,6 +26,7 @@ pub const REVIEW_ACCOUNT: FocusId = FocusId::from_key("diffy.review.account");
 pub const REVIEW_DIALOG: FocusId = FocusId::from_key("diffy.review.dialog");
 pub const REVIEW_OVERVIEW: FocusId = FocusId::from_key("diffy.review.overview");
 pub const STATUS_SETTINGS: &str = "status.settings";
+pub const SHORTCUTS: FocusId = FocusId::from_key("diffy.shortcuts");
 pub const TITLE_BAR: FocusId = FocusId::from_key("title.repo");
 pub const PULL_REQUEST_BAR: FocusId = FocusId::from_key("review.pull_request.title");
 pub const REVIEW_PULLS: FocusId = FocusId::from_key("diffy.review.pulls");

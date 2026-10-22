@@ -132,7 +132,7 @@ const VIEW: &[Entry] = &[
 const SEARCH: &[Entry] = &[
     Entry::new(GLOBAL, C::OpenSearch, &["mod+f"], "Open search"),
     Entry::new(GLOBAL, C::OpenCommandPalette, &["mod+k"], "Command palette"),
-    Entry::new(GLOBAL, C::ShowKeymaps, &["shift+/"], "Open keymaps"),
+    Entry::new(GLOBAL, C::ShowKeymaps, &["shift+/"], "Keyboard shortcuts"),
 ];
 
 const SETTINGS_ENTRIES: &[Entry] = &[
@@ -524,7 +524,7 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
         C::DecreaseUiScale => CommandsAction::DecreaseUiScale.into(),
         C::ToggleSidebar => NavigationAction::ToggleSidebar.into(),
         C::OpenSettings => CommandsAction::OpenSettings.into(),
-        C::ShowKeymaps => CommandsAction::OpenKeymaps.into(),
+        C::ShowKeymaps => CommandsAction::ShowKeyboardShortcuts.into(),
         C::NextHunk => interaction(InteractionAction::GoToNextHunk),
         C::ReviewSelectedLines => interaction(InteractionAction::AnnotateSelection),
         C::PreviousHunk => interaction(InteractionAction::GoToPreviousHunk),

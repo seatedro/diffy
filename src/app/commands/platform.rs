@@ -325,6 +325,9 @@ impl CommandsController {
             Some(LayerKind::Confirmation) => {
                 (binding == "escape").then_some(CommandsAction::CancelConfirmation)
             }
+            Some(LayerKind::Shortcuts) => {
+                matches!(binding, "escape" | "shift+/").then_some(CommandsAction::CloseOverlay)
+            }
             None if self.settings_open() => {
                 (binding == "escape").then_some(CommandsAction::CloseSettings)
             }

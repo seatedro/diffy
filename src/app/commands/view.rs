@@ -43,6 +43,7 @@ pub fn overlays(
         LayerKind::Palette,
         LayerKind::Confirmation,
         LayerKind::ContextMenu,
+        LayerKind::Shortcuts,
     ]
     .into_iter()
     .filter(|kind| commands.has_layer(*kind))
@@ -58,6 +59,7 @@ pub fn overlays(
             LayerKind::Picker => picker_panel(commands, size, cx),
             LayerKind::RefPicker => super::ref_picker_view::ref_picker_panel(commands, size, cx),
             LayerKind::Confirmation => confirmation(commands, size, cx.theme),
+            LayerKind::Shortcuts => Some(shortcuts(commands, slot, cx.theme)),
             LayerKind::ContextMenu => context_menu(commands, size, cx.theme),
         };
         children.extend(element);
@@ -682,3 +684,122 @@ pub fn leader_menu(
         </div>
     })
 }
+
+fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let saved = &slot.shared.settings.settings.keymap_overrides;
+    let small = TextStyle::BodySmall.font_size(theme);
+    let caption = TextStyle::Caption.font_size(theme);
+    let reviewing = commands.shortcuts_reviewing();
+    let order: &[&str] = if reviewing {
+        &[
+            "Review",
+            "Navigation",
+            "Areas",
+            "View",
+            "Search",
+            "Scrolling",
+        ]
+    } else {
+        &[
+            "Navigation",
+            "Areas",
+            "Working Tree",
+            "View",
+            "Search",
+            "Repository",
+            "Scrolling",
+        ]
+    };
+    let row = |label: String, binding: String| {
+        view! { scale,
+            <div class="flex-row items-center w-full" gap={Sp::SM} py={Sp::XXS}
+                 accessibility_role={AccessibilityRole::ListItem}
+                 aria-label={format!("{label}: {binding}")}>
+                <div class="flex-1 flex-row" min_w={0.0}>
+                    <text size={Px(small)} class="truncate" color={tc.text}>{label}</text>
+                </div>
+                {kbd(binding, theme)}
+            </div>
+        }
+    };
+    let block = |title: &str, rows: Vec<AnyElement>| {
+        let title = title.to_owned();
+        view! { scale,
+            <div class="flex-col w-full" gap={Sp::XXS}
+                 accessibility_role={AccessibilityRole::List} aria-label={title.clone()}>
+                <text size={Px(caption)} class="font-semibold" color={tc.text_muted}>{title.to_uppercase()}</text>
+                {...rows}
+            </div>
+        }
+    };
+    let mut blocks: Vec<(usize, AnyElement)> = Vec::new();
+    for title in order {
+        let Some(group) = keymap::KEYMAP.groups().iter().find(|g| g.title == *title) else {
+            continue;
+        };
+        let rows: Vec<AnyElement> = group
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let binding = keymap::display_binding(saved, entry.command)?;
+                Some(row(entry.description.to_owned(), binding))
+            })
+            .collect();
+        if !rows.is_empty() {
+            blocks.push((rows.len(), block(title, rows)));
+        }
+        if *title == "Navigation" {
+            let go: Vec<AnyElement> = keymap::GO
+                .iter()
+                .map(|leader| row(leader.label.to_owned(), format!("g {}", leader.key)))
+                .collect();
+            blocks.push((go.len(), block("Go to", go)));
+        }
+    }
+    let mut columns: [Vec<AnyElement>; 2] = Default::default();
+    let mut heights = [0usize; 2];
+    for (count, element) in blocks {
+        let column = usize::from(heights[1] < heights[0]);
+        heights[column] += count + 2;
+        columns[column].push(element);
+    }
+    let [left, right] = columns;
+    let margin = tokens::scaled(Sz::MODAL_MARGIN, scale);
+    let height = (slot.height - margin * 2.0).max(1.0);
+    let customize = action_button(
+        "Customize",
+        CommandsAction::OpenKeymaps.into(),
+        SHORTCUTS_CUSTOMIZE,
+        ButtonTone::Plain,
+        theme,
+    );
+    let modal = Modal::new(
+        "Keyboard shortcuts",
+        if reviewing {
+            "Reviewing a pull request"
+        } else {
+            "Everything you can do without the mouse"
+        },
+        icons::KEYBOARD,
+        tokens::scaled(Sz::MODAL_XL, scale),
+        slot.width,
+        slot.height,
+        CommandsAction::CloseOverlay,
+    )
+    .height(height)
+    .body_child(view! { scale,
+        <div class="flex-row items-start w-full overflow-y-scroll scrollbar-auto-hide" gap={Sp::XL}
+             focus_target={crate::app::text_targets::SHORTCUTS}
+             test_id="shortcuts.sheet">
+            <div class="flex-col flex-1" min_w={0.0} gap={Sp::LG}>{...left}</div>
+            <div class="flex-col flex-1" min_w={0.0} gap={Sp::LG}>{...right}</div>
+        </div>
+    })
+    .footer_child(view! { <div class="flex-1" /> })
+    .footer_child(customize);
+    view! { <div class="absolute top-0 left-0" z_index={350}>{modal}</div> }
+}
+
+const SHORTCUTS_CUSTOMIZE: FocusId = FocusId::from_key("diffy.shortcuts.customize");

@@ -136,4 +136,7 @@ impl Layout {
     pub const STATUS_BADGE: f32 = 15.0;
     pub const PROGRESS_H: f32 = 4.0;
     pub const OVERVIEW_LABEL_W: f32 = 104.0;
+    pub const LAUNCHER_W: f32 = 560.0;
+    pub const LAUNCHER_MARK: f32 = 34.0;
+    pub const LAUNCHER_PATH_MAX_W: f32 = 220.0;
 }

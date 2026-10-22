@@ -2,6 +2,7 @@ pub mod api;
 pub mod device_flow;
 pub mod overview;
 pub mod pull_request;
+pub mod repository;
 mod transport;
 
 pub use api::{
@@ -20,3 +21,4 @@ pub use overview::{
     PullRequestTimelineKind,
 };
 pub use pull_request::{GitHubPullRequest, parse_pr_reference, parse_pr_url};
+pub use repository::{GitHubRepo, parse_remote, parse_repo_reference};

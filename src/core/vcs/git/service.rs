@@ -479,6 +479,45 @@ pub fn has_uncommitted_changes(repo_path: &Path) -> bool {
     .is_ok_and(|output| !output.stdout.is_empty())
 }
 
+pub fn uncommitted_count(repo_path: &Path) -> Result<usize> {
+    let output = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("status"),
+            OsString::from("--porcelain"),
+            OsString::from("-z"),
+            OsString::from("--no-renames"),
+            OsString::from("--untracked-files=normal"),
+        ],
+    )?;
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+        .count())
+}
+
+pub fn clone_repository(
+    url: &str,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(usize, usize, usize),
+) -> Result<()> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| git_error_fatal("clone", "no parent folder"))?;
+    run_system_git_progress(
+        parent,
+        &[
+            OsString::from("clone"),
+            OsString::from("--progress"),
+            OsString::from(url),
+            dest.as_os_str().to_owned(),
+        ],
+        "Receiving objects",
+        on_progress,
+    )
+}
+
 /// Whether git ignores every one of `paths`, which lie inside `repo_path`.
 /// A failure counts as not ignored, so callers err toward refreshing.
 pub fn all_ignored(repo_path: &Path, paths: &[PathBuf]) -> bool {

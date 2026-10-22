@@ -51,10 +51,11 @@ pub enum Repositories {
     Branch,
     Active,
     Discovered,
+    Remote,
 }
 
-fn schema_v1() -> Vec<TableCreateStatement> {
-    vec![
+fn schema_v1() -> Vec<String> {
+    let tables: [TableCreateStatement; 5] = [
         Table::create()
             .table(Meta::Table)
             .col(ColumnDef::new(Meta::Key).text().primary_key())
@@ -91,10 +92,23 @@ fn schema_v1() -> Vec<TableCreateStatement> {
                     .not_null(),
             )
             .to_owned(),
+    ];
+    tables
+        .iter()
+        .map(|table| table.to_string(SqliteQueryBuilder))
+        .collect()
+}
+
+fn repository_remotes() -> Vec<String> {
+    vec![
+        Table::alter()
+            .table(Repositories::Table)
+            .add_column(ColumnDef::new(Repositories::Remote).text().null())
+            .to_string(SqliteQueryBuilder),
     ]
 }
 
-const MIGRATIONS: &[fn() -> Vec<TableCreateStatement>] = &[schema_v1];
+const MIGRATIONS: &[fn() -> Vec<String>] = &[schema_v1, repository_remotes];
 
 #[derive(Clone)]
 pub struct Database {
@@ -233,7 +247,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
     for (index, migration) in MIGRATIONS.iter().enumerate().skip(version) {
         let transaction = connection.transaction()?;
         for statement in migration() {
-            transaction.execute_batch(&statement.to_string(SqliteQueryBuilder))?;
+            transaction.execute_batch(&statement)?;
         }
         transaction.pragma_update(None, "user_version", index + 1)?;
         transaction.commit()?;

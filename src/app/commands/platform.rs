@@ -7,7 +7,7 @@ use quark_ui::key_context::KeyBindings;
 use super::state::{CommandsController, LayerKind};
 use crate::app::route::Controllers;
 use crate::app::text_targets::{
-    COMMIT_MESSAGE, REVIEW_COMPOSER, SEARCH, SETTINGS_STEERING_PROMPT, SIDEBAR_FILTER,
+    COMMIT_MESSAGE, LAUNCHER, REVIEW_COMPOSER, SEARCH, SETTINGS_STEERING_PROMPT, SIDEBAR_FILTER,
     TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT,
 };
 use crate::contracts::commands::{CommandDescriptor, CommandsAction, RefPickerAction};
@@ -107,6 +107,15 @@ pub fn key_action(
     if let Some(action) = controllers.commands.key_action(&binding) {
         return Some(action);
     }
+    if focus == Some(LAUNCHER)
+        && controllers.commands.launcher_active()
+        && controllers.commands.top_layer().is_none()
+        && !controllers.commands.settings_open()
+        && !controllers.review.is_modal_open()
+        && let Some(action) = launcher_key(&binding)
+    {
+        return Some(action.into());
+    }
     let quiet = controllers.commands.top_layer().is_none()
         && !controllers.commands.settings_open()
         && !controllers.review.is_modal_open()
@@ -125,6 +134,16 @@ pub fn key_action(
         && !controllers.viewport.interaction.has_text_selection()
         && controllers.mutations.selected_lines().is_empty();
     leaves_commit.then(|| NavigationAction::ClearHistoryCommit.into())
+}
+
+fn launcher_key(binding: &str) -> Option<CommandsAction> {
+    Some(match binding {
+        "arrowdown" | "ctrl+n" => CommandsAction::LauncherMove(1),
+        "arrowup" | "ctrl+p" => CommandsAction::LauncherMove(-1),
+        "enter" => CommandsAction::LauncherConfirm,
+        "escape" => CommandsAction::LauncherClear,
+        _ => return None,
+    })
 }
 
 const TEXT_FIELDS: [FocusId; 7] = [

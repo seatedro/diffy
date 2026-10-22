@@ -45,7 +45,8 @@ fn regions(ui: &Harness) -> (Node, Option<Node>, Node, Node) {
     (
         ui.find(By::role_name(Role::TitleBar, "Title bar")),
         ui.try_find(By::role_name(Role::Navigation, "Files")),
-        ui.find(By::role_name(Role::Main, "Diff")),
+        ui.try_find(By::role_name(Role::Main, "Diff"))
+            .unwrap_or_else(|| ui.find(By::role_name(Role::Main, "Launcher"))),
         ui.find(By::role_name(Role::Status, "Status")),
     )
 }
@@ -66,13 +67,19 @@ fn background(ui: &Harness) -> Option<Color> {
 
 #[test]
 fn shell_renders_labeled_regions() {
-    let ui = harness();
+    let mut ui = harness();
 
     assert!(
         ui.accessibility_tree()
             .starts_with(&format!("Window {TITLE:?}\n")),
         "root window is named {TITLE}"
     );
+    let (title, files, launcher, _) = regions(&ui);
+    assert!(files.is_none(), "no sidebar before a repository opens");
+    assert_eq!(ui.find(By::test_id("launcher")), launcher);
+    assert!(contains(title.bounds, ui.find(By::name(TITLE)).bounds));
+
+    deliver_current(&mut ui, opened("/fixtures/alpha"));
     let (title, files, diff, status) = regions(&ui);
     let files = files.expect("files region at the default size");
     assert_eq!(ui.find(By::test_id("title")), title);
@@ -90,7 +97,6 @@ fn shell_renders_labeled_regions() {
             "{node} outside the window"
         );
     }
-    assert!(contains(title.bounds, ui.find(By::name(TITLE)).bounds));
     assert!(ui.app().dispatcher().attached);
 }
 

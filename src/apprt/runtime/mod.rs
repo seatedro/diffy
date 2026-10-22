@@ -100,6 +100,14 @@ impl AppRuntime {
                     });
                 });
             }
+            ShellEffect::OpenLauncherDialog(folder) => {
+                thread::spawn(move || {
+                    events.send(ShellEvent::LauncherDialogClosed {
+                        folder,
+                        path: shell.open_repository_dialog(),
+                    });
+                });
+            }
             ShellEffect::OpenBrowser { url } => {
                 thread::spawn(move || {
                     if let Err(error) = shell.open_browser(&url) {

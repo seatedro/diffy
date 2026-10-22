@@ -150,6 +150,14 @@ pub enum CommandsAction {
     RemoveRepoScanRoot(String),
     SetRepoScanDepth(u8),
     ToggleRepoScanHidden,
+    LauncherMove(i32),
+    LauncherSelect(usize),
+    LauncherConfirm,
+    LauncherClear,
+    LauncherFolderChosen {
+        folder: LauncherFolder,
+        path: PathBuf,
+    },
     OpenRefPicker(CompareField),
     ShowRefPicker(Box<RefPickerRequest>),
     RefPicker(RefPickerAction),
@@ -268,6 +276,18 @@ pub enum CommandsEffect {
         id: JobId,
         after_ms: u64,
     },
+    CountChanges(Vec<PathBuf>),
+    CloneRepository {
+        job: JobId,
+        url: String,
+        dest: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LauncherFolder {
+    LocateClone { url: String },
+    CloneInto { url: String, name: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -348,6 +368,29 @@ pub enum CommandsEvent {
         scan: Arc<RepoScan>,
         cached: bool,
     },
+    ChangesCounted {
+        path: PathBuf,
+        count: Option<usize>,
+    },
+    CloneProgress {
+        job: JobId,
+        received: usize,
+        total: usize,
+    },
+    CloneFinished {
+        job: JobId,
+        path: PathBuf,
+        result: Result<(), String>,
+    },
+}
+
+impl CommandsEvent {
+    pub fn app_scoped(&self) -> bool {
+        matches!(
+            self,
+            Self::CloneProgress { .. } | Self::CloneFinished { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

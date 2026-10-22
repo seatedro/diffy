@@ -540,7 +540,7 @@ impl ReviewController {
         self.open_composer(ComposerTarget::Conversation, "")
     }
 
-    pub(super) fn signed_in(&self) -> bool {
+    pub fn signed_in(&self) -> bool {
         self.account
             .token
             .as_ref()

@@ -3,6 +3,8 @@ pub mod fixtures;
 #[cfg(test)]
 pub mod harness;
 pub mod keymap;
+mod launcher;
+mod launcher_view;
 mod list;
 mod palette;
 pub mod picker;
@@ -17,6 +19,7 @@ mod tests;
 mod toasts;
 mod view;
 
+pub use launcher_view::launcher;
 pub use platform::{
     PlatformRequest, apply as apply_platform, key_action, menu_action, take_requests,
 };

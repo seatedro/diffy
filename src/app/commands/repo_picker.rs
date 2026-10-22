@@ -296,6 +296,7 @@ mod tests {
                     path: PathBuf::from(path),
                     branch: Some("main".to_owned()),
                     active: None,
+                    remote: None,
                 })
                 .collect(),
             ..RepoScan::default()

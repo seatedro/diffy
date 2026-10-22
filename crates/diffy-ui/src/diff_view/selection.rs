@@ -65,6 +65,29 @@ pub(crate) fn decode_key(key: BlockKey) -> (Side, u32, u32) {
     (side, ((key.0 & !SIDE_BIT) >> 32) as u32, key.0 as u32)
 }
 
+fn common_indent<'a>(lines: impl Iterator<Item = &'a str>) -> usize {
+    let mut common: Option<&str> = None;
+    for line in lines {
+        let rest = line.trim_start_matches([' ', '\t']);
+        if rest.is_empty() {
+            continue;
+        }
+        let lead = &line[..line.len() - rest.len()];
+        common = Some(match common {
+            None => lead,
+            Some(common) => {
+                let shared = common
+                    .bytes()
+                    .zip(lead.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                &common[..shared]
+            }
+        });
+    }
+    common.map_or(0, str::len)
+}
+
 impl DiffViewState {
     /// Copies `content`; `None` when the view cannot produce it exactly
     /// (an unknown file or line, or a whole file only part of which is
@@ -119,7 +142,7 @@ impl DiffViewState {
         } else {
             (key_side(s.focus), key_side(s.anchor))
         };
-        let mut first = true;
+        let mut pieces = Vec::new();
         for (seg, segment) in self.segments.iter().enumerate() {
             let seg = seg as u32;
             if seg < start.0 || seg > end.0 {
@@ -157,12 +180,19 @@ impl DiffViewState {
                 } else {
                     text.len()
                 };
-                if !first {
-                    out.push('\n');
-                }
-                first = false;
-                out.push_str(&text[from..to.max(from)]);
+                pieces.push((text, from, to.max(from)));
             }
+        }
+        let indent = if pieces.len() > 1 {
+            common_indent(pieces.iter().map(|(text, _, _)| *text))
+        } else {
+            0
+        };
+        for (at, (text, from, to)) in pieces.into_iter().enumerate() {
+            if at > 0 {
+                out.push('\n');
+            }
+            out.push_str(&text[from.max(indent).min(to)..to]);
         }
         out
     }

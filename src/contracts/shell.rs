@@ -7,10 +7,10 @@ use crate::contracts::delivery::{
 };
 use crate::contracts::mutations::{MutationsAction, MutationsEffect, MutationsEvent};
 use crate::contracts::navigation::{
-    NavigationAction, NavigationEffect, NavigationEvent, RepositoryContext,
+    NavigationAction, NavigationEffect, NavigationEvent, RankFilesRequest, RepositoryContext,
 };
 use crate::contracts::review::{ReviewAction, ReviewContext, ReviewEffect, ReviewEvent};
-use crate::contracts::shared::{SharedContext, SourceTarget, WorkspaceEpoch};
+use crate::contracts::shared::{JobId, SharedContext, SourceTarget, WorkspaceEpoch};
 use crate::contracts::viewport::{
     CompareIntent, CompareManifestSnapshot, ViewportAction, ViewportEffect, ViewportEvent,
 };
@@ -145,6 +145,8 @@ pub enum Intent {
     SettingsChanged(Rc<SettingsSnapshot>),
     RequestConfirmation(ConfirmationRequest),
     Toast(ToastUpdate),
+    RankFiles(Rc<RankFilesRequest>),
+    RankFilesUnavailable(JobId),
 }
 
 #[derive(Debug, Default)]

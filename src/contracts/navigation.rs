@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::ai::rank::RankCandidate;
 use crate::contracts::shared::{CompareGeneration, FileKey, JobId};
 use crate::core::compare::CompareMode;
 use crate::core::vcs::model::{
@@ -155,6 +156,7 @@ pub enum NavigationAction {
     ScrollFiles(i32),
     ScrollFilesTo(u32),
     ToggleSidebarMode,
+    ToggleSmartSort,
     ToggleSidebar,
     SetSidebarTab(SidebarTab),
     SelectHistoryCommit(String),
@@ -185,6 +187,12 @@ pub struct ResolveRefRequest {
     pub repo_path: PathBuf,
     pub field: CompareField,
     pub query: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankFilesRequest {
+    pub job: JobId,
+    pub files: Vec<RankCandidate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +237,10 @@ pub enum NavigationEvent {
     },
     CompareWorktreeChanged {
         path: PathBuf,
+    },
+    FilesRanked {
+        job: JobId,
+        ranking: Result<Vec<u32>, String>,
     },
 }
 

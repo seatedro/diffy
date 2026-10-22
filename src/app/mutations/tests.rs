@@ -24,7 +24,7 @@ use crate::contracts::mutations::{
 use crate::contracts::navigation::{
     RepositoryContext, RepositoryRevision, RepositorySnapshot, RepositorySyncReason,
 };
-use crate::contracts::shared::{FileKey, FileRevision, SharedContext, Side, SourceTarget};
+use crate::contracts::shared::{FileKey, FileRevision, JobId, SharedContext, Side, SourceTarget};
 use crate::contracts::shell::{Action, Controller, Effect, Intent, Reduction};
 use crate::contracts::viewport::CompareManifestSnapshot;
 use crate::contracts::viewport::pipeline::ManifestFile;
@@ -689,6 +689,31 @@ fn cancelling_a_generation_stops_the_worker() {
     };
     assert_ne!(*generation, request.generation);
     assert!(!controller.ai().active);
+}
+
+#[test]
+fn file_ranking_uses_the_configured_key_or_reports_it_missing() {
+    let cx = shared();
+    let request = Rc::new(crate::contracts::navigation::RankFilesRequest {
+        job: JobId(7),
+        files: Vec::new(),
+    });
+    let mut controller = MutationsController::default();
+    let missing = controller.apply_intent(&Intent::RankFiles(request.clone()), &cx);
+    assert!(missing.effects.is_empty());
+    assert!(matches!(
+        missing.intents.as_slice(),
+        [Intent::RankFilesUnavailable(JobId(7))]
+    ));
+
+    ai_ready(&mut controller, &cx);
+    let ready = controller.apply_intent(&Intent::RankFiles(request), &cx);
+    let effects = mutation_effects(&ready);
+    let [MutationsEffect::RankFiles(job)] = effects.as_slice() else {
+        panic!("expected a ranking job");
+    };
+    assert_eq!(job.request.job, JobId(7));
+    assert_eq!(job.provider, crate::ai::Provider::Anthropic);
 }
 
 #[test]

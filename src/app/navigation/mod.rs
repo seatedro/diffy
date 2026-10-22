@@ -1,6 +1,7 @@
 mod banner;
 mod row_actions;
 mod rows;
+mod smart_sort;
 mod state;
 #[cfg(test)]
 mod tests;

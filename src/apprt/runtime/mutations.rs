@@ -246,6 +246,17 @@ impl MutationsRuntime {
                     events.send(MutationsEvent::AiClisScanned { generation, scan });
                 });
             }
+            MutationsEffect::RankFiles(job) => {
+                let services = self.services;
+                thread::spawn(move || {
+                    let request = job.request.job;
+                    let ranking = services.rank_files(*job);
+                    events.send(NavigationEvent::FilesRanked {
+                        job: request,
+                        ranking,
+                    });
+                });
+            }
         }
     }
 }

@@ -35,6 +35,7 @@ pub struct GenerateRequest {
     pub provider: Provider,
     pub api_key: String,
     pub user_message: String,
+    pub max_tokens: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +80,7 @@ async fn drive_stream(request: GenerateRequest, tx: Sender<StreamMessage>) {
         provider,
         api_key,
         user_message,
+        max_tokens,
     } = request;
 
     // Keys pasted from browser/terminals sometimes carry trailing whitespace.
@@ -107,8 +109,10 @@ async fn drive_stream(request: GenerateRequest, tx: Sender<StreamMessage>) {
 
     let client = crate::core::http::client();
     if let Err(error) = match provider {
-        Provider::OpenAi => stream_openai(&client, &api_key, &user_message, &tx).await,
-        Provider::Anthropic => stream_anthropic(&client, &api_key, &user_message, &tx).await,
+        Provider::OpenAi => stream_openai(&client, &api_key, &user_message, max_tokens, &tx).await,
+        Provider::Anthropic => {
+            stream_anthropic(&client, &api_key, &user_message, max_tokens, &tx).await
+        }
     } {
         tracing::error!(
             provider = provider.label(),
@@ -123,6 +127,7 @@ async fn stream_openai(
     client: &reqwest::Client,
     api_key: &str,
     user_message: &str,
+    max_tokens: u32,
     tx: &Sender<StreamMessage>,
 ) -> Result<(), String> {
     let body = json!({
@@ -135,7 +140,7 @@ async fn stream_openai(
                 ]
             }
         ],
-        "max_output_tokens": 1024,
+        "max_output_tokens": max_tokens,
         "stream": true
     });
 
@@ -157,6 +162,7 @@ async fn stream_anthropic(
     client: &reqwest::Client,
     api_key: &str,
     user_message: &str,
+    max_tokens: u32,
     tx: &Sender<StreamMessage>,
 ) -> Result<(), String> {
     let body = json!({
@@ -165,7 +171,7 @@ async fn stream_anthropic(
             { "role": "user", "content": user_message }
         ],
         "system": "You are a helpful assistant.",
-        "max_tokens": 1024,
+        "max_tokens": max_tokens,
         "temperature": 0.7,
         "stream": true
     });

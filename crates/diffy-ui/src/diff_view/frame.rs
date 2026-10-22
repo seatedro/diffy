@@ -283,10 +283,14 @@ impl DiffViewState {
                     let selected = [Side::Old, Side::New].map(|side| {
                         let line = paint.sides[side as usize].as_ref()?;
                         if let Some(merge) = &line.merge {
-                            let (lo, hi) =
-                                self.row_selection(ordered, (seg, row), side, merge.source_len())?;
+                            let len = merge.source_len();
+                            let (lo, hi) = self.row_selection(ordered, (seg, row), side, len)?;
                             let lo = merge.to_layout(Side::New, lo)?;
-                            let hi = merge.to_layout(Side::New, hi)?;
+                            let hi = if hi > len {
+                                line.layout.text().len() + 1
+                            } else {
+                                merge.to_layout(Side::New, hi)?
+                            };
                             return (lo < hi).then_some((lo, hi));
                         }
                         // In line bytes, then in the bytes of a window's text.

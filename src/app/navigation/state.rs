@@ -1182,7 +1182,7 @@ impl NavigationController {
         }
     }
 
-    fn rank_unavailable(&mut self, job: JobId) -> Reduction {
+    fn rank_unavailable(&mut self, job: JobId, reason: &str) -> Reduction {
         if !self.smart.unavailable(job) {
             return Reduction::default();
         }
@@ -1194,9 +1194,7 @@ impl NavigationController {
             id: None,
             kind: ToastKind::Info,
             message: "Smart sort is ranking by path".to_owned(),
-            description: Some(
-                "Add an AI key under Settings \u{2192} Clankers to rank files with AI.".to_owned(),
-            ),
+            description: Some(reason.to_owned()),
         }))
     }
 
@@ -1666,7 +1664,7 @@ impl NavigationController {
             Intent::SetReviewTarget(None) if self.review_labels.take().is_some() => {
                 Reduction::changed()
             }
-            Intent::RankFilesUnavailable(job) => self.rank_unavailable(*job),
+            Intent::RankFilesUnavailable { job, reason } => self.rank_unavailable(*job, reason),
             Intent::SettingsChanged(settings) => match settings.settings.last_compare.as_ref() {
                 Some(last) if last.renderer != self.compare.renderer => {
                     self.compare.renderer = last.renderer;

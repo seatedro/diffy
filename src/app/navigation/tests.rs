@@ -854,14 +854,20 @@ fn smart_sort_without_ai_keeps_role_order_and_says_so_once() {
     open(&mut ui, mixed_files());
     ui.click_node(By::test_id("sidebar.smart-sort"));
     let job = rank_requests(&ui)[0].job;
-    ui.app_mut().inject(Intent::RankFilesUnavailable(job));
+    ui.app_mut().inject(Intent::RankFilesUnavailable {
+        job,
+        reason: "No AI".to_owned(),
+    });
     ui.frame();
     assert_eq!(row_order(&ui, &[1, 2, 3, 4, 5]), [4, 5, 2, 1, 3]);
     assert_eq!(toasts(&ui), 1);
 
     publish(&mut ui, fixtures::manifest(2, mixed_files()[1..].to_vec()));
     let job = rank_requests(&ui).last().map(|r| r.job).expect("request");
-    ui.app_mut().inject(Intent::RankFilesUnavailable(job));
+    ui.app_mut().inject(Intent::RankFilesUnavailable {
+        job,
+        reason: "No AI".to_owned(),
+    });
     assert_eq!(toasts(&ui), 1);
 }
 

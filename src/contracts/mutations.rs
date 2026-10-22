@@ -252,8 +252,7 @@ pub struct GenerateCommitMessageRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RankFilesJob {
     pub request: RankFilesRequest,
-    pub provider: Provider,
-    pub api_key: Secret,
+    pub backend: AiBackend,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -499,6 +498,18 @@ pub enum MutationsEvent {
         repository: RepositoryRevision,
         message: String,
     },
+}
+
+impl MutationsEvent {
+    pub fn app_scoped(&self) -> bool {
+        matches!(
+            self,
+            Self::AiKeysLoaded { .. }
+                | Self::AiKeysLoadFailed { .. }
+                | Self::AiKeySaveFailed { .. }
+                | Self::AiClisScanned { .. }
+        )
+    }
 }
 
 #[cfg(test)]

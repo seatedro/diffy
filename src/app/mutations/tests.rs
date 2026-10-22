@@ -703,7 +703,7 @@ fn file_ranking_uses_the_configured_key_or_reports_it_missing() {
     assert!(missing.effects.is_empty());
     assert!(matches!(
         missing.intents.as_slice(),
-        [Intent::RankFilesUnavailable(JobId(7))]
+        [Intent::RankFilesUnavailable { job: JobId(7), .. }]
     ));
 
     ai_ready(&mut controller, &cx);
@@ -713,7 +713,50 @@ fn file_ranking_uses_the_configured_key_or_reports_it_missing() {
         panic!("expected a ranking job");
     };
     assert_eq!(job.request.job, JobId(7));
-    assert_eq!(job.provider, crate::ai::Provider::Anthropic);
+    assert!(matches!(
+        job.backend,
+        AiBackend::Api {
+            provider: Provider::Anthropic,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn ranking_and_generation_wait_for_one_cli_scan_then_use_the_cli() {
+    let mut cx = shared();
+    with_cli(&mut cx, None);
+    let mut controller = MutationsController::default();
+    let request = Rc::new(crate::contracts::navigation::RankFilesRequest {
+        job: JobId(7),
+        files: Vec::new(),
+    });
+    let ranking = controller.apply_intent(&Intent::RankFiles(request), &cx);
+    let ranking_effects = mutation_effects(&ranking);
+    let [MutationsEffect::ScanAiClis { generation }] = ranking_effects.as_slice() else {
+        panic!("expected a scan before ranking");
+    };
+    let generation = *generation;
+    let pending = controller.reduce_action(MutationsAction::GenerateCommitMessage, &cx);
+    assert!(mutation_effects(&pending).is_empty());
+
+    let ready = controller.reduce_event(
+        MutationsEvent::AiClisScanned {
+            generation,
+            scan: cli_scan(&[(CliTool::ClaudeCode, CliAuth::SignedIn)]),
+        },
+        &cx,
+    );
+    let ready_effects = mutation_effects(&ready);
+    let [
+        MutationsEffect::RankFiles(job),
+        MutationsEffect::GenerateCommitMessage(commit),
+    ] = ready_effects.as_slice()
+    else {
+        panic!("expected both waiting tasks to run");
+    };
+    assert!(matches!(&job.backend, AiBackend::Cli(command) if command.tool == CliTool::ClaudeCode));
+    assert!(matches!(&commit.backend, AiBackend::Cli(_)));
 }
 
 #[test]

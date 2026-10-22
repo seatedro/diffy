@@ -105,6 +105,16 @@ pub enum AppEvent {
     Delivery(DeliveryEvent),
 }
 
+impl AppEvent {
+    pub fn outlives_workspace(&self) -> bool {
+        match self {
+            Self::Review(event) => event.account_scoped(),
+            Self::Mutations(event) => event.app_scoped(),
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct EventEnvelope {
     pub workspace: WorkspaceEpoch,
@@ -146,7 +156,7 @@ pub enum Intent {
     RequestConfirmation(ConfirmationRequest),
     Toast(ToastUpdate),
     RankFiles(Rc<RankFilesRequest>),
-    RankFilesUnavailable(JobId),
+    RankFilesUnavailable { job: JobId, reason: String },
 }
 
 #[derive(Debug, Default)]

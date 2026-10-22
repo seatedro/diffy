@@ -1,10 +1,9 @@
 use std::path::Path;
-use std::sync::mpsc::RecvTimeoutError;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crate::ai::{self, CliCommand, CliScan, GenerateRequest, RunOutcome, StreamMessage};
+use crate::ai::{self, CliScan, RunOutcome};
 use crate::contracts::mutations::{
-    AiBackend, GenerateCommitMessageRequest, MutationsEvent, RankFilesJob, StagedDigest,
+    GenerateCommitMessageRequest, MutationsEvent, RankFilesJob, StagedDigest,
 };
 use crate::contracts::review::Secret;
 use crate::core::error::Result;
@@ -103,19 +102,13 @@ impl MutationsServices {
                 chunk,
             })
         };
-        let result = match backend {
-            AiBackend::Api { provider, api_key } => stream_api(
-                GenerateRequest {
-                    provider,
-                    api_key: api_key.into_inner(),
-                    user_message,
-                    max_tokens: ai::COMMIT_MAX_TOKENS,
-                },
-                live,
-                &mut forward,
-            ),
-            AiBackend::Cli(command) => run_cli(&command, &user_message, live, &mut forward),
-        };
+        let result = super::ai::complete(
+            backend,
+            user_message,
+            ai::COMMIT_MAX_TOKENS,
+            live,
+            &mut forward,
+        );
         let elapsed_ms = started.elapsed().as_millis() as u64;
         match result {
             Ok(RunOutcome::Finished) => {
@@ -140,57 +133,9 @@ impl MutationsServices {
     }
 }
 
-const API_POLL: Duration = Duration::from_millis(100);
-
-fn stream_api(
-    request: GenerateRequest,
-    live: &dyn Fn() -> bool,
-    forward: &mut dyn FnMut(String) -> bool,
-) -> std::result::Result<RunOutcome, String> {
-    let rx = ai::run_streaming(request);
-    loop {
-        match rx.recv_timeout(API_POLL) {
-            Ok(StreamMessage::Chunk(chunk)) => {
-                if !live() || !forward(chunk) {
-                    return Ok(RunOutcome::Cancelled);
-                }
-            }
-            Ok(StreamMessage::Finished) => return Ok(RunOutcome::Finished),
-            Ok(StreamMessage::Failed(message)) => return Err(message),
-            Err(RecvTimeoutError::Timeout) if !live() => return Ok(RunOutcome::Cancelled),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err("AI worker exited unexpectedly".to_owned());
-            }
-        }
-    }
-}
-
-fn run_cli(
-    command: &CliCommand,
-    user_message: &str,
-    live: &dyn Fn() -> bool,
-    forward: &mut dyn FnMut(String) -> bool,
-) -> std::result::Result<RunOutcome, String> {
-    let workdir = ai::cli::workdir()
-        .ok_or_else(|| "couldn't find Diffy's config folder for AI sessions".to_owned())?;
-    tracing::info!(
-        tool = command.tool.label(),
-        program = %command.program.display(),
-        workdir = %workdir.display(),
-        user_message_bytes = user_message.len(),
-        "ai.cli: run"
-    );
-    ai::cli::run(command, &workdir, user_message, live, forward)
-}
-
 impl MutationsServices {
     pub fn rank_files(&self, job: RankFilesJob) -> std::result::Result<Vec<u32>, String> {
-        let RankFilesJob {
-            request,
-            provider,
-            api_key,
-        } = job;
+        let RankFilesJob { request, backend } = job;
         let started = Instant::now();
         let (user_message, sent) = ai::rank::build_rank_message(&request.files);
         if sent == 0 {
@@ -198,30 +143,17 @@ impl MutationsServices {
         }
         tracing::info!(
             job = request.job.0,
-            provider = provider.label(),
+            backend = backend.label(),
             files = request.files.len(),
             sent,
             bytes = user_message.len(),
             "ai.rank: dispatch"
         );
-        let rx = ai::run_streaming(GenerateRequest {
-            provider,
-            api_key: api_key.into_inner(),
-            user_message,
-            max_tokens: ai::rank::RANK_MAX_TOKENS,
-        });
-        let mut reply = String::new();
-        loop {
-            match rx.recv() {
-                Ok(StreamMessage::Chunk(chunk)) => reply.push_str(&chunk),
-                Ok(StreamMessage::Finished) => break,
-                Ok(StreamMessage::Failed(message)) => {
+        let reply =
+            super::ai::complete_text(backend, user_message, ai::rank::RANK_MAX_TOKENS, &|| true)
+                .inspect_err(|message| {
                     tracing::warn!(job = request.job.0, %message, "ai.rank: request failed");
-                    return Err(message);
-                }
-                Err(_) => return Err("AI worker exited unexpectedly".to_owned()),
-            }
-        }
+                })?;
         let ranking = ai::rank::parse_ranking(&reply, sent);
         tracing::info!(
             job = request.job.0,

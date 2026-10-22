@@ -104,13 +104,24 @@ pub struct AiState {
     pub cli: Option<Arc<CliScan>>,
     pub scanning: bool,
     scan_generation: u64,
-    queued: bool,
+    waiting: Vec<AiTask>,
+}
+
+#[derive(Debug)]
+enum AiTask {
+    CommitMessage,
+    RankFiles(RankFilesRequest),
+}
+
+enum Backend {
+    Ready(AiBackend),
+    Waiting(Reduction),
+    Unavailable(String),
 }
 
 enum CliChoice {
     Ready(CliCommand),
     SignedOut(CliTool),
-    Pending,
     Missing,
 }
 
@@ -944,46 +955,10 @@ impl MutationsController {
         let Some(repo) = cx.repository.as_ref() else {
             return error("Open a repository before generating a commit message.");
         };
-        let preferred = cx.settings.settings.ai_provider;
-        let choice = if !cx.settings.settings.ai_use_cli {
-            CliChoice::Missing
-        } else {
-            match self.ai.cli.as_deref() {
-                Some(scan) if !self.ai.scanning => pick_cli(scan, preferred),
-                _ => CliChoice::Pending,
-            }
-        };
-        let backend = match choice {
-            CliChoice::Ready(command) => AiBackend::Cli(command),
-            CliChoice::SignedOut(tool) => {
-                return error(format!(
-                    "{} is signed out. {}",
-                    tool.label(),
-                    tool.sign_in_hint()
-                ));
-            }
-            CliChoice::Pending => {
-                self.ai.queued = true;
-                return self.scan_clis(false);
-            }
-            CliChoice::Missing => {
-                let key = |provider: Provider| {
-                    match provider {
-                        Provider::OpenAi => self.ai.openai.clone(),
-                        Provider::Anthropic => self.ai.anthropic.clone(),
-                    }
-                    .filter(|key| !key.is_empty())
-                    .map(|api_key| AiBackend::Api { provider, api_key })
-                };
-                let chosen = match preferred {
-                    Some(provider) => key(provider),
-                    None => key(Provider::Anthropic).or_else(|| key(Provider::OpenAi)),
-                };
-                let Some(backend) = chosen else {
-                    return error(missing_backend(preferred, cx.settings.settings.ai_use_cli));
-                };
-                backend
-            }
+        let backend = match self.ai_backend(|| AiTask::CommitMessage, cx) {
+            Backend::Ready(backend) => backend,
+            Backend::Waiting(reduction) => return reduction,
+            Backend::Unavailable(message) => return error(message),
         };
         let staging = repo.snapshot.capabilities.staging_area;
         let has_staged = staging
@@ -1031,31 +1006,73 @@ impl MutationsController {
         )))
     }
 
-    fn ai_credentials(&self, cx: &SharedContext) -> Option<(Provider, Secret)> {
+    fn ai_backend(&mut self, task: impl FnOnce() -> AiTask, cx: &SharedContext) -> Backend {
+        let settings = &cx.settings.settings;
+        let preferred = settings.ai_provider;
+        if settings.ai_use_cli {
+            match self.ai.cli.as_deref() {
+                Some(scan) if !self.ai.scanning => match pick_cli(scan, preferred) {
+                    CliChoice::Ready(command) => return Backend::Ready(AiBackend::Cli(command)),
+                    CliChoice::SignedOut(tool) => {
+                        return Backend::Unavailable(format!(
+                            "{} is signed out. {}",
+                            tool.label(),
+                            tool.sign_in_hint()
+                        ));
+                    }
+                    CliChoice::Missing => {}
+                },
+                _ => {
+                    let task = task();
+                    let kind = std::mem::discriminant(&task);
+                    self.ai
+                        .waiting
+                        .retain(|queued| std::mem::discriminant(queued) != kind);
+                    self.ai.waiting.push(task);
+                    return Backend::Waiting(self.scan_clis(false));
+                }
+            }
+        }
         let key = |provider: Provider| {
             match provider {
                 Provider::OpenAi => self.ai.openai.clone(),
                 Provider::Anthropic => self.ai.anthropic.clone(),
             }
             .filter(|key| !key.is_empty())
-            .map(|key| (provider, key))
+            .map(|api_key| AiBackend::Api { provider, api_key })
         };
-        match cx.settings.settings.ai_provider {
+        let chosen = match preferred {
             Some(provider) => key(provider),
             None => key(Provider::Anthropic).or_else(|| key(Provider::OpenAi)),
+        };
+        match chosen {
+            Some(backend) => Backend::Ready(backend),
+            None => Backend::Unavailable(missing_backend(preferred, settings.ai_use_cli)),
         }
     }
 
-    fn rank_files(&self, request: &RankFilesRequest, cx: &SharedContext) -> Reduction {
-        match self.ai_credentials(cx) {
-            Some((provider, api_key)) => {
+    fn run_ai_task(&mut self, task: AiTask, cx: &SharedContext) -> Reduction {
+        match task {
+            AiTask::CommitMessage => self.generate_commit_message(cx),
+            AiTask::RankFiles(request) => self.rank_files(&request, cx),
+        }
+    }
+
+    fn rank_files(&mut self, request: &RankFilesRequest, cx: &SharedContext) -> Reduction {
+        match self.ai_backend(|| AiTask::RankFiles(request.clone()), cx) {
+            Backend::Ready(backend) => {
                 Reduction::default().effect(MutationsEffect::RankFiles(Box::new(RankFilesJob {
                     request: request.clone(),
-                    provider,
-                    api_key,
+                    backend,
                 })))
             }
-            None => Reduction::default().intent(Intent::RankFilesUnavailable(request.job)),
+            Backend::Waiting(reduction) => reduction,
+            Backend::Unavailable(reason) => {
+                Reduction::default().intent(Intent::RankFilesUnavailable {
+                    job: request.job,
+                    reason,
+                })
+            }
         }
     }
 
@@ -1377,7 +1394,9 @@ impl MutationsController {
     }
 
     fn cancel_generation(&mut self) -> Reduction {
-        self.ai.queued = false;
+        self.ai
+            .waiting
+            .retain(|task| !matches!(task, AiTask::CommitMessage));
         if !self.ai.active {
             return Reduction::default();
         }
@@ -2043,11 +2062,10 @@ impl Controller for MutationsController {
                 }
                 self.ai.scanning = false;
                 self.ai.cli = Some(scan);
-                if !std::mem::take(&mut self.ai.queued) {
-                    return Reduction::changed();
-                }
                 let mut reduction = Reduction::changed();
-                reduction.merge(self.generate_commit_message(cx));
+                for task in std::mem::take(&mut self.ai.waiting) {
+                    reduction.merge(self.run_ai_task(task, cx));
+                }
                 reduction
             }
             E::CommitMessageStarted { generation, staged } => {

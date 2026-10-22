@@ -9,6 +9,8 @@ use quark_ui::theme::{Color, ThemeMode};
 
 use crate::app::testing::*;
 use crate::app::theme::ThemePair;
+use crate::contracts::mutations::MutationsEvent;
+use crate::contracts::review::Secret;
 use crate::contracts::shared::WorkspaceEpoch;
 use crate::contracts::shell::{AppMessage, ShellEvent};
 use crate::core::themes::ThemeRegistry;
@@ -146,6 +148,23 @@ fn current_workspace_events_change_the_title_and_stale_ones_do_not() {
     ui.find(By::name("Repository alpha"));
     assert_eq!(ui.app().shared().workspace, WorkspaceEpoch(1));
     assert_eq!(ui.frame_count(), frames);
+}
+
+#[test]
+fn ai_setup_results_survive_a_workspace_switch() {
+    let mut ui = harness();
+    deliver_current(&mut ui, opened("/fixtures/alpha"));
+
+    deliver(
+        &mut ui,
+        WorkspaceEpoch(0),
+        MutationsEvent::AiKeysLoaded {
+            openai: Some(Secret::new("key")),
+            anthropic: None,
+        },
+    );
+
+    assert!(ui.app().controllers().mutations.ai().openai.is_some());
 }
 
 #[test]

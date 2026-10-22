@@ -26,7 +26,7 @@ use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, SettingsSnapshot, ToastUpdate};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
-    Action, AppEvent, AppMessage, AppStartup, Controller, Effect, Intent, Reduction, ShellAction,
+    Action, AppMessage, AppStartup, Controller, Effect, Intent, Reduction, ShellAction,
     ShellEffect, ShellEvent,
 };
 use crate::contracts::viewport::ViewportAction;
@@ -289,7 +289,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             | Intent::RequestConfirmation(_)
             | Intent::Toast(_)
             | Intent::RankFiles(_)
-            | Intent::RankFilesUnavailable(_) => false,
+            | Intent::RankFilesUnavailable { .. } => false,
         }
     }
 
@@ -808,9 +808,9 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         self.tick(cx);
         match message {
             AppMessage::Runtime(envelope) => {
-                let account =
-                    matches!(&envelope.event, AppEvent::Review(event) if event.account_scoped());
-                if envelope.workspace != self.shared.workspace && !account {
+                if envelope.workspace != self.shared.workspace
+                    && !envelope.event.outlives_workspace()
+                {
                     tracing::trace!(
                         event = ?envelope.event,
                         stale = envelope.workspace.0,

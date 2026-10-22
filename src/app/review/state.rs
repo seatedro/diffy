@@ -145,6 +145,7 @@ pub struct ActivePullRequest {
     pub loading: bool,
     pub error: Option<String>,
     session_dirty: bool,
+    review_refetch: bool,
 }
 
 impl ActivePullRequest {
@@ -485,6 +486,15 @@ impl ReviewController {
 
     fn fetch_review(&mut self) -> Option<ReviewEffect> {
         let pr = self.pr.as_ref()?.pr.clone();
+        let in_flight = self.in_flight.values().any(|entry| {
+            matches!(entry.kind, Pending::ReviewData | Pending::ReviewComments)
+                && entry.pr.as_ref() == Some(&pr)
+        });
+        let active = self.pr.as_mut()?;
+        active.review_refetch = in_flight;
+        if in_flight {
+            return None;
+        }
         let token = self.token();
         Some(match token {
             Some(token) => self.github(
@@ -499,6 +509,14 @@ impl ReviewController {
                 GitHubRequest::FetchReviewComments { pr, token: None },
             ),
         })
+    }
+
+    fn queued_review_fetch(&mut self) -> Option<ReviewEffect> {
+        if self.pr.as_ref()?.review_refetch {
+            self.fetch_review()
+        } else {
+            None
+        }
     }
 
     fn startup(&mut self, startup: &crate::contracts::shell::AppStartup) -> Reduction {
@@ -563,6 +581,7 @@ impl ReviewController {
                 loading: true,
                 error: None,
                 session_dirty: false,
+                review_refetch: false,
             });
         } else if let Some(active) = self.pr.as_mut() {
             active.loading = true;
@@ -1270,6 +1289,9 @@ impl ReviewController {
                 if let Some(effect) = self.save_session() {
                     reduction = reduction.effect(effect);
                 }
+                if let Some(effect) = self.queued_review_fetch() {
+                    reduction = reduction.effect(effect);
+                }
                 reduction
             }
             GitHubResponse::ReviewDataLoadFailed { pr, message } => {
@@ -1295,6 +1317,9 @@ impl ReviewController {
                         reduction = reduction.effect(effect);
                     }
                 }
+                if let Some(effect) = self.queued_review_fetch() {
+                    reduction = reduction.effect(effect);
+                }
                 reduction
             }
             GitHubResponse::ReviewCommentsLoadFailed { message, .. } => {
@@ -1302,7 +1327,11 @@ impl ReviewController {
                     session.status = ReviewSessionStatus::Failed;
                     session.status_message = Some(message);
                 }
-                Reduction::changed()
+                let mut reduction = Reduction::changed();
+                if let Some(effect) = self.queued_review_fetch() {
+                    reduction = reduction.effect(effect);
+                }
+                reduction
             }
             GitHubResponse::ThreadReplyAdded { .. } => {
                 if let Pending::Reply(draft) = kind

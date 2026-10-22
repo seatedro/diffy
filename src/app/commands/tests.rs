@@ -23,6 +23,7 @@ use crate::contracts::commands::{
     RefPickerRequest, SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::navigation::{CompareField, NavigationAction, RepositorySyncReason};
+use crate::contracts::review::ReviewAction;
 use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{
     Action, Controller, Effect, Intent, LogicalFocus, Reduction, ShellAction,
@@ -406,6 +407,26 @@ fn palette_hands_a_pull_request_url_to_review() {
         Intent::OpenPullRequest { url } if url == "https://github.com/o/r/pull/7"
     )));
     assert_eq!(ui.focus(), Some(SIDEBAR));
+}
+
+#[test]
+fn pasting_a_pull_request_link_into_the_palette_opens_it() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.run(CommandsAction::OpenCommandPalette);
+    ui.type_text("https://github.com/owner/repo/pull/7/files");
+    ui.find(By::name("Open owner/repo#7"));
+    ui.key("enter");
+    assert_eq!(
+        ui.app().dispatched,
+        vec![Action::from(ReviewAction::LoadPullRequest {
+            url: "https://github.com/owner/repo/pull/7".to_owned(),
+        })]
+    );
+
+    ui.run(CommandsAction::OpenCommandPalette);
+    ui.type_text("owner/repo#");
+    assert!(ui.try_find(By::name("Open owner/repo#")).is_none());
 }
 
 #[test]

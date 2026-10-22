@@ -136,8 +136,9 @@ impl std::fmt::Debug for CommandsController {
 
 impl Default for CommandsController {
     fn default() -> Self {
-        let mut palette =
-            CommandPalette::new().placeholder("Search commands, files and repositories");
+        let mut palette = CommandPalette::new()
+            .placeholder("Search commands, files and repos, or paste a PR link");
+        palette.register(palette::PullRequests);
         palette.register(palette::Commands);
         palette.register(palette::Files);
         palette.register(palette::Repositories);

@@ -2,11 +2,14 @@ use std::path::PathBuf;
 
 use quark_components::{PaletteItem, PaletteProvider};
 use quark_ui::element::Binding;
+use quark_ui::icons::lucide;
 
 use crate::contracts::commands::{CommandDescriptor, CommandsAction};
 use crate::contracts::navigation::{NavigationAction, SelectedFile, SelectionOrigin};
+use crate::contracts::review::ReviewAction;
 use crate::contracts::shared::FileKey;
 use crate::contracts::shell::Action;
+use crate::core::forge::github::parse_pr_reference;
 
 #[derive(Debug, Default)]
 pub struct PaletteSource {
@@ -103,5 +106,31 @@ impl PaletteProvider<PaletteSource> for Repositories {
             )
             .subtitle(display)
         }));
+    }
+}
+
+pub struct PullRequests;
+
+impl PaletteProvider<PaletteSource> for PullRequests {
+    fn title(&self) -> &str {
+        "Pull request"
+    }
+
+    fn collect(&self, _: &PaletteSource, _: &mut Vec<PaletteItem>) {}
+
+    fn typed(&self, query: &str, out: &mut Vec<PaletteItem>) {
+        let Some(pr) = parse_pr_reference(query) else {
+            return;
+        };
+        let url = pr.url();
+        out.push(
+            PaletteItem::new(
+                quark::stable_hash(&url),
+                format!("Open {}/{}#{}", pr.owner, pr.repo, pr.number),
+                Action::from(ReviewAction::LoadPullRequest { url }),
+            )
+            .subtitle("Review this pull request")
+            .icon(lucide::GIT_PULL_REQUEST),
+        );
     }
 }

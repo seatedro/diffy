@@ -19,4 +19,4 @@ pub use overview::{
     PullRequestActor, PullRequestOverview, PullRequestReviewer, PullRequestTimelineItem,
     PullRequestTimelineKind,
 };
-pub use pull_request::{GitHubPullRequest, parse_pr_url};
+pub use pull_request::{GitHubPullRequest, parse_pr_reference, parse_pr_url};

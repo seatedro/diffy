@@ -139,6 +139,13 @@ impl Default for Launcher {
 }
 
 impl Launcher {
+    pub fn reset(&mut self) {
+        self.query.set_text("");
+        self.counts.clear();
+        self.requested.clear();
+        self.refilter();
+    }
+
     pub fn set_entries(&mut self, recent: Vec<PathBuf>, scan: Option<&RepoScan>) {
         let home = dirs::home_dir();
         let home = home.as_deref();

@@ -1514,8 +1514,6 @@ impl CommandsController {
         }
         if launcher {
             self.focus(Some(LAUNCHER));
-        } else {
-            self.launcher = None;
         }
         let settings = &snapshot.settings;
         self.request(PlatformRequest::Theme(Box::new(
@@ -2458,8 +2456,8 @@ impl Controller for CommandsController {
                 self.startup(&cx.settings, startup.options.args.repo.is_none())
             }
             Intent::ActivateWorkspace { .. } => {
-                if self.launcher.take().is_none() {
-                    return Reduction::default();
+                if let Some(launcher) = &mut self.launcher {
+                    launcher.reset();
                 }
                 if self.layers.is_empty() && self.view_focus == Some(LAUNCHER) {
                     self.view_focus = Some(crate::app::text_targets::SIDEBAR);

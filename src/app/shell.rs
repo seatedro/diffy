@@ -380,13 +380,25 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         self.ensure_focus(cx);
     }
 
+    fn launcher_visible(&self) -> bool {
+        self.controllers.commands.launcher_active()
+            && self.shared.repository.is_none()
+            && !matches!(
+                self.controllers.navigation.status(),
+                crate::app::navigation::RepoStatus::Opening
+            )
+            && !self.controllers.viewport.interaction.text_compare().active
+            && !self.controllers.review.overview_open()
+    }
+
     fn ensure_focus(&mut self, cx: &mut UiContext) {
-        if cx.focus().is_none()
-            && self.shared.repository.is_some()
+        let idle = cx.focus().is_none()
             && self.controllers.commands.top_layer().is_none()
             && !self.controllers.commands.settings_open()
-            && !self.controllers.review.is_modal_open()
-        {
+            && !self.controllers.review.is_modal_open();
+        if idle && self.launcher_visible() {
+            cx.set_focus(Some(text_targets::LAUNCHER));
+        } else if idle && self.shared.repository.is_some() {
             cx.set_focus(Some(text_targets::focus_id(self.area_focus(Area::Main))));
         }
     }
@@ -562,18 +574,24 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             width,
             height,
         };
+        let launcher = self.launcher_visible();
+        let label = if launcher {
+            self.shell.display_name.as_str()
+        } else {
+            label
+        };
         let review = review::view(&mut self.controllers.review, &slot, cx);
         let editing = self.controllers.commands.editing_ref();
         let nav = &self.controllers.navigation;
         let repo = match nav.repo_path() {
-            Some(_) => navigation::repo_chip(nav, theme),
-            None => view! {
+            Some(_) if !launcher => navigation::repo_chip(nav, theme),
+            _ => view! {
                 <text size={TextStyle::Body.font_size(theme)} class="truncate font-semibold" color={tc.text_strong}>
                     {label}
                 </text>
             },
         };
-        let compare = navigation::compare_bar(nav, editing, theme);
+        let compare = navigation::compare_bar(nav, editing, theme).filter(|_| !launcher);
         view! {
             <div
                 w={width}
@@ -605,10 +623,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             };
             return review::pulls_page(&self.controllers.review, &slot, cx);
         }
-        if self.controllers.commands.launcher_active()
-            && !self.controllers.viewport.interaction.text_compare().active
-            && !self.controllers.review.overview_open()
-        {
+        if self.launcher_visible() {
             let slot = Slot {
                 shared: &self.shared,
                 width,
@@ -934,7 +949,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         let overlays = commands::overlays(&mut self.controllers.commands, &slot, external, cx);
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let workspace = self.shared.repository.is_some()
-            && !self.controllers.commands.launcher_active()
+            && !self.launcher_visible()
             && self.controllers.commands.top_layer().is_none()
             && !self.controllers.commands.settings_open();
         let reviewing = self.shared.review.is_some();

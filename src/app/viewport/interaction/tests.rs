@@ -109,8 +109,7 @@ fn line_names(ui: &UiTestHarness<Host>) -> Vec<String> {
 fn empty_and_loading_states_name_the_region() {
     let mut ui = harness(Host::new(), SIZE);
     ui.find(By::role_name(Role::Main, "Diff"));
-    assert!(ui.painted_text().contains("Open a repository"));
-    ui.find(By::role_name(Role::Button, "Open Repository…"));
+    assert!(ui.painted_text().contains("Nothing to compare"));
 
     ui.app_mut().install(ViewportInstall::Begin {
         generation: GENERATION,

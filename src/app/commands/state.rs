@@ -44,6 +44,7 @@ use crate::core::keymap::{KeymapOverride, ShortcutCommand};
 use crate::core::ref_catalog::{RefCatalog, RefEntryKind, WORKING_TREE_LABEL};
 use crate::core::repo_discovery::RepoScan;
 use crate::core::theme_types::ThemeMode;
+use crate::core::tips;
 use crate::core::vcs::git::{WORKDIR_REF, is_full_hex_oid};
 use crate::core::vcs::model::{RevisionId, VcsKind};
 use crate::fonts::{FontFamilyEntry, FontRole, bundled_font_entries, normalize_font_selection};
@@ -64,6 +65,15 @@ const QUIT_BINDING: &str = "mod+q";
 const REF_FRECENCY_PREFIX: &str = "ref:";
 // Toast job ids are shared with other streams' counters; keep clones clear of them.
 const CLONE_JOBS: u64 = 1 << 48;
+
+const TIP_DELAY_MS: u64 = 8_000;
+
+#[derive(Debug, Clone, Copy)]
+enum TipSession {
+    Pending,
+    Showing(&'static tips::Tip),
+    Done,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerKind {
@@ -127,6 +137,8 @@ pub struct CommandsController {
     file_pending: Option<FileListKey>,
     file_generation: u64,
     go_prefix: bool,
+    tip: Cell<TipSession>,
+    tip_since: Cell<Option<u64>>,
     shortcuts_reviewing: bool,
     go_since: Cell<Option<u64>>,
     row_stride: f32,
@@ -182,6 +194,8 @@ impl Default for CommandsController {
             file_pending: None,
             file_generation: 0,
             go_prefix: false,
+            tip: Cell::new(TipSession::Pending),
+            tip_since: Cell::new(None),
             shortcuts_reviewing: false,
             go_since: Cell::new(None),
             row_stride: 0.0,
@@ -1364,6 +1378,12 @@ impl CommandsController {
     }
 
     fn shortcut(&mut self, command: ShortcutCommand, cx: &SharedContext) -> Reduction {
+        let mut noted = self.note_family(command);
+        noted.merge(self.run_shortcut(command, cx));
+        noted
+    }
+
+    fn run_shortcut(&mut self, command: ShortcutCommand, cx: &SharedContext) -> Reduction {
         if command == ShortcutCommand::GoPrefix {
             self.go_prefix = true;
             self.go_since.set(None);
@@ -1499,6 +1519,66 @@ impl CommandsController {
         self.settings = snapshot.clone();
         let mut reduction = self.refresh_launcher();
         reduction.merge(self.scan_repositories());
+        reduction
+            .merge(self.update_settings(|s| s.tips.sessions = s.tips.sessions.saturating_add(1)));
+        reduction
+    }
+
+    pub fn visible_tip(
+        &self,
+        context: tips::Context,
+        now_ms: u64,
+    ) -> Result<Option<&'static tips::Tip>, u64> {
+        match self.tip.get() {
+            TipSession::Showing(tip) => Ok(Some(tip)),
+            TipSession::Done => Ok(None),
+            TipSession::Pending => {
+                let since = self.tip_since.get().unwrap_or(now_ms);
+                self.tip_since.set(Some(since));
+                let due = since + TIP_DELAY_MS;
+                if now_ms < due {
+                    return Err(due - now_ms);
+                }
+                let tip = tips::next_tip(&self.settings.settings.tips, context, tips::now_secs());
+                self.tip
+                    .set(tip.map_or(TipSession::Done, TipSession::Showing));
+                Ok(tip)
+            }
+        }
+    }
+
+    pub fn hint_bar(&self) -> bool {
+        tips::show_hint_bar(&self.settings.settings.tips)
+    }
+
+    fn note_family(&mut self, command: ShortcutCommand) -> Reduction {
+        let Some(family) = tips::family_of(command) else {
+            return Reduction::default();
+        };
+        let now = tips::now_secs();
+        let mut reduction = Reduction::default();
+        if let TipSession::Showing(tip) = self.tip.get()
+            && tip.family == family
+        {
+            reduction.merge(self.dismiss_tip());
+        }
+        if tips::should_record_use(&self.settings.settings.tips, family, now) {
+            reduction.merge(self.update_settings(|s| {
+                s.tips.used.insert(family.key().to_owned(), now);
+            }));
+        }
+        reduction
+    }
+
+    fn dismiss_tip(&mut self) -> Reduction {
+        let TipSession::Showing(tip) = self.tip.replace(TipSession::Done) else {
+            return Reduction::default();
+        };
+        let now = tips::now_secs();
+        let mut reduction = self.update_settings(|s| {
+            s.tips.shown.insert(tip.id.to_owned(), now);
+        });
+        reduction.changed = true;
         reduction
     }
 
@@ -2049,6 +2129,8 @@ impl Controller for CommandsController {
                 None => Reduction::default(),
             },
             A::Leader(binding) => self.leader(&binding, cx),
+            A::DismissTip => self.dismiss_tip(),
+            A::HideHintBar => self.update_settings(|s| s.tips.hint_bar_hidden = true),
             A::OverlayKey(binding) => match self.top_layer() {
                 Some(LayerKind::Palette) => {
                     let outcome = binding

@@ -96,6 +96,7 @@ pub struct Settings {
     pub keymap_overrides: Vec<KeymapOverride>,
     pub repo_discovery: RepoDiscovery,
     pub github_clones: BTreeMap<String, PathBuf>,
+    pub tips: crate::core::tips::TipsMemory,
 }
 
 impl Default for Settings {
@@ -118,6 +119,7 @@ impl Default for Settings {
             keymap_overrides: Vec::new(),
             repo_discovery: RepoDiscovery::default(),
             github_clones: BTreeMap::new(),
+            tips: crate::core::tips::TipsMemory::default(),
         }
     }
 }

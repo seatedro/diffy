@@ -19,7 +19,7 @@ use super::state::{InteractionController, Phase};
 use crate::app::commands::keymap::{self, workspace_context};
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT};
-use crate::app::tokens::{self, Sp, TextStyle};
+use crate::app::tokens::{self, Layout, Sp, TextStyle};
 use crate::contracts::commands::CommandsAction;
 use crate::contracts::shell::Action;
 use crate::contracts::viewport::interaction::{
@@ -216,6 +216,7 @@ fn welcome(slot: &Slot, width: f32, height: f32, theme: &Theme) -> AnyElement {
             p={tokens::scaled(Sp::LG, scale)}
             test_id="diff.welcome"
         >
+            {?crate::app::brand::logo(Layout::LAUNCHER_MARK)}
             <div class="flex-col items-center" gap={tokens::scaled(Sp::XS, scale)}>
                 <text size={TextStyle::Heading.font_size(theme)} class="font-semibold" color={tc.text_strong}>
                     "Open a repository"

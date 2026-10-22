@@ -1,3 +1,4 @@
+pub mod brand;
 pub mod commands;
 pub mod delivery;
 pub mod diff_slots;

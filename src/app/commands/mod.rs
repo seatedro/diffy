@@ -26,4 +26,4 @@ pub use platform::{
 pub use settings_view::settings_slot;
 pub use state::{CommandsController, LayerKind, builtin_commands, normalize as normalize_settings};
 pub use toasts::{ToastHost, ToastItem};
-pub use view::{leader_menu, overlays, toasts};
+pub use view::{leader_menu, overlays, status_hints, toasts};

@@ -19,6 +19,7 @@ use crate::app::text_targets::PICKER;
 use crate::app::tokens::{self, Ico, Layout, Rad, Shadow, Sp, Sz, TextStyle};
 use crate::contracts::commands::{CommandsAction, ToastKind};
 use crate::contracts::shell::Action;
+use crate::core::tips;
 
 fn palette_event(event: PaletteEvent) -> quark_ui::Action {
     Action::from(CommandsAction::Palette(event)).into()
@@ -803,3 +804,123 @@ fn shortcuts(commands: &CommandsController, slot: &Slot, theme: &Theme) -> AnyEl
 }
 
 const SHORTCUTS_CUSTOMIZE: FocusId = FocusId::from_key("diffy.shortcuts.customize");
+
+pub fn status_hints(
+    commands: &CommandsController,
+    slot: &Slot,
+    reviewing: bool,
+    cx: &mut ViewContext,
+) -> Option<AnyElement> {
+    let context = if reviewing {
+        tips::Context::Reviewing
+    } else {
+        tips::Context::Workspace
+    };
+    let now = cx.frame.elapsed().as_millis() as u64;
+    let tip = match commands.visible_tip(context, now) {
+        Ok(tip) => tip,
+        Err(wait) => {
+            cx.frame
+                .request_frame_in(std::time::Duration::from_millis(wait.max(1)));
+            None
+        }
+    };
+    let theme = cx.theme;
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let saved = &slot.shared.settings.settings.keymap_overrides;
+    let small = TextStyle::BodySmall.font_size(theme);
+    let hint = |binding: String, label: &str| {
+        let label = label.to_owned();
+        view! { scale,
+            <div class="flex-row items-center shrink-0" gap={Sp::XS}>
+                {kbd(binding, theme)}
+                <text size={Px(small)} color={tc.text_muted}>{label}</text>
+            </div>
+        }
+    };
+    let link = |label: &str, id: &str, action: CommandsAction| {
+        let label = label.to_owned();
+        view! { scale,
+            <div class="flex-row items-center shrink-0" px={Sp::XS}
+                 rounded={theme.metrics.control_radius}
+                 hover_bg={tc.ghost_element_hover}
+                 cursor={CursorHint::Pointer}
+                 id={id.to_owned()}
+                 role="button"
+                 aria-label={label.clone()}
+                 on:click={action}>
+                <text size={Px(small)} class="font-medium" color={tc.accent}>{label}</text>
+            </div>
+        }
+    };
+    use crate::core::keymap::ShortcutCommand as C;
+    let (label, mut items, close) = if let Some(tip) = tip {
+        let mut items: Vec<AnyElement> = tip
+            .keys
+            .iter()
+            .filter_map(|(command, label)| {
+                Some(hint(keymap::display_binding(saved, *command)?, label))
+            })
+            .collect();
+        if tip.leader {
+            items.extend(
+                keymap::GO
+                    .iter()
+                    .filter(|leader| matches!(leader.key, "f" | "h" | "p"))
+                    .map(|leader| hint(format!("g {}", leader.key), leader.label)),
+            );
+        }
+        items.insert(
+            0,
+            view! { <text size={small} class="font-medium" color={tc.text_muted}>"Tip"</text> },
+        );
+        (
+            format!("Tip: {}", tip.title),
+            items,
+            link("Got it", "tip.dismiss", CommandsAction::DismissTip),
+        )
+    } else if commands.hint_bar() {
+        let keys: &[(C, &str)] = if reviewing {
+            &[
+                (C::NextThread, "thread"),
+                (C::ReviewReply, "reply"),
+                (C::ReviewResolve, "resolve"),
+                (C::ReviewMarkViewed, "viewed"),
+                (C::SubmitReview, "submit"),
+            ]
+        } else {
+            &[
+                (C::NextHunk, "hunk"),
+                (C::NextFile, "file"),
+                (C::JumpToElement, "jump"),
+                (C::GoPrefix, "go to"),
+            ]
+        };
+        let mut items: Vec<AnyElement> = keys
+            .iter()
+            .filter_map(|(command, label)| {
+                Some(hint(keymap::display_binding(saved, *command)?, label))
+            })
+            .collect();
+        items.extend(
+            keymap::display_binding(saved, C::ShowKeymaps).map(|binding| hint(binding, "all keys")),
+        );
+        (
+            "Key hints".to_owned(),
+            items,
+            link("Hide", "hints.hide", CommandsAction::HideHintBar),
+        )
+    } else {
+        return None;
+    };
+    items.push(close);
+    Some(view! { scale,
+        <div class="flex-row items-center justify-end overflow-hidden" min_w={0.0} gap={Sp::MD}
+             accessibility_role={AccessibilityRole::Group}
+             aria-label={label}
+             test_id="status.hints">
+            {...items}
+        </div>
+    })
+}

@@ -114,15 +114,8 @@ pub fn launcher(
     if header {
         children.push(view! {
             <div class="flex-col items-center shrink-0" gap={gap} pb={gap}>
-                <div
-                    class="flex-row items-center justify-center"
-                    w={mark}
-                    h={mark}
-                    rounded={tokens::scaled(Rad::XXL, scale)}
-                    bg={tc.accent}
-                    aria-label="Diffy"
-                >
-                    <icon svg={lucide::GIT_COMPARE} size={Ico::LG} color={tc.on_accent} />
+                <div class="flex-row items-center justify-center" w={mark} h={mark} aria-label="Diffy">
+                    {?crate::app::brand::logo(Layout::LAUNCHER_MARK)}
                 </div>
                 <text size={TextStyle::Heading.font_size(theme)} class="font-semibold" color={tc.text_strong}>
                     "What do you want to review?"

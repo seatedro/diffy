@@ -729,6 +729,16 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         let delivery = delivery::view(&mut self.controllers.delivery, &slot, cx);
         let viewing = navigation::viewing_status(&self.controllers.navigation, theme);
         let small = TextStyle::BodySmall.font_size(theme);
+        let workspace = self.shared.repository.is_some()
+            && !self.controllers.commands.launcher_active()
+            && self.controllers.commands.top_layer().is_none()
+            && !self.controllers.commands.settings_open();
+        let hints = workspace
+            .then(|| {
+                let reviewing = self.shared.review.is_some();
+                commands::status_hints(&self.controllers.commands, &slot, reviewing, cx)
+            })
+            .flatten();
         let sync = mutations::sync_controls(&self.controllers.mutations, &slot, theme);
         let branch = branch_status(&self.shared, sync, theme);
         let settings = mutations::render_control(
@@ -781,6 +791,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 {settings}
                 {?branch}
                 <div class="flex-1 flex-row items-center" min_w={0.0}>{compare}</div>
+                {?hints}
                 {?viewing}
                 {changes}
                 {?indexing}
@@ -935,6 +946,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         let languages = delivery::overlay(&mut self.controllers.delivery, &slot, cx);
         let toasts = commands::toasts(&mut self.controllers.commands, &slot, cx);
         let leader = commands::leader_menu(&self.controllers.commands, &slot, cx);
+
         let tooltip = tooltip(cx, width, height);
         let energy = self.shell.debug_overlay.then(|| self.energy_hud.view(cx));
         view! {

@@ -181,6 +181,8 @@ pub enum CommandsAction {
     RunCommand(&'static str),
     Shortcut(ShortcutCommand),
     Leader(String),
+    DismissTip,
+    HideHintBar,
     OpenContextMenu {
         entries: Vec<ContextMenuEntry>,
         x: i32,

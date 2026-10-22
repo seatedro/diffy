@@ -191,7 +191,7 @@ impl GitHubApi {
         if !self.has_token() {
             return self.fetch_public_pull_request_overview(owner, repo, number);
         }
-        let value = self.graphql_request(
+        let value = self.graphql_query(
             PULL_REQUEST_OVERVIEW_QUERY,
             json!({
                 "owner": owner,

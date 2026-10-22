@@ -2,6 +2,7 @@ pub mod api;
 pub mod device_flow;
 pub mod overview;
 pub mod pull_request;
+mod transport;
 
 pub use api::{
     CreatePullRequestReview, CreatePullRequestReviewComment, CreatePullRequestReviewDraftComment,

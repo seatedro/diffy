@@ -1133,6 +1133,41 @@ fn edit_and_delete_go_through_graphql_and_refetch() {
 }
 
 #[test]
+fn overlapping_refetches_coalesce_into_one_follow_up() {
+    let mut driver = Driver::signed_in_with_pr();
+    let fetches = |driver: &Driver| {
+        driver
+            .fake
+            .requests()
+            .iter()
+            .filter(|r| matches!(r, GitHubRequest::FetchReviewData { .. }))
+            .count()
+    };
+    let before = fetches(&driver);
+
+    driver.fake.hold = true;
+    for id in ["comment-1", "comment-2", "comment-3"] {
+        for _ in 0..2 {
+            driver.act(ReviewAction::DeleteComment {
+                comment_node_id: id.to_owned(),
+            });
+        }
+    }
+    for effect in std::mem::take(&mut driver.fake.held) {
+        driver.fake.hold = false;
+        let events = driver.fake.run(effect);
+        driver.fake.hold = true;
+        for event in events {
+            driver.deliver(event);
+        }
+    }
+    assert_eq!(fetches(&driver), before);
+    driver.release();
+
+    assert_eq!(fetches(&driver), before + 2);
+}
+
+#[test]
 fn commenting_signed_out_opens_sign_in() {
     let mut driver = Driver::signed_in_with_pr();
     driver.act(ReviewAction::SignOut);

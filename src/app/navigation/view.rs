@@ -167,7 +167,9 @@ fn header(nav: &NavigationController, theme: &Theme) -> AnyElement {
             class="flex-row items-end w-full shrink-0"
             h={tokens::scaled(Sz::SIDEBAR_LIST_OFFSET, scale)}
         >
-            <div class="flex-1" min_w={0.0}>{tab_bar(items).label("Sidebar").full_width()}</div>
+            <div class="flex-1 h-full" min_w={0.0}>
+                {tab_bar(items).label("Sidebar").full_width().full_height()}
+            </div>
             <div
                 class="flex-row items-center shrink-0 h-full"
                 pr={tokens::scaled(Sp::SM, scale)}

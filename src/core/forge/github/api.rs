@@ -1,8 +1,11 @@
+use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::transport::{self, Media};
 use crate::core::error::{DiffyError, Result};
-use crate::core::http;
+
+const API_ROOT: &str = "https://api.github.com";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct GitHubUser {
@@ -318,20 +321,13 @@ impl GitHubApi {
     }
 
     pub fn fetch_current_user(&self) -> Result<GitHubUser> {
-        let body = http::block_on(async {
-            let mut request = crate::core::http::client()
-                .get("https://api.github.com/user")
-                .header("Accept", "application/vnd.github.v3+json")
-                .header("User-Agent", "diffy/0.1");
-            if !self.token.is_empty() {
-                request = request.header("Authorization", &format!("Bearer {}", self.token));
-            }
-            let response = request.send().await.map_err(|error| {
-                DiffyError::network(format!("GitHub user fetch failed: {error}"))
-            })?;
-            http::response_text(response, "GitHub user fetch").await
-        })?;
-        let json: Value = serde_json::from_str(&body)?;
+        let page = transport::get(
+            &self.token,
+            &format!("{API_ROOT}/user"),
+            Media::Legacy,
+            "GitHub user fetch",
+        )?;
+        let json: Value = serde_json::from_str(&page.body)?;
 
         let login = string_field(&json, "login");
         if login.is_empty() {
@@ -356,21 +352,13 @@ impl GitHubApi {
         repo: &str,
         number: i32,
     ) -> Result<PullRequestInfo> {
-        let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}");
-        let body = http::block_on(async {
-            let mut request = crate::core::http::client()
-                .get(&url)
-                .header("Accept", "application/vnd.github.v3+json")
-                .header("User-Agent", "diffy/0.1");
-            if !self.token.is_empty() {
-                request = request.header("Authorization", &format!("Bearer {}", self.token));
-            }
-            let response = request.send().await.map_err(|error| {
-                DiffyError::network(format!("GitHub pull request fetch failed: {error}"))
-            })?;
-            http::response_text(response, "GitHub pull request fetch").await
-        })?;
-        let json: Value = serde_json::from_str(&body)?;
+        let page = transport::get(
+            &self.token,
+            &format!("{API_ROOT}/repos/{owner}/{repo}/pulls/{number}"),
+            Media::Legacy,
+            "GitHub pull request fetch",
+        )?;
+        let json: Value = serde_json::from_str(&page.body)?;
         let base = json.get("base").cloned().unwrap_or(Value::Null);
         let head = json.get("head").cloned().unwrap_or(Value::Null);
         let base_repo = base.get("repo").cloned().unwrap_or(Value::Null);
@@ -408,38 +396,28 @@ impl GitHubApi {
         repo: &str,
         number: i32,
     ) -> Result<Vec<PullRequestReviewComment>> {
-        http::block_on(async {
-            let client = crate::core::http::client();
-            let mut comments = Vec::new();
-            let mut page = 1_u32;
-
-            loop {
-                let url = format!(
-                    "https://api.github.com/repos/{owner}/{repo}/pulls/{number}/comments?per_page=100&page={page}"
-                );
-                let mut request = client
-                    .get(&url)
-                    .header("Accept", "application/vnd.github+json")
-                    .header("X-GitHub-Api-Version", "2026-03-10")
-                    .header("User-Agent", "diffy/0.1");
-                if !self.token.is_empty() {
-                    request = request.header("Authorization", &format!("Bearer {}", self.token));
-                }
-                let response = request.send().await.map_err(|error| {
-                    DiffyError::network(format!("GitHub review comments fetch failed: {error}"))
-                })?;
-                let body = http::response_text(response, "GitHub review comments fetch").await?;
-                let mut page_comments: Vec<PullRequestReviewComment> = serde_json::from_str(&body)?;
-                let count = page_comments.len();
-                comments.append(&mut page_comments);
-                if count < 100 {
-                    break;
-                }
-                page = page.saturating_add(1);
+        let mut comments = Vec::new();
+        let mut page = 1_u32;
+        loop {
+            let url = format!(
+                "{API_ROOT}/repos/{owner}/{repo}/pulls/{number}/comments?per_page=100&page={page}"
+            );
+            let response = transport::get(
+                &self.token,
+                &url,
+                Media::Versioned,
+                "GitHub review comments fetch",
+            )?;
+            let mut page_comments: Vec<PullRequestReviewComment> =
+                serde_json::from_str(&response.body)?;
+            let count = page_comments.len();
+            comments.append(&mut page_comments);
+            if !response.next || count == 0 {
+                break;
             }
-
-            Ok(comments)
-        })
+            page = page.saturating_add(1);
+        }
+        Ok(comments)
     }
 
     pub fn fetch_pull_request_review_data(
@@ -458,7 +436,8 @@ impl GitHubApi {
         let mut after: Option<String> = None;
         let query = review_graphql_query(PULL_REQUEST_REVIEW_DATA_QUERY);
         loop {
-            let value = self.graphql_request(
+            let value = transport::graphql_query(
+                &self.token,
                 &query,
                 json!({
                     "owner": owner,
@@ -467,11 +446,27 @@ impl GitHubApi {
                     "after": after,
                 }),
             )?;
+            let errors = transport::graphql_errors(&value);
             let pull_request = value
                 .pointer("/data/repository/pullRequest")
-                .ok_or_else(|| {
-                    DiffyError::Parse("missing pull request in GraphQL response".to_owned())
-                })?;
+                .filter(|pull_request| pull_request.is_object());
+            let pull_request = match pull_request {
+                Some(pull_request) if errors.iter().all(is_withheld_pull_request_field) => {
+                    if !errors.is_empty() {
+                        tracing::warn!(
+                            "GitHub withheld pull request fields: {}",
+                            graphql_error_message(errors)
+                        );
+                    }
+                    pull_request
+                }
+                _ if !errors.is_empty() => return Err(graphql_failure(errors)),
+                _ => {
+                    return Err(DiffyError::Parse(
+                        "missing pull request in GraphQL response".to_owned(),
+                    ));
+                }
+            };
             if result.metadata.node_id.is_empty() {
                 result.metadata = parse_pull_request_review_metadata(pull_request);
                 result.reviews =
@@ -489,13 +484,14 @@ impl GitHubApi {
             if !has_next {
                 break;
             }
-            after = page_info
+            let next = page_info
                 .and_then(|v| v.get("endCursor"))
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned);
-            if after.is_none() {
+            if next.is_none() || next == after {
                 break;
             }
+            after = next;
         }
 
         Ok(result)
@@ -513,24 +509,13 @@ impl GitHubApi {
                 "GitHub authentication is required to add review comments".to_owned(),
             ));
         }
-        let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}/comments");
-        let request_body = serde_json::to_string(comment)?;
-        let body = http::block_on(async {
-            let response = crate::core::http::client()
-                .post(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2026-03-10")
-                .header("User-Agent", "diffy/0.1")
-                .header("Authorization", &format!("Bearer {}", self.token))
-                .header("Content-Type", "application/json")
-                .body(request_body)
-                .send()
-                .await
-                .map_err(|error| {
-                    DiffyError::network(format!("GitHub review comment create failed: {error}"))
-                })?;
-            http::response_text(response, "GitHub review comment create").await
-        })?;
+        let body = transport::send(
+            &self.token,
+            Method::POST,
+            &format!("{API_ROOT}/repos/{owner}/{repo}/pulls/{number}/comments"),
+            Some(serde_json::to_string(comment)?),
+            "GitHub review comment create",
+        )?;
         serde_json::from_str(&body).map_err(Into::into)
     }
 
@@ -547,26 +532,15 @@ impl GitHubApi {
                 "GitHub authentication is required to reply to review comments".to_owned(),
             ));
         }
-        let url = format!(
-            "https://api.github.com/repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies"
-        );
-        let request_body = serde_json::to_string(reply)?;
-        let body = http::block_on(async {
-            let response = crate::core::http::client()
-                .post(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2026-03-10")
-                .header("User-Agent", "diffy/0.1")
-                .header("Authorization", &format!("Bearer {}", self.token))
-                .header("Content-Type", "application/json")
-                .body(request_body)
-                .send()
-                .await
-                .map_err(|error| {
-                    DiffyError::network(format!("GitHub review comment reply failed: {error}"))
-                })?;
-            http::response_text(response, "GitHub review comment reply").await
-        })?;
+        let body = transport::send(
+            &self.token,
+            Method::POST,
+            &format!(
+                "{API_ROOT}/repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies"
+            ),
+            Some(serde_json::to_string(reply)?),
+            "GitHub review comment reply",
+        )?;
         serde_json::from_str(&body).map_err(Into::into)
     }
 
@@ -582,25 +556,13 @@ impl GitHubApi {
                 "GitHub authentication is required to update review comments".to_owned(),
             ));
         }
-        let url =
-            format!("https://api.github.com/repos/{owner}/{repo}/pulls/comments/{comment_id}");
-        let request_body = serde_json::to_string(update)?;
-        let body = http::block_on(async {
-            let response = crate::core::http::client()
-                .patch(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2026-03-10")
-                .header("User-Agent", "diffy/0.1")
-                .header("Authorization", &format!("Bearer {}", self.token))
-                .header("Content-Type", "application/json")
-                .body(request_body)
-                .send()
-                .await
-                .map_err(|error| {
-                    DiffyError::network(format!("GitHub review comment update failed: {error}"))
-                })?;
-            http::response_text(response, "GitHub review comment update").await
-        })?;
+        let body = transport::send(
+            &self.token,
+            Method::PATCH,
+            &format!("{API_ROOT}/repos/{owner}/{repo}/pulls/comments/{comment_id}"),
+            Some(serde_json::to_string(update)?),
+            "GitHub review comment update",
+        )?;
         serde_json::from_str(&body).map_err(Into::into)
     }
 
@@ -615,22 +577,13 @@ impl GitHubApi {
                 "GitHub authentication is required to delete review comments".to_owned(),
             ));
         }
-        let url =
-            format!("https://api.github.com/repos/{owner}/{repo}/pulls/comments/{comment_id}");
-        http::block_on(async {
-            let response = crate::core::http::client()
-                .delete(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2026-03-10")
-                .header("User-Agent", "diffy/0.1")
-                .header("Authorization", &format!("Bearer {}", self.token))
-                .send()
-                .await
-                .map_err(|error| {
-                    DiffyError::network(format!("GitHub review comment delete failed: {error}"))
-                })?;
-            http::response_text(response, "GitHub review comment delete").await
-        })?;
+        transport::send(
+            &self.token,
+            Method::DELETE,
+            &format!("{API_ROOT}/repos/{owner}/{repo}/pulls/comments/{comment_id}"),
+            None,
+            "GitHub review comment delete",
+        )?;
         Ok(())
     }
 
@@ -646,26 +599,13 @@ impl GitHubApi {
                 "GitHub authentication is required to create pull request reviews".to_owned(),
             ));
         }
-        let url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}/reviews");
-        let request_body = serde_json::to_string(review)?;
-        let body = http::block_on(async {
-            let response = crate::core::http::client()
-                .post(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2026-03-10")
-                .header("User-Agent", "diffy/0.1")
-                .header("Authorization", &format!("Bearer {}", self.token))
-                .header("Content-Type", "application/json")
-                .body(request_body)
-                .send()
-                .await
-                .map_err(|error| {
-                    DiffyError::network(format!(
-                        "GitHub pull request review create failed: {error}"
-                    ))
-                })?;
-            http::response_text(response, "GitHub pull request review create").await
-        })?;
+        let body = transport::send(
+            &self.token,
+            Method::POST,
+            &format!("{API_ROOT}/repos/{owner}/{repo}/pulls/{number}/reviews"),
+            Some(serde_json::to_string(review)?),
+            "GitHub pull request review create",
+        )?;
         serde_json::from_str(&body).map_err(Into::into)
     }
 
@@ -682,28 +622,13 @@ impl GitHubApi {
                 "GitHub authentication is required to submit pull request reviews".to_owned(),
             ));
         }
-        let url = format!(
-            "https://api.github.com/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/events"
-        );
-        let request_body = serde_json::to_string(submit)?;
-        let body = http::block_on(async {
-            let response = crate::core::http::client()
-                .post(&url)
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2026-03-10")
-                .header("User-Agent", "diffy/0.1")
-                .header("Authorization", &format!("Bearer {}", self.token))
-                .header("Content-Type", "application/json")
-                .body(request_body)
-                .send()
-                .await
-                .map_err(|error| {
-                    DiffyError::network(format!(
-                        "GitHub pull request review submit failed: {error}"
-                    ))
-                })?;
-            http::response_text(response, "GitHub pull request review submit").await
-        })?;
+        let body = transport::send(
+            &self.token,
+            Method::POST,
+            &format!("{API_ROOT}/repos/{owner}/{repo}/pulls/{number}/reviews/{review_id}/events"),
+            Some(serde_json::to_string(submit)?),
+            "GitHub pull request review submit",
+        )?;
         serde_json::from_str(&body).map_err(Into::into)
     }
 
@@ -817,38 +742,32 @@ impl GitHubApi {
     }
 
     fn graphql_request(&self, query: &str, variables: Value) -> Result<Value> {
-        let request_body = json!({
-            "query": query,
-            "variables": variables,
-        })
-        .to_string();
-        let body = http::block_on(async {
-            let response = crate::core::http::client()
-                .post("https://api.github.com/graphql")
-                .header("Accept", "application/vnd.github+json")
-                .header("X-GitHub-Api-Version", "2026-03-10")
-                .header("User-Agent", "diffy/0.1")
-                .header("Authorization", &format!("Bearer {}", self.token))
-                .header("Content-Type", "application/json")
-                .body(request_body)
-                .send()
-                .await
-                .map_err(|error| {
-                    DiffyError::network(format!("GitHub GraphQL request failed: {error}"))
-                })?;
-            http::response_text(response, "GitHub GraphQL request").await
-        })?;
-        let value: Value = serde_json::from_str(&body)?;
-        if let Some(errors) = value.get("errors").and_then(Value::as_array)
-            && !errors.is_empty()
-        {
-            return Err(DiffyError::network_fatal(format!(
-                "GitHub GraphQL request failed: {}",
-                graphql_error_message(errors)
-            )));
+        let value = transport::graphql_mutation(&self.token, query, variables)?;
+        let errors = transport::graphql_errors(&value);
+        if !errors.is_empty() {
+            return Err(graphql_failure(errors));
         }
         Ok(value)
     }
+}
+
+fn graphql_failure(errors: &[Value]) -> DiffyError {
+    DiffyError::network_fatal(format!(
+        "GitHub GraphQL request failed: {}",
+        graphql_error_message(errors)
+    ))
+}
+
+fn is_withheld_pull_request_field(error: &Value) -> bool {
+    error.get("type").and_then(Value::as_str) == Some("FORBIDDEN")
+        && error
+            .get("path")
+            .and_then(Value::as_array)
+            .is_some_and(|path| {
+                path.len() > 2
+                    && path.first().and_then(Value::as_str) == Some("repository")
+                    && path.get(1).and_then(Value::as_str) == Some("pullRequest")
+            })
 }
 
 const REVIEW_COMMENT_FIELDS: &str = r#"
@@ -1320,4 +1239,27 @@ fn graphql_error_message(errors: &[Value]) -> String {
         .filter_map(|error| error.get("message").and_then(Value::as_str))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_forbidden_fields_inside_the_pull_request_are_withheld() {
+        let withheld = |error: Value| is_withheld_pull_request_field(&error);
+        assert!(withheld(json!({
+            "type": "FORBIDDEN",
+            "path": ["repository", "pullRequest", "reviewRequests", "nodes", 0, "requestedReviewer"],
+        })));
+        assert!(!withheld(json!({
+            "type": "FORBIDDEN",
+            "path": ["repository", "pullRequest"],
+        })));
+        assert!(!withheld(json!({
+            "type": "NOT_FOUND",
+            "path": ["repository", "pullRequest", "labels"],
+        })));
+        assert!(!withheld(json!({ "type": "FORBIDDEN" })));
+    }
 }

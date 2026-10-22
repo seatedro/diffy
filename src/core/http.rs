@@ -21,7 +21,7 @@ pub(crate) fn block_on<T>(future: impl Future<Output = Result<T>>) -> Result<T> 
 }
 
 /// Whether a failed HTTP status is worth retrying unchanged.
-fn status_is_retryable(status: reqwest::StatusCode) -> bool {
+pub(crate) fn status_is_retryable(status: reqwest::StatusCode) -> bool {
     status.is_server_error()
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS
         || status == reqwest::StatusCode::REQUEST_TIMEOUT

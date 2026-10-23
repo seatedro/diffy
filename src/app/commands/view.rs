@@ -1000,6 +1000,7 @@ pub fn hint_bar(
         &[
             (C::NextHunk, "hunk"),
             (C::NextFile, "file"),
+            (C::ReviewMarkViewed, "viewed"),
             (C::JumpToElement, "jump"),
             (C::GoPrefix, "go to"),
             (C::OpenCommandPalette, "anything"),

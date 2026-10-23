@@ -69,6 +69,12 @@ const NAVIGATION: &[Entry] = &[
     Entry::new(WORKSPACE, C::PreviousFile, &["shift+n"], "Previous file"),
     Entry::new(
         WORKSPACE,
+        C::ReviewMarkViewed,
+        &["x"],
+        "Mark viewed, go to the next unviewed file",
+    ),
+    Entry::new(
+        WORKSPACE,
         C::ToggleFocus,
         &["tab"],
         "Toggle sidebar / editor focus",
@@ -191,7 +197,7 @@ const WORKING_TREE: &[Entry] = &[
     Entry::new(
         TREE,
         C::Discard,
-        &["x"],
+        &["shift+x"],
         "Discard file / hunk / selected lines",
     ),
     Entry::new(TREE, C::StageAll, &["a"], "Stage all"),
@@ -285,12 +291,6 @@ const REVIEW_KEYS: &[Entry] = &[
         C::ReviewToggleThread,
         &["z"],
         "Expand or collapse the current thread",
-    ),
-    Entry::new(
-        REVIEW,
-        C::ReviewMarkViewed,
-        &["x"],
-        "Mark viewed, go to the next unviewed file",
     ),
     Entry::new(REVIEW, C::NextThread, &["shift+]"], "Next thread"),
     Entry::new(REVIEW, C::PreviousThread, &["shift+["], "Previous thread"),

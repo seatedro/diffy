@@ -45,13 +45,14 @@ impl Family {
 pub fn family_of(command: ShortcutCommand) -> Option<Family> {
     use ShortcutCommand as C;
     Some(match command {
-        C::NextHunk | C::PreviousHunk | C::NextFile | C::PreviousFile => Family::Hunks,
+        C::NextHunk | C::PreviousHunk | C::NextFile | C::PreviousFile | C::ReviewMarkViewed => {
+            Family::Hunks
+        }
         C::NextThread
         | C::PreviousThread
         | C::ReviewReply
         | C::ReviewResolve
-        | C::ReviewToggleThread
-        | C::ReviewMarkViewed => Family::Threads,
+        | C::ReviewToggleThread => Family::Threads,
         C::GoPrefix => Family::Go,
         C::JumpToElement => Family::Jump,
         C::OpenCommandPalette => Family::Palette,
@@ -99,6 +100,7 @@ pub const TIPS: &[Tip] = &[
             (ShortcutCommand::NextHunk, "next hunk"),
             (ShortcutCommand::PreviousHunk, "previous hunk"),
             (ShortcutCommand::NextFile, "next file"),
+            (ShortcutCommand::ReviewMarkViewed, "viewed, next file"),
         ],
         leader: false,
     },

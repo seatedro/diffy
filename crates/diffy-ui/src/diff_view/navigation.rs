@@ -150,21 +150,21 @@ impl DiffViewState {
         self.set_scroll(target)
     }
 
-    /// Scrolls to the next or previous hunk or file start: the header or
-    /// gap row above a hunk's first line when there is one.
+    /// Moves to the next or previous run of changes, or scrolls to the next
+    /// or previous file start.
     pub(crate) fn jump(&mut self, forward: bool, hunks: bool) -> bool {
+        if hunks {
+            return self.jump_change(forward);
+        }
         let rows = self.list.rows();
         let current = self.list.scroll_offset();
         // List indices of every start, in display order.
         let starts = self.segments.iter().flat_map(|segment| {
-            let p = &segment.projection;
-            let starts = if hunks { &p.hunk_rows } else { &p.file_rows };
-            starts.iter().filter_map(move |&start| {
-                let above = start.checked_sub(1).filter(|&r| {
-                    hunks && matches!(p.kind[r as usize], RowKind::HunkHeader | RowKind::Gap)
-                });
-                segment.list_rows.index(above.unwrap_or(start))
-            })
+            segment
+                .projection
+                .file_rows
+                .iter()
+                .filter_map(|&start| segment.list_rows.index(start))
         });
         // Half a point of slack: offsets are rounded to Fenwick units.
         let target = if forward {
@@ -187,12 +187,45 @@ impl DiffViewState {
         }
     }
 
-    pub fn focus_change(&mut self, forward: bool) -> Option<super::selection::LineHit> {
+    /// Focuses the first row of the next or previous run of changed rows,
+    /// counted from the keyboard focus or else the top of the viewport.
+    /// Runs rather than hunks, since a semantic file is a single hunk that
+    /// spans the whole file. Returns whether anything moved.
+    fn jump_change(&mut self, forward: bool) -> bool {
         let count = self.refs.len();
-        let start = self.focused_index.map(|i| i as usize);
-        let changed = |state: &Self, index: usize| match state.refs.get(index)? {
+        let starts = |state: &Self, i: usize| {
+            state.changed_row(i).is_some() && (i == 0 || state.changed_row(i - 1).is_none())
+        };
+        let target = match self.focused_index.map(|i| i as usize) {
+            Some(here) if forward => (here + 1..count).find(|&i| starts(self, i)),
+            Some(here) => (0..here).rev().find(|&i| starts(self, i)),
+            None => {
+                let top = self
+                    .list
+                    .rows()
+                    .row_at(self.list.scroll_offset())
+                    .unwrap_or(0);
+                if forward {
+                    (top..count).find(|&i| starts(self, i))
+                } else {
+                    (0..top).rev().find(|&i| starts(self, i))
+                }
+            }
+        };
+        let Some(index) = target else {
+            return false;
+        };
+        let above = index.saturating_sub(REVEAL_CONTEXT as usize);
+        let moved = self.set_scroll(self.list.rows().offset_of_index(above));
+        let focused = self.focused_index != Some(index as u32);
+        self.set_focus(Some(index as u32));
+        moved || focused
+    }
+
+    fn changed_row(&self, index: usize) -> Option<(u32, u32, RowKind)> {
+        match self.refs.get(index)? {
             RowRef::Line { seg, row } => {
-                let p = &state.segments[seg as usize].projection;
+                let p = &self.segments[seg as usize].projection;
                 let kind = p.kind[row as usize];
                 matches!(
                     kind,
@@ -206,7 +239,13 @@ impl DiffViewState {
                 .then_some((seg, row, kind))
             }
             _ => None,
-        };
+        }
+    }
+
+    pub fn focus_change(&mut self, forward: bool) -> Option<super::selection::LineHit> {
+        let count = self.refs.len();
+        let start = self.focused_index.map(|i| i as usize);
+        let changed = |state: &Self, index: usize| state.changed_row(index);
         let next = |index: usize| -> Option<usize> {
             if forward {
                 (index + 1 < count).then_some(index + 1)

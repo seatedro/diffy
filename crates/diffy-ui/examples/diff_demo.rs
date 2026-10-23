@@ -601,17 +601,16 @@ mod tests {
             let p = state.projection();
             (p.kind[row as usize], p.hunk.get(row as usize + 1).copied())
         };
-        // Each hunk starts at the collapsed gap above it, under the file
-        // header.
+        // Each step lands on a change with its context lines above it.
         ui.key("n");
-        assert_eq!(top_kind(&ui), (RowKind::Gap, Some(0)));
+        assert_eq!(top_kind(&ui), (RowKind::Context, Some(0)));
         ui.key("n");
-        assert_eq!(top_kind(&ui), (RowKind::Gap, Some(1)));
+        assert_eq!(top_kind(&ui), (RowKind::Context, Some(1)));
         assert!(ui.try_find(line("changed 200")).is_some());
         ui.key("alt+arrowdown");
-        assert_eq!(top_kind(&ui), (RowKind::Gap, Some(2)));
+        assert_eq!(top_kind(&ui), (RowKind::Context, Some(2)));
         ui.key("p");
-        assert_eq!(top_kind(&ui), (RowKind::Gap, Some(1)));
+        assert_eq!(top_kind(&ui), (RowKind::Context, Some(1)));
     }
 
     fn long_lines() -> DiffDocument {

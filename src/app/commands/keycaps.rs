@@ -33,7 +33,7 @@ pub fn caps(binding: &str, theme: &Theme) -> AnyElement {
                 keys.push(modifier_cap(modifier, theme));
             }
         }
-        keys.push(key_cap(key, theme));
+        keys.push(key_cap(key, !parts.is_empty(), theme));
     }
     view! { scale,
         <div class="flex-row items-center shrink-0" gap={Sp::XXS}>{...keys}</div>
@@ -60,7 +60,7 @@ fn modifier_cap(modifier: &str, theme: &Theme) -> AnyElement {
     )
 }
 
-fn key_cap(key: &str, theme: &Theme) -> AnyElement {
+fn key_cap(key: &str, chord: bool, theme: &Theme) -> AnyElement {
     let icon = match key {
         "enter" => Some(icons::CORNER_DOWN_LEFT),
         "tab" => Some(icons::ARROW_RIGHT_TO_LINE),
@@ -76,7 +76,7 @@ fn key_cap(key: &str, theme: &Theme) -> AnyElement {
         "escape" => "esc".to_owned(),
         "space" => "space".to_owned(),
         "/" => "/".to_owned(),
-        key if key.chars().count() == 1 => key.to_uppercase(),
+        key if chord && key.chars().count() == 1 => key.to_uppercase(),
         key => key.to_owned(),
     };
     kbd(label, theme)

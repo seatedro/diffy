@@ -760,13 +760,20 @@ impl CommandsController {
                 .collect(),
             ..RepoView::default()
         };
+        if let Some(repo) = cx.repository.as_ref() {
+            view.set_worktrees(&repo.snapshot.worktrees, home.as_deref());
+        }
         if let Some(scan) = &self.repo_scan {
             view.set_discovered(scan, home.as_deref(), now, current.as_deref());
         }
+        let counts = view.worktree_paths();
         let mut reduction = self.scan_repositories();
         view.scanning = self.repo_scanning;
         self.repo_picker_current = current;
         reduction.merge(self.show_picker(PickerState::repositories(view, anchored)));
+        if !counts.is_empty() {
+            reduction = reduction.effect(CommandsEffect::CountChanges(counts));
+        }
         reduction
     }
 
@@ -2383,7 +2390,16 @@ impl Controller for CommandsController {
                 self.refresh_launcher()
             }
             CommandsEvent::ChangesCounted { path, count } => {
-                let shown = self
+                let mut shown = false;
+                if let Some(picker) = self.picker.as_mut()
+                    && let Some(view) = picker.repos.as_mut()
+                    && view.worktrees.iter().any(|tree| tree.path == path)
+                {
+                    view.changed.insert(path.clone(), count.unwrap_or(0));
+                    picker.refresh();
+                    shown = true;
+                }
+                shown |= self
                     .launcher
                     .as_mut()
                     .is_some_and(|launcher| launcher.set_count(path, count));

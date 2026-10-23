@@ -79,6 +79,7 @@ fn repository(
             changes: Vec::new(),
             operation_log: Vec::new(),
             file_changes: buckets.iter().map(|bucket| change(*bucket)).collect(),
+            worktrees: Vec::new(),
             publish_plan: None,
         }),
     })

@@ -9,6 +9,7 @@ use sea_query::{Expr, ExprTrait, OnConflict, Order, Query, SqliteQueryBuilder};
 use sea_query_rusqlite::RusqliteBinder;
 
 use crate::core::error::Result;
+use crate::core::vcs::model::Worktree;
 use crate::platform::database::{Database, Meta, Repositories};
 use crate::platform::persistence::RepoDiscovery;
 
@@ -71,6 +72,7 @@ pub struct DiscoveredRepo {
     pub branch: Option<String>,
     pub active: Option<i64>,
     pub remote: Option<String>,
+    pub worktrees: Vec<DiscoveredRepo>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -86,6 +88,7 @@ impl RepoScan {
         self.repos
             .iter()
             .chain(&self.known)
+            .flat_map(|repo| std::iter::once(repo).chain(&repo.worktrees))
             .find(|repo| repo.path == path)
     }
 }
@@ -142,6 +145,7 @@ pub fn scan(options: &RepoDiscovery, known: &[PathBuf], home: Option<&Path>) -> 
         .map(describe)
         .collect();
     let repos = paths.into_iter().map(describe).collect();
+    let (repos, known) = group_worktrees(repos, known);
     RepoScan {
         scanned_at: unix_secs(SystemTime::now()).unwrap_or_default(),
         millis: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -161,7 +165,76 @@ fn describe(path: PathBuf) -> DiscoveredRepo {
         active: git.as_deref().and_then(last_active),
         remote: git.as_deref().and_then(origin_url),
         path,
+        worktrees: Vec::new(),
     }
+}
+
+/// Nests each repo's linked worktrees under it, read from git's own
+/// registry so worktrees in hidden or unscanned folders still appear.
+fn group_worktrees(
+    mut repos: Vec<DiscoveredRepo>,
+    mut known: Vec<DiscoveredRepo>,
+) -> (Vec<DiscoveredRepo>, Vec<DiscoveredRepo>) {
+    let mut linked = BTreeSet::new();
+    for repo in repos.iter_mut().chain(known.iter_mut()) {
+        let found = worktrees(&repo.path);
+        if found.iter().any(|tree| tree.current && !tree.main) {
+            continue;
+        }
+        repo.worktrees = found
+            .into_iter()
+            .filter(|tree| !tree.main && !tree.current)
+            .map(|tree| describe(tree.path))
+            .collect();
+        repo.worktrees
+            .sort_by_key(|tree| std::cmp::Reverse(tree.active));
+        linked.extend(repo.worktrees.iter().map(|tree| tree.path.clone()));
+    }
+    repos.retain(|repo| !linked.contains(&repo.path));
+    known.retain(|repo| !linked.contains(&repo.path));
+    (repos, known)
+}
+
+/// Every checkout of the repository at `repo`: the main worktree first, then
+/// linked ones by path. Linked worktrees whose folder is gone are skipped.
+pub fn worktrees(repo: &Path) -> Vec<Worktree> {
+    let Some(git) = git_dir(repo) else {
+        return Vec::new();
+    };
+    let common = common_dir(&git);
+    let here = canonical(repo.to_path_buf());
+    let mut found = Vec::new();
+    if common.file_name().is_some_and(|name| name == ".git")
+        && let Some(main) = common.parent()
+    {
+        let path = canonical(main.to_path_buf());
+        found.push(Worktree {
+            current: path == here,
+            path,
+            branch: head_branch(&common),
+            main: true,
+        });
+    }
+    let mut linked: Vec<Worktree> = fs::read_dir(common.join("worktrees"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let meta = entry.path();
+            let pointer = fs::read_to_string(meta.join("gitdir")).ok()?;
+            let path = meta.join(pointer.trim()).parent()?.to_path_buf();
+            let path = canonical(path);
+            path.is_dir().then(|| Worktree {
+                current: path == here,
+                path,
+                branch: head_branch(&meta),
+                main: false,
+            })
+        })
+        .collect();
+    linked.sort_by(|a, b| a.path.cmp(&b.path));
+    found.extend(linked);
+    found
 }
 
 pub fn load_cache(dir: &Path) -> Option<RepoScan> {
@@ -199,17 +272,22 @@ pub fn load_cache(dir: &Path) -> Option<RepoScan> {
                     branch: row.get(1)?,
                     active: row.get(2)?,
                     remote: row.get(4)?,
+                    worktrees: Vec::new(),
                 },
                 row.get::<_, bool>(3)?,
             ))
         })
         .ok()?;
     let (repos, known): (Vec<_>, Vec<_>) = rows.into_iter().partition(|(_, found)| *found);
+    let (repos, known) = group_worktrees(
+        repos.into_iter().map(|(repo, _)| repo).collect(),
+        known.into_iter().map(|(repo, _)| repo).collect(),
+    );
     Some(RepoScan {
         scanned_at,
         millis,
-        repos: repos.into_iter().map(|(repo, _)| repo).collect(),
-        known: known.into_iter().map(|(repo, _)| repo).collect(),
+        repos,
+        known,
     })
 }
 
@@ -329,11 +407,24 @@ fn branch(git_dir: &Path) -> Option<String> {
     }
 }
 
-fn origin_url(git_dir: &Path) -> Option<String> {
-    let common = fs::read_to_string(git_dir.join("commondir"))
+fn head_branch(git_dir: &Path) -> Option<String> {
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    head.trim()
+        .strip_prefix("ref:")?
+        .trim()
+        .strip_prefix("refs/heads/")
+        .map(str::to_owned)
+}
+
+fn common_dir(git_dir: &Path) -> PathBuf {
+    fs::read_to_string(git_dir.join("commondir"))
         .ok()
-        .map(|dir| git_dir.join(dir.trim()))
-        .unwrap_or_else(|| git_dir.to_path_buf());
+        .map(|dir| canonical(git_dir.join(dir.trim())))
+        .unwrap_or_else(|| git_dir.to_path_buf())
+}
+
+fn origin_url(git_dir: &Path) -> Option<String> {
+    let common = common_dir(git_dir);
     let config = fs::read_to_string(common.join("config")).ok()?;
     let mut origin = false;
     for line in config.lines().map(str::trim) {
@@ -448,6 +539,11 @@ mod tests {
         fs::create_dir_all(&linked).unwrap();
         fs::write(linked.join("HEAD"), "ref: refs/heads/topic\n").unwrap();
         fs::write(linked.join("commondir"), "../..\n").unwrap();
+        fs::write(
+            linked.join("gitdir"),
+            format!("{}\n", root.join("work/gamma/.git").display()),
+        )
+        .unwrap();
         fs::create_dir_all(root.join("work/gamma")).unwrap();
         fs::write(
             root.join("work/gamma/.git"),
@@ -470,6 +566,35 @@ mod tests {
             gamma.remote.as_deref(),
             Some("git@example.com:owner/alpha.git")
         );
+
+        let trees = worktrees(&root.join("work/gamma"));
+        let listed: Vec<_> = trees
+            .iter()
+            .map(|tree| {
+                (
+                    tree.path.clone(),
+                    tree.branch.as_deref(),
+                    tree.main,
+                    tree.current,
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                (root.join("code/alpha"), Some("feature/one"), true, false),
+                (root.join("work/gamma"), Some("topic"), false, true),
+            ]
+        );
+        let result = scan(&RepoDiscovery::default(), &[], Some(root));
+        let alpha = result.find(&root.join("code/alpha")).unwrap();
+        assert_eq!(alpha.worktrees.len(), 1);
+        assert!(
+            !result
+                .repos
+                .iter()
+                .any(|repo| repo.path.ends_with("work/gamma"))
+        );
     }
 
     #[test]
@@ -483,6 +608,7 @@ mod tests {
                 branch: Some("main".to_owned()),
                 active: Some(40),
                 remote: Some("https://example.com/owner/repo.git".to_owned()),
+                worktrees: Vec::new(),
             }],
             known: Vec::new(),
         };

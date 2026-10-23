@@ -1160,6 +1160,7 @@ fn scanned(ui: &mut harness::Harness, repos: &[(&str, Option<&str>)]) {
                 branch: Some("main".to_owned()),
                 active: None,
                 remote: remote.map(str::to_owned),
+                worktrees: Vec::new(),
             })
             .collect(),
         ..RepoScan::default()

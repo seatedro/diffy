@@ -6,7 +6,7 @@ use crate::contracts::shared::{CompareGeneration, FileKey, JobId};
 use crate::core::compare::CompareMode;
 use crate::core::vcs::model::{
     FileChange, PublishPlan, RepoCapabilities, RepoLocation, VcsChange, VcsOperationLogEntry,
-    VcsRef, VcsSnapshot,
+    VcsRef, VcsSnapshot, Worktree,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -79,6 +79,7 @@ pub struct RepositorySnapshot {
     pub changes: Vec<VcsChange>,
     pub operation_log: Vec<VcsOperationLogEntry>,
     pub file_changes: Vec<FileChange>,
+    pub worktrees: Vec<Worktree>,
     /// The publish plan computed against this exact snapshot, so plan and
     /// refs update atomically. `None` when the backend has nothing
     /// publishable (no remotes, nothing described).
@@ -98,6 +99,7 @@ impl RepositorySnapshot {
             changes: snapshot.changes,
             operation_log: snapshot.operation_log,
             file_changes: snapshot.file_changes,
+            worktrees: snapshot.worktrees,
             publish_plan: None,
         }
     }

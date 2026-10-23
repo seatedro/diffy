@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use quark::view;
 use quark_ui::accessibility::AccessibilityRole;
 use quark_ui::element::*;
@@ -6,6 +8,7 @@ use quark_ui::style::Styled;
 use quark_ui::theme::{Color, Theme};
 
 use super::NavigationController;
+use crate::app::commands::repo_picker::tilde;
 use crate::app::icons;
 use crate::app::tokens::{self, Ico, Layout, Sp, TextStyle};
 use crate::contracts::commands::CommandsAction;
@@ -16,11 +19,16 @@ use crate::core::vcs::model::RefKind;
 pub fn repo_chip(nav: &NavigationController, theme: &Theme) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
-    let name = nav
+    let (name, worktree) = repo_names(nav);
+    let label = match &worktree {
+        Some(worktree) => format!("Repository {name}, worktree {worktree}"),
+        None => format!("Repository {name}"),
+    };
+    let home = dirs::home_dir();
+    let path = nav
         .repo_path()
-        .and_then(|path| path.file_name())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Open repository".to_owned());
+        .map(|path| tilde(path, home.as_deref()))
+        .unwrap_or_default();
     view! {
         <div
             class="flex-row items-center shrink-0"
@@ -33,14 +41,48 @@ pub fn repo_chip(nav: &NavigationController, theme: &Theme) -> AnyElement {
             id="title.repo"
             test_id="title.repo"
             role="button"
-            aria-label={format!("Repository {name}")}
+            aria-label={label}
+            @when {!path.is_empty()} { tooltip={path} }
             on:click={CommandsAction::OpenRepoPicker { anchored: true }}
         >
             <icon svg={lucide::FOLDER} size={Ico::SM} color={tc.icon} />
             <text size={TextStyle::Body.font_size(theme)} class="font-medium truncate" color={tc.text_strong}>{name}</text>
+            {?worktree.map(|worktree| view! {
+                <div class="flex-row items-center overflow-hidden" gap={tokens::scaled(Sp::XS, scale)} max_w={tokens::scaled(Layout::BRANCH_MAX_W, scale)}>
+                    <icon svg={lucide::CHEVRON_RIGHT} size={Ico::XS} color={tc.text_muted} />
+                    <icon svg={lucide::GIT_BRANCH} size={Ico::XS} color={tc.accent} />
+                    <text size={TextStyle::Body.font_size(theme)} class="truncate" color={tc.accent}>{worktree}</text>
+                </div>
+            })}
             <icon svg={lucide::CHEVRON_DOWN} size={Ico::XS} color={tc.text_muted} />
         </div>
     }
+}
+
+fn repo_names(nav: &NavigationController) -> (String, Option<String>) {
+    let Some(path) = nav.repo_path() else {
+        return ("Open repository".to_owned(), None);
+    };
+    let trees = nav
+        .repository()
+        .map(|repo| repo.snapshot.worktrees.as_slice())
+        .unwrap_or_default();
+    match trees.iter().find(|tree| tree.current && !tree.main) {
+        Some(current) => {
+            let main = trees
+                .iter()
+                .find(|tree| tree.main)
+                .map_or(path, |tree| tree.path.as_path());
+            (folder_name(main), Some(folder_name(&current.path)))
+        }
+        None => (folder_name(path), None),
+    }
+}
+
+fn folder_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 pub fn compare_bar(

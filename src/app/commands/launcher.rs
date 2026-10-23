@@ -6,7 +6,7 @@ use quark_components::FuzzyMatcher;
 use quark_ui::text_input::TextField;
 
 use super::picker::expand_path;
-use super::repo_picker::tilde;
+use super::repo_picker::{short_parent, tilde};
 use crate::core::forge::github::{
     GitHubRepo, parse_pr_reference, parse_remote, parse_repo_reference,
 };
@@ -15,6 +15,7 @@ use crate::core::search::fuzzy::match_ranges;
 
 pub const MAX_REPO_ROWS: usize = 8;
 const ROOT_HINTS: usize = 3;
+const NESTED_WORKTREES: usize = 3;
 
 type Ranges = Vec<(usize, usize)>;
 
@@ -61,6 +62,28 @@ pub struct LauncherRow {
     pub branch: Option<String>,
     pub detail: Option<String>,
     pub choice: LauncherChoice,
+    pub worktree: bool,
+    pub nested: bool,
+}
+
+impl LauncherRow {
+    fn item(
+        section: Section,
+        label: String,
+        detail: Option<String>,
+        choice: LauncherChoice,
+    ) -> Self {
+        Self {
+            section,
+            label,
+            highlights: Vec::new(),
+            branch: None,
+            detail,
+            choice,
+            worktree: false,
+            nested: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -68,8 +91,10 @@ struct RepoEntry {
     path: PathBuf,
     name: String,
     alias: String,
+    location: String,
     branch: Option<String>,
     github: Option<GitHubRepo>,
+    worktrees: Vec<RepoEntry>,
 }
 
 impl RepoEntry {
@@ -80,25 +105,46 @@ impl RepoEntry {
             .unwrap_or_else(|| path.display().to_string());
         Self {
             alias: tilde(&path, home),
+            location: short_parent(&path, home),
             branch: found.and_then(|repo| repo.branch.clone()),
             github: found
                 .and_then(|repo| repo.remote.as_deref())
                 .and_then(parse_remote),
+            worktrees: found
+                .map(|repo| {
+                    repo.worktrees
+                        .iter()
+                        .map(|tree| RepoEntry::new(tree.path.clone(), Some(tree), home))
+                        .collect()
+                })
+                .unwrap_or_default(),
             name,
             path,
         }
     }
 
-    fn row(&self, highlights: Ranges) -> LauncherRow {
+    fn row(&self, highlights: Ranges, worktree: bool, nested: bool) -> LauncherRow {
         LauncherRow {
             section: Section::Repositories,
             label: self.name.clone(),
             highlights,
             branch: self.branch.clone(),
-            detail: Some(self.alias.clone()),
+            detail: Some(if nested {
+                self.location.clone()
+            } else {
+                self.alias.clone()
+            }),
             choice: LauncherChoice::Repository(self.path.clone()),
+            worktree,
+            nested,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Pick {
+    repo: usize,
+    worktree: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -110,7 +156,7 @@ pub struct Launcher {
     pub signed_in: bool,
     moved: bool,
     entries: Vec<RepoEntry>,
-    matched: Vec<(usize, Ranges)>,
+    matched: Vec<(Pick, Ranges)>,
     counts: HashMap<PathBuf, Option<usize>>,
     requested: HashSet<PathBuf>,
     capacity: usize,
@@ -150,9 +196,23 @@ impl Launcher {
         let home = dirs::home_dir();
         let home = home.as_deref();
         let find = |path: &Path| scan.and_then(|scan| scan.find(path));
+        let owners: HashMap<&Path, &Path> = scan
+            .into_iter()
+            .flat_map(|scan| scan.repos.iter().chain(&scan.known))
+            .flat_map(|repo| {
+                repo.worktrees
+                    .iter()
+                    .map(|tree| (tree.path.as_path(), repo.path.as_path()))
+            })
+            .collect();
         let mut seen: HashSet<PathBuf> = HashSet::new();
         let mut entries: Vec<RepoEntry> = recent
             .into_iter()
+            .map(|path| {
+                owners
+                    .get(path.as_path())
+                    .map_or(path, |owner| owner.to_path_buf())
+            })
             .filter(|path| seen.insert(path.clone()))
             .map(|path| {
                 let found = find(&path);
@@ -204,9 +264,10 @@ impl Launcher {
 
     pub fn take_count_requests(&mut self) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        for (index, _) in &self.matched {
-            let path = &self.entries[*index].path;
-            if self.requested.insert(path.clone()) {
+        for row in &self.rows {
+            if let LauncherChoice::Repository(path) = &row.choice
+                && self.requested.insert(path.clone())
+            {
                 paths.push(path.clone());
             }
         }
@@ -251,28 +312,52 @@ impl Launcher {
         self.matched.clear();
         if query.is_empty() {
             self.matched = (0..self.entries.len().min(MAX_REPO_ROWS))
-                .map(|index| (index, Vec::new()))
+                .map(|repo| {
+                    let pick = Pick {
+                        repo,
+                        worktree: None,
+                    };
+                    (pick, Vec::new())
+                })
                 .collect();
         } else {
             self.matcher.set_query(&query);
             let mut positions = Vec::new();
-            let mut scored: Vec<(i32, usize, Ranges)> = Vec::new();
-            for (index, entry) in self.entries.iter().enumerate() {
+            let mut scored: Vec<(i32, usize, Pick, Ranges)> = Vec::new();
+            let picks = self.entries.iter().enumerate().flat_map(|(repo, entry)| {
+                std::iter::once((
+                    Pick {
+                        repo,
+                        worktree: None,
+                    },
+                    entry,
+                ))
+                .chain(entry.worktrees.iter().enumerate().map(
+                    move |(index, tree)| {
+                        let pick = Pick {
+                            repo,
+                            worktree: Some(index),
+                        };
+                        (pick, tree)
+                    },
+                ))
+            });
+            for (order, (pick, entry)) in picks.enumerate() {
                 positions.clear();
                 if let Some(score) = self.matcher.score(&entry.name, &mut positions) {
-                    scored.push((score, index, match_ranges(&entry.name, &positions)));
+                    scored.push((score, order, pick, match_ranges(&entry.name, &positions)));
                     continue;
                 }
                 positions.clear();
                 if let Some(score) = self.matcher.score(&entry.alias, &mut positions) {
-                    scored.push((score, index, Vec::new()));
+                    scored.push((score, order, pick, Vec::new()));
                 }
             }
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             self.matched = scored
                 .into_iter()
                 .take(MAX_REPO_ROWS)
-                .map(|(_, index, highlights)| (index, highlights))
+                .map(|(_, _, pick, highlights)| (pick, highlights))
                 .collect();
         }
         self.build(&query);
@@ -296,65 +381,77 @@ impl Launcher {
             let reference = format!("{}/{}#{}", pr.owner, pr.repo, pr.number);
             let local = self.find_local(&pr.owner, &pr.repo).map(Path::to_path_buf);
             let home = dirs::home_dir();
-            self.rows.push(LauncherRow {
-                section: Section::Typed,
-                label: match local {
+            self.rows.push(LauncherRow::item(
+                Section::Typed,
+                match local {
                     Some(_) => format!("Open {reference}"),
                     None => format!("Locate clone for {reference}\u{2026}"),
                 },
-                highlights: Vec::new(),
-                branch: None,
-                detail: local.as_deref().map(|path| tilde(path, home.as_deref())),
-                choice: LauncherChoice::PullRequest {
+                local.as_deref().map(|path| tilde(path, home.as_deref())),
+                LauncherChoice::PullRequest {
                     url: pr.url(),
                     local,
                 },
-            });
+            ));
         } else if looks_like_path(query) {
-            self.rows.push(LauncherRow {
-                section: Section::Typed,
-                label: "Open this path".to_owned(),
-                highlights: Vec::new(),
-                branch: None,
-                detail: Some(query.to_owned()),
-                choice: LauncherChoice::Path(expand_path(query)),
-            });
+            self.rows.push(LauncherRow::item(
+                Section::Typed,
+                "Open this path".to_owned(),
+                Some(query.to_owned()),
+                LauncherChoice::Path(expand_path(query)),
+            ));
         }
-        for (index, highlights) in self.matched.iter().take(self.capacity) {
-            self.rows.push(self.entries[*index].row(highlights.clone()));
+        let mut shown = 0;
+        for (pick, highlights) in &self.matched {
+            if shown >= self.capacity {
+                break;
+            }
+            let repo = &self.entries[pick.repo];
+            if let Some(index) = pick.worktree {
+                self.rows
+                    .push(repo.worktrees[index].row(highlights.clone(), true, false));
+                shown += 1;
+                continue;
+            }
+            self.rows.push(repo.row(highlights.clone(), false, false));
+            shown += 1;
+            if !query.is_empty() {
+                continue;
+            }
+            for tree in repo.worktrees.iter().take(NESTED_WORKTREES) {
+                if shown >= self.capacity {
+                    break;
+                }
+                self.rows.push(tree.row(Vec::new(), true, true));
+                shown += 1;
+            }
         }
         let (label, detail) = pull_request_row(self.signed_in);
-        self.rows.push(LauncherRow {
-            section: Section::PullRequests,
-            label: label.to_owned(),
-            highlights: Vec::new(),
-            branch: None,
-            detail: Some(detail.to_owned()),
-            choice: LauncherChoice::PullRequests,
-        });
-        self.rows.push(LauncherRow {
-            section: Section::More,
-            label: "Open folder\u{2026}".to_owned(),
-            highlights: Vec::new(),
-            branch: None,
-            detail: None,
-            choice: LauncherChoice::OpenFolder,
-        });
+        self.rows.push(LauncherRow::item(
+            Section::PullRequests,
+            label.to_owned(),
+            Some(detail.to_owned()),
+            LauncherChoice::PullRequests,
+        ));
+        self.rows.push(LauncherRow::item(
+            Section::More,
+            "Open folder\u{2026}".to_owned(),
+            None,
+            LauncherChoice::OpenFolder,
+        ));
         let source = clone_source(query);
-        self.rows.push(LauncherRow {
-            section: Section::More,
-            label: match &source {
+        self.rows.push(LauncherRow::item(
+            Section::More,
+            match &source {
                 Some(source) => format!("Clone {}\u{2026}", source.repo.slug()),
                 None => "Clone from GitHub\u{2026}".to_owned(),
             },
-            highlights: Vec::new(),
-            branch: None,
-            detail: Some(match source {
+            Some(match &source {
                 Some(_) => "Choose a folder".to_owned(),
                 None => "owner/repo or URL".to_owned(),
             }),
-            choice: LauncherChoice::Clone(source),
-        });
+            LauncherChoice::Clone(source),
+        ));
     }
 
     pub fn set_signed_in(&mut self, signed_in: bool) {
@@ -415,6 +512,7 @@ mod tests {
                     branch: Some("main".to_owned()),
                     active: None,
                     remote: remote.map(str::to_owned),
+                    worktrees: Vec::new(),
                 })
                 .collect(),
             ..RepoScan::default()

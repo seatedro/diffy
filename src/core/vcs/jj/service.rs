@@ -629,6 +629,7 @@ impl VcsRepository for JjRepository {
             changes,
             operation_log: parse_operation_log(&operation_log),
             file_changes,
+            worktrees: Vec::new(),
         };
         self.last_snapshot = Some(snapshot.clone());
         Ok(snapshot)

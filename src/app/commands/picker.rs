@@ -87,6 +87,9 @@ pub enum RowKind {
         count: usize,
         expanded: bool,
     },
+    Worktree {
+        main: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

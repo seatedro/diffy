@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use quark_components::FuzzyMatcher;
@@ -7,6 +7,7 @@ use super::picker::{PickerChoice, PickerRow, RowKind};
 use crate::core::ref_catalog::relative_age;
 use crate::core::repo_discovery::RepoScan;
 use crate::core::search::fuzzy::match_ranges;
+use crate::core::vcs::model::Worktree;
 
 const PARENT_COMPONENTS: usize = 2;
 pub const RECENT_LABEL: &str = "Recent";
@@ -65,15 +66,92 @@ impl RepoEntry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorktreeEntry {
+    pub path: PathBuf,
+    pub name: String,
+    pub location: String,
+    pub alias: String,
+    pub branch: Option<String>,
+    pub main: bool,
+    pub current: bool,
+}
+
+impl WorktreeEntry {
+    fn new(tree: &Worktree, home: Option<&Path>) -> Self {
+        Self {
+            name: tree
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| tree.path.display().to_string()),
+            location: short_parent(&tree.path, home),
+            alias: tilde(&tree.path, home),
+            branch: tree.branch.clone(),
+            main: tree.main,
+            current: tree.current,
+            path: tree.path.clone(),
+        }
+    }
+
+    fn row(&self, highlights: Vec<(usize, usize)>, changed: Option<usize>) -> PickerRow {
+        PickerRow {
+            label: self.name.clone(),
+            detail: Some(self.location.clone()),
+            meta: changed
+                .filter(|count| *count > 0)
+                .map(|count| format!("{count} changed")),
+            highlights,
+            choice: PickerChoice::Repository(self.path.clone()),
+            current: self.current,
+            kind: RowKind::Worktree { main: self.main },
+            branch: self.branch.clone(),
+            indent: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct RepoView {
     pub recent: Vec<RepoEntry>,
     pub discovered: Vec<RepoEntry>,
+    pub worktrees: Vec<WorktreeEntry>,
+    pub worktree_label: String,
+    pub changed: HashMap<PathBuf, usize>,
     pub expanded: Option<String>,
     pub scanning: bool,
 }
 
 impl RepoView {
+    pub fn set_worktrees(&mut self, trees: &[Worktree], home: Option<&Path>) {
+        if trees.len() < 2 {
+            return;
+        }
+        self.worktrees = trees
+            .iter()
+            .map(|tree| WorktreeEntry::new(tree, home))
+            .collect();
+        let main = self
+            .worktrees
+            .iter()
+            .find(|tree| tree.main)
+            .unwrap_or(&self.worktrees[0]);
+        self.worktree_label = format!("Worktrees of {}", main.name);
+    }
+
+    pub fn worktree_paths(&self) -> Vec<PathBuf> {
+        self.worktrees
+            .iter()
+            .map(|tree| tree.path.clone())
+            .collect()
+    }
+
+    fn worktree_rows(&self) -> impl Iterator<Item = PickerRow> + '_ {
+        self.worktrees
+            .iter()
+            .map(|tree| tree.row(Vec::new(), self.changed.get(&tree.path).copied()))
+    }
+
     pub fn set_discovered(
         &mut self,
         scan: &RepoScan,
@@ -139,9 +217,22 @@ impl RepoView {
 
     fn browse_rows(&self) -> Vec<PickerRow> {
         let mut rows = Vec::new();
-        if !self.recent.is_empty() {
+        if !self.worktrees.is_empty() {
+            rows.push(heading(
+                &self.worktree_label,
+                Some(self.worktrees.len()),
+                false,
+            ));
+            rows.extend(self.worktree_rows());
+        }
+        let recent: Vec<&RepoEntry> = self
+            .recent
+            .iter()
+            .filter(|entry| !self.worktrees.iter().any(|tree| tree.path == entry.path))
+            .collect();
+        if !recent.is_empty() {
             rows.push(heading(RECENT_LABEL, None, false));
-            rows.extend(self.recent.iter().map(|entry| entry.row(Vec::new(), false)));
+            rows.extend(recent.into_iter().map(|entry| entry.row(Vec::new(), false)));
         }
         if self.discovered.is_empty() && !self.scanning {
             return rows;
@@ -178,7 +269,32 @@ impl RepoView {
         matcher.set_query(query);
         let mut positions = Vec::new();
         let mut scored: Vec<(i32, usize, PickerRow)> = Vec::new();
-        for (order, (entry, recent)) in self.unique().into_iter().enumerate() {
+        for (order, tree) in self.worktrees.iter().enumerate() {
+            positions.clear();
+            let changed = self.changed.get(&tree.path).copied();
+            if let Some(score) = matcher.score(&tree.name, &mut positions) {
+                let ranges = match_ranges(&tree.name, &positions);
+                scored.push((score, order, tree.row(ranges, changed)));
+                continue;
+            }
+            positions.clear();
+            if let Some(score) = matcher.score(&tree.alias, &mut positions) {
+                scored.push((score, order, tree.row(Vec::new(), changed)));
+            }
+        }
+        let skip: HashSet<&Path> = self
+            .worktrees
+            .iter()
+            .map(|tree| tree.path.as_path())
+            .collect();
+        let offset = self.worktrees.len();
+        for (order, (entry, recent)) in self
+            .unique()
+            .into_iter()
+            .filter(|(entry, _)| !skip.contains(entry.path.as_path()))
+            .enumerate()
+        {
+            let order = order + offset;
             positions.clear();
             let row = if let Some(score) = matcher.score(&entry.name, &mut positions) {
                 Some((
@@ -258,7 +374,7 @@ pub fn tilde(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
-fn short_parent(path: &Path, home: Option<&Path>) -> String {
+pub fn short_parent(path: &Path, home: Option<&Path>) -> String {
     let Some(parent) = path.parent() else {
         return String::new();
     };
@@ -297,6 +413,7 @@ mod tests {
                     branch: Some("main".to_owned()),
                     active: None,
                     remote: None,
+                    worktrees: Vec::new(),
                 })
                 .collect(),
             ..RepoScan::default()

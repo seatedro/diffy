@@ -54,6 +54,7 @@ pub fn snapshot(reason: RepositorySyncReason, operation_log: bool) -> Repository
             description: "snapshot working copy".to_owned(),
         }],
         file_changes: Vec::new(),
+        worktrees: Vec::new(),
         publish_plan: None,
     }
 }

@@ -91,7 +91,13 @@ fn picker_panel(
     let picker = &*picker;
     let title = picker.kind.title();
     let repository = picker.kind == PickerKind::Repository;
-    let panel_w = if repository {
+    let worktrees = picker
+        .repos
+        .as_ref()
+        .is_some_and(|view| !view.worktrees.is_empty());
+    let panel_w = if worktrees {
+        tokens::scaled(Layout::WORKTREE_PICKER_W, scale)
+    } else if repository {
         tokens::scaled(Layout::REPO_PICKER_W, scale)
     } else {
         Sz::MODAL_MD * scale
@@ -303,6 +309,66 @@ fn repo_row(row: &PickerRow, index: usize, selected: bool, theme: &Theme) -> Any
                 </div>
             </div>
         },
+        RowKind::Worktree { main } => {
+            let icon = if main {
+                lucide::FOLDER_GIT
+            } else {
+                lucide::GIT_BRANCH
+            };
+            let icon_color = if row.current {
+                tc.accent
+            } else if row.meta.is_some() {
+                tc.status_warning
+            } else {
+                paint.icon
+            };
+            let mono = TextStyle::MonoSmall.font_size(theme);
+            view! {
+                <div
+                    class="w-full flex-row items-center"
+                    h={height}
+                    px={pad}
+                    gap={tokens::scaled(Sp::SM, scale)}
+                    rounded={theme.metrics.control_radius}
+                    bg={fill}
+                    @when {!selected} { hover_bg={tc.ghost_element_hover} }
+                    cursor={CursorHint::Pointer}
+                    id={id.clone()}
+                    key={id}
+                    accessibility_role={AccessibilityRole::ListBoxOption}
+                    aria-label={row.label.clone()}
+                    aria-selected={selected}
+                    on:click={click}
+                >
+                    <icon svg={icon} size={Ico::SM} color={icon_color} />
+                    <div class="flex-row items-center overflow-hidden shrink-0" w={tokens::scaled(Layout::WORKTREE_NAME_W, scale)}>
+                        {list::highlighted(&row.label, &row.highlights, paint.text, theme)}
+                    </div>
+                    <div class="flex-1 flex-row items-center overflow-hidden" min_w={0.0}>
+                        {?row.branch.as_ref().map(|branch| view! {
+                            <div
+                                class="flex-row items-center overflow-hidden"
+                                px={tokens::scaled(Sp::XS + Sp::XXS, scale)}
+                                rounded={tokens::scaled(Rad::SM, scale)}
+                                bg={tc.element_background}
+                            >
+                                <text size={mono} class="font-mono truncate" color={tc.text}>{branch.clone()}</text>
+                            </div>
+                        })}
+                    </div>
+                    <div class="flex-row justify-end shrink-0" w={tokens::scaled(Layout::CHANGES_W, scale)}>
+                        {?row.meta.as_ref().map(|changed| view! {
+                            <text size={small} color={tc.status_warning}>{changed.clone()}</text>
+                        })}
+                    </div>
+                    <div class="flex-row justify-end overflow-hidden shrink-0" w={tokens::scaled(Layout::WORKTREE_PATH_W, scale)}>
+                        {?row.detail.as_ref().map(|path| view! {
+                            <text size={mono} class="font-mono truncate" color={tc.placeholder}>{path.clone()}</text>
+                        })}
+                    </div>
+                </div>
+            }
+        }
         RowKind::Item => {
             let indent = if row.indent {
                 tokens::scaled(Sp::XL + Sp::SM, scale)

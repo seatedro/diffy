@@ -91,19 +91,15 @@ pub fn launcher(
             }
             section = Some((row.section, rows));
         }
-        let count = match &row.choice {
-            LauncherChoice::Repository(path) => launcher.count(path),
-            _ => None,
+        let selected = index == launcher.selected;
+        let element = if let LauncherChoice::Repository(path) = &row.choice {
+            let count = launcher.count(path);
+            let continues =
+                row.nested && launcher.rows.get(index + 1).is_some_and(|next| next.nested);
+            repo_row(row, index, selected, count, continues, theme)
+        } else {
+            launcher_row(row, index, selected, signed_in, &saved, theme)
         };
-        let element = launcher_row(
-            row,
-            index,
-            index == launcher.selected,
-            count,
-            signed_in,
-            &saved,
-            theme,
-        );
         if let Some((_, rows)) = section.as_mut() {
             rows.push(element);
         }
@@ -234,11 +230,106 @@ fn heading(section: Section, hint: Option<String>, theme: &Theme) -> AnyElement 
     }
 }
 
-fn launcher_row(
+fn repo_row(
     row: &LauncherRow,
     index: usize,
     selected: bool,
     count: Option<Option<usize>>,
+    continues: bool,
+    theme: &Theme,
+) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let small = TextStyle::BodySmall.font_size(theme);
+    let mono = TextStyle::MonoSmall.font_size(theme);
+    let paint = tokens::row_paint(theme, tc.elevated_surface, selected, true);
+    let row_h = theme.metrics.ui_row_height.round();
+    let gap = tokens::scaled(Sp::SM, scale);
+    let changed = count.flatten().filter(|count| *count > 0);
+    let icon = if row.worktree {
+        lucide::GIT_BRANCH
+    } else {
+        lucide::FOLDER_GIT
+    };
+    let icon_color = if row.worktree && changed.is_some() {
+        tc.status_warning
+    } else {
+        paint.icon
+    };
+    let guide = row.nested.then(|| {
+        let hairline = tokens::scaled(1.0, scale).max(1.0);
+        let inset = tokens::scaled(Sp::XXS, scale);
+        let mid = Ico::SM / 2.0;
+        let above = (row_h - Ico::SM) / 2.0 - inset;
+        let down = if continues { row_h } else { row_h / 2.0 };
+        view! {
+            <div class="shrink-0" w={Ico::SM} h={row_h}>
+                <div class="absolute" left={mid} top={-above} w={hairline} h={above + down} bg={tc.border} />
+                <div class="absolute" left={mid} top={row_h / 2.0} w={mid + gap - inset} h={hairline} bg={tc.border} />
+            </div>
+        }
+    });
+    let id = format!("launcher-row:{index}:{}", row.label);
+    let click: quark_ui::Action = Action::from(CommandsAction::LauncherSelect(index)).into();
+    view! {
+        <div
+            class="w-full flex-row items-center shrink-0"
+            h={row_h}
+            px={tokens::scaled(Sp::SM, scale)}
+            gap={gap}
+            rounded={theme.metrics.control_radius}
+            bg={paint.bg}
+            @when {!selected} { hover_bg={tc.ghost_element_hover} }
+            cursor={CursorHint::Pointer}
+            id={id.clone()}
+            key={id}
+            accessibility_role={AccessibilityRole::ListBoxOption}
+            aria-label={row.label.clone()}
+            aria-selected={selected}
+            on:click={click}
+        >
+            {?guide}
+            <icon svg={icon} size={Ico::SM} color={icon_color} />
+            <div class="flex-1 flex-row items-center overflow-hidden" min_w={0.0} gap={gap}>
+                <div class="flex-row items-center shrink-0">
+                    {list::highlighted(&row.label, &row.highlights, paint.text, theme)}
+                </div>
+                {?row.detail.clone().map(|detail| view! {
+                    <div class="flex-row overflow-hidden" min_w={0.0}>
+                        <text size={mono} class="font-mono truncate" color={tc.placeholder}>{detail}</text>
+                    </div>
+                })}
+            </div>
+            <div class="flex-row items-center overflow-hidden shrink-0" w={tokens::scaled(Layout::BRANCH_MAX_W, scale)}>
+                {?row.branch.as_ref().map(|branch| view! {
+                    <div
+                        class="flex-row items-center overflow-hidden"
+                        px={tokens::scaled(Sp::XS + Sp::XXS, scale)}
+                        rounded={tokens::scaled(Rad::SM, scale)}
+                        bg={tc.element_background}
+                    >
+                        <text size={mono} class="font-mono truncate" color={tc.text}>{branch.clone()}</text>
+                    </div>
+                })}
+            </div>
+            <div class="flex-row items-center justify-end shrink-0" w={tokens::scaled(Layout::CHANGES_W, scale)}>
+                {?changed.map(|count| view! {
+                    <text size={small} color={tc.status_warning}>{format!("{count} changed")}</text>
+                })}
+            </div>
+            <div class="flex-row items-center justify-end shrink-0" w={tokens::scaled(Layout::CONTROL_SM_H, scale)}>
+                if selected {
+                    {kbd_icon(icons::CORNER_DOWN_LEFT, theme)}
+                }
+            </div>
+        </div>
+    }
+}
+
+fn launcher_row(
+    row: &LauncherRow,
+    index: usize,
+    selected: bool,
     signed_in: bool,
     saved: &[crate::core::keymap::KeymapOverride],
     theme: &Theme,
@@ -269,12 +360,6 @@ fn launcher_row(
             | LauncherChoice::Path(_)
             | LauncherChoice::PullRequest { .. }
     );
-    let status = count.map(|count| match count {
-        Some(0) | None => view! { <text size={small} color={paint.muted}>"clean"</text> },
-        Some(n) => {
-            view! { <text size={small} color={tc.status_warning}>{format!("{n} changed")}</text> }
-        }
-    });
     let binding = matches!(row.choice, LauncherChoice::OpenFolder)
         .then(|| keymap::display_binding(saved, ShortcutCommand::OpenRepository))
         .flatten();
@@ -311,7 +396,6 @@ fn launcher_row(
                 </div>
             })}
             <div class="flex-1" min_w={0.0} />
-            {?status}
             {?detail.map(|detail| if mono_detail {
                 view! {
                     <div class="flex-row overflow-hidden" min_w={0.0} max_w={tokens::scaled(Layout::LAUNCHER_PATH_MAX_W, scale)}>

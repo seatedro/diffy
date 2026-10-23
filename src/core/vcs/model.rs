@@ -119,6 +119,14 @@ pub struct VcsRef {
     pub worktree: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub main: bool,
+    pub current: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VcsChange {
     pub revision: RevisionId,
@@ -501,6 +509,7 @@ pub struct VcsSnapshot {
     pub changes: Vec<VcsChange>,
     pub operation_log: Vec<VcsOperationLogEntry>,
     pub file_changes: Vec<FileChange>,
+    pub worktrees: Vec<Worktree>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

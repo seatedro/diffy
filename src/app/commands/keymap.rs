@@ -432,6 +432,11 @@ pub const GO: &[Leader] = &[
         action: || CommandsAction::OpenRepoPicker { anchored: false }.into(),
     },
     Leader {
+        key: "w",
+        label: "Worktrees",
+        action: || CommandsAction::OpenRepoPicker { anchored: true }.into(),
+    },
+    Leader {
         key: "d",
         label: "Definition",
         action: || SymbolsAction::GoToDefinition.into(),

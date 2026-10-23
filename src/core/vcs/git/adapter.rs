@@ -23,7 +23,7 @@ use crate::core::vcs::model::{
     ChangeBucket, ChangeFlags, CommitRecord, FileChange, FileChangeStatus, FileOperation,
     PublishAction, PublishActionKind, PublishOutcome, PublishPlan, PullFastForwardOutcome, RefKind,
     RepoCapabilities, RepoLocation, RevisionId, VCS_PROFILE_GIT, VcsChange, VcsCompareRequest,
-    VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot,
+    VcsCompareSpec, VcsKind, VcsRef, VcsSnapshot, Worktree,
 };
 use crate::core::vcs::mutation::{MutationMaterial, PatchApplication};
 use crate::core::vcs::patch::patch_identity;
@@ -677,16 +677,18 @@ pub fn git_snapshot_from_parts(
             workspace_root: path,
             store_root: None,
         });
-    let worktrees = checked_out_elsewhere(&location.workspace_root);
+    let worktrees = crate::core::repo_discovery::worktrees(&location.workspace_root);
+    let elsewhere = checked_out_elsewhere(&worktrees);
     VcsSnapshot {
         location,
         reason,
         change_kind,
         capabilities: git_capabilities(),
-        refs: git_refs(branches, tags, &worktrees),
+        refs: git_refs(branches, tags, &elsewhere),
         changes: git_changes(commits, branches),
         operation_log: Vec::new(),
         file_changes: git_file_changes(status_items),
+        worktrees,
     }
 }
 
@@ -734,36 +736,14 @@ pub fn git_refs(
     refs
 }
 
-/// Branches checked out in a worktree other than `workspace_root`, with
-/// that worktree's directory.
-fn checked_out_elsewhere(workspace_root: &Path) -> HashMap<String, PathBuf> {
-    let mut found = HashMap::new();
-    let Ok(repo) = gix::open(workspace_root) else {
-        return found;
-    };
-    let here = canonical(workspace_root);
-    let mut add = |repo: &gix::Repository| {
-        let (Some(workdir), Ok(Some(head))) = (repo.workdir(), repo.head_name()) else {
-            return;
-        };
-        let workdir = canonical(workdir);
-        if workdir != here {
-            found.insert(head.shorten().to_string(), workdir);
-        }
-    };
-    if let Ok(main) = repo.main_repo() {
-        add(&main);
-    }
-    for proxy in repo.worktrees().unwrap_or_default() {
-        if let Ok(linked) = proxy.into_repo() {
-            add(&linked);
-        }
-    }
-    found
-}
-
-fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+/// Branches checked out in a worktree other than the open one, with that
+/// worktree's directory.
+fn checked_out_elsewhere(worktrees: &[Worktree]) -> HashMap<String, PathBuf> {
+    worktrees
+        .iter()
+        .filter(|tree| !tree.current)
+        .filter_map(|tree| Some((tree.branch.clone()?, tree.path.clone())))
+        .collect()
 }
 
 pub fn git_changes(commits: &[CommitInfo], branches: &[BranchInfo]) -> Vec<VcsChange> {

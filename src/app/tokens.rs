@@ -114,6 +114,10 @@ pub struct Layout;
 impl Layout {
     pub const REF_PICKER_W: f32 = 540.0;
     pub const REPO_PICKER_W: f32 = 480.0;
+    pub const WORKTREE_PICKER_W: f32 = 620.0;
+    pub const WORKTREE_NAME_W: f32 = 190.0;
+    pub const WORKTREE_PATH_W: f32 = 150.0;
+    pub const CHANGES_W: f32 = 72.0;
     pub const AGE_W: f32 = 40.0;
     pub const BRANCH_MAX_W: f32 = 150.0;
     pub const HOVER_CARD_W: f32 = 330.0;

@@ -471,6 +471,12 @@ fn viewed_markers_toggle_by_path() {
     let toggle = ui.find(By::role_name(Role::CheckBox, "Mark viewed"));
     ui.click(toggle.center());
     assert!(ui.app().nav.is_viewed("src/a.rs"));
+    assert!(
+        ui.try_find(file_node(1)).is_none(),
+        "viewed files fold away"
+    );
+    ui.click_node(By::role_name(Role::Button, "Viewed, 1 file"));
+    ui.pointer_move(ui.find(file_node(1)).center());
     ui.find(By::role_name(Role::CheckBox, "Mark unviewed"));
 }
 

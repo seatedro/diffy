@@ -437,9 +437,14 @@ fn files(
                 let menu = view_file_actions(file, &manifest, cx);
                 file_row(file, *depth, state, &actions, menu, theme)
             }
-            Row::Section { bucket, files } => {
-                section_row(*bucket, *files, group_action(*bucket, cx), theme)
-            }
+            Row::Section { bucket, files } => section_row(
+                rows::section_label(*bucket),
+                *files,
+                group_action(*bucket, cx),
+                theme,
+            ),
+            Row::Pending { files } => section_row("To review", *files, None, theme),
+            Row::Viewed { files, expanded } => viewed_row(*files, *expanded, theme),
             Row::Item { file, item } => {
                 let file = &manifest.files[*file as usize];
                 item_row(file, *item, tree, theme)
@@ -573,6 +578,11 @@ fn file_row(
         .collect();
     let show_dir = !state.tree && !dir.is_empty();
     let (mark, mark_color) = status_badge(file, theme);
+    let mark_color = if state.viewed {
+        tc.text_muted
+    } else {
+        mark_color
+    };
     let stats = match file.stats {
         FileStats::Known {
             additions,
@@ -599,6 +609,13 @@ fn file_row(
         paint.muted
     } else {
         paint.text
+    };
+    let (dir_color, add_color, del_color) = if viewed && !state.selected {
+        (tc.placeholder, paint.muted, paint.muted)
+    } else if viewed {
+        (paint.muted, paint.muted, paint.muted)
+    } else {
+        (paint.muted, tc.line_add_text, tc.line_del_text)
     };
     let row_bg = paint.bg;
     let hover_bg = if state.selected {
@@ -679,13 +696,13 @@ fn file_row(
                     {highlighted_text(name, &name_ranges, name_color, TextStyle::Body.font_size(theme), theme)}
                 }
                 if show_dir {
-                    {highlighted_text(dir, &dir_ranges, paint.muted, small, theme)}
+                    {highlighted_text(dir, &dir_ranges, dir_color, small, theme)}
                 }
             </div>
             {?stats.map(|(add, del)| view! {
                 <div class="flex-row shrink-0" gap={tokens::scaled(Sp::XS, scale)}>
-                    if add > 0 { <text size={mono} class="font-mono" color={tc.line_add_text}>{format!("+{add}")}</text> }
-                    if del > 0 { <text size={mono} class="font-mono" color={tc.line_del_text}>{format!("\u{2212}{del}")}</text> }
+                    if add > 0 { <text size={mono} class="font-mono" color={add_color}>{format!("+{add}")}</text> }
+                    if del > 0 { <text size={mono} class="font-mono" color={del_color}>{format!("\u{2212}{del}")}</text> }
                 </div>
             })}
             {tools}
@@ -783,14 +800,13 @@ fn highlighted_text(
 }
 
 fn section_row(
-    bucket: ChangeBucket,
+    label: &'static str,
     files: u32,
     action: Option<RowAction>,
     theme: &Theme,
 ) -> AnyElement {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
-    let label = rows::section_label(bucket);
     let noun = if files == 1 { "file" } else { "files" };
     let caption = TextStyle::Caption.font_size(theme);
     let button = action.map(|a| text_action(&a, theme));
@@ -808,6 +824,35 @@ fn section_row(
             <text size={caption} color={tc.text_muted}>{files.to_string()}</text>
             <div class="flex-1" />
             {?button}
+        </div>
+    }
+}
+
+fn viewed_row(files: u32, expanded: bool, theme: &Theme) -> AnyElement {
+    let tc = &theme.colors;
+    let scale = tokens::ui_scale(theme);
+    let noun = if files == 1 { "file" } else { "files" };
+    let caption = TextStyle::Caption.font_size(theme);
+    view! {
+        <div
+            class="flex-row items-center w-full shrink-0"
+            h={theme.metrics.ui_row_height.round()}
+            px={tokens::scaled(Sp::SM, scale)}
+            gap={tokens::scaled(Sp::XS, scale)}
+            rounded={theme.metrics.control_radius}
+            hover_bg={tc.sidebar_row_hover}
+            cursor={CursorHint::Pointer}
+            key="section:viewed"
+            id="files.viewed"
+            test_id="files.viewed"
+            role="button"
+            aria-label={format!("Viewed, {files} {noun}")}
+            aria-expanded={expanded}
+            on:click={NavigationAction::ToggleViewedGroup}
+        >
+            <icon svg={if expanded { lucide::CHEVRON_DOWN } else { lucide::CHEVRON_RIGHT }} size={Ico::XS} color={tc.text_muted} />
+            <text size={caption} class="font-semibold" color={tc.text_muted}>"VIEWED"</text>
+            <text size={caption} color={tc.text_muted}>{files.to_string()}</text>
         </div>
     }
 }

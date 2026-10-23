@@ -149,6 +149,7 @@ pub enum NavigationAction {
     SelectNextFile,
     SelectPreviousFile,
     ToggleFolder(String),
+    ToggleViewedGroup,
     ExpandAllFolders,
     CollapseAllFolders,
     ToggleFileViewed(FileKey),

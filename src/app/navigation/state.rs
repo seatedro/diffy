@@ -8,7 +8,7 @@ use quark_ui::FocusId;
 use quark_ui::element::ScrollbarVisibility;
 use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
-use super::rows::{self, Row, RowCache};
+use super::rows::{self, Fold, Row, RowCache};
 use super::smart_sort::{Finish, SmartSort, SortStatus};
 
 use crate::app::text_targets::{SIDEBAR_FILTER, TextCx, TextHost};
@@ -174,6 +174,7 @@ pub struct NavigationController {
     expanded: HashSet<String>,
     expanded_revision: u64,
     viewed: HashSet<String>,
+    viewed_open: bool,
     scroll_px: f32,
     manifest: Option<Rc<CompareManifestSnapshot>>,
     selection: Option<Selection>,
@@ -223,6 +224,7 @@ impl Default for NavigationController {
             expanded: HashSet::new(),
             expanded_revision: 0,
             viewed: HashSet::new(),
+            viewed_open: false,
             scroll_px: 0.0,
             manifest: None,
             selection: None,
@@ -639,8 +641,12 @@ impl NavigationController {
                 &manifest.files,
                 self.mode,
                 self.filter.text(),
-                &self.expanded,
-                self.expanded_revision,
+                &Fold {
+                    folders: &self.expanded,
+                    revision: self.expanded_revision,
+                    viewed: &self.viewed,
+                    viewed_open: self.viewed_open,
+                },
                 self.selected_key()
                     .and_then(|key| manifest.files.iter().position(|f| f.key == key))
                     .map(|i| i as u32),
@@ -1237,6 +1243,7 @@ impl NavigationController {
         };
         let path = |nav: &Self, index: usize| nav.files()[index].paths.display_path().into_owned();
         self.viewed.insert(path(self, current));
+        self.expanded_revision += 1;
         let count = self.files().len();
         let next = (1..count)
             .map(|step| (current + step) % count)
@@ -1546,6 +1553,13 @@ impl NavigationController {
                 if !self.viewed.remove(&path) {
                     self.viewed.insert(path);
                 }
+                self.expanded_revision += 1;
+                self.clamp_scroll();
+                Reduction::changed()
+            }
+            A::ToggleViewedGroup => {
+                self.viewed_open = !self.viewed_open;
+                self.clamp_scroll();
                 Reduction::changed()
             }
             A::MarkViewedAndNext => self.mark_viewed_and_next(),

@@ -28,6 +28,21 @@ pub enum Row {
         file: u32,
         item: u32,
     },
+    Pending {
+        files: u32,
+    },
+    Viewed {
+        files: u32,
+        expanded: bool,
+    },
+}
+
+/// Folder expansion and viewed-file grouping that shape the file rows.
+pub struct Fold<'a> {
+    pub folders: &'a HashSet<String>,
+    pub revision: u64,
+    pub viewed: &'a HashSet<String>,
+    pub viewed_open: bool,
 }
 
 const SECTION_ORDER: [ChangeBucket; 5] = [
@@ -45,6 +60,7 @@ struct RowKey {
     mode: SidebarMode,
     filter: String,
     expanded: u64,
+    viewed_open: bool,
     selected: Option<u32>,
 }
 
@@ -90,8 +106,7 @@ impl RowCache {
         files: &Arc<[ManifestFile]>,
         mode: SidebarMode,
         filter: &str,
-        expanded: &HashSet<String>,
-        expanded_revision: u64,
+        fold: &Fold,
         selected: Option<u32>,
     ) {
         let filter = filter.trim();
@@ -100,7 +115,8 @@ impl RowCache {
             len: files.len(),
             mode,
             filter: filter.to_owned(),
-            expanded: expanded_revision,
+            expanded: fold.revision,
+            viewed_open: fold.viewed_open,
             selected,
         };
         if self.key.as_ref() == Some(&key) {
@@ -110,18 +126,35 @@ impl RowCache {
         self.highlights.clear();
         if !filter.is_empty() {
             self.build_filtered(files, filter);
-        } else if mode == SidebarMode::Tree {
-            self.build_tree(files, key.files, expanded);
         } else {
-            let order: Vec<u32> = match self.order.as_deref() {
-                Some(order) if order.len() == files.len() => order.to_vec(),
-                _ => (0..files.len() as u32).collect(),
-            };
-            if files.iter().any(staged_bucket) {
-                self.build_sections(files, &order);
+            let viewed: Vec<bool> = if fold.viewed.is_empty() {
+                Vec::new()
             } else {
-                self.rows
-                    .extend(order.into_iter().map(|file| Row::File { file, depth: 0 }));
+                files
+                    .iter()
+                    .map(|file| fold.viewed.contains(file.paths.display_path().as_ref()))
+                    .collect()
+            };
+            let seen = |file: u32| viewed.get(file as usize).copied().unwrap_or(false);
+            let count = viewed.iter().filter(|seen| **seen).count() as u32;
+            let pending = files.len() as u32 - count;
+            if count > 0
+                && pending > 0
+                && (mode == SidebarMode::Tree || !files.iter().any(staged_bucket))
+            {
+                self.rows.push(Row::Pending { files: pending });
+            }
+            self.build_part(files, mode, key.files, fold.folders, true, |file| {
+                !seen(file)
+            });
+            if count > 0 {
+                self.rows.push(Row::Viewed {
+                    files: count,
+                    expanded: fold.viewed_open,
+                });
+                if fold.viewed_open {
+                    self.build_part(files, mode, key.files, fold.folders, false, seen);
+                }
             }
         }
         if let Some(file) = selected
@@ -182,6 +215,33 @@ impl RowCache {
         );
     }
 
+    fn build_part(
+        &mut self,
+        files: &[ManifestFile],
+        mode: SidebarMode,
+        identity: usize,
+        folders: &HashSet<String>,
+        sections: bool,
+        keep: impl Fn(u32) -> bool,
+    ) {
+        if mode == SidebarMode::Tree {
+            self.build_tree(files, identity, folders, keep);
+            return;
+        }
+        let order: Vec<u32> = match self.order.as_deref() {
+            Some(order) if order.len() == files.len() => {
+                order.iter().copied().filter(|&file| keep(file)).collect()
+            }
+            _ => (0..files.len() as u32).filter(|&file| keep(file)).collect(),
+        };
+        if sections && files.iter().any(staged_bucket) {
+            self.build_sections(files, &order);
+        } else {
+            self.rows
+                .extend(order.into_iter().map(|file| Row::File { file, depth: 0 }));
+        }
+    }
+
     fn build_sections(&mut self, files: &[ManifestFile], order: &[u32]) {
         let mut groups: [Vec<u32>; SECTION_ORDER.len()] = Default::default();
         for &index in order {
@@ -207,7 +267,13 @@ impl RowCache {
         }
     }
 
-    fn build_tree(&mut self, files: &[ManifestFile], identity: usize, expanded: &HashSet<String>) {
+    fn build_tree(
+        &mut self,
+        files: &[ManifestFile],
+        identity: usize,
+        expanded: &HashSet<String>,
+        keep: impl Fn(u32) -> bool,
+    ) {
         if self
             .sorted
             .as_ref()
@@ -223,7 +289,7 @@ impl RowCache {
         let mut open: Vec<String> = Vec::new();
         let mut collapsed: Option<String> = None;
         let mut path = String::new();
-        for &index in order {
+        for &index in order.iter().filter(|&&index| keep(index)) {
             path.clear();
             files[index as usize].paths.push_display_path_to(&mut path);
             if let Some(prefix) = &collapsed {
@@ -328,6 +394,17 @@ mod tests {
             .collect()
     }
 
+    fn fold(folders: &HashSet<String>, revision: u64) -> Fold<'_> {
+        Fold {
+            folders,
+            revision,
+            viewed: &NONE,
+            viewed_open: false,
+        }
+    }
+
+    static NONE: std::sync::LazyLock<HashSet<String>> = std::sync::LazyLock::new(HashSet::new);
+
     fn labels(cache: &RowCache, files: &[ManifestFile]) -> Vec<String> {
         cache
             .rows()
@@ -354,6 +431,10 @@ mod tests {
                 Row::Section { bucket, files } => {
                     format!("# {} {files}", section_label(*bucket))
                 }
+                Row::Pending { files } => format!("# To review {files}"),
+                Row::Viewed { files, expanded } => {
+                    format!("# Viewed {files}{}", if *expanded { "" } else { " +" })
+                }
             })
             .collect()
     }
@@ -369,18 +450,18 @@ mod tests {
         ]);
         let mut cache = RowCache::default();
         let mut expanded = HashSet::new();
-        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 0, None);
+        cache.ensure(&files, SidebarMode::Tree, "", &fold(&expanded, 0), None);
         assert_eq!(labels(&cache, &files), ["README", "docs/+", "src/+"]);
 
         expanded.insert("src".to_owned());
-        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 1, None);
+        cache.ensure(&files, SidebarMode::Tree, "", &fold(&expanded, 1), None);
         assert_eq!(
             labels(&cache, &files),
             ["README", "docs/+", "src/", "  src/a/+", "  src/b.rs"]
         );
 
         expanded.insert("src/a".to_owned());
-        cache.ensure(&files, SidebarMode::Tree, "", &expanded, 2, None);
+        cache.ensure(&files, SidebarMode::Tree, "", &fold(&expanded, 2), None);
         assert_eq!(
             labels(&cache, &files),
             [
@@ -400,9 +481,21 @@ mod tests {
     fn filter_ranks_matches_in_a_flat_list() {
         let files = manifest(&["src/main.rs", "src/lib.rs", "docs/main.md"]);
         let mut cache = RowCache::default();
-        cache.ensure(&files, SidebarMode::Tree, "lib", &HashSet::new(), 0, None);
+        cache.ensure(
+            &files,
+            SidebarMode::Tree,
+            "lib",
+            &fold(&HashSet::new(), 0),
+            None,
+        );
         assert_eq!(labels(&cache, &files), ["src/lib.rs"]);
-        cache.ensure(&files, SidebarMode::Tree, "zzz", &HashSet::new(), 0, None);
+        cache.ensure(
+            &files,
+            SidebarMode::Tree,
+            "zzz",
+            &fold(&HashSet::new(), 0),
+            None,
+        );
         assert!(cache.rows().is_empty());
     }
 
@@ -424,7 +517,13 @@ mod tests {
             })
             .collect();
         let mut cache = RowCache::default();
-        cache.ensure(&files, SidebarMode::List, "", &HashSet::new(), 0, None);
+        cache.ensure(
+            &files,
+            SidebarMode::List,
+            "",
+            &fold(&HashSet::new(), 0),
+            None,
+        );
         assert_eq!(
             labels(&cache, &files),
             [
@@ -438,7 +537,38 @@ mod tests {
             ]
         );
         assert_eq!(cache.file_rows(), [1, 2, 4, 6]);
-        cache.ensure(&plain, SidebarMode::List, "", &HashSet::new(), 0, None);
+        cache.ensure(
+            &plain,
+            SidebarMode::List,
+            "",
+            &fold(&HashSet::new(), 0),
+            None,
+        );
         assert_eq!(labels(&cache, &plain), ["a.rs", "b.rs", "c.rs", "d.rs"]);
+    }
+
+    #[test]
+    fn viewed_files_fold_into_a_closed_group() {
+        let files = manifest(&["a.rs", "b.rs", "c.rs"]);
+        let viewed: HashSet<String> = ["b.rs".to_owned()].into();
+        let folders = HashSet::new();
+        let mut cache = RowCache::default();
+        let mut fold = Fold {
+            folders: &folders,
+            revision: 0,
+            viewed: &viewed,
+            viewed_open: false,
+        };
+        cache.ensure(&files, SidebarMode::List, "", &fold, None);
+        assert_eq!(
+            labels(&cache, &files),
+            ["# To review 2", "a.rs", "c.rs", "# Viewed 1 +"]
+        );
+        fold.viewed_open = true;
+        cache.ensure(&files, SidebarMode::List, "", &fold, None);
+        assert_eq!(
+            labels(&cache, &files),
+            ["# To review 2", "a.rs", "c.rs", "# Viewed 1", "b.rs"]
+        );
     }
 }

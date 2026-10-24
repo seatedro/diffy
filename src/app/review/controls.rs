@@ -40,6 +40,17 @@ pub fn button(
         .size(ButtonSize::Compact)
 }
 
+/// One face in an overlapping avatar stack: every face but the last sits in
+/// a slot `step` wide, so the next one paints over its right edge. A negative
+/// margin would do the same but collapses the stack's laid-out width to zero,
+/// and whatever follows lands on top of it.
+pub fn stacked(face: AnyElement, step: f32, last: bool) -> AnyElement {
+    if last {
+        return face;
+    }
+    view! { <div class="shrink-0" w={step}>{face}</div> }
+}
+
 pub fn control_height(theme: &Theme) -> f32 {
     let scale = theme.metrics.ui_scale();
     let m = theme.components.button_compact;

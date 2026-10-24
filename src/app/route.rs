@@ -9,11 +9,13 @@ use crate::app::navigation::NavigationController;
 use crate::app::review::ReviewController;
 use crate::app::viewport::ViewportController;
 use crate::contracts::commands::{CommandDescriptor, CommandSource, CommandsAction};
+use crate::contracts::mutations::MutationsAction;
 use crate::contracts::review::ReviewAction;
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, AppEvent, Controller, Intent, Reduction, ShellAction, ShellEvent,
 };
+use crate::core::vcs::model::FileOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stream {
@@ -79,6 +81,49 @@ impl Controllers {
                     reduction.merge(self.mutations.reduce_action(line, cx));
                 }
                 reduction
+            }
+            Action::Mutations(MutationsAction::ApplyListedFiles(operation)) => {
+                let marked = self.navigation.marked();
+                let files: Vec<_> = if marked.is_empty() {
+                    cx.selected_file.iter().map(|file| file.key).collect()
+                } else {
+                    marked.to_vec()
+                };
+                let action = if files.is_empty() {
+                    MutationsAction::ApplyListedFiles(operation)
+                } else {
+                    MutationsAction::ApplyFiles { files, operation }
+                };
+                self.mutations.reduce_action(action, cx)
+            }
+            Action::Mutations(
+                action @ (MutationsAction::StageHunk
+                | MutationsAction::UnstageHunk
+                | MutationsAction::DiscardHunk),
+            ) => {
+                let operation = match action {
+                    MutationsAction::StageHunk => FileOperation::Stage,
+                    MutationsAction::UnstageHunk => FileOperation::Unstage,
+                    _ => FileOperation::Discard,
+                };
+                // The hunk the diff marks, resolved now against what it
+                // shows, so it is never one an earlier operation replaced.
+                let presentation = self.mutations.presentation();
+                let target = self
+                    .viewport
+                    .interaction
+                    .target_hunk(|source| presentation.reaches(source, operation));
+                let action = match (target, operation) {
+                    (Some(target), FileOperation::Stage) => MutationsAction::StageHunkAt(target),
+                    (Some(target), FileOperation::Unstage) => {
+                        MutationsAction::UnstageHunkAt(target)
+                    }
+                    (Some(target), FileOperation::Discard) => {
+                        MutationsAction::DiscardHunkAt(target)
+                    }
+                    (None, _) => action,
+                };
+                self.mutations.reduce_action(action, cx)
             }
             Action::Navigation(action) => self.navigation.reduce_action(action, cx),
             Action::Commands(action) => self.commands.reduce_action(action, cx),

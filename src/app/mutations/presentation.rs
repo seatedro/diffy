@@ -19,7 +19,7 @@ use crate::app::viewport::interaction::hunk_target;
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::shared::{FileKey, FileRevision, HunkTarget, Side, SourceTarget};
 use crate::contracts::viewport::CompareManifestSnapshot;
-use crate::core::vcs::model::ChangeBucket;
+use crate::core::vcs::model::{ChangeBucket, FileOperation};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PresentationStyle {
@@ -72,8 +72,7 @@ pub fn file_controls(file: FileKey, buckets: &[ChangeBucket]) -> Vec<Control> {
                     MutationsAction::StageFile(file),
                     Tone::Secondary,
                 )
-                .icon(lucide::PLUS)
-                .shortcut("S"),
+                .icon(lucide::PLUS),
                 Control::new(
                     id("discard"),
                     "Discard\u{2026}",
@@ -98,8 +97,7 @@ pub fn file_controls(file: FileKey, buckets: &[ChangeBucket]) -> Vec<Control> {
                     MutationsAction::StageFile(file),
                     Tone::Secondary,
                 )
-                .icon(lucide::PLUS)
-                .shortcut("S"),
+                .icon(lucide::PLUS),
                 Control::new(
                     id("delete"),
                     "Delete\u{2026}",
@@ -246,6 +244,27 @@ impl MutationPresentation {
         self.buckets(source.id, file_revision(source))
     }
 
+    /// Whether keys applying `operation` to a hunk reach `source`'s hunks:
+    /// every file outside a working-tree compare, else the files with
+    /// changes the operation takes.
+    pub fn reaches(&self, source: FileSource, operation: FileOperation) -> bool {
+        if !self.working() {
+            return true;
+        }
+        let wanted: &[ChangeBucket] = match operation {
+            FileOperation::Unstage => &[ChangeBucket::Staged],
+            FileOperation::Stage | FileOperation::Discard => &[
+                ChangeBucket::Unstaged,
+                ChangeBucket::Untracked,
+                ChangeBucket::WorkingCopy,
+                ChangeBucket::Conflicted,
+            ],
+        };
+        self.source_buckets(source)
+            .iter()
+            .any(|bucket| wanted.contains(bucket))
+    }
+
     pub fn actions_for_hunk(&self, target: &HunkTarget) -> Vec<Control> {
         if !self.partial {
             return Vec::new();
@@ -303,6 +322,11 @@ fn changed(kind: RowKind) -> bool {
 impl DiffDecorator for MutationPresentation {
     fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The hunk `s` stages.
+    fn targets_hunks(&self, source: FileSource) -> bool {
+        self.reaches(source, FileOperation::Stage)
     }
 
     fn header_slot(&self, slot: HeaderSlot, cx: &HeaderContext) -> Option<AnyElement> {

@@ -97,6 +97,13 @@ impl Deco {
         self.sources.as_ref()?.file(unit)
     }
 
+    fn targets(&self, unit: u32) -> bool {
+        match (&self.decorator, self.file(unit)) {
+            (Some(decorator), Some(source)) => decorator.targets_hunks(source),
+            _ => true,
+        }
+    }
+
     fn badge(&self, paint: &RowPaint, kind: RowKind, side: Side) -> Option<u32> {
         let decorator = self.decorator.as_ref()?;
         let line = paint.source_lines[side as usize]?;
@@ -234,6 +241,12 @@ fn build(
     let split = frame.columns.mode == Mode::Split;
     let sticky = frame.sticky_header.as_ref().map(|row| row.key);
     let picks = [Side::Old, Side::New].map(|side| picked_rows(frame, side, deco));
+    // Marked only while keys reach it: with the view focused.
+    let target = look
+        .env
+        .focused
+        .then(|| frame.target_hunk(|unit| deco.targets(unit)))
+        .flatten();
     let badges = [Side::Old, Side::New].map(|side| line_badges(frame, side, deco));
     // Split rows with no line on a side: one fill across that side's
     // gutter and text, outside the sideways scroll.
@@ -368,13 +381,16 @@ fn build(
                         {band(frame, row, look, deco, on_event)}
                     </div>
                 }
-                for row in frame.rows.iter().filter(|r| !r.focused && r.height > 0.0 && r.paint.kind.is_line()) {
+                for row in frame.rows.iter().filter(|r| r.height > 0.0 && r.paint.kind.is_line()) {
                     if let Some(utility) = hover_utility(frame, row, deco) {
                         {utility}
                     }
                 }
+                for row in frame.rows.iter().filter(|r| r.height > 0.0 && r.hunk.is_some() && r.hunk.map(|h| (r.paint.file, h)) == target) {
+                    {target_band(frame, row, look)}
+                }
                 for (i, row) in frame.rows.iter().enumerate().filter(|(_, r)| r.focused && r.height > 0.0) {
-                    {focus_overlay(frame, row, look, deco, picks.iter().any(|p| p[i].on))}
+                    {focus_overlay(frame, row, look, picks.iter().any(|p| p[i].on))}
                 }
                 if let Some(row) = &frame.sticky_header {
                     <div
@@ -1071,8 +1087,11 @@ fn hover_utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<AnyEl
             h={row.height}
             interaction_group={group}
         >
+            // In the line numbers, outside the hovered text, so the code it
+            // would cover stays readable.
             <div
-                class="absolute top-0 left-0"
+                class="absolute top-0"
+                left={column.gutter_x - column.text_x}
                 w={size}
                 h={size}
                 show_when={GroupCondition::HoveredOrFocusWithin(group)}
@@ -1083,20 +1102,23 @@ fn hover_utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<AnyEl
     })
 }
 
+/// A row of the hunk keys act on: a tint across it and a bar at its left
+/// edge, so the hunk reads as one block.
+fn target_band(frame: &ViewFrame, row: &FrameRow, look: Look) -> AnyElement {
+    let color = look.colors.focused_row;
+    view! {
+        <div class="absolute left-0" top={row.top} w={frame.viewport.0} h={row.height}
+             bg={color.with_alpha(quark_ui::design::Alpha::TINT)}>
+            <div class="absolute left-0 top-0" w={CHANGE_BAR_W} h={row.height} bg={color} />
+        </div>
+    }
+}
+
 /// The keyboard focus outline over a row, painted after everything else
-/// in it, with the decorator's gutter utility for a line row.
-/// The keyboard focus outline over a row, painted after everything else
-/// in it, with the decorator's gutter utility for a line row.
-fn focus_overlay(
-    frame: &ViewFrame,
-    row: &FrameRow,
-    look: Look,
-    deco: &Deco,
-    picked: bool,
-) -> AnyElement {
+/// in it.
+fn focus_overlay(frame: &ViewFrame, row: &FrameRow, look: Look, picked: bool) -> AnyElement {
     let (width, height) = (frame.viewport.0, row.height);
     let color = look.colors.focused_row;
-    let utility = utility(frame, row, deco);
     let band = matches!(
         row.paint.kind.diff(),
         Some(RowKind::FileHeader | RowKind::MovedHere | RowKind::MovedAway)
@@ -1119,11 +1141,6 @@ fn focus_overlay(
                     w={width}
                     h={height}
                 />
-            }
-            if let Some((column, size, element)) = utility {
-                <div class="absolute top-0" left={column.text_x} w={size} h={size}>
-                    {element}
-                </div>
             }
         </div>
     }

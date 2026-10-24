@@ -442,7 +442,7 @@ pub fn selection_bar(
                     MutationsAction::StageSelectedLines,
                     Tone::Primary,
                 )
-                .shortcut("S"),
+                .shortcut("s"),
             );
         }
         actions.push(

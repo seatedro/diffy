@@ -426,6 +426,8 @@ pub struct FrameRow {
     /// The row holds the keyboard focus target (the row a navigation key
     /// or search result last moved to).
     pub focused: bool,
+    /// The hunk the row belongs to, by index in its file.
+    pub hunk: Option<u32>,
 }
 
 /// How many logical rows a compact preview may show.
@@ -472,4 +474,24 @@ pub struct ViewFrame {
     pub scrollbar_auto_hide: bool,
     pub scrollbar: ScrollbarVisibility,
     pub link: bool,
+}
+
+impl ViewFrame {
+    /// The hunk keys acting on one hunk reach, as `(file, hunk)`, among
+    /// the files `accept` takes: the focused row's while it is on screen,
+    /// else the first on screen. Scrolling or moving to another file moves
+    /// it with the view.
+    pub fn target_hunk(&self, accept: impl Fn(u32) -> bool) -> Option<(u32, u32)> {
+        let shown = |row: &&FrameRow| row.top + row.height > 0.0 && row.top < self.viewport.1;
+        let hunk = |row: &FrameRow| {
+            let hunk = row.hunk?;
+            accept(row.paint.file).then_some((row.paint.file, hunk))
+        };
+        self.rows
+            .iter()
+            .filter(shown)
+            .filter(|row| row.focused)
+            .find_map(hunk)
+            .or_else(|| self.rows.iter().filter(shown).find_map(hunk))
+    }
 }

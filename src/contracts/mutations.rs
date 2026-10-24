@@ -79,6 +79,9 @@ pub enum MutationsAction {
         files: Vec<FileKey>,
         operation: FileOperation,
     },
+    /// The files marked in the file list, else the one it has selected;
+    /// the router fills them in as [`Self::ApplyFiles`].
+    ApplyListedFiles(FileOperation),
     ApplyBucket {
         bucket: ChangeBucket,
         operation: FileOperation,

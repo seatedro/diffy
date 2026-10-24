@@ -15,7 +15,7 @@ use quark_ui::theme::Theme;
 
 use super::keys;
 use super::state::{InteractionController, Phase};
-use crate::app::commands::keymap::workspace_context;
+use crate::app::commands::keymap::diff_context;
 use crate::app::shell::{Slot, empty_state};
 use crate::app::text_targets::{SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT};
 use crate::app::tokens::{self, Sp, TextStyle};
@@ -260,7 +260,7 @@ fn diff_area(
     let list_box = div()
         .w(width)
         .h(list_h)
-        .key_context(workspace_context(reviewing))
+        .key_context(diff_context(reviewing))
         .on_key("escape", act(InteractionAction::ClearSelection))
         .test_id("diff.lines")
         .child(list);

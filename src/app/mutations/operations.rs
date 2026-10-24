@@ -88,7 +88,7 @@ pub fn file_row_actions(entry: &ManifestFile, cx: &SharedContext) -> Vec<RowActi
                     lucide::PLUS,
                     false,
                 )
-                .with_shortcut("S"),
+                .with_shortcut("s"),
             ],
             ChangeBucket::Staged => vec![RowAction::file(
                 id("unstage"),
@@ -181,7 +181,7 @@ pub fn selection_actions(files: &[FileKey], cx: &SharedContext) -> Vec<RowAction
                 lucide::PLUS,
                 false,
             )
-            .with_shortcut("S"),
+            .with_shortcut("s"),
         );
     }
     if staging(cx) && all(&[ChangeBucket::Staged]) {

@@ -2,8 +2,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use diffy_ui::diff_view::decorator::{
-    AnnotationContext, DiffDecorator, GutterContext, HeaderContext, HeaderSlot, LineContext,
-    LineMark, SeparatorContext,
+    AnnotationContext, DiffDecorator, FileSource, GutterContext, HeaderContext, HeaderSlot,
+    LineContext, LineMark, SeparatorContext,
 };
 use quark::view;
 use quark_ui::element::*;
@@ -120,6 +120,10 @@ impl DiffDecorator for AppDiffDecorator {
         self.review
             .annotation(cx)
             .or_else(|| self.mutations.annotation(cx))
+    }
+
+    fn targets_hunks(&self, source: FileSource) -> bool {
+        self.mutations.targets_hunks(source)
     }
 
     fn gutter_utility(&self, cx: &GutterContext) -> Option<AnyElement> {

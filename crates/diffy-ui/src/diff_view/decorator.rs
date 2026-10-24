@@ -286,6 +286,12 @@ pub trait DiffDecorator {
     }
 
     /// A control drawn over the focused line row's gutter.
+    /// Whether keys acting on one hunk reach `source`'s hunks. The view
+    /// marks the hunk they would act on, among files this accepts.
+    fn targets_hunks(&self, _source: FileSource) -> bool {
+        true
+    }
+
     fn gutter_utility(&self, _cx: &GutterContext) -> Option<AnyElement> {
         None
     }

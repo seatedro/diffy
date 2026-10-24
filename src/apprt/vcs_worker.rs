@@ -32,6 +32,9 @@ pub(crate) enum VcsWorkerEvent {
     CompareWorktreeChanged {
         path: PathBuf,
     },
+    /// Files in the working tree changed without changing its status, as
+    /// an edit to a file already modified does.
+    WorktreeContentChanged,
     Progress {
         generation: u64,
         phase: ComparePhase,
@@ -265,6 +268,8 @@ pub(crate) enum VcsCommand {
     Dirty {
         path: PathBuf,
         change_hint: RepositoryChangeKind,
+        /// A file git does not ignore changed in the working tree.
+        content: bool,
     },
 }
 
@@ -345,6 +350,7 @@ struct PendingDirty {
     workspace: WorkspaceEpoch,
     path: PathBuf,
     change_hint: RepositoryChangeKind,
+    content: bool,
 }
 
 fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerCommand>) {
@@ -373,6 +379,7 @@ fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerComma
                 events: Arc::clone(&events),
                 workspace: dirty.workspace,
             };
+            let revision = state.snapshot_revision;
             sync_repository(
                 &mut state,
                 &emitter,
@@ -381,14 +388,25 @@ fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerComma
                 Some(dirty.change_hint),
                 None,
             );
+            // The snapshot compares statuses, not contents: a further edit
+            // to a modified file leaves it unchanged and unsent.
+            if dirty.content && state.snapshot_revision == revision {
+                emitter.emit(VcsWorkerEvent::WorktreeContentChanged);
+            }
             continue;
         };
 
-        if let VcsCommand::Dirty { path, change_hint } = command {
+        if let VcsCommand::Dirty {
+            path,
+            change_hint,
+            content,
+        } = command
+        {
             pending_dirty = Some(match pending_dirty.take() {
                 Some(pending) if pending.path == path && pending.workspace == workspace => {
                     PendingDirty {
                         change_hint: pending.change_hint.merge(change_hint),
+                        content: pending.content || content,
                         ..pending
                     }
                 }
@@ -396,6 +414,7 @@ fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerComma
                     workspace,
                     path,
                     change_hint,
+                    content,
                 },
             });
             continue;

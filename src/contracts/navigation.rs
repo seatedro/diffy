@@ -243,6 +243,8 @@ pub enum NavigationEvent {
     CompareWorktreeChanged {
         path: PathBuf,
     },
+    /// Working-tree files changed while the repository snapshot did not.
+    WorktreeContentChanged,
     FilesRanked {
         job: JobId,
         ranking: Result<Vec<u32>, String>,

@@ -9,19 +9,19 @@ use quark_ui::theme::{Color, Theme};
 
 use super::ReviewController;
 use super::controls::{self, GhostChip, Tone};
-use super::overview::{CheckTone, check_icon, info_state, reviewer_state, state_badge};
+use super::overview::{CheckTone, check_icon, info_state, state_badge};
 use super::state::{AuthStatus, ReviewOverlay};
+use crate::app::icons;
 use crate::app::shell::Slot;
 use crate::app::text_targets::{REVIEW_ACCOUNT, REVIEW_DIALOG};
 use crate::app::tokens::{self, Bp, Ico, Layout, Rad, Shadow, Sp, Sz, TextStyle};
 use crate::contracts::review::{PullsAction, ReviewAction};
 use crate::contracts::shell::ShellAction;
-use crate::core::forge::github::{PullRequestCheckSummary, PullRequestOverview};
+use crate::core::forge::github::PullRequestCheckSummary;
 use crate::core::review::ReviewDecision;
 
 const CARD_MAX_WIDTH: f32 = 600.0;
 const ACCOUNT_MENU_WIDTH: f32 = 260.0;
-const REVIEWER_STACK_MAX: usize = 4;
 
 fn action(action: ReviewAction) -> quark_ui::Action {
     action.into()
@@ -140,37 +140,14 @@ pub fn pull_request_bar(
             </div>
         }
     });
-    let roomy = width >= Bp::NARROW * scale;
     let fits = width >= Bp::COMPACT * scale;
-    let branches = info.filter(|_| roomy).map(|info| {
-        let label = format!("{} \u{2192} {}", info.head_branch, info.base_branch);
-        view! { scale,
-            <div class="flex-row items-center overflow-hidden" min_w={0.0} px={Sp::XS} py={Sp::XXS}
-                 rounded={Rad::SM} bg={tc.element_background}
-                 accessibility_role={AccessibilityRole::Label}
-                 aria-label={label.clone()}
-                 tooltip={label.clone()}
-                 test_id="review.pull_request.branches">
-                <text size={Px(small)} class="truncate font-mono" color={tc.text}>{label}</text>
-            </div>
-        }
-    });
-    let reviewers = overview_data
-        .filter(|overview| roomy && !overview.reviewers.is_empty())
-        .map(|overview| reviewer_stack(review, overview, theme));
-    let checks = overview_data
-        .filter(|_| fits)
-        .and_then(|overview| checks_status(&overview.checks, theme));
-    let counts = review.review_counts().map(|(unresolved, pending, failed)| {
-        let mut parts = vec![format!("{unresolved} unresolved")];
-        if pending > 0 {
-            parts.push(format!("{pending} pending"));
-        }
-        if failed > 0 {
-            parts.push(format!("{failed} failed"));
-        }
-        parts.join(" \u{b7} ")
-    });
+    let status = status_pill(
+        overview_data
+            .filter(|_| fits)
+            .map(|overview| &overview.checks),
+        review.review_counts(),
+        theme,
+    );
     let open = controls::icon_button(
         lucide::EXTERNAL_LINK,
         "Open on GitHub",
@@ -203,13 +180,8 @@ pub fn pull_request_bar(
                 <text size={Px(small)} color={tc.text_muted}>{number}</text>
                 <text size={Px(small)} class="truncate font-medium" color={color}>{title}</text>
             </div>
-            {?branches}
             <spacer />
-            {?reviewers}
-            {?checks}
-            if let Some(counts) = counts {
-                <text size={Px(small)} color={tc.text_muted}>{counts}</text>
-            }
+            {?status}
             <div class="flex-row items-center shrink-0" gap={Sp::XXS}
                  accessibility_role={AccessibilityRole::Group}
                  aria-label="Pull request views">
@@ -221,96 +193,87 @@ pub fn pull_request_bar(
     })
 }
 
-fn reviewer_stack(
-    review: &ReviewController,
-    overview: &PullRequestOverview,
+/// Checks, open threads and unsent comments in one pill that opens the
+/// overview, where each has its detail.
+fn status_pill(
+    checks: Option<&PullRequestCheckSummary>,
+    counts: Option<(usize, usize, usize)>,
     theme: &Theme,
-) -> AnyElement {
+) -> Option<AnyElement> {
     let tc = &theme.colors;
     let scale = tokens::ui_scale(theme);
-    let size = tokens::scaled(Ico::MD, scale);
-    let overlap = -(size * 0.25).round();
-    let shown = overview.reviewers.len().min(REVIEWER_STACK_MAX);
-    let extra = overview.reviewers.len() - shown;
-    let label = overview
-        .reviewers
-        .iter()
-        .map(|reviewer| {
-            let (state, _, _) = reviewer_state(&reviewer.state, theme);
-            format!("@{}: {state}", reviewer.actor.login)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let faces = overview.reviewers[..shown]
-        .iter()
-        .enumerate()
-        .map(|(index, reviewer)| {
-            let login = reviewer.actor.login.clone();
-            let ring = match reviewer.state.as_str() {
-                "APPROVED" => tc.line_add_text,
-                "CHANGES_REQUESTED" => tc.line_del_text,
-                _ => tc.title_bar_background,
-            };
-            let face = review.host.face(&login);
-            let margin = if index == 0 { 0.0 } else { overlap };
-            view! {
-                <div class="shrink-0" border={ring} rounded={size} margin_left={margin}>
-                    {avatar(login).size(Ico::MD).image(face)}
-                </div>
-            }
-        })
-        .collect::<Vec<_>>();
     let small = TextStyle::BodySmall.font_size(theme);
-    view! { scale,
-        <div class="flex-row items-center shrink-0" gap={Sp::XXS}
-             accessibility_role={AccessibilityRole::Label}
-             aria-label={format!("Reviewers: {}", label.replace('\n', ", "))}
-             tooltip={label}
-             test_id="review.pull_request.reviewers">
-            <div class="flex-row items-center shrink-0">{...faces}</div>
-            if extra > 0 {
-                <text size={Px(small)} color={tc.text_muted}>{format!("+{extra}")}</text>
-            }
-        </div>
+    let mut parts = Vec::new();
+    let mut labels = Vec::new();
+    if let Some(checks) = checks.filter(|checks| checks.total_count > 0) {
+        let (tone, count) = if checks.failure_count > 0 {
+            (CheckTone::Failed, checks.failure_count)
+        } else if checks.pending_count > 0 {
+            (CheckTone::Pending, checks.pending_count)
+        } else {
+            (CheckTone::Passed, checks.total_count)
+        };
+        let (icon, color) = check_icon(tone, theme);
+        parts.push((icon, color, count.to_string(), tc.text));
+        labels.push(format!(
+            "Checks: {} passed, {} failed, {} pending",
+            checks.success_count, checks.failure_count, checks.pending_count
+        ));
     }
-}
-
-fn checks_status(checks: &PullRequestCheckSummary, theme: &Theme) -> Option<AnyElement> {
-    if checks.total_count == 0 {
+    if let Some((unresolved, pending, failed)) = counts {
+        let threads = unresolved.to_string();
+        parts.push((icons::MESSAGE_SQUARE, tc.text_muted, threads, tc.text));
+        labels.push(format!("{unresolved} unresolved"));
+        if pending > 0 {
+            let label = format!("{pending} pending");
+            parts.push((
+                lucide::PENCIL,
+                tc.status_warning,
+                label.clone(),
+                tc.status_warning,
+            ));
+            labels.push(label);
+        }
+        if failed > 0 {
+            let label = format!("{failed} failed");
+            parts.push((
+                lucide::ALERT_CIRCLE,
+                tc.status_error,
+                label.clone(),
+                tc.status_error,
+            ));
+            labels.push(label);
+        }
+    }
+    if parts.is_empty() {
         return None;
     }
-    let tc = &theme.colors;
-    let scale = tokens::ui_scale(theme);
-    let small = TextStyle::BodySmall.font_size(theme);
-    let (tone, label) = if checks.failure_count > 0 {
-        (
-            CheckTone::Failed,
-            format!("{} failing", checks.failure_count),
-        )
-    } else if checks.pending_count > 0 {
-        (
-            CheckTone::Pending,
-            format!("{} pending", checks.pending_count),
-        )
-    } else {
-        (CheckTone::Passed, "Checks passed".to_owned())
-    };
-    let (icon, color) = check_icon(tone, theme);
-    let detail = format!(
-        "{} passed \u{b7} {} failed \u{b7} {} pending",
-        checks.success_count, checks.failure_count, checks.pending_count
-    );
+    let mut children = Vec::new();
+    for (index, (icon, icon_color, count, count_color)) in parts.into_iter().enumerate() {
+        if index > 0 {
+            children.push(view! { scale,
+                <div class="shrink-0" w={Px(1.0)} h={Ico::SM} bg={tc.border_variant} />
+            });
+        }
+        children.push(view! { scale,
+            <div class="flex-row items-center shrink-0" gap={Sp::XXS}>
+                <icon svg={icon} size={Ico::SM} color={icon_color} />
+                <text size={Px(small)} color={count_color}>{count}</text>
+            </div>
+        });
+    }
+    let label = labels.join("\n");
     Some(view! { scale,
-        <div class="flex-row items-center shrink-0" gap={Sp::XS} px={Sp::XS} py={Sp::XXS}
-             rounded={Rad::MD} hover_bg={tc.ghost_element_hover}
+        <div class="flex-row items-center shrink-0" gap={Sp::SM} px={Sp::SM} py={Sp::XXS}
+             rounded={Rad::PILL} bg={tc.element_background}
+             hover_bg={tc.element_hover}
              cursor={CursorHint::Pointer}
              accessibility_role={AccessibilityRole::Button}
-             aria-label={format!("Checks: {detail}")}
-             tooltip={detail}
-             test_id="review.pull_request.checks"
+             aria-label={label.replace('\n', ", ")}
+             tooltip={label}
+             test_id="review.pull_request.status"
              on:click={action(ReviewAction::OpenOverview)}>
-            <icon svg={icon} size={Ico::SM} color={color} />
-            <text size={Px(small)} color={tc.text_muted}>{label}</text>
+            {...children}
         </div>
     })
 }

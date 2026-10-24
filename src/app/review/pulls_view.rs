@@ -237,10 +237,10 @@ impl Page<'_> {
     fn faces(&self, reviewers: &[PullRequestReviewer]) -> AnyElement {
         let tc = &self.theme.colors;
         let size = tokens::scaled(Ico::SM, self.scale);
-        let overlap = -(size * 0.25).round();
-        let faces: Vec<AnyElement> = reviewers
+        let step = size - (size * 0.25).round();
+        let shown = reviewers.len().min(ROW_FACES);
+        let faces: Vec<AnyElement> = reviewers[..shown]
             .iter()
-            .take(ROW_FACES)
             .enumerate()
             .map(|(index, reviewer)| {
                 let ring = match reviewer.state.as_str() {
@@ -248,12 +248,12 @@ impl Page<'_> {
                     "CHANGES_REQUESTED" => tc.line_del_text,
                     _ => tc.editor_surface,
                 };
-                let margin = if index == 0 { 0.0 } else { overlap };
-                view! {
-                    <div class="shrink-0" border={ring} rounded={size} margin_left={margin}>
+                let face = view! {
+                    <div class="shrink-0" border={ring} rounded={size}>
                         {self.face(&reviewer.actor.login, Ico::SM)}
                     </div>
-                }
+                };
+                controls::stacked(face, step, index + 1 == shown)
             })
             .collect();
         view! { <div class="flex-row items-center shrink-0">{...faces}</div> }

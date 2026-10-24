@@ -53,6 +53,11 @@ resources = [
 main = true
 path = "diffy"
 
+# `diffy://github.com/owner/repo/pull/N` opens the pull request; see
+# src/platform/deep_link.rs.
+[[package.metadata.packager.deep-link-protocols]]
+schemes = ["diffy"]
+
 [package.metadata.packager.macos]
 info-plist-path = "assets/packaging/macos/generated/Info.plist"
 

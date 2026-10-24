@@ -697,6 +697,7 @@ impl Driver {
             file_index: None,
             file_path: None,
             open_pr: open_pr.map(str::to_owned),
+            link: None,
         };
         let options =
             StartupOptions::from_parts_with_keyring(args, None, "client".to_owned(), false, true);
@@ -2843,6 +2844,41 @@ fn enter_opens_a_known_clone_or_asks_to_locate_one() {
     assert_eq!(driver.activated.last(), Some(&PathBuf::from("/tmp/thing")));
     assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 3);
     assert!(!driver.review.pulls_open());
+}
+
+/// A `diffy://` link names only the repository, so the clone has to be found
+/// (or located) across three async steps before the review opens.
+#[test]
+fn links_review_in_a_found_or_located_clone() {
+    let mut driver = pulls_driver();
+    driver.act(pulls(PullsAction::ReviewLink {
+        url: "https://github.com/owner/gadget/pull/9".to_owned(),
+    }));
+    assert_eq!(driver.activated, vec![PathBuf::from("/tmp/gadget")]);
+    assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 9);
+    assert!(driver.dialogs.is_empty());
+
+    driver.act(pulls(PullsAction::ReviewLink {
+        url: "https://github.com/elsewhere/thing/pull/3".to_owned(),
+    }));
+    assert_eq!(driver.dialogs, vec!["elsewhere/thing".to_owned()]);
+    assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 9);
+
+    driver.act(pulls(PullsAction::CloneChosen {
+        repo: "elsewhere/thing".to_owned(),
+        path: PathBuf::from("/tmp/thing"),
+    }));
+    assert_eq!(driver.activated.last(), Some(&PathBuf::from("/tmp/thing")));
+    let active = driver.review.active_pull_request().unwrap();
+    assert_eq!((active.pr.repo.as_str(), active.pr.number), ("thing", 3));
+
+    driver.act(pulls(PullsAction::ReviewLink {
+        url: "https://github.com/owner/repo/issues/1".to_owned(),
+    }));
+    assert_eq!(
+        driver.errors(),
+        vec!["Not a GitHub pull request link.".to_owned()]
+    );
 }
 
 #[test]

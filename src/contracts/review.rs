@@ -122,7 +122,15 @@ pub enum PullsAction {
     EscapeFilter,
     ClearFilter,
     LocateClone,
-    CloneChosen { repo: String, path: PathBuf },
+    CloneChosen {
+        repo: String,
+        path: PathBuf,
+    },
+    /// A pull request link from outside the app: a `diffy://` click or a
+    /// later launch.
+    ReviewLink {
+        url: String,
+    },
 }
 
 impl From<PullsAction> for ReviewAction {

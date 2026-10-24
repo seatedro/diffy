@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
+use quark_app::platform::single_instance::PrimaryInstance;
 use quark_app::{AppEvent as WindowEvent, InputEvent, UiApp, UiContext, UiSender, ViewContext};
 use quark_components::tooltip::{TooltipSide, tooltip_layer};
 use quark_components::{Axis, Pane, Split, SplitEvent, SplitState};
@@ -33,6 +34,7 @@ use crate::contracts::shell::{
 use crate::contracts::viewport::ViewportAction;
 use crate::core::compare::RendererKind;
 use crate::core::vcs::model::RefKind;
+use crate::platform::deep_link;
 
 pub trait EffectDispatcher: 'static {
     fn attach(&mut self, _sender: UiSender<AppMessage>) {}
@@ -128,6 +130,7 @@ pub struct DiffyApp<D> {
     slots: DiffSlots,
     deferred: Vec<ShellEffect>,
     startup: Option<Rc<AppStartup>>,
+    instance: Option<PrimaryInstance>,
     clock_ms: u64,
     energy_hud: crate::app::energy_hud::EnergyHud,
 }
@@ -142,6 +145,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             slots: DiffSlots::default(),
             deferred: Vec::new(),
             startup: None,
+            instance: None,
             clock_ms: 0,
             energy_hud: Default::default(),
         }
@@ -150,6 +154,29 @@ impl<D: EffectDispatcher> DiffyApp<D> {
     pub fn with_startup(mut self, startup: AppStartup) -> Self {
         self.startup = Some(Rc::new(startup));
         self
+    }
+
+    /// The first-instance socket, so later launches' links reach this app.
+    pub fn with_instance(mut self, instance: Option<PrimaryInstance>) -> Self {
+        self.instance = instance;
+        self
+    }
+
+    /// Opens the last pull request `args` link to and brings the window
+    /// forward. Other arguments a later launch forwarded are ignored.
+    fn open_links(&mut self, args: &[String], cx: &mut UiContext) {
+        let Some(url) = args
+            .iter()
+            .rev()
+            .find_map(|arg| deep_link::pull_request_url(arg))
+        else {
+            return;
+        };
+        self.update(Action::Review(PullsAction::ReviewLink { url }.into()), cx);
+        if let Some(window) = cx.window.window() {
+            window.focus_window();
+        }
+        cx.window.request_redraw();
     }
 
     pub fn shared(&self) -> &SharedContext {
@@ -890,9 +917,14 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
                 .set_syntax_wake(wake.clone());
             self.controllers.viewport.interaction.set_syntax_wake(wake);
         }
+        if let Some(instance) = self.instance.take() {
+            cx.window.listen_for_instances(instance);
+        }
         if let Some(startup) = self.startup.take() {
+            let link = startup.options.args.link.clone();
             self.reduce(Reduction::default().intent(Intent::Startup(startup)));
             self.flush(cx);
+            self.open_links(link.as_slice(), cx);
         }
     }
 
@@ -1037,6 +1069,10 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn app_event(&mut self, event: WindowEvent, cx: &mut UiContext) {
         self.tick(cx);
+        if let WindowEvent::OpenUrls(args) = &event {
+            self.open_links(args, cx);
+            return;
+        }
         if let WindowEvent::Menu(id) = &event
             && let Some(action) = commands::menu_action(&self.controllers, id)
         {

@@ -77,6 +77,20 @@ impl ToastHost {
                     item.shown_at_ms = None;
                     return;
                 }
+                // The same message again restarts the one showing rather
+                // than stacking a copy per repeated key press.
+                if id.is_none()
+                    && let Some(item) = self.items.iter_mut().find(|t| {
+                        t.job.is_none()
+                            && t.undo.is_none()
+                            && t.kind == kind
+                            && t.message == message
+                            && t.description == description
+                    })
+                {
+                    item.shown_at_ms = None;
+                    return;
+                }
                 self.push(ToastItem {
                     id: 0,
                     job: id,

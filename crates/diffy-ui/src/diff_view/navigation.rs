@@ -312,7 +312,12 @@ impl DiffViewState {
 
     pub fn focused_hunk(&self) -> Option<(FileId, u32)> {
         self.focused?;
-        let RowRef::Line { seg, row } = self.refs.get(self.focused_index? as usize)? else {
+        self.hunk_at(self.focused_index? as usize)
+    }
+
+    /// The hunk list row `index` belongs to, by file and index in the file.
+    pub(crate) fn hunk_at(&self, index: usize) -> Option<(FileId, u32)> {
+        let RowRef::Line { seg, row } = self.refs.get(index)? else {
             return None;
         };
         let segment = &self.segments[seg as usize];

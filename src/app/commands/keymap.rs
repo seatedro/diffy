@@ -11,6 +11,7 @@ use crate::contracts::shell::{Action, AreaDirection, LogicalFocus, ShellAction};
 use crate::contracts::viewport::{FilesAction, InteractionAction, SymbolsAction, ViewportAction};
 use crate::core::compare::LayoutMode;
 use crate::core::keymap::{KeymapOverride, ShortcutCommand};
+use crate::core::vcs::model::FileOperation;
 
 pub type Override = keymap::KeymapOverride<ShortcutCommand>;
 pub type Entry = ShortcutEntry<ShortcutCommand>;
@@ -25,11 +26,33 @@ pub fn workspace_context(reviewing: bool) -> &'static str {
         WORKSPACE_CONTEXT
     }
 }
+
+/// The changed-file list's context: keys there act on whole files.
+pub fn files_context(reviewing: bool) -> &'static str {
+    if reviewing {
+        "surface=workspace mode=review pane=files"
+    } else {
+        "surface=workspace pane=files"
+    }
+}
+
+/// The diff's context: keys there act on hunks and lines.
+pub fn diff_context(reviewing: bool) -> &'static str {
+    if reviewing {
+        "surface=workspace mode=review pane=diff"
+    } else {
+        "surface=workspace pane=diff"
+    }
+}
 pub const SETTINGS_CONTEXT: &str = "surface=settings";
 pub const TEXT_CONTEXT: &str = "surface=text";
 
 const WORKSPACE: ShortcutScope = ShortcutScope("surface == workspace");
 const TREE: ShortcutScope = ShortcutScope("surface == workspace && mode != review");
+const TREE_FILES: ShortcutScope =
+    ShortcutScope("surface == workspace && mode != review && pane == files");
+const TREE_DIFF: ShortcutScope =
+    ShortcutScope("surface == workspace && mode != review && pane == diff");
 const REVIEW: ShortcutScope = ShortcutScope("surface == workspace && mode == review");
 const SETTINGS: ShortcutScope = ShortcutScope("surface == settings");
 const GLOBAL: ShortcutScope = ShortcutScope::GLOBAL;
@@ -186,18 +209,26 @@ const SETTINGS_ENTRIES: &[Entry] = &[
 ];
 
 const WORKING_TREE: &[Entry] = &[
-    Entry::new(TREE, C::Stage, &["s"], "Stage file / hunk / selected lines"),
+    Entry::new(TREE_FILES, C::StageFile, &["s"], "Stage file"),
     Entry::new(
-        TREE,
+        TREE_FILES,
+        C::UnstageFile,
+        &["shift+s", "shift+u"],
+        "Unstage file",
+    ),
+    Entry::new(TREE_FILES, C::DiscardFile, &["shift+x"], "Discard file"),
+    Entry::new(TREE_DIFF, C::Stage, &["s"], "Stage hunk / selected lines"),
+    Entry::new(
+        TREE_DIFF,
         C::Unstage,
         &["shift+s", "shift+u"],
-        "Unstage file / hunk / selected lines",
+        "Unstage hunk / selected lines",
     ),
     Entry::new(
-        TREE,
+        TREE_DIFF,
         C::Discard,
         &["shift+x"],
-        "Discard file / hunk / selected lines",
+        "Discard hunk / selected lines",
     ),
     Entry::new(TREE, C::StageAll, &["a"], "Stage all"),
     Entry::new(TREE, C::UnstageAll, &["shift+a"], "Unstage all"),
@@ -460,7 +491,7 @@ pub const GO: &[Leader] = &[
 
 pub fn applies(entry: &Entry, reviewing: bool) -> bool {
     match entry.scope {
-        scope if scope == TREE => !reviewing,
+        scope if scope == TREE || scope == TREE_FILES || scope == TREE_DIFF => !reviewing,
         scope if scope == REVIEW => reviewing,
         _ => true,
     }
@@ -603,6 +634,11 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
             ShellAction::FocusLogical(Some(LogicalFocus::CommitMessage)).into()
         }
         C::SubmitCommit => MutationsAction::SubmitCommit.into(),
+        // Also when the palette hides the command for the selected file,
+        // so the key answers with why it does nothing.
+        C::StageFile => MutationsAction::ApplyListedFiles(FileOperation::Stage).into(),
+        C::UnstageFile => MutationsAction::ApplyListedFiles(FileOperation::Unstage).into(),
+        C::DiscardFile => MutationsAction::ApplyListedFiles(FileOperation::Discard).into(),
         C::GenerateCommitMessage => MutationsAction::GenerateCommitMessage.into(),
         C::ToggleLineSelection => MutationsAction::ToggleCurrentLineSelection.into(),
         C::ToggleLineSelectionRange => MutationsAction::ToggleCurrentLineSelectionRange.into(),

@@ -7,7 +7,7 @@ use diffy_diff::{
     DiffSession, DiffUpdate, GapId, Reveal, Revision, RowKind, Side, SourcePurpose, SourceRemap,
     UpdateError,
 };
-use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources, LinePointer};
+use diffy_ui::diff_view::decorator::{DiffDecorator, DiffSources, FileSource, LinePointer};
 use diffy_ui::diff_view::presentation::{DiffLayout, DiffMarkers, DiffNumbers, DiffPresentation};
 use diffy_ui::{
     DiffAnnotation, DiffEvent, DiffKey, DiffOutcome, DiffSessionViewState, DiffStyle, DiffTarget,
@@ -241,6 +241,15 @@ impl InteractionController {
             .selected_lines()
             .as_ref()
             .map(source_target)
+    }
+
+    /// The hunk the diff marks for keys acting on one hunk, among the
+    /// files `accept` takes; see [`diffy_ui::diff_view::ViewFrame::target_hunk`].
+    pub fn target_hunk(&self, accept: impl Fn(FileSource) -> bool) -> Option<HunkTarget> {
+        let frame = self.diff.as_ref()?.frame()?;
+        let (unit, hunk) =
+            frame.target_hunk(|unit| self.sources.file(unit).is_some_and(&accept))?;
+        Some(hunk_target(&self.sources.hunk_at(unit, hunk)?))
     }
 
     pub fn focused_hunk(&self) -> Option<HunkTarget> {

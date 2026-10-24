@@ -338,6 +338,7 @@ impl DiffViewState {
                 search,
                 link,
                 focused: self.focused == Some(key),
+                hunk: self.hunk_at(index).map(|(_, hunk)| hunk),
             });
             kept.insert(key, paint);
         }
@@ -419,6 +420,7 @@ impl DiffViewState {
             search: Default::default(),
             link: [None, None],
             focused: self.focused == Some(key),
+            hunk: None,
         })
     }
 

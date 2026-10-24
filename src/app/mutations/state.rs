@@ -1534,19 +1534,12 @@ impl Controller for MutationsController {
                 cx,
             ),
             A::UnstageAllFiles => self.all_in(&[ChangeBucket::Staged], FileOperation::Unstage, cx),
+            // The router resolves these to the hunk the diff marks, and
+            // these, the files the list has; one arriving here found none.
             A::StageHunk | A::UnstageHunk | A::DiscardHunk => {
-                let operation = match action {
-                    A::StageHunk => FileOperation::Stage,
-                    A::UnstageHunk => FileOperation::Unstage,
-                    _ => FileOperation::Discard,
-                };
-                match cx.selection.clone() {
-                    Some(target) => {
-                        self.request_patch(MutationSelection::HunksAt(vec![target]), operation, cx)
-                    }
-                    None => error("Move the cursor into a hunk first."),
-                }
+                error("Scroll a hunk into view first.")
             }
+            A::ApplyListedFiles(_) => error("Select a file first."),
             A::StageHunkAt(target) => self.request_patch(
                 MutationSelection::Hunks(vec![target]),
                 FileOperation::Stage,
@@ -2346,16 +2339,18 @@ impl MutationsController {
                 CommandDescriptor::new(
                     "mutations.stage_file",
                     "Stage file",
-                    MutationsAction::StageSelectedFile,
+                    MutationsAction::ApplyListedFiles(FileOperation::Stage),
                 )
+                .shortcut(ShortcutCommand::StageFile)
                 .enabled(file),
             );
             out.push(
                 CommandDescriptor::new(
                     "mutations.unstage_file",
                     "Unstage file",
-                    MutationsAction::UnstageSelectedFile,
+                    MutationsAction::ApplyListedFiles(FileOperation::Unstage),
                 )
+                .shortcut(ShortcutCommand::UnstageFile)
                 .enabled(file),
             );
             out.push(
@@ -2384,8 +2379,9 @@ impl MutationsController {
             CommandDescriptor::new(
                 "mutations.discard_file",
                 "Discard file",
-                MutationsAction::DiscardSelectedFile,
+                MutationsAction::ApplyListedFiles(FileOperation::Discard),
             )
+            .shortcut(ShortcutCommand::DiscardFile)
             .enabled(file),
         );
         out.push(

@@ -56,6 +56,26 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
 
+      - uses: kunobi-ninja/kache-action@ad7317540dcdd71c904f7a60a87b620a0c0e67ed # v1
+        if: runner.os != 'Windows'
+        with:
+          cache-key-prefix: kache-package-${{ matrix.name }}
+          s3-bucket: ${{ secrets.KACHE_S3_ACCESS_KEY_ID != '' && 'quark-kache' || '' }}
+          s3-endpoint: https://d996894143090cc02f1539e379655b2c.r2.cloudflarestorage.com
+          s3-region: auto
+          s3-access-key-id: ${{ secrets.KACHE_S3_ACCESS_KEY_ID }}
+          s3-secret-access-key: ${{ secrets.KACHE_S3_SECRET_ACCESS_KEY }}
+          # Package only runs for tags, so tag builds must save or nothing would.
+          save-cache: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' }}
+          pr-comment: false
+          cache-executables: true
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: runner.os == 'Windows'
+        with:
+          key: package-windows-v1
+          save-if: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' }}
+
       - name: Validate update public key
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash

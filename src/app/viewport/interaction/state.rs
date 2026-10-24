@@ -25,7 +25,7 @@ use crate::app::review::ReviewPresentation;
 use crate::app::text_targets::{
     SEARCH, TEXT_COMPARE_LEFT, TEXT_COMPARE_RIGHT, TextCx, TextHost, VIEWPORT,
 };
-use crate::contracts::commands::{CommandDescriptor, CommandSource};
+use crate::contracts::commands::{CommandDescriptor, CommandSource, ToastUpdate};
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{SelectedFile, SelectionOrigin};
 use crate::contracts::review::CardKey;
@@ -1258,9 +1258,24 @@ impl Controller for InteractionController {
             A::ScrollToBottom => self.navigate(DiffKey::End),
             A::GoToNextHunk => self.navigate(DiffKey::NextHunk),
             A::GoToThread(delta) => self.go_to_thread(delta, cx),
-            A::AnnotateSelection => {
-                let outcome = self.key(DiffKey::Annotate);
-                self.outcome(outcome)
+            A::AnnotateSelection => match self.key(DiffKey::Annotate) {
+                DiffOutcome::Unchanged => Reduction::default().intent(Intent::Toast(
+                    ToastUpdate::info("Select a line to comment on."),
+                )),
+                outcome => self.outcome(outcome),
+            },
+            A::AnnotateLine(target) => {
+                let covering = self
+                    .diff
+                    .as_ref()
+                    .and_then(|diff| diff.selected_lines())
+                    .filter(|selected| {
+                        selected.file == target.file
+                            && selected.side == target.side
+                            && selected.lines.contains(&target.lines.start)
+                    });
+                let anchor = covering.unwrap_or_else(|| source_anchor(&target));
+                Reduction::changed().intent(Intent::RequestAnnotation(source_target(&anchor)))
             }
             A::GoToPreviousHunk => self.navigate(DiffKey::PrevHunk),
             A::GoToNextFile => self.navigate(DiffKey::NextFile),

@@ -1617,6 +1617,43 @@ fn file_thread() -> GitHubPullRequestReviewThread {
     }
 }
 
+/// The gutter "+" was lost once when the UI moved to Quark; without it the
+/// only way to comment was a key that did nothing unless a line was selected.
+#[test]
+fn lines_offer_a_comment_control_while_a_pull_request_is_open() {
+    let gutter = diffy_ui::diff_view::decorator::GutterContext {
+        file: 0,
+        source: Some(diffy_ui::diff_view::decorator::FileSource {
+            id: FileKey(1),
+            revision: diffy_ui::diff_view::Revision(1),
+        }),
+        side: Side::New,
+        line: 4,
+        kind: diffy_diff::RowKind::Context,
+        width: 16.0,
+        height: 16.0,
+    };
+    let mut driver = Driver::new(Fake::new());
+    driver.startup(None);
+    driver.open_repository();
+    assert!(
+        driver
+            .review
+            .presentation()
+            .gutter_utility(&gutter)
+            .is_none()
+    );
+
+    let driver = Driver::signed_in_with_pr();
+    assert!(
+        driver
+            .review
+            .presentation()
+            .gutter_utility(&gutter)
+            .is_some()
+    );
+}
+
 #[test]
 fn open_pull_request_intent_loads_like_the_action() {
     let mut driver = Driver::signed_in_with_pr();

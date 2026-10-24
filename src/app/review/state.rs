@@ -672,10 +672,9 @@ impl ReviewController {
     fn startup(&mut self, startup: &crate::contracts::shell::AppStartup) -> Reduction {
         self.client_id = startup.options.github_client_id.clone();
         self.account.user = startup.settings.github_user.clone();
+        // `--repo` arrives as the workspace navigation activates; a pull
+        // request loaded before that would answer a stale workspace.
         self.pending_url = startup.options.args.open_pr.clone();
-        if self.repo_path.is_none() {
-            self.repo_path = startup.options.args.repo.clone();
-        }
         let mut reduction = Reduction::changed();
         match startup.options.github_token.clone() {
             Some(token) => {

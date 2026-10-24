@@ -222,7 +222,7 @@ const WORKING_TREE: &[Entry] = &[
         "Select changed line range",
     ),
     Entry::new(
-        WORKSPACE,
+        REVIEW,
         C::ReviewSelectedLines,
         &["shift+r"],
         "Comment on selected lines",
@@ -463,6 +463,19 @@ pub fn applies(entry: &Entry, reviewing: bool) -> bool {
         scope if scope == TREE => !reviewing,
         scope if scope == REVIEW => reviewing,
         _ => true,
+    }
+}
+
+/// Whether `command`'s key runs it over the settings page or the
+/// workspace, so the palette shows only keys that work where it opened.
+pub fn works_on(command: ShortcutCommand, settings: bool, reviewing: bool) -> bool {
+    let Some(entry) = KEYMAP.entry(command) else {
+        return false;
+    };
+    match entry.scope {
+        GLOBAL => true,
+        SETTINGS => settings,
+        _ => !settings && applies(entry, reviewing),
     }
 }
 

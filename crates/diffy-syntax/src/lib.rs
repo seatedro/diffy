@@ -82,7 +82,7 @@ pub use quark_update::PublicKey;
 pub use scope::{ScopeResult, ScopeSpan, ScopeTable, ScopeWorker, scope_table};
 pub use store::{Catalog, GrammarState, GrammarStatus, GrammarStore, LanguageStatus};
 #[cfg(feature = "engine")]
-pub use store::{GrammarQueries, StoreConfig};
+pub use store::{GrammarQueries, Injector, StoreConfig};
 pub use symbols::{Symbol, SymbolKind};
 #[cfg(feature = "engine")]
 pub use symbols::{Tagger, TaggerLookup};

@@ -92,6 +92,10 @@ impl Grammar {
         &self.language
     }
 
+    pub(crate) fn has_injections(&self) -> bool {
+        self.injections.is_some()
+    }
+
     pub(crate) fn highlights(&self) -> &Arc<str> {
         &self.highlights
     }
@@ -241,6 +245,32 @@ impl Grammar {
             }
             tree
         })
+    }
+
+    /// The regions `tree` (this grammar's parse of `source`) embeds in a
+    /// named language, one level deep. Only regions that are a single
+    /// range, such as a `<script>` body, are listed.
+    pub(crate) fn embedded(&self, tree: &ts::Tree, source: &str) -> Vec<(LanguageId, ts::Range)> {
+        let Some(injections) = &self.injections else {
+            return Vec::new();
+        };
+        let whole = range((0, ts::Point::default()), (source.len(), end_point(source)));
+        let mut budget = Limits::for_source(source.len()).discovery;
+        let mut out = Vec::new();
+        injections.find(
+            tree,
+            source,
+            &[whole],
+            &mut budget,
+            &|| false,
+            &mut |target, ranges| {
+                if let (Target::Named(language), [range]) = (target, ranges.as_slice()) {
+                    out.push((language, *range));
+                }
+                ControlFlow::Continue(())
+            },
+        );
+        out
     }
 
     /// `(start, end, kind, pattern)` for every capture with a highlight

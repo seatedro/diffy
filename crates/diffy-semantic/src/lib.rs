@@ -7,6 +7,7 @@ mod syntax;
 
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use diffy_diff::SemanticSpan;
@@ -14,7 +15,7 @@ use tree_sitter as ts;
 
 pub use diffy_diff::{ItemChange, Move, OutlineItem, Rename};
 pub use rules::{Queries, Rules};
-pub use tree_sitter::Language;
+pub use tree_sitter::{Language, Tree};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -118,20 +119,36 @@ pub fn diff(
         [old, new],
         limits,
         &options,
-        None,
+        (None, None),
         |_, _, _, diff| diff,
     )
 }
 
 pub type Vet<'v> = dyn Fn(&[(&str, &str)]) -> Vec<bool> + Sync + 'v;
 
-pub fn diff_vetted(
+/// A region of a source written in another language (a tree-sitter
+/// injection), diffed with its own grammar in place of the host's leaf.
+#[derive(Clone)]
+pub struct Embedded {
+    pub range: ts::Range,
+    pub language: ts::Language,
+    pub rules: Arc<Rules>,
+    /// The language's name; regions of the same name share node kinds.
+    pub name: Arc<str>,
+}
+
+/// Lists the regions of a host parse, with its source, that embed another
+/// language.
+pub type Embed<'e> = dyn Fn(&ts::Tree, &str) -> Vec<Embedded> + 'e;
+
+pub fn diff_with(
     language: &ts::Language,
     rules: &Rules,
     old: &str,
     new: &str,
     limits: &Limits,
-    vet: &Vet<'_>,
+    vet: Option<&Vet<'_>>,
+    embed: Option<&Embed<'_>>,
 ) -> Result<SemanticDiff, Fallback> {
     #[cfg(feature = "eval")]
     let options = eval::current();
@@ -143,7 +160,7 @@ pub fn diff_vetted(
         [old, new],
         limits,
         &options,
-        Some(vet),
+        (vet, embed),
         |_, _, _, diff| diff,
     )
 }
@@ -154,7 +171,7 @@ fn run<T>(
     [old, new]: [&str; 2],
     limits: &Limits,
     options: &matcher::Options,
-    vet: Option<&Vet<'_>>,
+    (vet, embed): (Option<&Vet<'_>>, Option<&Embed<'_>>),
     finish: impl FnOnce(&syntax::Tree<'_>, &syntax::Tree<'_>, matcher::Matching, SemanticDiff) -> T,
 ) -> Result<T, Fallback> {
     let deadline = Instant::now() + limits.max_time;
@@ -174,8 +191,14 @@ fn run<T>(
             return Err(Fallback::ErrorCoverage(covered * 100 / text.len().max(1)));
         }
     }
-    let old = syntax::Tree::lower(&old_tree, old, rules);
-    let new = syntax::Tree::lower(&new_tree, new, rules);
+    let mut layers: [Vec<syntax::Layer>; 2] = Default::default();
+    if let Some(embed) = embed {
+        for (side, (tree, text)) in [(&old_tree, old), (&new_tree, new)].into_iter().enumerate() {
+            layers[side] = embedded(&mut parser, embed(tree, text), text, deadline)?;
+        }
+    }
+    let old = syntax::Tree::lower(&old_tree, old, rules, &layers[0]);
+    let new = syntax::Tree::lower(&new_tree, new, rules, &layers[1]);
     let errors = old.errors + new.errors;
     if errors > limits.max_errors {
         return Err(Fallback::ParseErrors(errors));
@@ -293,7 +316,7 @@ pub mod eval {
             [old, new],
             limits,
             &inner(options),
-            None,
+            (None, None),
             |old, new, m, diff| {
                 let mut baseline = Features::default();
                 for tree in [old, new] {
@@ -344,6 +367,44 @@ pub mod eval {
 }
 
 const MAX_ERROR_PERCENT: usize = 20;
+
+/// Parses each embedded region over the whole source, so its nodes keep
+/// their byte offsets. A region that overlaps an earlier one, or parses
+/// mostly as errors (a script in a language the query guessed wrong),
+/// stays an opaque leaf of the host.
+fn embedded(
+    parser: &mut ts::Parser,
+    mut regions: Vec<Embedded>,
+    src: &str,
+    deadline: Instant,
+) -> Result<Vec<syntax::Layer>, Fallback> {
+    regions.sort_by_key(|r| r.range.start_byte);
+    let mut layers: Vec<syntax::Layer> = Vec::new();
+    for region in regions {
+        let range = region.range.start_byte as u32..region.range.end_byte as u32;
+        if layers.last().is_some_and(|l| l.range.end > range.start) {
+            continue;
+        }
+        if Instant::now() > deadline {
+            return Err(Fallback::Timeout);
+        }
+        let parsed = parser.set_language(&region.language).is_ok()
+            && parser.set_included_ranges(&[region.range]).is_ok();
+        let tree = parsed.then(|| parser.parse(src, None)).flatten();
+        let len = range.len();
+        if let Some(tree) = tree
+            && error_bytes(tree.root_node()) * 100 <= len * MAX_ERROR_PERCENT
+        {
+            layers.push(syntax::Layer {
+                range,
+                tree,
+                rules: region.rules,
+                kinds: syntax::kinds(&region.name),
+            });
+        }
+    }
+    Ok(layers)
+}
 
 pub fn semantic_query(language: &str) -> Option<&'static str> {
     Some(match language {

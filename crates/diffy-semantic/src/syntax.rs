@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use tree_sitter as ts;
 
@@ -25,7 +26,9 @@ pub(crate) struct Node {
     pub(crate) close: Range<u32>,
     pub(crate) next: u32,
     pub(crate) hash: u64,
-    pub(crate) kind: u16,
+    /// The tree-sitter kind id, tagged with its language in the high bits
+    /// so an embedded language's kinds never equal the host's.
+    pub(crate) kind: u32,
     pub(crate) class: Class,
     pub(crate) name: bool,
     pub(crate) callee: bool,
@@ -48,16 +51,58 @@ pub(crate) struct Tree<'a> {
     pub(crate) errors: usize,
 }
 
+/// An embedded region's own parse, lowered in place of the host node that
+/// spans exactly its range.
+pub(crate) struct Layer {
+    pub(crate) range: Range<u32>,
+    pub(crate) tree: ts::Tree,
+    pub(crate) rules: Arc<Rules>,
+    pub(crate) kinds: u32,
+}
+
 struct Lowering<'r> {
     rules: &'r Rules,
     found: HashMap<usize, Found>,
+    kinds: u32,
+    layers: Vec<(&'r Layer, Lowering<'r>)>,
+}
+
+impl Lowering<'_> {
+    fn kind(&self, node: ts::Node<'_>) -> u32 {
+        self.kinds | u32::from(node.kind_id())
+    }
+
+    fn layer(&self, range: &Range<u32>) -> Option<&(&Layer, Lowering<'_>)> {
+        let at = self
+            .layers
+            .partition_point(|(l, _)| l.range.start < range.start);
+        self.layers.get(at).filter(|(l, _)| l.range == *range)
+    }
+}
+
+/// The high bits of every node kind in `language`'s layers.
+pub(crate) fn kinds(language: &str) -> u32 {
+    (hash_bytes(language.as_bytes()) % 0xffff + 1) as u32 * 0x1_0000
 }
 
 impl<'a> Tree<'a> {
-    pub(crate) fn lower(tree: &ts::Tree, src: &'a str, rules: &Rules) -> Self {
+    pub(crate) fn lower(tree: &ts::Tree, src: &'a str, rules: &Rules, layers: &[Layer]) -> Self {
         let lowering = Lowering {
             rules,
             found: rules.items(tree, src),
+            kinds: 0,
+            layers: layers
+                .iter()
+                .map(|layer| {
+                    let lowering = Lowering {
+                        rules: &layer.rules,
+                        found: layer.rules.items(&layer.tree, src),
+                        kinds: layer.kinds,
+                        layers: Vec::new(),
+                    };
+                    (layer, lowering)
+                })
+                .collect(),
         };
         let mut out = Self {
             src,
@@ -68,7 +113,7 @@ impl<'a> Tree<'a> {
         };
         let root = tree.root_node();
         out.errors += usize::from(root.is_error());
-        let at = out.open_list(root.kind_id(), span(root), 0..0, 0..0);
+        let at = out.open_list(lowering.kind(root), span(root), 0..0, 0..0);
         let mut cursor = root.walk();
         let children: Vec<_> = root.children(&mut cursor).collect();
         for child in children {
@@ -112,6 +157,18 @@ impl<'a> Tree<'a> {
             return;
         }
         let comment = node.is_extra() || node.kind().contains("comment");
+        if !comment && let Some((layer, inner)) = lowering.layer(&span(node)) {
+            let root = layer.tree.root_node();
+            self.errors += usize::from(root.is_error());
+            let at = self.open_list(lowering.kind(node), span(node), 0..0, 0..0);
+            let mut cursor = root.walk();
+            let children: Vec<_> = root.children(&mut cursor).collect();
+            for child in children {
+                self.node(child, inner, depth + 1);
+            }
+            self.close_list(at);
+            return;
+        }
         let text = lowering.rules.text(node.kind_id())
             || node.child_count() > 0 && depth < MAX_DEPTH && self.uncovered(node);
         if node.child_count() == 0 || comment || text || depth >= MAX_DEPTH {
@@ -124,7 +181,7 @@ impl<'a> Tree<'a> {
             };
             let name =
                 class == Class::Plain && node.is_named() && node.kind().ends_with("identifier");
-            self.atom(node.kind_id(), span(node), class, name);
+            self.atom(lowering.kind(node), span(node), class, name);
             if name
                 && callee(node)
                 && let Some(last) = self.nodes.last_mut()
@@ -138,7 +195,7 @@ impl<'a> Tree<'a> {
         let delims = self.delimiters(&children, lowering.rules);
         self.note_item(node, lowering);
         let Some((i, j)) = delims else {
-            let at = self.open_list(node.kind_id(), span(node), 0..0, 0..0);
+            let at = self.open_list(lowering.kind(node), span(node), 0..0, 0..0);
             for child in children {
                 self.node(child, lowering, depth + 1);
             }
@@ -147,11 +204,11 @@ impl<'a> Tree<'a> {
         };
         let (open, close) = (span(children[i]), span(children[j]));
         let outer = (i > 0 || j + 1 < children.len())
-            .then(|| self.open_list(node.kind_id(), span(node), 0..0, 0..0));
+            .then(|| self.open_list(lowering.kind(node), span(node), 0..0, 0..0));
         for &child in &children[..i] {
             self.node(child, lowering, depth + 1);
         }
-        let inner = self.open_list(node.kind_id(), open.start..close.end, open, close);
+        let inner = self.open_list(lowering.kind(node), open.start..close.end, open, close);
         for &child in &children[i + 1..j] {
             self.node(child, lowering, depth + 1);
         }
@@ -246,7 +303,7 @@ impl<'a> Tree<'a> {
         None
     }
 
-    fn atom(&mut self, kind: u16, span: Range<u32>, class: Class, name: bool) {
+    fn atom(&mut self, kind: u32, span: Range<u32>, class: Class, name: bool) {
         let text = self.text(span.clone());
         let seed = mix(mix(ATOM_SEED, u64::from(kind)), class as u64);
         let hash = if class == Class::Comment {
@@ -271,7 +328,7 @@ impl<'a> Tree<'a> {
 
     fn open_list(
         &mut self,
-        kind: u16,
+        kind: u32,
         span: Range<u32>,
         open: Range<u32>,
         close: Range<u32>,

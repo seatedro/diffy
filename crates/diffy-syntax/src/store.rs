@@ -37,6 +37,25 @@ pub struct GrammarQueries {
     pub tags: Option<Arc<str>>,
 }
 
+/// Finds the regions of a document written in other languages (tree-sitter
+/// injections), such as the scripts and styles of a Svelte component.
+#[cfg(feature = "engine")]
+#[derive(Clone)]
+pub struct Injector(Arc<Grammar>);
+
+#[cfg(feature = "engine")]
+impl Injector {
+    /// The single-range regions `tree`, parsed from `source` with this
+    /// injector's language, embeds in a named language, in match order.
+    pub fn find(
+        &self,
+        tree: &tree_sitter::Tree,
+        source: &str,
+    ) -> Vec<(LanguageId, tree_sitter::Range)> {
+        self.0.embedded(tree, source)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Catalog {
     pub statuses: Vec<GrammarStatus>,
@@ -149,6 +168,16 @@ impl GrammarStore {
                 },
             )),
             Tag::Pending | Tag::Unavailable => None,
+        }
+    }
+
+    /// The injection search of `tag`'s grammar, when it is loaded and has
+    /// an injection query.
+    #[cfg(feature = "engine")]
+    pub fn injector(&self, tag: &str) -> Option<Injector> {
+        match self.grammar(&LanguageId::from_fence(tag)?) {
+            Tag::Ready(grammar) if grammar.has_injections() => Some(Injector(grammar)),
+            Tag::Ready(_) | Tag::Pending | Tag::Unavailable => None,
         }
     }
 

@@ -72,6 +72,9 @@ fn repo_watch_worker_loop(
     let mut pending_dirty: Option<RepositoryChangeKind> = None;
     let mut worktree: Option<PathBuf> = None;
     let mut pending_worktree: HashSet<PathBuf> = HashSet::new();
+    // Working-tree files of the open repository changed since the last
+    // flush, to tell edits git shows from ignored build output.
+    let mut pending_content: HashSet<PathBuf> = HashSet::new();
 
     loop {
         let command = if pending_dirty.is_some() || !pending_worktree.is_empty() {
@@ -91,6 +94,7 @@ fn repo_watch_worker_loop(
             Some(WatchCommand::SetRepo(workspace, path)) => {
                 pending_dirty = None;
                 pending_worktree.clear();
+                pending_content.clear();
                 if let Some(old) = worktree.take() {
                     unwatch_paths(&mut watcher, &[old]);
                 }
@@ -141,6 +145,18 @@ fn repo_watch_worker_loop(
                 if let Some(active_watch) = active.as_ref()
                     && !is_ignored_metadata_event(active_watch, &event)
                 {
+                    if let Some(workdir) = active_watch.workdir.as_ref() {
+                        pending_content.extend(
+                            event
+                                .paths
+                                .iter()
+                                .filter(|path| {
+                                    path.starts_with(workdir)
+                                        && !path.starts_with(&active_watch.metadata_dir)
+                                })
+                                .cloned(),
+                        );
+                    }
                     let change_kind = classify_event(active_watch, &event);
                     pending_dirty = Some(match pending_dirty {
                         Some(existing) => existing.merge(change_kind),
@@ -156,6 +172,7 @@ fn repo_watch_worker_loop(
                 let Some(active_watch) = active.as_ref() else {
                     pending_dirty = None;
                     pending_worktree.clear();
+                    pending_content.clear();
                     continue;
                 };
                 if let Some(root) = worktree.as_ref()
@@ -181,11 +198,18 @@ fn repo_watch_worker_loop(
                 let Some(change_hint) = pending_dirty.take() else {
                     continue;
                 };
+                let paths: Vec<PathBuf> = pending_content.drain().collect();
+                let content = !paths.is_empty()
+                    && active_watch
+                        .workdir
+                        .as_ref()
+                        .is_some_and(|workdir| !all_ignored(workdir, &paths));
                 let _ = dirty_sender.send(VcsWorkerCommand {
                     workspace: active_watch.workspace,
                     command: VcsCommand::Dirty {
                         path: active_watch.request_path.clone(),
                         change_hint,
+                        content,
                     },
                 });
             }

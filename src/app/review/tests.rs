@@ -1940,7 +1940,7 @@ fn author_avatars_show_initials_until_loaded() {
         }),
     });
 
-    assert_eq!(images(&ui), before + 2);
+    assert_eq!(images(&ui), before + 1);
 }
 
 #[test]

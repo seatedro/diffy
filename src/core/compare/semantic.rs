@@ -8,7 +8,7 @@ use diffy_diff::{
     Side, SourceCoverage, TextStore,
 };
 use diffy_semantic::{Limits, Move, OutlineItem, Queries, Rename, Row, Rules};
-use diffy_syntax::{GrammarQueries, GrammarStore, LanguageId};
+use diffy_syntax::{GrammarQueries, GrammarStore, Injector, LanguageId};
 #[cfg(feature = "difftastic")]
 use vendored_difftastic::{
     ChangeIntensity as DftIntensity, ChangeSpan, DiffRequest, DiffStatus, SemanticDiffResult,
@@ -431,6 +431,7 @@ pub struct SemanticGrammar {
     pub name: Arc<str>,
     pub language: diffy_semantic::Language,
     pub rules: Arc<Rules>,
+    pub injector: Option<Injector>,
 }
 
 pub fn semantic_tag(path: &str) -> Option<LanguageId> {
@@ -467,6 +468,7 @@ pub fn semantic_grammar(store: &GrammarStore, tag: &LanguageId) -> Option<Semant
         }
     };
     Some(SemanticGrammar {
+        injector: store.injector(tag.as_str()),
         name: queries.language,
         language,
         rules,
@@ -498,7 +500,7 @@ fn compile_rules(language: &diffy_semantic::Language, grammar: &GrammarQueries) 
 
 pub fn document_from_native_with(
     changed: &ChangedPath,
-    grammar: impl FnOnce(&LanguageId) -> Option<SemanticGrammar>,
+    grammars: impl Fn(&LanguageId) -> Option<SemanticGrammar>,
     vet: Option<&diffy_semantic::Vet<'_>>,
 ) -> Result<(DiffDocument, Option<String>)> {
     let meta = changed.meta();
@@ -523,30 +525,50 @@ pub fn document_from_native_with(
     let Some(tag) = semantic_tag(changed.display_path()) else {
         return line_diff("no grammar for this file".to_owned());
     };
-    let Some(grammar) = grammar(&tag) else {
+    let Some(grammar) = grammars(&tag) else {
         return line_diff(format!("{tag} grammar unavailable"));
     };
     let limits = Limits {
         max_time: FILE_TIME_BUDGET,
         ..Limits::default()
     };
-    let diff = match vet {
-        Some(vet) => diffy_semantic::diff_vetted(
-            &grammar.language,
-            &grammar.rules,
-            old.as_str(),
-            new.as_str(),
-            &limits,
-            vet,
-        ),
-        None => diffy_semantic::diff(
-            &grammar.language,
-            &grammar.rules,
-            old.as_str(),
-            new.as_str(),
-            &limits,
-        ),
+    let embed = |tree: &diffy_semantic::Tree, source: &str| {
+        let Some(injector) = &grammar.injector else {
+            return Vec::new();
+        };
+        // Regions repeat a few languages many times (every `{expression}`
+        // of a Svelte template), so each is looked up once.
+        let mut seen: Vec<(LanguageId, Option<SemanticGrammar>)> = Vec::new();
+        let mut out = Vec::new();
+        for (language, range) in injector.find(tree, source) {
+            let at = match seen.iter().position(|(l, _)| *l == language) {
+                Some(at) => at,
+                None => {
+                    let found = grammars(&language);
+                    seen.push((language, found));
+                    seen.len() - 1
+                }
+            };
+            if let Some(embedded) = &seen[at].1 {
+                out.push(diffy_semantic::Embedded {
+                    range,
+                    language: embedded.language.clone(),
+                    rules: embedded.rules.clone(),
+                    name: embedded.name.clone(),
+                });
+            }
+        }
+        out
     };
+    let diff = diffy_semantic::diff_with(
+        &grammar.language,
+        &grammar.rules,
+        old.as_str(),
+        new.as_str(),
+        &limits,
+        vet,
+        Some(&embed),
+    );
     match diff {
         Ok(diff) => {
             let chunks = clean_rows(diff.chunks, &old, &new);

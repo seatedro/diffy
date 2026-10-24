@@ -53,6 +53,9 @@ pub enum InteractionAction {
     SearchPrevious,
     CopySelection,
     AnnotateSelection,
+    /// The gutter comment control of a line: the selection when it covers
+    /// the line, else the line.
+    AnnotateLine(SourceTarget),
     SetSourceSelection(Option<SourceTarget>),
     ExpandContext {
         file: FileKey,

@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use diffy_ui::diff_view::AnnotationId;
 use diffy_ui::diff_view::decorator::{
-    AnnotationContext, DiffDecorator, HeaderContext, HeaderSlot, LineContext,
+    AnnotationContext, DiffDecorator, GutterContext, HeaderContext, HeaderSlot, LineContext,
 };
 use quark::{Px, view};
 use quark_app::ViewContext;
@@ -28,10 +28,12 @@ use super::code_highlighter::ReviewCodeHighlighter;
 use super::composer::{ComposerEditor, ComposerTarget};
 use super::controls::{self, Tone};
 use super::state::{DeleteTarget, ReviewController};
+use crate::app::mutations::{Chrome, Control, Tone as ControlTone, render_control};
 use crate::app::text_targets::REVIEW_COMPOSER;
 use crate::app::tokens::{self, Alpha, Ico, Rad, Sp, TextStyle};
 use crate::contracts::review::{CardKey, ComposerFormat, ReviewAction};
-use crate::contracts::shared::{FileKey, SharedContext, SourceTarget};
+use crate::contracts::shared::{FileKey, FileRevision, SharedContext, Side, SourceTarget};
+use crate::contracts::viewport::InteractionAction;
 use crate::core::forge::github::PullRequestTimelineKind;
 use crate::core::review::{
     ReviewDraft, ReviewDraftKind, ReviewDraftState, ReviewResolution, ReviewSession, ReviewSide,
@@ -666,6 +668,8 @@ pub struct ReviewPresentation {
     files: Rc<[(String, FileKey, Vec<CardKey>)]>,
     open_file: Option<String>,
     composer: Option<ComposerView>,
+    /// A pull request is open, so lines take review comments.
+    commentable: bool,
     host: CardHost,
 }
 
@@ -1016,6 +1020,7 @@ impl ReviewPresentation {
             files: Rc::from([]),
             open_file: None,
             composer: None,
+            commentable: false,
             host,
         }
     }
@@ -1028,6 +1033,7 @@ impl ReviewPresentation {
             files: Rc::clone(&self.files),
             open_file: self.open_file.clone(),
             composer: self.composer.clone(),
+            commentable: self.commentable,
             host: self.host.clone(),
         }
     }
@@ -1213,6 +1219,7 @@ impl ReviewPresentation {
             files: files.into(),
             open_file: controller.file_comments.clone(),
             composer,
+            commentable: controller.session().is_some(),
             host: controller.host.clone(),
         }
     }
@@ -1379,6 +1386,38 @@ impl DiffDecorator for ReviewPresentation {
             return None;
         }
         self.file_comments_element(cx.source.map(|source| source.id), cx.title)
+    }
+
+    /// The "+" that comments on a line, as on GitHub: over the boundary of
+    /// the hovered or focused line's gutter and code.
+    fn gutter_utility(&self, cx: &GutterContext) -> Option<AnyElement> {
+        if !self.commentable {
+            return None;
+        }
+        let source = cx.source?;
+        let target = SourceTarget {
+            file: source.id,
+            revision: FileRevision(source.revision.0),
+            side: cx.side,
+            lines: cx.line..cx.line + 1,
+        };
+        let side = match cx.side {
+            Side::Old => "L",
+            Side::New => "R",
+        };
+        let control = Control::new(
+            format!("review.comment.{}.{side}.{}", source.id.0, cx.line),
+            format!("Comment on line {side}{}", cx.line + 1),
+            InteractionAction::AnnotateLine(target),
+            ControlTone::Primary,
+        )
+        .icon_only(lucide::PLUS);
+        let chrome = Chrome::from_theme(&self.theme()).square(cx.width.min(cx.height));
+        Some(view! {
+            <div w={cx.width} h={cx.height} class="flex-row items-center justify-center">
+                {render_control(control, &chrome)}
+            </div>
+        })
     }
 }
 

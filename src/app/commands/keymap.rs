@@ -32,7 +32,6 @@ const WORKSPACE: ShortcutScope = ShortcutScope("surface == workspace");
 const TREE: ShortcutScope = ShortcutScope("surface == workspace && mode != review");
 const REVIEW: ShortcutScope = ShortcutScope("surface == workspace && mode == review");
 const SETTINGS: ShortcutScope = ShortcutScope("surface == settings");
-const TEXT: ShortcutScope = ShortcutScope("surface == text");
 const GLOBAL: ShortcutScope = ShortcutScope::GLOBAL;
 
 use ShortcutCommand as C;
@@ -204,10 +203,16 @@ const WORKING_TREE: &[Entry] = &[
     Entry::new(TREE, C::UnstageAll, &["shift+a"], "Unstage all"),
     Entry::new(TREE, C::FocusCommitMessage, &["c"], "Focus commit message"),
     Entry::new(
-        TEXT,
+        TREE,
         C::SubmitCommit,
         &["mod+enter"],
         "Create commit from message",
+    ),
+    Entry::new(
+        TREE,
+        C::GenerateCommitMessage,
+        &["mod+g"],
+        "Generate commit message",
     ),
     Entry::new(TREE, C::ToggleLineSelection, &["v"], "Select changed line"),
     Entry::new(
@@ -585,6 +590,7 @@ pub fn builtin_action(command: ShortcutCommand) -> Option<Action> {
             ShellAction::FocusLogical(Some(LogicalFocus::CommitMessage)).into()
         }
         C::SubmitCommit => MutationsAction::SubmitCommit.into(),
+        C::GenerateCommitMessage => MutationsAction::GenerateCommitMessage.into(),
         C::ToggleLineSelection => MutationsAction::ToggleCurrentLineSelection.into(),
         C::ToggleLineSelectionRange => MutationsAction::ToggleCurrentLineSelectionRange.into(),
         C::FetchRemotes => MutationsAction::FetchAllRemotes.into(),

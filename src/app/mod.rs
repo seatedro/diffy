@@ -51,6 +51,11 @@ impl Default for RunOptions {
 pub fn start() -> Result<(), Box<dyn std::error::Error>> {
     let options = crate::platform::startup::StartupOptions::load();
     crate::platform::logging::init_logging(options.log_debug);
+    let link = options.args.link.as_deref();
+    let instance = match crate::platform::deep_link::claim(link) {
+        crate::platform::deep_link::Launch::Run(instance) => instance,
+        crate::platform::deep_link::Launch::Forwarded => return Ok(()),
+    };
     let settings_store = crate::platform::persistence::SettingsStore::new_default();
     let settings = settings_store.load()?;
     let dispatcher = runtime::RuntimeDispatcher::new(
@@ -70,7 +75,8 @@ pub fn start() -> Result<(), Box<dyn std::error::Error>> {
     run_with(
         run_options,
         DiffyApp::new(dispatcher, crate::platform::startup::app_display_name())
-            .with_startup(startup),
+            .with_startup(startup)
+            .with_instance(instance),
     )?;
     Ok(())
 }

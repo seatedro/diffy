@@ -2015,7 +2015,7 @@ impl ReviewController {
                 self.avatars.settle(&url, false);
                 Reduction::default()
             }
-            ReviewEvent::ClonesResolved { job, clones } => self.clones_resolved(job, clones),
+            ReviewEvent::ClonesResolved { job, clones } => self.clones_resolved(job, clones, cx),
             ReviewEvent::CloneValidated { repo, result } => self.clone_validated(repo, result, cx),
         }
     }

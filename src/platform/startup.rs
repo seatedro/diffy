@@ -40,6 +40,11 @@ pub struct Args {
 
     #[arg(long = "open-pr")]
     pub open_pr: Option<String>,
+
+    /// A `diffy://` link, or a GitHub pull request URL, to open in the
+    /// running window.
+    #[arg(value_name = "URL")]
+    pub link: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

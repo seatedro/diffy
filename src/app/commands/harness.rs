@@ -106,6 +106,7 @@ pub fn no_args() -> Args {
         file_index: None,
         file_path: None,
         open_pr: None,
+        link: None,
     }
 }
 

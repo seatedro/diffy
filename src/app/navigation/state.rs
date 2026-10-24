@@ -1002,6 +1002,7 @@ impl NavigationController {
         }
         self.repo_path = Some(path.to_path_buf());
         self.watched_worktree = None;
+        self.review_labels = None;
         self.status = RepoStatus::Opening;
         self.repository = None;
         self.manifest = None;
@@ -1086,7 +1087,9 @@ impl NavigationController {
             startup.auto_compare = false;
             startup.pr_pending = false;
         }
-        if plan.pr_pending {
+        // A pull request that resolved while the repository opened (a link,
+        // or a review picked in another repository) already set the compare.
+        if plan.pr_pending || self.review_labels.is_some() {
             return Reduction::default();
         }
         if plan.auto_compare {

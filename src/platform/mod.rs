@@ -1,4 +1,5 @@
 pub mod database;
+pub mod deep_link;
 pub mod energy;
 pub mod logging;
 pub mod persistence;

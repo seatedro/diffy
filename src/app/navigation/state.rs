@@ -1709,6 +1709,14 @@ impl NavigationController {
                 }
                 self.compare_intent(cx)
             }
+            NavigationEvent::WorktreeContentChanged => {
+                let reads_worktree =
+                    self.compare.working_copy || is_working_copy_ref(&self.compare.right);
+                if self.manifest.is_none() || !reads_worktree {
+                    return Reduction::default();
+                }
+                self.compare_intent(cx)
+            }
             NavigationEvent::FilesRanked { job, ranking } => self.files_ranked(job, ranking),
         }
     }

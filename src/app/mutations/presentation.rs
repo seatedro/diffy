@@ -347,18 +347,16 @@ impl DiffDecorator for MutationPresentation {
             lines: cx.line..cx.line + 1,
         };
         let selected = self.is_selected(source, cx.side, cx.line);
-        let (label, action) = if selected {
-            (
-                "Deselect line",
-                MutationsAction::ToggleLineSelection(target),
-            )
+        // Toggles rather than replaces, so lines picked one by one add up.
+        let label = if selected {
+            "Deselect line"
         } else {
-            ("Select line", MutationsAction::SelectLines(target))
+            "Select line"
         };
         let control = Control::new(
             format!("mutations.line.{}.{:?}.{}", source.id.0, cx.side, cx.line),
             label,
-            action,
+            MutationsAction::ToggleLineSelection(target),
             if selected { Tone::Primary } else { Tone::Ghost },
         )
         .icon_only(if selected {

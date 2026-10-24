@@ -636,7 +636,7 @@ fn keymap_rebinding_rejects_conflicts_and_saves_overrides() {
     ui.find(By::role_name(Role::Button, "Press keys for Next hunk"));
 
     ui.key("n");
-    ui.find(By::role_name(Role::Alert, "N is already used by Next file"));
+    ui.find(By::role_name(Role::Alert, "n is already used by Next file"));
     assert!(settings(&ui).keymap_overrides.is_empty());
 
     ui.key("shift+h");

@@ -631,6 +631,7 @@ impl CommandsController {
             return Reduction::default();
         };
         let saved = &self.settings.settings.keymap_overrides;
+        let (settings, reviewing) = (self.settings_open(), cx.review.is_some());
         self.palette_source.commands = self
             .commands()
             .into_iter()
@@ -638,6 +639,7 @@ impl CommandsController {
             .map(|descriptor| PaletteCommand {
                 binding: descriptor
                     .shortcut
+                    .filter(|&s| keymap::works_on(s, settings, reviewing))
                     .and_then(|s| keymap::first_binding(saved, s))
                     .and_then(|b| b.parse::<Binding>().ok()),
                 descriptor,

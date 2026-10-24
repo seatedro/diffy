@@ -178,9 +178,9 @@ pub fn kbd(label: &str, chrome: &Chrome, fg: Color) -> AnyElement {
             class="shrink-0 flex-row items-center justify-center"
             px={chrome.gap}
             rounded={chrome.radius * 0.5}
-            border={fg.with_alpha(Alpha::DIM)}
+            border={fg.with_alpha(Alpha::MUTED)}
         >
-            <text size={chrome.small} class="font-mono" color={fg.with_alpha(Alpha::MUTED)}>{label}</text>
+            <text size={chrome.small} class="font-mono" color={fg.with_alpha(Alpha::STRONG)}>{label}</text>
         </div>
     }
 }

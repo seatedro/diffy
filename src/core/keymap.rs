@@ -69,6 +69,7 @@ pub enum ShortcutCommand {
     UnstageAll,
     FocusCommitMessage,
     SubmitCommit,
+    GenerateCommitMessage,
     ToggleLineSelection,
     ToggleLineSelectionRange,
     ReviewSelectedLines,

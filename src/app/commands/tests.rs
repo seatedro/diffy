@@ -26,7 +26,9 @@ use crate::contracts::commands::{
     LauncherFolder, RefPickerRequest, SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::navigation::{CompareField, NavigationAction, RepositorySyncReason};
-use crate::contracts::review::{GitHubRequest, ReviewAction, ReviewEffect, ReviewEvent};
+use crate::contracts::review::{
+    GitHubRequest, PullsAction, ReviewAction, ReviewEffect, ReviewEvent,
+};
 use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{
     Action, Controller, Effect, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
@@ -408,10 +410,12 @@ fn palette_hands_a_pull_request_url_to_review() {
     assert_eq!(ui.focus(), Some(PICKER));
     ui.type_text("https://github.com/o/r/pull/7");
     ui.key("enter");
-    assert!(ui.app().intents.iter().any(|i| matches!(
-        i,
-        Intent::OpenPullRequest { url } if url == "https://github.com/o/r/pull/7"
-    )));
+    assert_eq!(
+        ui.app().dispatched,
+        vec![Action::from(ReviewAction::from(PullsAction::ReviewLink {
+            url: "https://github.com/o/r/pull/7".to_owned(),
+        }))]
+    );
     assert_eq!(ui.focus(), Some(SIDEBAR));
 }
 
@@ -425,9 +429,9 @@ fn pasting_a_pull_request_link_into_the_palette_opens_it() {
     ui.key("enter");
     assert_eq!(
         ui.app().dispatched,
-        vec![Action::from(ReviewAction::LoadPullRequest {
+        vec![Action::from(ReviewAction::from(PullsAction::ReviewLink {
             url: "https://github.com/owner/repo/pull/7".to_owned(),
-        })]
+        }))]
     );
 
     ui.run(CommandsAction::OpenCommandPalette);
@@ -603,8 +607,7 @@ fn keymap_list_scrolls_to_its_last_binding() {
     let last = |ui: &Cmd| {
         ui.find_all(Role::Button)
             .into_iter()
-            .filter(|n| n.name.as_deref().is_some_and(|n| n.starts_with("Rebind ")))
-            .last()
+            .rfind(|n| n.name.as_deref().is_some_and(|n| n.starts_with("Rebind ")))
             .unwrap()
     };
     let before = last(&ui).bounds;

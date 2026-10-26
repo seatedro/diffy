@@ -25,7 +25,7 @@ use crate::app::tokens::{self, Layout, Sp, Sz, TextStyle};
 use crate::app::{commands, delivery, mutations, navigation, review, viewport};
 use crate::contracts::commands::SettingsSection;
 use crate::contracts::commands::{CommandsAction, LauncherFolder, SettingsSnapshot, ToastUpdate};
-use crate::contracts::review::PullsAction;
+use crate::contracts::review::{PullsAction, ReviewAction};
 use crate::contracts::shared::{AccountEpoch, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, AppMessage, AppStartup, AreaDirection, Controller, Effect, Intent, LogicalFocus,
@@ -1133,6 +1133,9 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             self.ensure_focus(cx);
         }
         self.hover_event(event, cx);
+        if let InputEvent::Focused(focused) = event {
+            self.update(Action::Review(ReviewAction::WindowFocused(*focused)), cx);
+        }
         let Some(action) = commands::key_action(&self.controllers, event, cx.focus()) else {
             return false;
         };

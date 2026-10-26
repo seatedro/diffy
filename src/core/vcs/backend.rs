@@ -33,6 +33,17 @@ pub trait VcsBackend: Send + Sync {
     fn watch_paths(&self, location: &RepoLocation) -> Result<VcsWatchPaths>;
 }
 
+/// The refs a pull request's diff reads, fetched into the repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestRefs {
+    pub info: PullRequestInfo,
+    pub base: String,
+    pub head: String,
+    /// Set when `base` holds this merge base itself: a shallow fetch has
+    /// no history to find one in, so the diff runs straight from it.
+    pub merge_base: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct VcsWatchPaths {
     pub metadata_dir: PathBuf,
@@ -156,7 +167,7 @@ pub trait VcsRepository: Send {
         &mut self,
         _pull_request_url: &str,
         _github_token: &str,
-    ) -> Result<(PullRequestInfo, String, String)> {
+    ) -> Result<PullRequestRefs> {
         Err(unsupported_operation(
             self.location(),
             "GitHub pull request comparison",

@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
@@ -237,6 +237,16 @@ pub fn app_cache_dir() -> Option<PathBuf> {
     config_dir_override()
         .map(|dir| dir.join("cache"))
         .or_else(|| dirs::cache_dir().map(|base| base.join(APP_DIR_NAME)))
+}
+
+/// One repository per GitHub repository whose pull requests were reviewed
+/// without a clone: rebuilt on demand, so a cache.
+pub fn review_cache_dir() -> Option<PathBuf> {
+    app_cache_dir().map(|dir| dir.join("pull-requests"))
+}
+
+pub fn is_review_cache(path: &Path) -> bool {
+    review_cache_dir().is_some_and(|dir| path.starts_with(dir))
 }
 
 pub fn app_log_dir() -> Option<PathBuf> {

@@ -12,9 +12,9 @@ pub use api::{
     GitHubPullRequestReviewEvent, GitHubPullRequestReviewThread,
     GitHubPullRequestReviewThreadComment, GitHubReviewCommentUser, GitHubReviewSide,
     GitHubReviewThreadResolution, GitHubUser, PullRequestCheckContext, PullRequestCheckSummary,
-    PullRequestInfo, PullRequestLabel, PullRequestReview, PullRequestReviewComment,
-    PullRequestReviewMetadata, PullRequestReviewRequest, PullRequestReviewSummary,
-    SubmitPullRequestReview, UpdatePullRequestReviewComment,
+    PullRequestFingerprint, PullRequestInfo, PullRequestLabel, PullRequestReview,
+    PullRequestReviewComment, PullRequestReviewMetadata, PullRequestReviewRequest,
+    PullRequestReviewSummary, SubmitPullRequestReview, UpdatePullRequestReviewComment,
 };
 pub use device_flow::{DeviceFlowState, poll_for_token, start_device_flow};
 pub use my_pulls::{MyPullRequest, PullRequestStats};

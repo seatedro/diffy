@@ -23,8 +23,8 @@ use crate::contracts::navigation::{
     RepositoryContext, RepositoryRevision, RepositorySnapshot, RepositorySyncReason,
 };
 use crate::contracts::review::{
-    AvatarImage, CardKey, GitHubRequest, GitHubResponse, PullRequestComparison, PullRequestRef,
-    PullsAction, ReviewAction, ReviewEffect, ReviewEvent, Secret,
+    AvatarImage, CardKey, GitHubRequest, GitHubResponse, HeadChange, PullRequestComparison,
+    PullRequestRef, PullWatch, PullsAction, ReviewAction, ReviewEffect, ReviewEvent, Secret,
 };
 use crate::contracts::shared::{
     AccountEpoch, CompareGeneration, FileKey, FileRevision, SharedContext, Side, SourceTarget,
@@ -40,8 +40,9 @@ use crate::core::forge::github::{
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThread,
     GitHubPullRequestReviewThreadComment, GitHubReviewSide, GitHubReviewThreadResolution,
     GitHubUser, MyPullRequest, PullRequestActor, PullRequestCheckContext, PullRequestCheckSummary,
-    PullRequestInfo, PullRequestLabel, PullRequestOverview, PullRequestReview, PullRequestReviewer,
-    PullRequestStats, PullRequestTimelineItem, PullRequestTimelineKind,
+    PullRequestFingerprint, PullRequestInfo, PullRequestLabel, PullRequestOverview,
+    PullRequestReview, PullRequestReviewer, PullRequestStats, PullRequestTimelineItem,
+    PullRequestTimelineKind,
 };
 use crate::core::review::{
     ReviewAnchor, ReviewComment, ReviewCommentId, ReviewDecision, ReviewDraftKind,
@@ -81,6 +82,7 @@ fn comparison(number: i32) -> PullRequestComparison {
         info: info(number),
         left_ref: format!("refs/diffy/pr/{number}/base"),
         right_ref: format!("refs/diffy/pr/{number}/head"),
+        merge_base: None,
     }
 }
 
@@ -207,6 +209,8 @@ struct Script {
     fail_overview: bool,
     pulls: Vec<MyPullRequest>,
     fail_pulls: bool,
+    /// The pull request's head, when not `info`'s.
+    head: Option<String>,
     requests: Vec<GitHubRequest>,
 }
 
@@ -232,8 +236,16 @@ impl GitHubBackend for FakeGitHub {
                 s.fail_overview,
             )
         });
-        let (pulls, fail_pulls) = self.with(|s| (s.pulls.clone(), s.fail_pulls));
+        let (pulls, fail_pulls, head) =
+            self.with(|s| (s.pulls.clone(), s.fail_pulls, s.head.clone()));
         let pr_number = |url: &str| if url == OTHER_URL { 7 } else { 42 };
+        let comparison = |number| {
+            let mut comparison = comparison(number);
+            if let Some(head) = &head {
+                comparison.info.head_sha = head.clone();
+            }
+            comparison
+        };
         match request {
             GitHubRequest::LoadPullRequest { url, .. } => {
                 let number = pr_number(&url);
@@ -246,6 +258,29 @@ impl GitHubBackend for FakeGitHub {
                 emit(GitHubResponse::PullRequestLoaded {
                     url,
                     comparison: comparison(number),
+                });
+            }
+            GitHubRequest::CheckPullRequest { pr, head_sha, .. } => {
+                let info = comparison(pr.number).info;
+                let change = if info.head_sha == head_sha {
+                    HeadChange::Same
+                } else {
+                    HeadChange::Ahead(1)
+                };
+                emit(GitHubResponse::PullRequestChecked {
+                    pr,
+                    now: Box::new(PullRequestFingerprint {
+                        title: info.title,
+                        state: info.state,
+                        merged: info.merged,
+                        draft: info.draft,
+                        head_sha: info.head_sha,
+                        base_branch: info.base_branch,
+                        ..PullRequestFingerprint::default()
+                    }),
+                    change,
+                    remarks_changed: false,
+                    checks_changed: false,
                 });
             }
             GitHubRequest::FetchUser { .. } => emit(GitHubResponse::UserFetched(GitHubUser {
@@ -539,13 +574,24 @@ impl Fake {
             ReviewEffect::LoadToken => events.push(ReviewEvent::TokenLoaded {
                 token: Some(Secret::new("stored-token")),
             }),
-            ReviewEffect::SaveToken(_) | ReviewEffect::ClearToken => {}
+            ReviewEffect::SaveToken(_)
+            | ReviewEffect::ClearToken
+            | ReviewEffect::WatchPullRequest(_) => {}
             ReviewEffect::LoadSession {
                 scope,
                 target,
                 pull_request,
+                repo_path,
+                merge_base,
+                carry,
             } => events.push(
-                match self.services.load_session(target.clone(), *pull_request) {
+                match self.services.load_session(
+                    target.clone(),
+                    *pull_request,
+                    repo_path.as_deref(),
+                    merge_base.as_deref(),
+                    carry.map(|carry| *carry),
+                ) {
                     Ok(session) => ReviewEvent::SessionLoaded {
                         scope,
                         target,
@@ -568,6 +614,12 @@ impl Fake {
                 job,
                 clones: self.clones.clone(),
             }),
+            ReviewEffect::PrepareReviewCache { repo } => {
+                events.push(ReviewEvent::ReviewCacheReady {
+                    result: Ok(PathBuf::from("/tmp/review-cache").join(&repo)),
+                    repo,
+                })
+            }
             ReviewEffect::ValidateClone { repo, path } => {
                 let result = if path.ends_with("unrelated") {
                     Err(format!("No remote in {} points at {repo}.", path.display()))
@@ -708,11 +760,53 @@ impl Driver {
     }
 
     fn open_repository(&mut self) {
+        self.open_repository_at(PathBuf::from("/tmp/repo"));
+    }
+
+    fn open_repository_at(&mut self, path: PathBuf) {
         self.intent(Intent::RepositoryChanged(Rc::new(RepositoryContext {
             revision: RepositoryRevision(1),
-            snapshot: Arc::new(repository_snapshot(PathBuf::from("/tmp/repo"))),
+            snapshot: Arc::new(repository_snapshot(path)),
         })));
         self.intent(Intent::PublishManifest(manifest()));
+    }
+
+    /// Runs the pull request watch once, as its thread would.
+    fn check_pull_request(&mut self) {
+        let Some(ReviewEffect::WatchPullRequest(PullWatch::Start {
+            scope, pr, info, ..
+        })) = self
+            .fake
+            .effects
+            .iter()
+            .rev()
+            .find(|effect| {
+                matches!(
+                    effect,
+                    ReviewEffect::WatchPullRequest(PullWatch::Start { .. })
+                )
+            })
+            .cloned()
+        else {
+            panic!("the pull request is not watched");
+        };
+        let mut events = Vec::new();
+        self.fake.services.github().execute(
+            GitHubRequest::CheckPullRequest {
+                pr,
+                token: None,
+                head_sha: info.head_sha,
+            },
+            &mut |response| {
+                events.push(ReviewEvent::GitHub {
+                    scope,
+                    response: Box::new(response),
+                })
+            },
+        );
+        for event in events {
+            self.deliver(event);
+        }
     }
 
     fn signed_in_with_pr() -> Self {
@@ -1003,6 +1097,177 @@ fn drafts_persist_across_a_simulated_restart() {
 
     driver.act(ReviewAction::ReplyToThread(driver.thread()));
     assert_eq!(driver.review.host.composer_text(), "Half-written reply");
+}
+
+/// A repository whose `src/widget.rs` has 30 lines, then two more at the
+/// top and line 25 rewritten; returns both commits.
+fn pushed_repo(dir: &Path) -> (String, String) {
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let lines = |top: &[&str], line_25: &str| {
+        let mut text: String = top.iter().map(|line| format!("{line}\n")).collect();
+        for n in 1..=30 {
+            if n == 25 {
+                text.push_str(line_25);
+            } else {
+                text.push_str(&format!("line {n}"));
+            }
+            text.push('\n');
+        }
+        text
+    };
+    git(&["init", "-q"]);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/widget.rs"), lines(&[], "line 25")).unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first"]);
+    let first = git(&["rev-parse", "HEAD"]);
+    std::fs::write(
+        dir.join("src/widget.rs"),
+        lines(&["use a;", "use b;"], "line 25, renamed"),
+    )
+    .unwrap();
+    git(&["commit", "-qam", "second"]);
+    (first, git(&["rev-parse", "HEAD"]))
+}
+
+#[test]
+fn a_push_waits_for_update_and_drafts_follow_their_lines() {
+    let repo = tempfile::tempdir().unwrap();
+    let (first, second) = pushed_repo(repo.path());
+    let mut driver = Driver::new(Fake::new());
+    driver.fake.github.with(|s| s.head = Some(first.clone()));
+    driver.startup(Some(URL));
+    driver.open_repository_at(repo.path().to_path_buf());
+    for (lines, body) in [
+        (19..20, "Still here."),
+        (24..25, "This line changes."),
+        (4..5, "nit"),
+        (9..10, "nit"),
+    ] {
+        driver.act(ReviewAction::OpenComposerAt(target(lines)));
+        driver.type_text(body);
+        driver.act(ReviewAction::SubmitComment);
+    }
+    // Half written when the update comes: kept, and moved with the rest.
+    driver.act(ReviewAction::OpenComposerAt(target(14..15)));
+    driver.type_text("Half written");
+
+    driver.fake.github.with(|s| s.head = Some(second.clone()));
+    let compares = driver.compares;
+    driver.check_pull_request();
+    let active = driver.review.active_pull_request().unwrap();
+    assert_eq!(active.update, Some(HeadChange::Ahead(1)));
+    assert_eq!(driver.compares, compares, "the diff waits for the reviewer");
+
+    driver.act(ReviewAction::UpdatePullRequest);
+    assert_eq!(driver.compares, compares + 1);
+    let active = driver.review.active_pull_request().unwrap();
+    assert_eq!(active.update, None);
+    let session = driver.session();
+    assert_eq!(session.pull_request.head_sha, second);
+    let draft = |body: &str| {
+        session
+            .drafts
+            .values()
+            .find(|draft| draft.body == body)
+            .unwrap()
+            .clone()
+    };
+    let kept = draft("Still here.");
+    assert_eq!(
+        kept.anchor.unwrap().line_range,
+        Some(ReviewLineRange::new(22, 1))
+    );
+    let outdated = draft("This line changes.");
+    assert!(outdated.is_outdated());
+    assert_eq!(
+        outdated.anchor.unwrap().original_line_range,
+        Some(ReviewLineRange::new(25, 1))
+    );
+    let line = |draft: &crate::core::review::ReviewDraft| {
+        draft.anchor.as_ref().unwrap().line_range.unwrap().start
+    };
+    let mut nits: Vec<u32> = session
+        .drafts
+        .values()
+        .filter(|draft| draft.body == "nit")
+        .map(line)
+        .collect();
+    nits.sort();
+    assert_eq!(
+        nits,
+        vec![7, 12],
+        "same words on other lines are other drafts"
+    );
+    assert_eq!(line(&draft("Half written")), 17);
+    assert!(driver.review.composer().is_none());
+    assert_eq!(session.drafts.len(), 5);
+    let Some(ReviewEffect::SaveSession { session: saved, .. }) = driver
+        .fake
+        .effects
+        .iter()
+        .rev()
+        .find(|effect| matches!(effect, ReviewEffect::SaveSession { .. }))
+    else {
+        panic!("the followed drafts are saved");
+    };
+    assert_eq!(
+        saved.drafts.len(),
+        5,
+        "the last save holds the followed drafts"
+    );
+    assert!(
+        session
+            .build_github_review_request(ReviewDecision::Comment, None)
+            .is_err(),
+        "an outdated draft is never posted to a line it no longer means"
+    );
+}
+
+#[test]
+fn drafts_left_on_an_older_head_follow_it_after_a_restart() {
+    let repo = tempfile::tempdir().unwrap();
+    let (first, second) = pushed_repo(repo.path());
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut driver = Driver::new(Fake::at(dir.path()));
+        driver.fake.github.with(|s| s.head = Some(first.clone()));
+        driver.startup(Some(URL));
+        driver.open_repository_at(repo.path().to_path_buf());
+        driver.act(ReviewAction::OpenComposerAt(target(19..20)));
+        driver.type_text("Still here.");
+        driver.act(ReviewAction::SubmitComment);
+    }
+
+    let mut driver = Driver::new(Fake::at(dir.path()));
+    driver.fake.github.with(|s| s.head = Some(second.clone()));
+    driver.startup(Some(URL));
+    driver.open_repository_at(repo.path().to_path_buf());
+    let drafts: Vec<_> = driver.session().drafts.values().collect();
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(
+        drafts[0].anchor.as_ref().unwrap().line_range,
+        Some(ReviewLineRange::new(22, 1))
+    );
+
+    // Moved once: reopening doesn't bring a second copy.
+    let mut driver = Driver::new(Fake::at(dir.path()));
+    driver.fake.github.with(|s| s.head = Some(second.clone()));
+    driver.startup(Some(URL));
+    driver.open_repository_at(repo.path().to_path_buf());
+    assert_eq!(driver.session().drafts.len(), 1);
 }
 
 #[test]
@@ -2836,7 +3101,7 @@ fn enter_reviews_in_the_open_repository() {
 }
 
 #[test]
-fn enter_opens_a_known_clone_or_asks_to_locate_one() {
+fn enter_opens_a_known_clone_or_the_review_cache() {
     let mut driver = pulls_driver();
     driver.act(pulls(PullsAction::Open));
     driver.act(pulls(PullsAction::Select(pull_url(9))));
@@ -2850,9 +3115,19 @@ fn enter_opens_a_known_clone_or_asks_to_locate_one() {
     driver.act(pulls(PullsAction::Open));
     driver.act(pulls(PullsAction::Select(pull_url(3))));
     driver.act(pulls(PullsAction::Review));
-    assert_eq!(driver.dialogs, vec!["elsewhere/thing".to_owned()]);
-    assert!(driver.review.pulls_open());
+    assert!(driver.dialogs.is_empty(), "no clone is no reason to ask");
+    assert_eq!(
+        driver.activated.last(),
+        Some(&PathBuf::from("/tmp/review-cache/elsewhere/thing"))
+    );
+    assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 3);
+    assert!(!driver.review.pulls_open());
 
+    // Linking a clone puts later reviews there.
+    driver.act(pulls(PullsAction::Open));
+    driver.act(pulls(PullsAction::Select(pull_url(3))));
+    driver.act(pulls(PullsAction::LocateClone));
+    assert_eq!(driver.dialogs, vec!["elsewhere/thing".to_owned()]);
     driver.act(pulls(PullsAction::CloneChosen {
         repo: "elsewhere/thing".to_owned(),
         path: PathBuf::from("/tmp/unrelated"),
@@ -2861,14 +3136,10 @@ fn enter_opens_a_known_clone_or_asks_to_locate_one() {
         driver.errors(),
         vec!["No remote in /tmp/unrelated points at elsewhere/thing.".to_owned()]
     );
-    assert!(driver.review.pulls_open());
-
-    driver.act(pulls(PullsAction::Review));
     driver.act(pulls(PullsAction::CloneChosen {
         repo: "elsewhere/thing".to_owned(),
         path: PathBuf::from("/tmp/thing"),
     }));
-
     assert_eq!(
         driver
             .shared
@@ -2878,34 +3149,30 @@ fn enter_opens_a_known_clone_or_asks_to_locate_one() {
             .get("elsewhere/thing"),
         Some(&PathBuf::from("/tmp/thing"))
     );
+    driver.act(pulls(PullsAction::Review));
     assert_eq!(driver.activated.last(), Some(&PathBuf::from("/tmp/thing")));
-    assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 3);
     assert!(!driver.review.pulls_open());
 }
 
-/// A `diffy://` link names only the repository, so the clone has to be found
-/// (or located) across three async steps before the review opens.
+/// A `diffy://` link names only the repository, so a clone has to be
+/// found, or the review cache made ready, before the review opens.
 #[test]
-fn links_review_in_a_found_or_located_clone() {
+fn links_review_in_a_found_clone_or_the_review_cache() {
     let mut driver = pulls_driver();
     driver.act(pulls(PullsAction::ReviewLink {
         url: "https://github.com/owner/gadget/pull/9".to_owned(),
     }));
     assert_eq!(driver.activated, vec![PathBuf::from("/tmp/gadget")]);
     assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 9);
-    assert!(driver.dialogs.is_empty());
 
     driver.act(pulls(PullsAction::ReviewLink {
         url: "https://github.com/elsewhere/thing/pull/3".to_owned(),
     }));
-    assert_eq!(driver.dialogs, vec!["elsewhere/thing".to_owned()]);
-    assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 9);
-
-    driver.act(pulls(PullsAction::CloneChosen {
-        repo: "elsewhere/thing".to_owned(),
-        path: PathBuf::from("/tmp/thing"),
-    }));
-    assert_eq!(driver.activated.last(), Some(&PathBuf::from("/tmp/thing")));
+    assert!(driver.dialogs.is_empty());
+    assert_eq!(
+        driver.activated.last(),
+        Some(&PathBuf::from("/tmp/review-cache/elsewhere/thing"))
+    );
     let active = driver.review.active_pull_request().unwrap();
     assert_eq!((active.pr.repo.as_str(), active.pr.number), ("thing", 3));
 

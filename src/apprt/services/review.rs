@@ -1,27 +1,35 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::contracts::review::{
-    AvatarImage, GitHubRequest, GitHubResponse, PullRequestComparison, PullRequestRef, Secret,
+    AvatarImage, DraftCarry, GitHubRequest, GitHubResponse, HeadChange, PullRequestComparison,
+    PullRequestRef, Secret,
 };
 use crate::core::compare::{LayoutMode, RendererKind};
 use crate::core::error::{DiffyError, Result};
 use crate::core::forge::github::{
-    DeviceFlowState, GitHubApi, PullRequestInfo, parse_pr_url, poll_for_token, start_device_flow,
+    DeviceFlowState, GitHubApi, PullRequestFingerprint, PullRequestInfo, parse_pr_url,
+    poll_for_token, start_device_flow,
 };
 use crate::core::frecency::{FrecencyStore, recent_repo_paths};
 use crate::core::http;
 use crate::core::repo_discovery;
-use crate::core::review::{ReviewSession, ReviewSessionKey, ReviewTarget};
+use crate::core::review::{
+    ReviewDraft, ReviewDraftKind, ReviewSession, ReviewSessionKey, ReviewSide, ReviewTarget,
+};
 use crate::core::vcs::discovery;
-use crate::core::vcs::git::{github_remotes, pr_ref_path};
-use crate::core::vcs::model::{VcsCompareRequest, VcsCompareSpec, VcsKind};
+use crate::core::vcs::git::{
+    LineHunk, github_remotes, init_pull_request_cache, is_pull_request_cache, line_hunks,
+    merge_base_oid, pr_ref_paths, ref_oid,
+};
+use crate::core::vcs::model::{VcsCompareRequest, VcsKind};
 use crate::platform::persistence::SettingsStore;
 use crate::platform::review_store::ReviewStore;
 use crate::platform::secrets;
+use crate::platform::startup::{is_review_cache, review_cache_dir};
 
 const DEV_GITHUB_TOKEN_FILE_NAME: &str = "github-token.dev";
 const CLONE_CANDIDATES: usize = 400;
@@ -105,15 +113,63 @@ impl ReviewServices {
         Ok(self.settings_store.dir().join(DEV_GITHUB_TOKEN_FILE_NAME))
     }
 
+    /// The session for `pull_request`'s head. Drafts not yet posted on an
+    /// earlier head, `carry`'s or ones left in the store, follow it there:
+    /// moved to where their lines went, or outdated when those lines
+    /// changed.
     pub fn load_session(
         &self,
         target: ReviewTarget,
         pull_request: PullRequestInfo,
+        repo_path: Option<&Path>,
+        merge_base: Option<&str>,
+        carry: Option<DraftCarry>,
     ) -> Result<ReviewSession> {
-        Ok(self
+        let head = pull_request.head_sha.clone();
+        let mut session = self
             .review_store
-            .load_session(&target, &pull_request.head_sha)?
-            .unwrap_or_else(|| ReviewSession::new(target, pull_request)))
+            .load_session(&target, &head)?
+            .unwrap_or_else(|| ReviewSession::new(target.clone(), pull_request.clone()));
+        let mut earlier: Vec<ReviewSession> = self
+            .review_store
+            .load_sessions_for_target(&target)?
+            .into_iter()
+            .filter(|old| old.pull_request.head_sha != head && old.has_unposted_drafts())
+            .collect();
+        let carry_head = carry.as_ref().map(|carry| carry.from.head_sha.clone());
+        let mut carried = Vec::new();
+        for old in &mut earlier {
+            let drafts = old.take_unposted_drafts();
+            // In memory, carry's drafts are newer than the ones saved for
+            // its head: those are only cleared.
+            if carry_head.as_deref() != Some(old.pull_request.head_sha.as_str()) {
+                carried.push((old.pull_request.clone(), None, drafts));
+            }
+        }
+        if let Some(carry) = carry {
+            carried.push((carry.from, carry.from_merge_base, carry.drafts));
+        }
+        if carried.is_empty() {
+            return Ok(session);
+        }
+        let to = Commits {
+            info: &pull_request,
+            merge_base,
+        };
+        for (from, from_merge_base, drafts) in carried {
+            let from = Commits {
+                info: &from,
+                merge_base: from_merge_base.as_deref(),
+            };
+            session.adopt_drafts(follow_drafts(repo_path, &from, &to, drafts));
+        }
+        // The new head's session first: drafts are cleared from the old
+        // ones only once they are safe there.
+        self.review_store.save_session(&session)?;
+        for old in &earlier {
+            self.review_store.save_session(old)?;
+        }
+        Ok(session)
     }
 
     pub fn save_session(&self, session: &ReviewSession) -> Result<ReviewSessionKey> {
@@ -135,9 +191,11 @@ impl ReviewServices {
         let mut seen = HashSet::new();
         let mut clones: Vec<(String, PathBuf)> = Vec::new();
         let candidates = current.into_iter().chain(recent).chain(discovered);
+        // A review cache stands in only for a repository with no clone.
         for path in candidates
             .filter(|path| seen.insert(path.clone()))
             .take(CLONE_CANDIDATES)
+            .filter(|path| !is_review_cache(path))
         {
             let Ok((root, keys)) = github_remotes(&path) else {
                 continue;
@@ -149,6 +207,29 @@ impl ReviewServices {
             }
         }
         clones
+    }
+
+    /// The repository kept for reviewing `repo`'s pull requests without a
+    /// clone, made on first use.
+    pub fn prepare_review_cache(&self, repo: &str) -> Result<PathBuf> {
+        let valid = |part: &str| {
+            !part.is_empty()
+                && !part.starts_with('.')
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        };
+        let Some((owner, name)) = repo.split_once('/').filter(|(o, n)| valid(o) && valid(n)) else {
+            return Err(DiffyError::Parse(format!(
+                "{repo} is not a GitHub repository"
+            )));
+        };
+        let dir = review_cache_dir()
+            .ok_or_else(|| DiffyError::General("no cache directory to keep it in".to_owned()))?
+            .join(owner.to_ascii_lowercase())
+            .join(name.to_ascii_lowercase());
+        init_pull_request_cache(&dir, owner, name)?;
+        Ok(dir)
     }
 
     pub fn validate_clone(&self, repo: &str, path: &Path) -> Result<PathBuf> {
@@ -229,7 +310,8 @@ impl LiveGitHub {
             repo = discovery::open_git_repository(repo_path)?;
         }
         let stage_started = Instant::now();
-        let (info, left_ref, right_ref) = repo.resolve_pull_request_comparison(url, &token)?;
+        let refs = repo.resolve_pull_request_comparison(url, &token)?;
+        let info = refs.info;
         tracing::info!(
             owner = %parsed.owner,
             repo = %parsed.repo,
@@ -241,8 +323,9 @@ impl LiveGitHub {
         );
         Ok(PullRequestComparison {
             info,
-            left_ref,
-            right_ref,
+            left_ref: refs.base,
+            right_ref: refs.head,
+            merge_base: refs.merge_base,
         })
     }
 
@@ -270,18 +353,30 @@ impl LiveGitHub {
             repo = git_repo;
         }
 
+        let shallow = is_pull_request_cache(repo_path);
         for session in sessions.into_iter().rev() {
             let info = session.pull_request;
             if info.base_branch.is_empty() || info.head_branch.is_empty() {
                 continue;
             }
-            let left_ref = pr_ref_path(info.number, &info.base_branch);
-            let right_ref = pr_ref_path(info.number, &info.head_branch);
+            let (left_ref, right_ref) =
+                pr_ref_paths(info.number, &info.base_branch, &info.head_branch);
+            let merge_base = if shallow {
+                match ref_oid(repo_path, &left_ref) {
+                    Ok(oid) => Some(oid),
+                    Err(_) => continue,
+                }
+            } else {
+                None
+            };
+            let comparison = PullRequestComparison {
+                left_ref,
+                right_ref,
+                info,
+                merge_base,
+            };
             let request = VcsCompareRequest {
-                spec: VcsCompareSpec::MergeBaseRange {
-                    base: left_ref.clone(),
-                    head: right_ref.clone(),
-                },
+                spec: comparison.spec(),
                 layout: LayoutMode::default(),
                 renderer: RendererKind::default(),
             };
@@ -292,16 +387,77 @@ impl LiveGitHub {
                     number = target.number,
                     "github-pr: using cached comparison refs"
                 );
-                return Ok(Some(PullRequestComparison {
-                    info,
-                    left_ref,
-                    right_ref,
-                }));
+                return Ok(Some(comparison));
             }
         }
 
         Ok(None)
     }
+}
+
+/// Moves `drafts` written on `from`'s head to `to`'s: new-side lines
+/// through the diff between the heads, old-side lines through the diff
+/// between the merge bases. Lines a change touched, or that can't be
+/// followed, make the draft outdated rather than land somewhere wrong.
+/// A head and, when it was fetched without history, its merge base.
+struct Commits<'a> {
+    info: &'a PullRequestInfo,
+    merge_base: Option<&'a str>,
+}
+
+impl Commits<'_> {
+    fn merge_base(&self, repo: &Path) -> Option<String> {
+        match self.merge_base {
+            Some(oid) => Some(oid.to_owned()),
+            None => merge_base_oid(repo, &self.info.base_sha, &self.info.head_sha).ok(),
+        }
+    }
+}
+
+fn follow_drafts(
+    repo_path: Option<&Path>,
+    from: &Commits,
+    to: &Commits,
+    mut drafts: Vec<ReviewDraft>,
+) -> Vec<ReviewDraft> {
+    let mut bases: Option<Option<(String, String)>> = None;
+    let mut hunks: HashMap<(ReviewSide, String), Option<Vec<LineHunk>>> = HashMap::new();
+    for draft in &mut drafts {
+        if !matches!(draft.kind, ReviewDraftKind::InlineComment) {
+            continue;
+        }
+        let Some(anchor) = draft.anchor.as_mut() else {
+            continue;
+        };
+        let (Some(side), Some(lines)) = (anchor.side, anchor.line_range) else {
+            continue;
+        };
+        let commits = match side {
+            ReviewSide::New => Some((from.info.head_sha.clone(), to.info.head_sha.clone())),
+            ReviewSide::Old => bases
+                .get_or_insert_with(|| {
+                    let repo = repo_path?;
+                    Some((from.merge_base(repo)?, to.merge_base(repo)?))
+                })
+                .clone(),
+        };
+        let followed = commits.and_then(|(old, new)| {
+            if old == new {
+                return Some(lines);
+            }
+            let hunks = hunks.entry((side, anchor.path.clone())).or_insert_with(|| {
+                line_hunks(repo_path?, &old, &new, &anchor.path)
+                    .inspect_err(|error| tracing::warn!("could not follow a draft: {error}"))
+                    .ok()
+            });
+            lines.follow(hunks.as_deref()?)
+        });
+        match followed {
+            Some(lines) => anchor.line_range = Some(lines),
+            None => anchor.mark_outdated(),
+        }
+    }
+    drafts
 }
 
 fn api(token: Option<Secret>) -> GitHubApi {
@@ -572,6 +728,60 @@ impl GitHubBackend for LiveGitHub {
                     message: error.user_message(),
                 },
             },
+            GitHubRequest::CheckPullRequest {
+                pr,
+                token,
+                head_sha,
+            } => {
+                let api = public_api(token);
+                // Signed in, one GraphQL read sees comments and checks too;
+                // signed out, GraphQL isn't open, so REST sees the rest.
+                let now = if api.has_token() {
+                    api.fetch_pull_request_fingerprint(&pr.owner, &pr.repo, pr.number)
+                } else {
+                    api.fetch_pull_request(&pr.owner, &pr.repo, pr.number)
+                        .map(|info| PullRequestFingerprint {
+                            title: info.title,
+                            state: info.state,
+                            merged: info.merged,
+                            draft: info.draft,
+                            head_sha: info.head_sha,
+                            base_branch: info.base_branch,
+                            ..PullRequestFingerprint::default()
+                        })
+                };
+                match now {
+                    Ok(now) => {
+                        let change = if now.head_sha == head_sha {
+                            HeadChange::Same
+                        } else {
+                            match api.compare_commits(&pr.owner, &pr.repo, &head_sha, &now.head_sha)
+                            {
+                                Ok(compared) if compared.status == "identical" => HeadChange::Same,
+                                Ok(compared) if compared.status == "ahead" => {
+                                    HeadChange::Ahead(compared.ahead_by)
+                                }
+                                Ok(_) => HeadChange::Rewritten,
+                                Err(error) => {
+                                    tracing::warn!("could not compare pull request heads: {error}");
+                                    HeadChange::Moved
+                                }
+                            }
+                        };
+                        GitHubResponse::PullRequestChecked {
+                            pr,
+                            now: Box::new(now),
+                            change,
+                            remarks_changed: false,
+                            checks_changed: false,
+                        }
+                    }
+                    Err(error) => GitHubResponse::PullRequestCheckFailed {
+                        pr,
+                        message: error.user_message(),
+                    },
+                }
+            }
             GitHubRequest::FetchMyPullRequests { token } => {
                 match GitHubApi::with_token(token.into_inner()).fetch_my_pull_requests() {
                     Ok(pulls) => GitHubResponse::MyPullRequestsLoaded(pulls),

@@ -991,7 +991,7 @@ pub fn hint_bar(
             (C::NextThread, "thread"),
             (C::NextFile, "file"),
             (C::ReviewComment, "comment"),
-            (C::ReviewReply, "reply"),
+            (C::RefreshPullRequest, "refresh"),
             (C::ReviewResolve, "resolve"),
             (C::ReviewMarkViewed, "viewed"),
             (C::SubmitReview, "submit"),

@@ -1740,7 +1740,12 @@ impl NavigationController {
             Intent::SetReviewTarget(Some(review)) => {
                 self.compare.left = review.left_ref.clone();
                 self.compare.right = review.right_ref.clone();
-                self.compare.mode = CompareMode::ThreeDot;
+                // A shallow fetch has no history to find a merge base in.
+                self.compare.mode = if review.left_is_merge_base {
+                    CompareMode::TwoDot
+                } else {
+                    CompareMode::ThreeDot
+                };
                 self.compare.working_copy = false;
                 self.review_labels = Some((
                     review.pull_request.base_branch.clone(),

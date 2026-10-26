@@ -85,7 +85,7 @@ pub const TIPS: &[Tip] = &[
         title: "Review from the keyboard",
         keys: &[
             (ShortcutCommand::NextThread, "next thread"),
-            (ShortcutCommand::ReviewReply, "reply"),
+            (ShortcutCommand::ReviewComment, "reply"),
             (ShortcutCommand::ReviewResolve, "resolve"),
             (ShortcutCommand::ReviewMarkViewed, "viewed, next file"),
         ],

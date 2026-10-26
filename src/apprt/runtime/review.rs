@@ -2,11 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::apprt::services::ReviewServices;
+use crate::apprt::services::{GitHubBackend, ReviewServices};
 use crate::apprt::transport::ScopedEventSender;
-use crate::contracts::review::{ReviewEffect, ReviewEvent, ReviewScope};
+use crate::contracts::review::{
+    GitHubRequest, GitHubResponse, PullRequestRef, PullWatch, ReviewEffect, ReviewEvent,
+    ReviewScope, Secret,
+};
+use crate::core::forge::github::{PullRequestFingerprint, PullRequestInfo};
 use crate::core::review::ReviewSession;
 use crate::platform::startup::GitHubTokenStore;
 
@@ -106,16 +110,239 @@ fn write_drafts(services: &ReviewServices, pending: &mut HashMap<String, DraftSa
     }
 }
 
+/// How often the open pull request is checked, after T3 Code's sync: a
+/// pull request someone is working on every half minute, one that went
+/// quiet every five, a closed one in case it reopens, a merged one not
+/// at all. Signed in, a check is one small GraphQL read; signed out,
+/// REST, at 60 requests an hour.
+const WATCH_ACTIVE: Duration = Duration::from_secs(30);
+const WATCH_QUIET: Duration = Duration::from_secs(5 * 60);
+const WATCH_CLOSED: Duration = Duration::from_secs(15 * 60);
+const WATCH_SIGNED_OUT: Duration = Duration::from_secs(5 * 60);
+/// A pull request with nothing new for this long is quiet.
+const WATCH_QUIET_AFTER: Duration = Duration::from_secs(30 * 60);
+/// Coming back to the window checks at once when the last check is
+/// older than this. Signed out, every request counts, however often the
+/// window is left and come back to.
+const WATCH_REFOCUS: Duration = Duration::from_secs(10);
+
+struct Watch {
+    scope: ReviewScope,
+    pr: PullRequestRef,
+    token: Option<Secret>,
+    /// The head the review shows: how the pull request moved is always
+    /// told against it, however many pushes were seen since.
+    loaded_head: String,
+    /// What the last check saw.
+    known: PullRequestFingerprint,
+    /// `known` has comments and checks to compare: the first check only
+    /// learns them.
+    marks_known: bool,
+    events: ScopedEventSender,
+    checked: Instant,
+    /// When a check last found something new.
+    changed: Instant,
+}
+
+impl Watch {
+    fn new(
+        scope: ReviewScope,
+        pr: PullRequestRef,
+        token: Option<Secret>,
+        info: &PullRequestInfo,
+        events: ScopedEventSender,
+    ) -> Self {
+        let now = Instant::now();
+        Self {
+            scope,
+            pr,
+            token,
+            loaded_head: info.head_sha.clone(),
+            known: PullRequestFingerprint {
+                title: info.title.clone(),
+                state: info.state.clone(),
+                merged: info.merged,
+                draft: info.draft,
+                head_sha: info.head_sha.clone(),
+                base_branch: info.base_branch.clone(),
+                ..PullRequestFingerprint::default()
+            },
+            marks_known: false,
+            events,
+            checked: now,
+            changed: now,
+        }
+    }
+
+    fn signed_in(&self) -> bool {
+        self.token.as_ref().is_some_and(|token| !token.is_empty())
+    }
+
+    /// How long until the next check, or `None` for a merged pull
+    /// request, which won't change again.
+    fn interval(&self) -> Option<Duration> {
+        if self.known.merged {
+            return None;
+        }
+        Some(if !self.signed_in() {
+            WATCH_SIGNED_OUT
+        } else if self.known.state == "closed" {
+            WATCH_CLOSED
+        } else if self.changed.elapsed() >= WATCH_QUIET_AFTER {
+            WATCH_QUIET
+        } else {
+            WATCH_ACTIVE
+        })
+    }
+
+    fn refocus(&self) -> Option<Duration> {
+        let interval = self.interval()?;
+        Some(if self.signed_in() {
+            WATCH_REFOCUS
+        } else {
+            interval
+        })
+    }
+
+    /// Asks GitHub about the pull request, and reports what changed
+    /// since the last check: its head, state or title, its comments, or
+    /// its checks.
+    fn check(&mut self, github: &dyn GitHubBackend) {
+        self.checked = Instant::now();
+        let request = GitHubRequest::CheckPullRequest {
+            pr: self.pr.clone(),
+            token: self.token.clone(),
+            head_sha: self.loaded_head.clone(),
+        };
+        github.execute(request, &mut |response| match response {
+            GitHubResponse::PullRequestChecked {
+                pr, now, change, ..
+            } => {
+                let moved = moved(&self.known, &now);
+                let remarks_changed = self.marks_known && now.remarks != self.known.remarks;
+                let checks_changed = self.marks_known && now.checks != self.known.checks;
+                self.marks_known = true;
+                self.known = (*now).clone();
+                if moved || remarks_changed || checks_changed {
+                    self.changed = Instant::now();
+                    self.events.send(ReviewEvent::GitHub {
+                        scope: self.scope,
+                        response: Box::new(GitHubResponse::PullRequestChecked {
+                            pr,
+                            now,
+                            change,
+                            remarks_changed,
+                            checks_changed,
+                        }),
+                    });
+                }
+            }
+            GitHubResponse::PullRequestCheckFailed { message, .. } => {
+                tracing::debug!("pull request check failed: {message}");
+            }
+            _ => {}
+        });
+    }
+}
+
+fn moved(known: &PullRequestFingerprint, now: &PullRequestFingerprint) -> bool {
+    known.head_sha != now.head_sha
+        || known.base_branch != now.base_branch
+        || known.state != now.state
+        || known.merged != now.merged
+        || known.draft != now.draft
+        || known.title != now.title
+}
+
+struct PullWatcher {
+    sender: Option<Sender<(PullWatch, ScopedEventSender)>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl PullWatcher {
+    fn new(github: Arc<dyn GitHubBackend>) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("diffy-review-watch".to_owned())
+            .spawn(move || watch_loop(github.as_ref(), &receiver))
+            .ok();
+        Self {
+            sender: Some(sender),
+            worker,
+        }
+    }
+
+    fn send(&self, command: PullWatch, events: ScopedEventSender) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send((command, events));
+        }
+    }
+}
+
+impl Drop for PullWatcher {
+    fn drop(&mut self) {
+        // Not joined: a check in flight can take a network timeout, and
+        // nothing it would report matters once the app is closing.
+        self.sender = None;
+        self.worker = None;
+    }
+}
+
+fn watch_loop(github: &dyn GitHubBackend, receiver: &Receiver<(PullWatch, ScopedEventSender)>) {
+    let mut watch: Option<Watch> = None;
+    let mut focused = true;
+    loop {
+        let wait = watch
+            .as_ref()
+            .filter(|_| focused)
+            .and_then(|watch| Some(watch.interval()?.saturating_sub(watch.checked.elapsed())));
+        let next = match wait {
+            Some(wait) => receiver.recv_timeout(wait),
+            None => receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match next {
+            Ok((
+                PullWatch::Start {
+                    scope,
+                    pr,
+                    token,
+                    info,
+                },
+                events,
+            )) => watch = Some(Watch::new(scope, pr, token, &info, events)),
+            Ok((PullWatch::Stop, _)) => watch = None,
+            Ok((PullWatch::WindowFocused(now), _)) => {
+                focused = now;
+                if let Some(watch) = watch.as_mut().filter(|w| {
+                    now && w
+                        .refocus()
+                        .is_some_and(|refocus| w.checked.elapsed() >= refocus)
+                }) {
+                    watch.check(github);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                if let Some(watch) = watch.as_mut() {
+                    watch.check(github);
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
 pub struct ReviewRuntime {
     services: ReviewServices,
     token_store: GitHubTokenStore,
     drafts: DraftSaver,
+    watcher: PullWatcher,
 }
 
 impl ReviewRuntime {
     pub fn new(services: ReviewServices, token_store: GitHubTokenStore) -> Self {
         Self {
             drafts: DraftSaver::new(services.clone()),
+            watcher: PullWatcher::new(Arc::clone(services.github())),
             services,
             token_store,
         }
@@ -225,14 +452,25 @@ impl ReviewRuntime {
                     }
                 });
             }
+            ReviewEffect::WatchPullRequest(command) => self.watcher.send(command, events),
             ReviewEffect::LoadSession {
                 scope,
                 target,
                 pull_request,
+                repo_path,
+                merge_base,
+                carry,
             } => {
                 let services = self.services.clone();
                 thread::spawn(move || {
-                    let event = match services.load_session(target.clone(), *pull_request) {
+                    let loaded = services.load_session(
+                        target.clone(),
+                        *pull_request,
+                        repo_path.as_deref(),
+                        merge_base.as_deref(),
+                        carry.map(|carry| *carry),
+                    );
+                    let event = match loaded {
                         Ok(session) => ReviewEvent::SessionLoaded {
                             scope,
                             target,
@@ -280,6 +518,15 @@ impl ReviewRuntime {
                 thread::spawn(move || {
                     let clones = services.resolve_clones(current);
                     events.send(ReviewEvent::ClonesResolved { job, clones });
+                });
+            }
+            ReviewEffect::PrepareReviewCache { repo } => {
+                let services = self.services.clone();
+                thread::spawn(move || {
+                    let result = services
+                        .prepare_review_cache(&repo)
+                        .map_err(|error| error.user_message());
+                    events.send(ReviewEvent::ReviewCacheReady { repo, result });
                 });
             }
             ReviewEffect::ValidateClone { repo, path } => {
@@ -411,5 +658,105 @@ mod tests {
         assert_eq!(saved_body(dir.path()).as_deref(), Some("submitted"));
         drop(runtime);
         assert_eq!(saved_body(dir.path()).as_deref(), Some("submitted"));
+    }
+
+    /// Answers every check with the pull request as it is set to.
+    struct Pushes(std::sync::Mutex<PullRequestFingerprint>);
+
+    impl Pushes {
+        fn set(&self, change: impl FnOnce(&mut PullRequestFingerprint)) {
+            change(&mut self.0.lock().unwrap());
+        }
+    }
+
+    impl GitHubBackend for Pushes {
+        fn execute(&self, request: GitHubRequest, emit: &mut dyn FnMut(GitHubResponse)) {
+            let GitHubRequest::CheckPullRequest { pr, head_sha, .. } = request else {
+                return;
+            };
+            let now = self.0.lock().unwrap().clone();
+            let change = if now.head_sha == head_sha {
+                crate::contracts::review::HeadChange::Same
+            } else {
+                crate::contracts::review::HeadChange::Ahead(1)
+            };
+            emit(GitHubResponse::PullRequestChecked {
+                pr,
+                now: Box::new(now),
+                change,
+                remarks_changed: false,
+                checks_changed: false,
+            });
+        }
+    }
+
+    #[test]
+    fn a_watch_reports_each_change_once_and_stops_at_a_merge() {
+        let (sender, messages) = mpsc::channel::<AppMessage>();
+        let events = RuntimeEventSender::from_channel(sender);
+        let open = PullRequestFingerprint {
+            state: "open".to_owned(),
+            head_sha: "one".to_owned(),
+            remarks: "1 comment".to_owned(),
+            ..PullRequestFingerprint::default()
+        };
+        let github = Pushes(std::sync::Mutex::new(open));
+        let info = PullRequestInfo {
+            state: "open".to_owned(),
+            head_sha: "one".to_owned(),
+            ..PullRequestInfo::default()
+        };
+        let pr = PullRequestRef {
+            owner: "owner".to_owned(),
+            repo: "repo".to_owned(),
+            number: 42,
+        };
+        let mut watch = Watch::new(
+            scope(1),
+            pr,
+            Some(Secret::new("token")),
+            &info,
+            events.scoped(WorkspaceEpoch(1)),
+        );
+        let reported = |messages: &mpsc::Receiver<AppMessage>| {
+            messages
+                .try_iter()
+                .filter_map(|message| match message {
+                    AppMessage::Runtime(envelope) => match envelope.event {
+                        AppEvent::Review(ReviewEvent::GitHub { response, .. }) => match *response {
+                            GitHubResponse::PullRequestChecked {
+                                now,
+                                remarks_changed,
+                                ..
+                            } => Some((now.head_sha, remarks_changed)),
+                            _ => None,
+                        },
+                        _ => None,
+                    },
+                    AppMessage::SyntaxWake => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        watch.check(&github);
+        assert!(
+            reported(&messages).is_empty(),
+            "the first check only learns"
+        );
+        assert_eq!(watch.interval(), Some(WATCH_ACTIVE));
+
+        github.set(|pr| pr.head_sha = "two".to_owned());
+        watch.check(&github);
+        watch.check(&github);
+        assert_eq!(reported(&messages), vec![("two".to_owned(), false)]);
+
+        github.set(|pr| pr.remarks = "2 comments".to_owned());
+        watch.check(&github);
+        assert_eq!(reported(&messages), vec![("two".to_owned(), true)]);
+
+        github.set(|pr| pr.merged = true);
+        watch.check(&github);
+        assert_eq!(reported(&messages).len(), 1);
+        assert_eq!(watch.interval(), None, "a merged pull request is done");
     }
 }

@@ -368,16 +368,12 @@ impl CommandsController {
                 ));
                 Reduction::changed()
             }
-            LauncherChoice::PullRequest {
-                url,
-                local: Some(path),
-            } => {
-                self.open_pull_request_in(path, url);
+            LauncherChoice::PullRequest { url } => {
+                self.request(PlatformRequest::Dispatch(
+                    ReviewAction::OpenPullRequest { reference: url }.into(),
+                ));
                 Reduction::changed()
             }
-            LauncherChoice::PullRequest { url, local: None } => Reduction::changed().effect(
-                ShellEffect::OpenLauncherDialog(LauncherFolder::LocateClone { url }),
-            ),
             LauncherChoice::PullRequests if signed_in => {
                 self.request(PlatformRequest::Dispatch(
                     ReviewAction::Pulls(PullsAction::Open).into(),
@@ -408,21 +404,8 @@ impl CommandsController {
         }
     }
 
-    fn open_pull_request_in(&self, path: PathBuf, url: String) {
-        self.request(PlatformRequest::Dispatch(
-            NavigationAction::OpenRepository(path).into(),
-        ));
-        self.request(PlatformRequest::Dispatch(
-            ReviewAction::LoadPullRequest { url }.into(),
-        ));
-    }
-
     fn launcher_folder(&mut self, folder: LauncherFolder, path: PathBuf) -> Reduction {
         match folder {
-            LauncherFolder::LocateClone { url } => {
-                self.open_pull_request_in(path, url);
-                Reduction::changed()
-            }
             LauncherFolder::CloneInto { url, name } => {
                 self.next_clone += 1;
                 let job = JobId(CLONE_JOBS | self.next_clone);
@@ -1233,7 +1216,7 @@ impl CommandsController {
             (_, PickerChoice::Action(action)) => reduction.merge(self.run(action, cx)),
             (_, PickerChoice::PullRequest(url)) => {
                 self.request(PlatformRequest::Dispatch(
-                    ReviewAction::from(PullsAction::ReviewLink { url }).into(),
+                    ReviewAction::OpenPullRequest { reference: url }.into(),
                 ));
             }
             (_, PickerChoice::File(path)) => {

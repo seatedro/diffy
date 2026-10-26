@@ -1914,7 +1914,7 @@ impl ReviewController {
                 Reduction::changed()
             }
             ReviewAction::SignOut => self.sign_out(cx),
-            ReviewAction::LoadPullRequest { url } => self.open_pull_request(url),
+            ReviewAction::OpenPullRequest { reference } => self.open_pull_request(reference, cx),
             ReviewAction::PreviewPullRequest => self.preview_pull_request(cx),
             ReviewAction::PeekPullRequest { url } => self.peek_pull_request(&url),
             ReviewAction::OpenSubmitMenu => {
@@ -2245,9 +2245,9 @@ impl ReviewController {
                 Reduction::default()
             }
             Intent::PublishManifest(_) => Reduction::changed(),
-            Intent::OpenPullRequest { url } => {
+            Intent::LoadPullRequest { url } => {
                 self.pulls.open = false;
-                self.open_pull_request(url.clone())
+                self.load_pull_request(url.clone())
             }
             Intent::FocusReviewCard(card) => {
                 if self.focused_card == *card {
@@ -2354,13 +2354,11 @@ impl ReviewController {
             .collect()
     }
 
-    fn open_pull_request(&mut self, url: String) -> Reduction {
+    /// Loads `url` once a workspace is open: the one opening for it may
+    /// still be on its way.
+    fn load_pull_request(&mut self, url: String) -> Reduction {
         self.pending_url = Some(url);
-        let reduction = self.load_pending();
-        if self.pending_url.is_some() && self.repo_path.is_none() {
-            return reduction.intent(info("Open a repository to load the pull request."));
-        }
-        reduction
+        self.load_pending()
     }
 
     fn peek_pull_request(&mut self, url: &str) -> Reduction {

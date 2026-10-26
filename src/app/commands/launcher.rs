@@ -47,7 +47,7 @@ pub struct CloneSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LauncherChoice {
     Repository(PathBuf),
-    PullRequest { url: String, local: Option<PathBuf> },
+    PullRequest { url: String },
     Path(PathBuf),
     PullRequests,
     OpenFolder,
@@ -379,19 +379,16 @@ impl Launcher {
         self.rows.clear();
         if let Some(pr) = parse_pr_reference(query) {
             let reference = format!("{}/{}#{}", pr.owner, pr.repo, pr.number);
-            let local = self.find_local(&pr.owner, &pr.repo).map(Path::to_path_buf);
+            // Shows the clone it will likely open in; the review picks it.
             let home = dirs::home_dir();
+            let clone = self
+                .find_local(&pr.owner, &pr.repo)
+                .map(|path| tilde(path, home.as_deref()));
             self.rows.push(LauncherRow::item(
                 Section::Typed,
-                match local {
-                    Some(_) => format!("Open {reference}"),
-                    None => format!("Locate clone for {reference}\u{2026}"),
-                },
-                local.as_deref().map(|path| tilde(path, home.as_deref())),
-                LauncherChoice::PullRequest {
-                    url: pr.url(),
-                    local,
-                },
+                format!("Review {reference}"),
+                clone,
+                LauncherChoice::PullRequest { url: pr.url() },
             ));
         } else if looks_like_path(query) {
             self.rows.push(LauncherRow::item(
@@ -546,7 +543,6 @@ mod tests {
             launcher.selected_choice(),
             Some(&LauncherChoice::PullRequest {
                 url: "https://github.com/Owner/Alpha/pull/3".to_owned(),
-                local: Some(PathBuf::from("/w/alpha")),
             })
         );
 

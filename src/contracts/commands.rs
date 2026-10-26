@@ -288,7 +288,6 @@ pub enum CommandsEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LauncherFolder {
-    LocateClone { url: String },
     CloneInto { url: String, name: String },
 }
 

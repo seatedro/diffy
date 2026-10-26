@@ -1078,20 +1078,24 @@ fn utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<(ColumnBox,
 fn hover_utility(frame: &ViewFrame, row: &FrameRow, deco: &Deco) -> Option<AnyElement> {
     let group = GroupId::new("diff.line");
     let (column, size, element) = utility(frame, row, deco)?;
+    // The line numbers and the code both count as the line: the button
+    // sits in the numbers, so leaving the code for it must not hide it.
+    let left = column.gutter_x.min(column.text_x);
+    let width = column.text_x + column.text_w - left;
     Some(view! {
         <div
             class="absolute"
-            left={column.text_x}
+            left={left}
             top={row.top}
-            w={column.text_w}
+            w={width}
             h={row.height}
             interaction_group={group}
         >
-            // In the line numbers, outside the hovered text, so the code it
-            // would cover stays readable.
+            // In the line numbers, beside the code, so the code it would
+            // cover stays readable.
             <div
                 class="absolute top-0"
-                left={column.gutter_x - column.text_x}
+                left={column.gutter_x - left}
                 w={size}
                 h={size}
                 show_when={GroupCondition::HoveredOrFocusWithin(group)}

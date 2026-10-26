@@ -172,7 +172,10 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         else {
             return;
         };
-        self.update(Action::Review(PullsAction::ReviewLink { url }.into()), cx);
+        self.update(
+            Action::Review(ReviewAction::OpenPullRequest { reference: url }),
+            cx,
+        );
         if let Some(window) = cx.window.window() {
             window.focus_window();
         }
@@ -326,7 +329,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 });
                 true
             }
-            Intent::OpenPullRequest { .. }
+            Intent::LoadPullRequest { .. }
             | Intent::FocusReviewCard(_)
             | Intent::RequestAnnotation(_)
             | Intent::OpenTextCompare
@@ -375,7 +378,6 @@ impl<D: EffectDispatcher> DiffyApp<D> {
                 }
                 ShellEffect::OpenLauncherDialog(folder) => {
                     let title = match folder {
-                        LauncherFolder::LocateClone { .. } => "Locate Clone",
                         LauncherFolder::CloneInto { .. } => "Clone Into",
                     };
                     let id = cx.window.file_dialog(FileDialog {

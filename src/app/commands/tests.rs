@@ -26,9 +26,7 @@ use crate::contracts::commands::{
     LauncherFolder, RefPickerRequest, SettingsSnapshot, ToastUpdate,
 };
 use crate::contracts::navigation::{CompareField, NavigationAction, RepositorySyncReason};
-use crate::contracts::review::{
-    GitHubRequest, PullsAction, ReviewAction, ReviewEffect, ReviewEvent,
-};
+use crate::contracts::review::{GitHubRequest, ReviewAction, ReviewEffect, ReviewEvent};
 use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{
     Action, Controller, Effect, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
@@ -412,9 +410,9 @@ fn palette_hands_a_pull_request_url_to_review() {
     ui.key("enter");
     assert_eq!(
         ui.app().dispatched,
-        vec![Action::from(ReviewAction::from(PullsAction::ReviewLink {
-            url: "https://github.com/o/r/pull/7".to_owned(),
-        }))]
+        vec![Action::from(ReviewAction::OpenPullRequest {
+            reference: "https://github.com/o/r/pull/7".to_owned(),
+        })]
     );
     assert_eq!(ui.focus(), Some(SIDEBAR));
 }
@@ -429,9 +427,9 @@ fn pasting_a_pull_request_link_into_the_palette_opens_it() {
     ui.key("enter");
     assert_eq!(
         ui.app().dispatched,
-        vec![Action::from(ReviewAction::from(PullsAction::ReviewLink {
-            url: "https://github.com/owner/repo/pull/7".to_owned(),
-        }))]
+        vec![Action::from(ReviewAction::OpenPullRequest {
+            reference: "https://github.com/owner/repo/pull/7".to_owned(),
+        })]
     );
 
     ui.run(CommandsAction::OpenCommandPalette);
@@ -1262,8 +1260,23 @@ fn a_pull_request_link_opens_the_matching_local_clone_then_the_pull_request() {
     );
     harness::clear_effects(&mut ui);
     ui.type_text("https://github.com/owner/alpha/pull/7/files");
-    ui.find(By::role_name(Role::ListBoxOption, "Open owner/alpha#7"));
+    ui.find(By::role_name(Role::ListBoxOption, "Review owner/alpha#7"));
     ui.key("enter");
+    // The review finds the clone, as it does for every way in.
+    let job = effects(&ui)
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Review(ReviewEffect::ResolveClones { job, .. }) => Some(*job),
+            _ => None,
+        })
+        .expect("the review looks the clone up");
+    harness::deliver(
+        &mut ui,
+        ReviewEvent::ClonesResolved {
+            job,
+            clones: vec![("owner/alpha".to_owned(), PathBuf::from("/w/alpha"))],
+        },
+    );
     assert_eq!(opened_repo(&ui), Some(PathBuf::from("/w/alpha")));
     assert!(effects(&ui).iter().any(|effect| matches!(
         effect,
@@ -1293,31 +1306,15 @@ fn launcher_event(ui: &mut Cmd, event: CommandsEvent) {
 }
 
 #[test]
-fn a_pull_request_without_a_local_clone_asks_for_its_folder() {
+fn a_pull_request_without_a_local_clone_goes_to_review() {
     let mut ui = cmd_harness(Settings::default());
     launcher_text(&mut ui, "other/repo#3");
     ui.run(CommandsAction::LauncherConfirm);
-    let url = "https://github.com/other/repo/pull/3".to_owned();
-    let folder = LauncherFolder::LocateClone { url: url.clone() };
-    assert!(
-        ui.app()
-            .effects
-            .contains(&Effect::Shell(ShellEffect::OpenLauncherDialog(
-                folder.clone()
-            )))
-    );
-    ui.run(CommandsAction::LauncherFolderChosen {
-        folder,
-        path: PathBuf::from("/w/elsewhere"),
-    });
     assert_eq!(
         ui.app().dispatched,
-        vec![
-            Action::from(NavigationAction::OpenRepository(PathBuf::from(
-                "/w/elsewhere"
-            ))),
-            Action::from(ReviewAction::LoadPullRequest { url }),
-        ]
+        vec![Action::from(ReviewAction::OpenPullRequest {
+            reference: "https://github.com/other/repo/pull/3".to_owned(),
+        })]
     );
 }
 

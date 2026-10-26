@@ -170,14 +170,21 @@ pub struct AppStartup {
 pub enum Intent {
     Startup(Rc<AppStartup>),
     SelectFile(Option<crate::contracts::navigation::SelectedFile>),
-    ActivateWorkspace { path: PathBuf },
+    ActivateWorkspace {
+        path: PathBuf,
+    },
     RequestCompare(CompareIntent),
     PublishManifest(Rc<CompareManifestSnapshot>),
     SelectSource(Option<SourceTarget>),
     RepositoryChanged(Rc<RepositoryContext>),
     InvalidateRepository,
     SetReviewTarget(Option<Rc<ReviewContext>>),
-    OpenPullRequest { url: String },
+    /// Load the pull request at `url` into the workspace that is open or
+    /// on its way; sent once `ReviewAction::OpenPullRequest` has chosen
+    /// the clone.
+    LoadPullRequest {
+        url: String,
+    },
     RequestAnnotation(SourceTarget),
     FocusReviewCard(Option<crate::contracts::review::CardKey>),
     OpenTextCompare,
@@ -190,7 +197,10 @@ pub enum Intent {
     RequestConfirmation(ConfirmationRequest),
     Toast(ToastUpdate),
     RankFiles(Rc<RankFilesRequest>),
-    RankFilesUnavailable { job: JobId, reason: String },
+    RankFilesUnavailable {
+        job: JobId,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Default)]

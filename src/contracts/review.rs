@@ -71,8 +71,12 @@ pub enum ReviewAction {
     OpenDeviceFlowBrowser,
     OpenAccountMenu,
     SignOut,
-    LoadPullRequest {
-        url: String,
+    /// Review the pull request a link or `owner/repo#N` names: the one
+    /// way in, from the launcher, palette, picker, pull request list and
+    /// `diffy://` links alike. It opens in a clone of its repository, or
+    /// the review cache when there is none.
+    OpenPullRequest {
+        reference: String,
     },
     PreviewPullRequest,
     OpenPullRequestInBrowser,
@@ -149,15 +153,7 @@ pub enum PullsAction {
     EscapeFilter,
     ClearFilter,
     LocateClone,
-    CloneChosen {
-        repo: String,
-        path: PathBuf,
-    },
-    /// A pull request link from outside the app: a `diffy://` click or a
-    /// later launch.
-    ReviewLink {
-        url: String,
-    },
+    CloneChosen { repo: String, path: PathBuf },
 }
 
 impl From<PullsAction> for ReviewAction {

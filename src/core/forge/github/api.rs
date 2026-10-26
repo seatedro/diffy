@@ -35,6 +35,33 @@ pub struct PullRequestInfo {
     pub head_repo_url: String,
 }
 
+/// What a pull request watch compares between checks.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullRequestFingerprint {
+    pub title: String,
+    /// `open` or `closed`, as the REST API says it.
+    pub state: String,
+    pub merged: bool,
+    pub draft: bool,
+    pub head_sha: String,
+    pub base_branch: String,
+    /// Changes when anyone comments, reviews, edits or opens a thread.
+    pub remarks: String,
+    /// Changes when a check starts, passes or fails.
+    pub checks: String,
+}
+
+/// GitHub's comparison of two commits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitComparison {
+    /// `ahead`, `behind`, `diverged` or `identical`: `head` relative to
+    /// `base`.
+    pub status: String,
+    /// Commits `head` has that `base` lacks.
+    pub ahead_by: u32,
+    pub merge_base: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum GitHubReviewSide {
@@ -407,6 +434,63 @@ impl GitHubApi {
         Ok(result)
     }
 
+    /// The few fields a watch compares between checks, in one small query:
+    /// a change in any says what to read again.
+    pub fn fetch_pull_request_fingerprint(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+    ) -> Result<PullRequestFingerprint> {
+        let value = self.graphql_query(
+            PULL_REQUEST_FINGERPRINT_QUERY,
+            json!({ "owner": owner, "repo": repo, "number": number }),
+        )?;
+        let pr = value
+            .pointer("/data/repository/pullRequest")
+            .filter(|pr| pr.is_object())
+            .ok_or_else(|| DiffyError::Parse("GitHub returned no pull request".to_owned()))?;
+        let field = |key: &str| pr.get(key).map(Value::to_string).unwrap_or_default();
+        let state = string_field(pr, "state");
+        Ok(PullRequestFingerprint {
+            title: string_field(pr, "title"),
+            merged: state == "MERGED",
+            state: if state == "OPEN" { "open" } else { "closed" }.to_owned(),
+            draft: bool_field(pr, "isDraft"),
+            head_sha: string_field(pr, "headRefOid"),
+            base_branch: string_field(pr, "baseRefName"),
+            remarks: [field("comments"), field("reviews"), field("reviewThreads")].join(" "),
+            checks: pr
+                .pointer("/commits/nodes/0/commit/statusCheckRollup")
+                .map(Value::to_string)
+                .unwrap_or_default(),
+        })
+    }
+
+    /// How `head` relates to `base`.
+    pub fn compare_commits(
+        &self,
+        owner: &str,
+        repo: &str,
+        base: &str,
+        head: &str,
+    ) -> Result<CommitComparison> {
+        // One commit per page: only the counts are read, not the list.
+        let page = transport::get(
+            &self.token,
+            &format!("{API_ROOT}/repos/{owner}/{repo}/compare/{base}...{head}?per_page=1"),
+            Media::Legacy,
+            "GitHub commit comparison",
+        )?;
+        let json: Value = serde_json::from_str(&page.body)?;
+        let merge_base = json.get("merge_base_commit").unwrap_or(&Value::Null);
+        Ok(CommitComparison {
+            status: string_field(&json, "status"),
+            ahead_by: u32::try_from(int_field(&json, "ahead_by")).unwrap_or_default(),
+            merge_base: string_field(merge_base, "sha"),
+        })
+    }
+
     pub fn fetch_pull_request_review_comments(
         &self,
         owner: &str,
@@ -774,7 +858,7 @@ impl GitHubApi {
         serde_json::from_str(&body).map_err(Into::into)
     }
 
-    pub(super) fn has_token(&self) -> bool {
+    pub fn has_token(&self) -> bool {
         !self.token.trim().is_empty()
     }
 
@@ -843,6 +927,44 @@ const REVIEW_COMMENT_FIELDS: &str = r#"
       viewerHasReacted
       users { totalCount }
     }
+"#;
+
+/// Counts and newest edits, not contents: cheap to ask every few
+/// seconds, and a change in one says which full read to make.
+const PULL_REQUEST_FINGERPRINT_QUERY: &str = r#"
+query DiffyPullRequestFingerprint($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      title
+      state
+      isDraft
+      headRefOid
+      baseRefName
+      comments(first: 1, orderBy: { field: UPDATED_AT, direction: DESC }) {
+        totalCount
+        nodes { updatedAt }
+      }
+      reviews(last: 1) {
+        totalCount
+        nodes { updatedAt }
+      }
+      reviewThreads { totalCount }
+      commits(last: 1) {
+        nodes {
+          commit {
+            statusCheckRollup {
+              state
+              contexts {
+                checkRunCountsByState { state count }
+                statusContextCountsByState { state count }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
 "#;
 
 const PULL_REQUEST_REVIEW_DATA_QUERY: &str = r#"

@@ -13,7 +13,7 @@ use crate::contracts::review::{GitHubRequest, PullsAction, ReviewEffect};
 use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{Intent, LogicalFocus, Reduction, ShellEffect};
 use crate::core::forge::github::MyPullRequest;
-use crate::core::forge::github::pull_request::parse_pr_url;
+use crate::core::forge::github::pull_request::parse_pr_reference;
 use crate::core::ref_catalog::now_secs;
 
 const STALE_SECS: i64 = 180;
@@ -192,8 +192,8 @@ pub struct PullsPage {
 enum LinkWait {
     /// The known clones are being looked up.
     Clones { url: String, repo: String },
-    /// The user was asked to locate one.
-    Locate { url: String, repo: String },
+    /// There is none, so the review cache is being made ready.
+    Cache { url: String, repo: String },
 }
 
 impl PullsPage {
@@ -477,23 +477,46 @@ impl ReviewController {
         };
         match self.clone_path(cx, &repo).map(Path::to_path_buf) {
             Some(path) => self.review_in(path, url),
-            None => {
-                self.pulls.link = Some(LinkWait::Locate {
-                    url,
-                    repo: repo.clone(),
-                });
-                Reduction::changed().effect(ShellEffect::OpenCloneDialog { repo })
-            }
+            None => self.review_without_clone(url, repo),
         }
     }
 
-    /// Reviews the pull request `url` links to in a local clone of its
-    /// repository: a known one, else one found among recent and scanned
-    /// repositories, else one the user locates.
+    /// Reviews `url` in the repository Diffy keeps for `repo`, which has
+    /// no clone here: it fetches only what the pull request's diff reads.
+    fn review_without_clone(&mut self, url: String, repo: String) -> Reduction {
+        self.pulls.link = Some(LinkWait::Cache {
+            url,
+            repo: repo.clone(),
+        });
+        Reduction::changed().effect(ReviewEffect::PrepareReviewCache { repo })
+    }
+
+    pub(super) fn review_cache_ready(
+        &mut self,
+        repo: String,
+        result: Result<PathBuf, String>,
+    ) -> Reduction {
+        let url = match self.pulls.link.take() {
+            Some(LinkWait::Cache { url, repo: wanted }) if wanted == repo => url,
+            other => {
+                self.pulls.link = other;
+                return Reduction::default();
+            }
+        };
+        match result {
+            Ok(path) => self.review_in(path, url),
+            Err(message) => Reduction::changed().intent(error(message)),
+        }
+    }
+
+    /// Reviews the pull request `url` (a link or `owner/repo#N`) names in a
+    /// local clone of its repository: a known one, else one found among
+    /// recent and scanned repositories, else the review cache.
     fn review_link(&mut self, url: String, cx: &SharedContext) -> Reduction {
-        let Some(pr) = parse_pr_url(&url) else {
+        let Some(pr) = parse_pr_reference(&url) else {
             return Reduction::changed().intent(error("Not a GitHub pull request link."));
         };
+        let url = pr.url();
         let repo = format!("{}/{}", pr.owner, pr.repo);
         if let Some(path) = self.clone_path(cx, &repo).map(Path::to_path_buf) {
             self.pulls.link = None;
@@ -510,15 +533,6 @@ impl ReviewController {
         cx: &SharedContext,
     ) -> Reduction {
         let review = self.pulls.review_after_locate.take();
-        let link = match self.pulls.link.take() {
-            Some(LinkWait::Locate { url, repo: wanted }) if wanted.eq_ignore_ascii_case(&repo) => {
-                Some(url)
-            }
-            other => {
-                self.pulls.link = other;
-                None
-            }
-        };
         let root = match result {
             Ok(root) => root,
             Err(message) => return Reduction::changed().intent(error(message)),
@@ -546,8 +560,6 @@ impl ReviewController {
         });
         if resume {
             reduction.merge(self.review_selected(cx));
-        } else if let Some(url) = link {
-            reduction.merge(self.review_in(root, url));
         }
         reduction
     }
@@ -573,7 +585,7 @@ impl ReviewController {
             return Reduction::default();
         };
         let Some(path) = self.clone_path(cx, &repo).map(Path::to_path_buf) else {
-            return self.locate_clone(true);
+            return self.review_without_clone(url, repo);
         };
         self.review_in(path, url)
     }

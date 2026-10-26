@@ -1232,7 +1232,9 @@ impl CommandsController {
             }
             (_, PickerChoice::Action(action)) => reduction.merge(self.run(action, cx)),
             (_, PickerChoice::PullRequest(url)) => {
-                reduction = reduction.intent(Intent::OpenPullRequest { url });
+                self.request(PlatformRequest::Dispatch(
+                    ReviewAction::from(PullsAction::ReviewLink { url }).into(),
+                ));
             }
             (_, PickerChoice::File(path)) => {
                 if let Some(key) = self.file_picker.clone() {
@@ -2495,7 +2497,9 @@ impl Controller for CommandsController {
                 )))
             }
             Intent::RepositoryChanged(repository) => {
+                // A review cache is opened for a pull request, not chosen.
                 if repository.snapshot.reason == RepositorySyncReason::Open
+                    && !crate::platform::startup::is_review_cache(&repository.snapshot.path)
                     && let Some(store) = &self.frecency
                 {
                     store.record_access(&format!("repo:{}", repository.snapshot.path.display()));

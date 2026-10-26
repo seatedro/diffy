@@ -517,7 +517,7 @@ impl VcsRepository for GitRepository {
         &mut self,
         pull_request_url: &str,
         github_token: &str,
-    ) -> Result<(crate::core::forge::github::PullRequestInfo, String, String)> {
+    ) -> Result<crate::core::vcs::backend::PullRequestRefs> {
         self.service
             .resolve_pull_request_comparison(pull_request_url, github_token)
     }

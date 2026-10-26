@@ -17,15 +17,16 @@ use crate::contracts::commands::{
 };
 use crate::contracts::navigation::SelectionOrigin;
 use crate::contracts::review::{
-    CardKey, ComposerFormat, GitHubRequest, GitHubResponse, PullRequestComparison, PullRequestRef,
-    PullsAction, ReviewAction, ReviewContext, ReviewEffect, ReviewEvent, ReviewScope, Secret,
+    CardKey, ComposerFormat, DraftCarry, GitHubRequest, GitHubResponse, HeadChange,
+    PullRequestComparison, PullRequestRef, PullWatch, PullsAction, ReviewAction, ReviewContext,
+    ReviewEffect, ReviewEvent, ReviewScope, Secret,
 };
 use crate::contracts::shared::{AccountEpoch, JobId, SharedContext, SourceTarget};
 use crate::contracts::shell::{Controller, Intent, LogicalFocus, Reduction, ShellEffect};
 use crate::contracts::viewport::CompareIntent;
 use crate::core::compare::RendererKind;
 use crate::core::forge::github::{DeviceFlowState, GitHubUser, parse_pr_url};
-use crate::core::forge::github::{PullRequestInfo, PullRequestOverview};
+use crate::core::forge::github::{PullRequestFingerprint, PullRequestInfo, PullRequestOverview};
 use crate::core::review::{
     ReviewAnchor, ReviewDecision, ReviewDraftId, ReviewDraftKind, ReviewDraftState,
     ReviewResolution, ReviewSession, ReviewSessionStatus, ReviewTarget, ReviewThread,
@@ -135,6 +136,7 @@ pub(super) enum Pending {
     Overview,
     Comment,
     Pulls,
+    Watch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +155,8 @@ pub struct ActivePullRequest {
     pub error: Option<String>,
     session_dirty: bool,
     review_refetch: bool,
+    /// A push the watch noticed that isn't loaded yet.
+    pub update: Option<HeadChange>,
 }
 
 impl ActivePullRequest {
@@ -731,6 +735,7 @@ impl ReviewController {
                 error: None,
                 session_dirty: false,
                 review_refetch: false,
+                update: None,
             });
         } else if let Some(active) = self.pr.as_mut() {
             active.loading = true;
@@ -758,7 +763,9 @@ impl ReviewController {
         self.overview = OverviewState::default();
         self.expanded.clear();
         self.in_flight.retain(|_, entry| entry.pr.is_none());
-        reduction.intent(Intent::SetReviewTarget(None))
+        reduction
+            .effect(ReviewEffect::WatchPullRequest(PullWatch::Stop))
+            .intent(Intent::SetReviewTarget(None))
     }
 
     fn publish(&self, cx: &SharedContext, compare: bool) -> Reduction {
@@ -775,15 +782,13 @@ impl ReviewController {
                 pull_request: Arc::new(comparison.info.clone()),
                 left_ref: comparison.left_ref.clone(),
                 right_ref: comparison.right_ref.clone(),
+                left_is_merge_base: comparison.merge_base.is_some(),
             }))));
         if compare && let Some(repo_path) = self.repo_path.clone() {
             reduction = reduction.intent(Intent::RequestCompare(CompareIntent {
                 repo_path,
                 request: VcsCompareRequest {
-                    spec: VcsCompareSpec::MergeBaseRange {
-                        base: comparison.left_ref.clone(),
-                        head: comparison.right_ref.clone(),
-                    },
+                    spec: comparison.spec(),
                     layout: cx.settings.settings.viewport.layout,
                     renderer: saved_renderer(cx),
                 },
@@ -800,8 +805,14 @@ impl ReviewController {
         let Some(active) = self.pr.as_mut() else {
             return Reduction::default();
         };
+        // The refs keep their names across pushes, so a new head is a
+        // change too. A base branch that moved on doesn't change a merge
+        // base diff.
         let refs_changed = active.comparison.as_ref().is_none_or(|current| {
-            current.left_ref != comparison.left_ref || current.right_ref != comparison.right_ref
+            current.left_ref != comparison.left_ref
+                || current.right_ref != comparison.right_ref
+                || current.info.head_sha != comparison.info.head_sha
+                || current.merge_base != comparison.merge_base
         });
         active.comparison = Some(comparison);
         self.publish(cx, refs_changed)
@@ -813,9 +824,30 @@ impl ReviewController {
         cx: &SharedContext,
     ) -> Reduction {
         let info = comparison.info.clone();
+        let merge_base = comparison.merge_base.clone();
+        let mut from_merge_base = None;
         if let Some(active) = self.pr.as_ref() {
             self.peeks
                 .insert(active.pr.clone(), PeekState::Ready(Box::new(info.clone())));
+            from_merge_base = active
+                .comparison
+                .as_ref()
+                .and_then(|loaded| loaded.merge_base.clone());
+            let moved = active
+                .session
+                .as_ref()
+                .is_some_and(|session| session.pull_request.head_sha != info.head_sha);
+            // The comment being written is on the old head's lines: keep
+            // it as a draft, so it follows them with the rest.
+            if moved
+                && self
+                    .composer
+                    .as_ref()
+                    .is_some_and(|c| c.target != ComposerTarget::Conversation)
+            {
+                self.stage_composer();
+                self.close_composer();
+            }
         }
         let mut reduction = self.set_comparison(comparison, cx);
         let Some(active) = self.pr.as_mut() else {
@@ -823,9 +855,21 @@ impl ReviewController {
         };
         active.loading = false;
         active.error = None;
+        active.update = None;
         let target = active.target();
+        let mut carry = None;
         match active.session.as_mut() {
             Some(session) => {
+                if session.pull_request.head_sha != info.head_sha {
+                    let drafts = session.take_unposted_drafts();
+                    if !drafts.is_empty() {
+                        carry = Some(Box::new(DraftCarry {
+                            from: session.pull_request.clone(),
+                            from_merge_base,
+                            drafts,
+                        }));
+                    }
+                }
                 session.pull_request = info.clone();
                 session.status = ReviewSessionStatus::Loading;
             }
@@ -835,13 +879,17 @@ impl ReviewController {
                 active.session = Some(session);
             }
         }
-        let pr = Some(active.pr.clone());
-        let scope = self.job(pr, Pending::Session);
+        let pr = active.pr.clone();
+        let scope = self.job(Some(pr.clone()), Pending::Session);
         reduction = reduction.effect(ReviewEffect::LoadSession {
             scope,
             target,
-            pull_request: Box::new(info),
+            pull_request: Box::new(info.clone()),
+            repo_path: self.repo_path.clone(),
+            merge_base,
+            carry,
         });
+        reduction = reduction.effect(self.watch(pr, info));
         if let Some(effect) = self.fetch_review() {
             reduction = reduction.effect(effect);
         }
@@ -851,6 +899,83 @@ impl ReviewController {
             reduction = reduction.effect(effect);
         }
         reduction
+    }
+
+    /// Starts noticing pushes to `pr`, which is loaded at `info`.
+    fn watch(&mut self, pr: PullRequestRef, info: PullRequestInfo) -> ReviewEffect {
+        self.in_flight
+            .retain(|_, entry| !matches!(entry.kind, Pending::Watch));
+        let token = self.token();
+        let scope = self.job(Some(pr.clone()), Pending::Watch);
+        ReviewEffect::WatchPullRequest(PullWatch::Start {
+            scope,
+            pr,
+            token,
+            info: Box::new(info),
+        })
+    }
+
+    /// The watch saw the pull request change. A new head waits for the
+    /// reviewer to load it, so the diff never shifts under them; state
+    /// and title update in place, and new comments and checks are read
+    /// at once, since they move nothing.
+    fn pull_request_checked(
+        &mut self,
+        now: PullRequestFingerprint,
+        change: HeadChange,
+        remarks_changed: bool,
+        checks_changed: bool,
+    ) -> Reduction {
+        let Some(active) = self.pr.as_mut() else {
+            return Reduction::default();
+        };
+        let Some(comparison) = active.comparison.as_mut() else {
+            return Reduction::default();
+        };
+        let loaded = &mut comparison.info;
+        active.update = (loaded.head_sha != now.head_sha || loaded.base_branch != now.base_branch)
+            .then_some(change);
+        let state_changed =
+            loaded.state != now.state || loaded.merged != now.merged || loaded.draft != now.draft;
+        loaded.title = now.title;
+        loaded.state = now.state;
+        loaded.merged = now.merged;
+        loaded.draft = now.draft;
+        let mut reduction = Reduction::changed();
+        if remarks_changed && let Some(effect) = self.fetch_review() {
+            reduction = reduction.effect(effect);
+        }
+        if (checks_changed || remarks_changed || state_changed)
+            && !self.overview.loading
+            && let Some(effect) = self.fetch_overview()
+        {
+            reduction = reduction.effect(effect);
+        }
+        reduction
+    }
+
+    /// Loads the pull request again: a new head, comments and checks.
+    fn refresh_pull_request(&mut self) -> Reduction {
+        let Some(active) = self.pr.as_ref() else {
+            return Reduction::default();
+        };
+        if active.loading {
+            return Reduction::default();
+        }
+        self.pending_url = Some(active.url.clone());
+        self.load_pending()
+            .intent(info("Refreshing the pull request\u{2026}"))
+    }
+
+    fn update_pull_request(&mut self) -> Reduction {
+        let Some(active) = self.pr.as_ref() else {
+            return Reduction::default();
+        };
+        if active.update.is_none() || active.loading {
+            return Reduction::default();
+        }
+        self.pending_url = Some(active.url.clone());
+        self.load_pending()
     }
 
     fn sign_out(&mut self, cx: &SharedContext) -> Reduction {
@@ -891,6 +1016,38 @@ impl ReviewController {
         self.host.reset_composer(body);
         self.focus_request = Some(LogicalFocus::ReviewComposer);
         Reduction::changed()
+    }
+
+    /// Keeps the open composer's text as a pending draft.
+    fn stage_composer(&mut self) {
+        let Some(composer) = self.composer.clone() else {
+            return;
+        };
+        let body = self.host.composer_text().trim().to_owned();
+        let Some(session) = self.session_mut() else {
+            return;
+        };
+        match composer.target {
+            ComposerTarget::Inline {
+                draft: Some(id), ..
+            }
+            | ComposerTarget::General { draft: Some(id) }
+            | ComposerTarget::Draft(id)
+            | ComposerTarget::Reply { draft: id, .. } => {
+                session.update_draft_body(id, body);
+            }
+            ComposerTarget::Inline {
+                path,
+                target,
+                draft: None,
+            } if !body.is_empty() => {
+                session.create_inline_draft(ReviewAnchor::from_source_target(path, &target), body);
+            }
+            ComposerTarget::General { draft: None } if !body.is_empty() => {
+                session.create_general_draft(body);
+            }
+            _ => {}
+        }
     }
 
     fn close_composer(&mut self) {
@@ -1411,7 +1568,12 @@ impl ReviewController {
         response: GitHubResponse,
         cx: &SharedContext,
     ) -> Reduction {
-        let keep = matches!(response, GitHubResponse::PullRequestCached { .. });
+        let keep = matches!(
+            response,
+            GitHubResponse::PullRequestCached { .. }
+                | GitHubResponse::PullRequestChecked { .. }
+                | GitHubResponse::PullRequestCheckFailed { .. }
+        );
         let Some(kind) = self.accept(scope, keep) else {
             return Reduction::default();
         };
@@ -1426,6 +1588,14 @@ impl ReviewController {
             GitHubResponse::PullRequestLoaded { comparison, .. } => {
                 self.pull_request_loaded(comparison, cx)
             }
+            GitHubResponse::PullRequestChecked {
+                now,
+                change,
+                remarks_changed,
+                checks_changed,
+                ..
+            } => self.pull_request_checked(*now, change, remarks_changed, checks_changed),
+            GitHubResponse::PullRequestCheckFailed { .. } => Reduction::default(),
             GitHubResponse::PullRequestLoadFailed { message, .. } => {
                 if let Some(active) = self.pr.as_mut() {
                     active.loading = false;
@@ -1847,6 +2017,13 @@ impl ReviewController {
                     self.open_overview()
                 }
             }
+            ReviewAction::UpdatePullRequest => self.update_pull_request(),
+            ReviewAction::RefreshPullRequest => self.refresh_pull_request(),
+            // Routed to a reply or the viewport before it gets here.
+            ReviewAction::CommentHere => Reduction::default(),
+            ReviewAction::WindowFocused(focused) => Reduction::default().effect(
+                ReviewEffect::WatchPullRequest(PullWatch::WindowFocused(focused)),
+            ),
             ReviewAction::RefreshOverview => {
                 if self.overview.loading {
                     Reduction::default()
@@ -1913,6 +2090,13 @@ impl ReviewController {
                     .effect(ReviewEffect::SaveToken(token))
                     .intent(self.bump_account())
                     .intent(info("GitHub authentication completed."));
+                // The bump dropped the watch's scope: watch again, signed in.
+                if let Some((pr, info)) = self.pr.as_ref().and_then(|active| {
+                    let comparison = active.comparison.as_ref()?;
+                    Some((active.pr.clone(), comparison.info.clone()))
+                }) {
+                    reduction = reduction.effect(self.watch(pr, info));
+                }
                 reduction.merge(self.fetch_user());
                 reduction.merge(self.load_pending());
                 if self.pr.as_ref().is_some_and(|pr| pr.comparison.is_some())
@@ -1970,7 +2154,17 @@ impl ReviewController {
                     Some(current) => current.merge_persisted_state(*session),
                     None => active.session = Some(*session),
                 }
-                Reduction::changed()
+                // Drafts that followed a push were saved with the session,
+                // but a save queued while it loaded can land after that.
+                let mut reduction = Reduction::changed();
+                if self
+                    .session()
+                    .is_some_and(ReviewSession::has_unposted_drafts)
+                    && let Some(effect) = self.save_session()
+                {
+                    reduction = reduction.effect(effect);
+                }
+                reduction
             }
             ReviewEvent::SessionLoadFailed { scope, message, .. } => {
                 if self.accept(scope, false).is_some() {
@@ -2015,6 +2209,7 @@ impl ReviewController {
                 Reduction::default()
             }
             ReviewEvent::ClonesResolved { job, clones } => self.clones_resolved(job, clones, cx),
+            ReviewEvent::ReviewCacheReady { repo, result } => self.review_cache_ready(repo, result),
             ReviewEvent::CloneValidated { repo, result } => self.clone_validated(repo, result, cx),
         }
     }
@@ -2216,6 +2411,10 @@ impl ReviewController {
                 renderer: saved_renderer(cx),
             },
         }))
+    }
+
+    pub fn has_focused_thread(&self) -> bool {
+        self.focused_thread().is_some()
     }
 
     fn focused_thread(&self) -> Option<&ReviewThread> {
@@ -2431,8 +2630,29 @@ impl CommandSource for ReviewController {
                 "Open pull request",
                 CommandsAction::OpenPullRequestPicker,
             )
-            .detail("Load a GitHub pull request by URL")
-            .enabled(cx.repository.is_some()),
+            .detail("Load a GitHub pull request by URL"),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "review.refresh_pull_request",
+                "Refresh pull request",
+                ReviewAction::RefreshPullRequest,
+            )
+            .detail("Read its commits, comments and checks again")
+            .enabled(self.pr.as_ref().is_some_and(|active| !active.loading)),
+        );
+        out.push(
+            CommandDescriptor::new(
+                "review.update_pull_request",
+                "Update pull request",
+                ReviewAction::UpdatePullRequest,
+            )
+            .detail("Load the latest push to this pull request")
+            .enabled(
+                self.pr
+                    .as_ref()
+                    .is_some_and(|active| active.update.is_some() && !active.loading),
+            ),
         );
         out.push(
             CommandDescriptor::new(

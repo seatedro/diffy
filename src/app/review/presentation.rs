@@ -729,7 +729,17 @@ fn file_level(
     anchor: Option<&crate::core::review::ReviewAnchor>,
     cx: &SharedContext,
 ) -> Option<FileKey> {
-    let anchor = anchor.filter(|anchor| anchor.active_line_range().is_none())?;
+    file_of(
+        anchor.filter(|anchor| anchor.active_line_range().is_none()),
+        cx,
+    )
+}
+
+fn file_of(
+    anchor: Option<&crate::core::review::ReviewAnchor>,
+    cx: &SharedContext,
+) -> Option<FileKey> {
+    let anchor = anchor?;
     cx.manifest
         .as_ref()?
         .files
@@ -967,14 +977,26 @@ fn draft_model(draft: &ReviewDraft, cx: &SharedContext) -> (CardModel, Vec<Comme
         ReviewDraftState::Submitting => ("Submitting", CardTone::Submitting, None),
         ReviewDraftState::Failed(message) => ("Failed", CardTone::Failed, Some(message.clone())),
     };
+    let outdated = draft.is_outdated();
     let title = match draft.kind {
         ReviewDraftKind::General => "Review summary".to_owned(),
+        _ if outdated => format!("{} (outdated)", thread_line_label(draft.anchor.as_ref())),
         _ => thread_line_label(draft.anchor.as_ref()),
+    };
+    // Its lines changed after it was written: show it on the file, not on
+    // whatever those line numbers hold now.
+    let (target, file_level) = if outdated {
+        (None, file_of(draft.anchor.as_ref(), cx))
+    } else {
+        (
+            locate(draft.anchor.as_ref(), cx),
+            file_level(draft.anchor.as_ref(), cx),
+        )
     };
     let model = CardModel {
         id: annotation_id(&key),
         focused: false,
-        target: locate(draft.anchor.as_ref(), cx),
+        target,
         path: draft
             .anchor
             .as_ref()
@@ -994,7 +1016,7 @@ fn draft_model(draft: &ReviewDraft, cx: &SharedContext) -> (CardModel, Vec<Comme
         confirm_delete: false,
         failure,
         retry_draft: None,
-        file_level: file_level(draft.anchor.as_ref(), cx),
+        file_level,
         test_id: card_test_id(&key),
         key,
     };

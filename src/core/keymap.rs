@@ -85,6 +85,7 @@ pub enum ShortcutCommand {
     JumpToElement,
     ReviewComment,
     ReviewReply,
+    RefreshPullRequest,
     ReviewResolve,
     ReviewToggleThread,
     ReviewMarkViewed,

@@ -8,13 +8,15 @@ use crate::contracts::shared::{AccountEpoch, JobId, SourceTarget};
 use crate::core::forge::github::{
     CreatePullRequestReview, CreatePullRequestReviewComment, CreatePullRequestReviewReply,
     DeviceFlowState, GitHubPullRequestReviewData, GitHubPullRequestReviewThreadComment,
-    GitHubReviewThreadResolution, GitHubUser, MyPullRequest, PullRequestInfo, PullRequestOverview,
-    PullRequestReview, PullRequestReviewComment, SubmitPullRequestReview,
-    UpdatePullRequestReviewComment,
+    GitHubReviewThreadResolution, GitHubUser, MyPullRequest, PullRequestFingerprint,
+    PullRequestInfo, PullRequestOverview, PullRequestReview, PullRequestReviewComment,
+    SubmitPullRequestReview, UpdatePullRequestReviewComment,
 };
 use crate::core::review::{
-    ReviewDecision, ReviewDraftId, ReviewSession, ReviewSessionKey, ReviewTarget, ReviewThreadId,
+    ReviewDecision, ReviewDraft, ReviewDraftId, ReviewSession, ReviewSessionKey, ReviewTarget,
+    ReviewThreadId,
 };
+use crate::core::vcs::model::VcsCompareSpec;
 
 #[derive(Clone, PartialEq, Eq, Hash, Default)]
 pub struct Secret(String);
@@ -69,7 +71,9 @@ pub enum ReviewAction {
     OpenDeviceFlowBrowser,
     OpenAccountMenu,
     SignOut,
-    LoadPullRequest { url: String },
+    LoadPullRequest {
+        url: String,
+    },
     PreviewPullRequest,
     OpenPullRequestInBrowser,
     OpenComposer,
@@ -82,26 +86,49 @@ pub enum ReviewAction {
     ReplyToFocused,
     ResolveFocused,
     ToggleFocused,
-    EditComment { comment_node_id: String },
-    ToggleCommentMenu { comment_node_id: String },
-    DeleteComment { comment_node_id: String },
-    SubmitReview { decision: ReviewDecision },
+    EditComment {
+        comment_node_id: String,
+    },
+    ToggleCommentMenu {
+        comment_node_id: String,
+    },
+    DeleteComment {
+        comment_node_id: String,
+    },
+    SubmitReview {
+        decision: ReviewDecision,
+    },
     DiscardDrafts,
     ToggleThread(ReviewThreadId),
-    SetThreadResolved { id: ReviewThreadId, resolved: bool },
+    SetThreadResolved {
+        id: ReviewThreadId,
+        resolved: bool,
+    },
     EditDraft(ReviewDraftId),
     DeleteDraft(ReviewDraftId),
-    CardDocument { card: CardKey, event: DocumentEvent },
+    CardDocument {
+        card: CardKey,
+        event: DocumentEvent,
+    },
     CopyCardSelection(CardKey),
     ScrollComposer(i32),
     OpenSubmitMenu,
     RequestAuthorAvatars(Vec<String>),
-    PeekPullRequest { url: String },
+    PeekPullRequest {
+        url: String,
+    },
     ToggleFileComments(String),
     OpenOverview,
     CloseOverview,
     ToggleOverview,
     RefreshOverview,
+    /// Load the pushes the watch noticed.
+    UpdatePullRequest,
+    /// Read the pull request again now: its head, comments and checks.
+    RefreshPullRequest,
+    /// Reply to the focused thread, else comment on the cursor's lines.
+    CommentHere,
+    WindowFocused(bool),
     ToggleOverviewChecks,
     OpenConversationComposer,
     OpenLink(String),
@@ -249,6 +276,25 @@ pub enum GitHubRequest {
     FetchMyPullRequests {
         token: Secret,
     },
+    /// Whether the pull request moved on from `head_sha`.
+    CheckPullRequest {
+        pr: PullRequestRef,
+        token: Option<Secret>,
+        head_sha: String,
+    },
+}
+
+/// How a pull request's head moved since it was loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadChange {
+    Same,
+    /// New commits on top of the loaded head.
+    Ahead(u32),
+    /// The loaded head is no longer in its history: a rebase or a force
+    /// push.
+    Rewritten,
+    /// It moved, but GitHub couldn't say how.
+    Moved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,10 +302,44 @@ pub struct PullRequestComparison {
     pub info: PullRequestInfo,
     pub left_ref: String,
     pub right_ref: String,
+    /// Set when `left_ref` holds this merge base itself, fetched without
+    /// the history to find it in.
+    pub merge_base: Option<String>,
+}
+
+impl PullRequestComparison {
+    /// What the pull request's diff compares.
+    pub fn spec(&self) -> VcsCompareSpec {
+        if self.merge_base.is_some() {
+            VcsCompareSpec::Range {
+                from: self.left_ref.clone(),
+                to: self.right_ref.clone(),
+            }
+        } else {
+            VcsCompareSpec::MergeBaseRange {
+                base: self.left_ref.clone(),
+                head: self.right_ref.clone(),
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum GitHubResponse {
+    PullRequestChecked {
+        pr: PullRequestRef,
+        now: Box<PullRequestFingerprint>,
+        change: HeadChange,
+        /// Set by the watch, which knows what it last saw: comments,
+        /// reviews or threads changed, so read them again.
+        remarks_changed: bool,
+        /// Checks changed, so read the overview again.
+        checks_changed: bool,
+    },
+    PullRequestCheckFailed {
+        pr: PullRequestRef,
+        message: String,
+    },
     PullRequestCached {
         url: String,
         comparison: PullRequestComparison,
@@ -444,6 +524,12 @@ pub enum ReviewEffect {
         scope: ReviewScope,
         target: ReviewTarget,
         pull_request: Box<PullRequestInfo>,
+        /// The clone the pull request was fetched into, and its merge base
+        /// when fetched without history, for following drafts from an
+        /// earlier head.
+        repo_path: Option<PathBuf>,
+        merge_base: Option<String>,
+        carry: Option<Box<DraftCarry>>,
     },
     SaveSession {
         scope: ReviewScope,
@@ -464,6 +550,38 @@ pub enum ReviewEffect {
         repo: String,
         path: PathBuf,
     },
+    /// Make the repository Diffy keeps for reviewing `repo`'s pull
+    /// requests when it has no clone here.
+    PrepareReviewCache {
+        repo: String,
+    },
+    WatchPullRequest(PullWatch),
+}
+
+/// The background check that notices pushes to the open pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullWatch {
+    /// Watch `info`'s pull request, replacing any earlier watch.
+    Start {
+        scope: ReviewScope,
+        pr: PullRequestRef,
+        token: Option<Secret>,
+        info: Box<PullRequestInfo>,
+    },
+    Stop,
+    /// Checks pause while the window is in the background, and run on
+    /// return when the last one is old.
+    WindowFocused(bool),
+}
+
+/// Drafts not yet posted, leaving the head they were written against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DraftCarry {
+    pub from: PullRequestInfo,
+    /// The merge base `from` was diffed against, when known without the
+    /// base branch's history.
+    pub from_merge_base: Option<String>,
+    pub drafts: Vec<ReviewDraft>,
 }
 
 #[derive(Debug)]
@@ -539,6 +657,10 @@ pub enum ReviewEvent {
         repo: String,
         result: Result<PathBuf, String>,
     },
+    ReviewCacheReady {
+        repo: String,
+        result: Result<PathBuf, String>,
+    },
 }
 
 impl ReviewEvent {
@@ -561,7 +683,8 @@ impl ReviewEvent {
             | Self::AvatarFetched { .. }
             | Self::AvatarFetchFailed { .. }
             | Self::ClonesResolved { .. }
-            | Self::CloneValidated { .. } => true,
+            | Self::CloneValidated { .. }
+            | Self::ReviewCacheReady { .. } => true,
             Self::SessionLoaded { .. }
             | Self::SessionLoadFailed { .. }
             | Self::SessionSaved { .. }
@@ -577,6 +700,8 @@ pub struct ReviewContext {
     pub pull_request: Arc<PullRequestInfo>,
     pub left_ref: String,
     pub right_ref: String,
+    /// `left_ref` is the merge base itself: diff straight from it.
+    pub left_is_merge_base: bool,
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{
     Action, AppEvent, Controller, Intent, Reduction, ShellAction, ShellEvent,
 };
+use crate::contracts::viewport::{InteractionAction, ViewportAction};
 use crate::core::vcs::model::FileOperation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,6 +62,17 @@ impl Controllers {
     ) -> Routed<ShellAction, Reduction> {
         match action {
             Action::Commands(action) => return Routed::Stream(self.commands_action(action, cx)),
+            // `c` on a thread answers it; anywhere else it starts one.
+            Action::Review(ReviewAction::CommentHere) => {
+                let action = if self.review.has_focused_thread() {
+                    ReviewAction::ReplyToFocused.into()
+                } else {
+                    Action::Viewport(ViewportAction::Interaction(
+                        InteractionAction::AnnotateSelection,
+                    ))
+                };
+                return self.route_action(action, cx);
+            }
             Action::Review(action) if opens_review_modal(&action) => {
                 if self.commands.modal_open() {
                     return Routed::Stream(Reduction::default());

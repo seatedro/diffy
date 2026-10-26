@@ -67,9 +67,14 @@ impl ReviewStore {
     }
 
     pub fn load_sessions_for_target(&self, target: &ReviewTarget) -> Result<Vec<ReviewSession>> {
+        // Keys start with the target's: `_` in it is a LIKE wildcard, so
+        // this can match a little more, and the target check below keeps
+        // only its own.
+        let prefix = ReviewSessionKey::new(target.clone(), "").storage_key();
         let select = Query::select()
             .column(ReviewSessions::Json)
             .from(ReviewSessions::Table)
+            .and_where(Expr::col(ReviewSessions::Key).like(format!("{prefix}%")))
             .to_owned();
         let rows = self
             .database()?

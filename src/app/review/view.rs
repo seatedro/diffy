@@ -15,7 +15,7 @@ use crate::app::icons;
 use crate::app::shell::Slot;
 use crate::app::text_targets::{REVIEW_ACCOUNT, REVIEW_DIALOG};
 use crate::app::tokens::{self, Bp, Ico, Layout, Rad, Shadow, Sp, Sz, TextStyle};
-use crate::contracts::review::{PullsAction, ReviewAction};
+use crate::contracts::review::{HeadChange, PullsAction, ReviewAction};
 use crate::contracts::shell::ShellAction;
 use crate::core::forge::github::PullRequestCheckSummary;
 use crate::core::review::ReviewDecision;
@@ -148,6 +148,27 @@ pub fn pull_request_bar(
         review.review_counts(),
         theme,
     );
+    let update = active.update.map(|change| {
+        let label = if active.loading {
+            "Updating\u{2026}".to_owned()
+        } else {
+            match change {
+                HeadChange::Ahead(1) => "1 new commit".to_owned(),
+                HeadChange::Ahead(count) => format!("{count} new commits"),
+                HeadChange::Rewritten => "Force-pushed".to_owned(),
+                HeadChange::Moved => "New changes".to_owned(),
+                HeadChange::Same => "Base changed".to_owned(),
+            }
+        };
+        let button = controls::button(
+            label,
+            action(ReviewAction::UpdatePullRequest),
+            Tone::Secondary,
+        )
+        .icon(lucide::REFRESH)
+        .tooltip("Load the latest push".to_owned());
+        view! { <div class="shrink-0" test_id="review.pull_request.update">{button}</div> }
+    });
     let open = controls::icon_button(
         lucide::EXTERNAL_LINK,
         "Open on GitHub",
@@ -181,6 +202,7 @@ pub fn pull_request_bar(
                 <text size={Px(small)} class="truncate font-medium" color={color}>{title}</text>
             </div>
             <spacer />
+            {?update}
             {?status}
             <div class="flex-row items-center shrink-0" gap={Sp::XXS}
                  accessibility_role={AccessibilityRole::Group}

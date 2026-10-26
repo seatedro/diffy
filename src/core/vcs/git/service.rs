@@ -13,7 +13,8 @@ use crate::core::compare::output::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
-use crate::core::forge::github::{GitHubApi, PullRequestInfo, parse_pr_url};
+use crate::core::forge::github::{GitHubApi, GitHubPullRequest, PullRequestInfo, parse_pr_url};
+use crate::core::vcs::backend::PullRequestRefs;
 use crate::core::vcs::compare_port::output_from_patch;
 use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
 use crate::core::vcs::mutation::{ApplyTarget, PatchApplication};
@@ -103,6 +104,18 @@ pub const PR_REF_PREFIX: &str = "refs/diffy/pr/";
 
 pub fn pr_ref_path(pr_number: i32, branch: &str) -> String {
     format!("{PR_REF_PREFIX}{pr_number}/{branch}")
+}
+
+/// The base and head refs a pull request is fetched into. A fork's head
+/// branch can share the base's name, and two refspecs can't write one ref.
+pub fn pr_ref_paths(pr_number: i32, base_branch: &str, head_branch: &str) -> (String, String) {
+    let base = pr_ref_path(pr_number, base_branch);
+    let head = if base_branch == head_branch {
+        pr_ref_path(pr_number, &format!("{head_branch}@head"))
+    } else {
+        pr_ref_path(pr_number, head_branch)
+    };
+    (base, head)
 }
 
 pub fn is_pr_ref(reference: &str) -> bool {
@@ -203,15 +216,56 @@ struct GitOutput {
 const GIT_PATH_ARG_CHUNK_SIZE: usize = 512;
 
 fn run_system_git(repo_path: &Path, args: &[OsString]) -> Result<()> {
-    run_system_git_inner(repo_path, args, false).map(|_| ())
+    run_system_git_inner(repo_path, args, false, &[]).map(|_| ())
 }
 
 fn run_system_git_allow_diff(repo_path: &Path, args: &[OsString]) -> Result<GitOutput> {
-    run_system_git_inner(repo_path, args, true)
+    run_system_git_inner(repo_path, args, true, &[])
 }
 
 fn run_system_git_capture(repo_path: &Path, args: &[OsString]) -> Result<GitOutput> {
-    run_system_git_inner(repo_path, args, false)
+    run_system_git_inner(repo_path, args, false, &[])
+}
+
+/// Git config for one command that sends `token` to github.com, through
+/// the environment so it never shows in a process list.
+fn github_auth_env(token: &str) -> Vec<(&'static str, String)> {
+    if token.is_empty() {
+        return Vec::new();
+    }
+    let credentials = base64(format!("x-access-token:{token}").as_bytes());
+    vec![
+        ("GIT_CONFIG_COUNT", "1".to_owned()),
+        (
+            "GIT_CONFIG_KEY_0",
+            "http.https://github.com/.extraheader".to_owned(),
+        ),
+        (
+            "GIT_CONFIG_VALUE_0",
+            format!("AUTHORIZATION: basic {credentials}"),
+        ),
+    ]
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,6 +275,185 @@ pub struct RefMetadata {
     pub subject: String,
     pub author: String,
     pub timestamp: i64,
+}
+
+/// Marks a repository Diffy keeps to review pull requests of a GitHub
+/// repository that has no clone here.
+const PULL_REQUEST_CACHE_KEY: &str = "diffy.pullRequestCache";
+const PULL_REQUEST_CACHE_REMOTE: &str = "origin";
+
+/// Makes `dir` a repository for reviewing `owner/repo`'s pull requests
+/// without a clone: no checkout, file contents fetched only as diffs need
+/// them, and nothing fetched but what a review asks for. Built beside
+/// `dir` and moved into place, so a failure leaves nothing half made.
+pub fn init_pull_request_cache(dir: &Path, owner: &str, repo: &str) -> Result<()> {
+    if is_pull_request_cache(dir) {
+        return Ok(());
+    }
+    let io = |what: &str, path: &Path, error: std::io::Error| {
+        DiffyError::General(format!("could not {what} {}: {error}", path.display()))
+    };
+    let parent = dir
+        .parent()
+        .ok_or_else(|| DiffyError::General(format!("{} has no parent", dir.display())))?;
+    std::fs::create_dir_all(parent).map_err(|error| io("create", parent, error))?;
+    let building = parent.join(format!(
+        ".{}.{}",
+        dir.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("cache"),
+        std::process::id()
+    ));
+    if building.exists() {
+        std::fs::remove_dir_all(&building).map_err(|error| io("remove", &building, error))?;
+    }
+    std::fs::create_dir(&building).map_err(|error| io("create", &building, error))?;
+    let url = format!("https://github.com/{owner}/{repo}.git");
+    let steps: [&[&str]; 8] = [
+        &["init", "-q"],
+        &[
+            "remote",
+            "add",
+            "--no-tags",
+            PULL_REQUEST_CACHE_REMOTE,
+            &url,
+        ],
+        // Only reviews fetch here, each naming what it wants.
+        &["config", "--unset-all", "remote.origin.fetch"],
+        &["config", "remote.origin.promisor", "true"],
+        &["config", "remote.origin.partialclonefilter", "blob:none"],
+        &[
+            "config",
+            "extensions.partialClone",
+            PULL_REQUEST_CACHE_REMOTE,
+        ],
+        // One empty commit, so the workspace around the review has a
+        // HEAD and a clean working tree rather than an unborn branch.
+        &[
+            "-c",
+            "user.name=Diffy",
+            "-c",
+            "user.email=diffy@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "--no-verify",
+            "-m",
+            "Review pull requests here",
+        ],
+        &["config", PULL_REQUEST_CACHE_KEY, "true"],
+    ];
+    let built = steps.iter().try_for_each(|args| {
+        let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+        run_system_git(&building, &args)
+    });
+    let moved = built.and_then(|()| {
+        if dir.exists() {
+            // Another prepare won the race, or an earlier one broke off.
+            if is_pull_request_cache(dir) {
+                return Ok(());
+            }
+            std::fs::remove_dir_all(dir).map_err(|error| io("remove", dir, error))?;
+        }
+        std::fs::rename(&building, dir).map_err(|error| io("move into", dir, error))
+    });
+    if building.exists() {
+        let _ = std::fs::remove_dir_all(&building);
+    }
+    moved
+}
+
+/// Whether `dir` is a repository [`init_pull_request_cache`] made.
+pub fn is_pull_request_cache(dir: &Path) -> bool {
+    dir.join(".git").is_dir()
+        && run_system_git_capture(
+            dir,
+            &[
+                OsString::from("config"),
+                OsString::from("--get"),
+                OsString::from(PULL_REQUEST_CACHE_KEY),
+            ],
+        )
+        .is_ok_and(|output| output.stdout.trim_ascii() == b"true")
+}
+
+/// One hunk of a zero-context diff: `old_len` lines from `old_start`
+/// became `new_len` lines from `new_start`. A zero length starts *after*
+/// its line, as in git's own headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineHunk {
+    pub old_start: u32,
+    pub old_len: u32,
+    pub new_start: u32,
+    pub new_len: u32,
+}
+
+/// The hunks that turn `path` at commit `from` into `path` at `to`.
+pub fn line_hunks(repo_path: &Path, from: &str, to: &str, path: &str) -> Result<Vec<LineHunk>> {
+    let output = run_system_git_allow_diff(
+        repo_path,
+        &[
+            OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-color"),
+            OsString::from("--no-renames"),
+            OsString::from("-U0"),
+            OsString::from(from),
+            OsString::from(to),
+            OsString::from("--"),
+            OsString::from(path),
+        ],
+    )?;
+    Ok(output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| parse_hunk_header(line.to_str().ok()?))
+        .collect())
+}
+
+fn parse_hunk_header(line: &str) -> Option<LineHunk> {
+    let ranges = line.strip_prefix("@@ -")?.split(" @@").next()?;
+    let (old, new) = ranges.split_once(" +")?;
+    let span = |text: &str| -> Option<(u32, u32)> {
+        match text.split_once(',') {
+            Some((start, len)) => Some((start.parse().ok()?, len.parse().ok()?)),
+            None => Some((text.parse().ok()?, 1)),
+        }
+    };
+    let (old_start, old_len) = span(old)?;
+    let (new_start, new_len) = span(new)?;
+    Some(LineHunk {
+        old_start,
+        old_len,
+        new_start,
+        new_len,
+    })
+}
+
+/// The commit `reference` names.
+pub fn ref_oid(repo_path: &Path, reference: &str) -> Result<String> {
+    resolve_commit_oid_at(repo_path, reference)
+}
+
+/// The best common ancestor of two commits.
+pub fn merge_base_oid(repo_path: &Path, left: &str, right: &str) -> Result<String> {
+    let output = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("merge-base"),
+            OsString::from(left),
+            OsString::from(right),
+        ],
+    )?;
+    let oid = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if oid.is_empty() {
+        return Err(DiffyError::General(format!(
+            "{left} and {right} share no history"
+        )));
+    }
+    Ok(oid)
 }
 
 /// Subject, author and date of every branch and tag tip in one
@@ -433,6 +666,7 @@ fn run_system_git_inner(
     repo_path: &Path,
     args: &[OsString],
     allow_diff_exit: bool,
+    env: &[(&str, String)],
 ) -> Result<GitOutput> {
     crate::platform::energy::count_process();
     let output = Command::new("git")
@@ -440,6 +674,7 @@ fn run_system_git_inner(
         .current_dir(repo_path)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(env.iter().map(|(key, value)| (key, value)))
         .output()
         .map_err(|e| git_error_fatal(git_command_label(args), format!("failed to run git: {e}")))?;
 
@@ -1720,7 +1955,7 @@ impl GitService {
         &self,
         pull_request_url: &str,
         github_token: &str,
-    ) -> Result<(PullRequestInfo, String, String)> {
+    ) -> Result<PullRequestRefs> {
         let total_started = Instant::now();
         let parsed = parse_pr_url(pull_request_url)
             .ok_or_else(|| DiffyError::Parse("not a valid GitHub pull request URL".to_owned()))?;
@@ -1734,6 +1969,9 @@ impl GitService {
             elapsed_ms = stage_started.elapsed().as_millis(),
             "github-pr: ref resolver fetched metadata"
         );
+        if is_pull_request_cache(self.repo_path_ref()?) {
+            return self.fetch_pull_request_shallow(&api, github_token, &parsed, info);
+        }
         let fetch_source = github_fetch_source_for_repo(
             self.repo_path_ref()?,
             &parsed.owner,
@@ -1746,8 +1984,8 @@ impl GitService {
             info.base_sha.clone()
         };
         let head_source = format!("refs/pull/{}/head", parsed.number);
-        let base_target = pr_ref_path(parsed.number, &info.base_branch);
-        let head_target = pr_ref_path(parsed.number, &info.head_branch);
+        let (base_target, head_target) =
+            pr_ref_paths(parsed.number, &info.base_branch, &info.head_branch);
         let mut refspecs = Vec::with_capacity(2);
         if !self.ref_matches_oid(&base_target, &info.base_sha) {
             refspecs.push(format!("+{base_source}:{base_target}"));
@@ -1778,7 +2016,95 @@ impl GitService {
             &base_target,
             &head_target,
         );
-        Ok((info, base_target, head_target))
+        Ok(PullRequestRefs {
+            info,
+            base: base_target,
+            head: head_target,
+            merge_base: None,
+        })
+    }
+
+    /// Fetches only what a pull request's diff reads into a repository
+    /// kept for it ([`init_pull_request_cache`]): its head and merge base
+    /// with no history and no file contents, then in one batch the
+    /// contents of the files it changes. A large repository costs about
+    /// what its changed files do, not its history.
+    fn fetch_pull_request_shallow(
+        &self,
+        api: &GitHubApi,
+        token: &str,
+        parsed: &GitHubPullRequest,
+        info: PullRequestInfo,
+    ) -> Result<PullRequestRefs> {
+        let started = Instant::now();
+        let (base_target, head_target) =
+            pr_ref_paths(parsed.number, &info.base_branch, &info.head_branch);
+        let mut merge_base = self.resolve_commit_oid(&base_target).ok();
+        let mut refspecs = Vec::with_capacity(2);
+        if !self.ref_matches_oid(&head_target, &info.head_sha) || merge_base.is_none() {
+            let compared =
+                api.compare_commits(&parsed.owner, &parsed.repo, &info.base_sha, &info.head_sha)?;
+            if compared.merge_base.is_empty() {
+                return Err(DiffyError::General(
+                    "GitHub didn't say where this pull request branched off".to_owned(),
+                ));
+            }
+            if merge_base.as_deref() != Some(compared.merge_base.as_str()) {
+                refspecs.push(format!("+{}:{base_target}", compared.merge_base));
+            }
+            merge_base = Some(compared.merge_base);
+            if !self.ref_matches_oid(&head_target, &info.head_sha) {
+                refspecs.push(format!("+refs/pull/{}/head:{head_target}", parsed.number));
+            }
+        }
+        if !refspecs.is_empty() {
+            let mut args = vec![
+                OsString::from("fetch"),
+                OsString::from("--depth=1"),
+                OsString::from("--filter=blob:none"),
+                OsString::from("--no-tags"),
+                OsString::from(PULL_REQUEST_CACHE_REMOTE),
+            ];
+            args.extend(refspecs.iter().map(OsString::from));
+            run_system_git_inner(self.repo_path_ref()?, &args, false, &github_auth_env(token))?;
+        }
+        let merge_base = merge_base.unwrap_or_default();
+        // A diff that needs file contents fetches the missing ones in one
+        // request, and finds them local after that. It runs on every load,
+        // so contents an interrupted fetch left out are fetched next time.
+        run_system_git_inner(
+            self.repo_path_ref()?,
+            &[
+                OsString::from("diff"),
+                OsString::from("--no-ext-diff"),
+                OsString::from("--find-renames"),
+                OsString::from("--numstat"),
+                OsString::from(&merge_base),
+                OsString::from(&info.head_sha),
+            ],
+            true,
+            &github_auth_env(token),
+        )?;
+        tracing::info!(
+            owner = %parsed.owner,
+            repo = %parsed.repo,
+            number = parsed.number,
+            refspecs = refspecs.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "github-pr: shallow fetch complete"
+        );
+        prune_stale_pr_refs(
+            self.repo_path_ref()?,
+            parsed.number,
+            &base_target,
+            &head_target,
+        );
+        Ok(PullRequestRefs {
+            info,
+            base: base_target,
+            head: head_target,
+            merge_base: Some(merge_base),
+        })
     }
 
     fn diff_between_refs(&self, left: &str, right: &str) -> Result<String> {
@@ -2402,10 +2728,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, github_fetch_source_for_repo,
+        INDEX_REF, PR_REF_PREFIX, WORKDIR_REF, base64, github_fetch_source_for_repo,
         github_repo_key_from_remote_url, github_repo_url_from_remote_transport, is_pr_ref,
         local_remote_for_github_repo, parse_objects_progress, parse_porcelain_status,
-        parse_shortstat, pr_ref_path,
+        parse_shortstat, pr_ref_path, pr_ref_paths,
     };
     use crate::core::vcs::git::{GitService, StatusItem, StatusOperation, StatusScope};
     use crate::core::vcs::mutation::{ApplyTarget, PatchApplication};
@@ -2522,6 +2848,25 @@ mod tests {
         assert_eq!(entries[0].0, "src/new.rs");
         assert_eq!(entries[0].1.as_deref(), Some("src/old.rs"));
         assert!(entries[0].2.contains(super::StatusBits::INDEX_RENAMED));
+    }
+
+    #[test]
+    fn base64_pads_like_the_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"x-access-token:abc"), "eC1hY2Nlc3MtdG9rZW46YWJj");
+    }
+
+    #[test]
+    fn pr_refs_of_a_fork_with_the_base_branch_name_stay_apart() {
+        let (base, head) = pr_ref_paths(5, "main", "main");
+        assert_ne!(base, head);
+        assert_eq!(
+            pr_ref_paths(5, "main", "feature"),
+            (pr_ref_path(5, "main"), pr_ref_path(5, "feature"))
+        );
     }
 
     #[test]

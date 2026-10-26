@@ -13,6 +13,7 @@ use crate::core::forge::github::{
     GitHubPullRequestReviewEvent, GitHubPullRequestReviewThread, GitHubReviewSide, PullRequestInfo,
     PullRequestReviewComment, PullRequestReviewMetadata, PullRequestReviewSummary,
 };
+use crate::core::vcs::git::LineHunk;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
 pub enum ReviewForge {
@@ -152,6 +153,35 @@ impl ReviewLineRange {
         start..start.saturating_add(self.len.max(1))
     }
 
+    /// Where these lines sit after `hunks` (sorted, as git prints them),
+    /// or `None` when a hunk changed or split them.
+    pub fn follow(self, hunks: &[LineHunk]) -> Option<Self> {
+        let (first, last) = (self.start, self.end_inclusive());
+        let mut shift = 0i64;
+        for hunk in hunks {
+            if hunk.old_len == 0 {
+                // An insertion after `old_start`.
+                if hunk.old_start >= last {
+                    break;
+                }
+                if hunk.old_start >= first {
+                    return None;
+                }
+            } else {
+                let end = hunk.old_start.saturating_add(hunk.old_len - 1);
+                if hunk.old_start > last {
+                    break;
+                }
+                if end >= first {
+                    return None;
+                }
+            }
+            shift += i64::from(hunk.new_len) - i64::from(hunk.old_len);
+        }
+        let start = u32::try_from(i64::from(first) + shift).ok()?;
+        Some(Self { start, ..self })
+    }
+
     pub fn from_source_lines(lines: &Range<u32>) -> Self {
         Self {
             start: lines.start.saturating_add(1),
@@ -255,6 +285,13 @@ impl ReviewAnchor {
 
     pub fn is_outdated(&self) -> bool {
         self.line_range.is_none() && self.original_line_range.is_some()
+    }
+
+    /// The lines this points at changed: keep them only as where it was.
+    pub fn mark_outdated(&mut self) {
+        if let Some(lines) = self.line_range.take() {
+            self.original_line_range = Some(lines);
+        }
     }
 
     pub fn active_line_range(&self) -> Option<ReviewLineRange> {
@@ -544,6 +581,21 @@ pub struct ReviewDraft {
     pub anchor: Option<ReviewAnchor>,
     pub body: String,
     pub state: ReviewDraftState,
+}
+
+impl ReviewDraft {
+    fn is_unposted(&self) -> bool {
+        matches!(
+            self.state,
+            ReviewDraftState::Pending | ReviewDraftState::Failed(_)
+        )
+    }
+
+    /// An inline comment whose lines changed after it was written.
+    pub fn is_outdated(&self) -> bool {
+        matches!(self.kind, ReviewDraftKind::InlineComment)
+            && self.anchor.as_ref().is_some_and(ReviewAnchor::is_outdated)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -843,6 +895,23 @@ impl ReviewSession {
         decision: ReviewDecision,
         body: Option<String>,
     ) -> Result<CreatePullRequestReview> {
+        let outdated = self
+            .pending_drafts()
+            .filter(|draft| draft.is_outdated())
+            .count();
+        if outdated > 0 {
+            let message = if outdated == 1 {
+                "A pending comment is on a line that changed since you wrote it. \
+                 Delete it or move it into the review summary."
+                    .to_owned()
+            } else {
+                format!(
+                    "{outdated} pending comments are on lines that changed since you wrote \
+                     them. Delete them or move them into the review summary."
+                )
+            };
+            return Err(DiffyError::General(message));
+        }
         let mut comments = Vec::new();
         for draft in self.pending_drafts() {
             match &draft.kind {
@@ -906,6 +975,42 @@ impl ReviewSession {
         self.threads
             .iter()
             .filter(move |thread| thread.path() == Some(path))
+    }
+
+    /// Removes the drafts not yet posted, so they can follow the pull
+    /// request to a new head.
+    pub fn take_unposted_drafts(&mut self) -> Vec<ReviewDraft> {
+        let (unposted, kept) = std::mem::take(&mut self.drafts)
+            .into_values()
+            .partition::<Vec<_>, _>(ReviewDraft::is_unposted);
+        self.drafts = kept.into_iter().map(|draft| (draft.id, draft)).collect();
+        unposted
+    }
+
+    pub fn has_unposted_drafts(&self) -> bool {
+        self.drafts.values().any(ReviewDraft::is_unposted)
+    }
+
+    /// Takes in drafts written against another head under fresh ids,
+    /// skipping copies of ones it already held: the same draft can reach
+    /// a head both from memory and from a save that landed late.
+    pub fn adopt_drafts(&mut self, drafts: impl IntoIterator<Item = ReviewDraft>) {
+        let held: Vec<(ReviewDraftKind, String, Option<ReviewAnchor>)> = self
+            .drafts
+            .values()
+            .filter(|draft| draft.is_unposted())
+            .map(|draft| (draft.kind.clone(), draft.body.clone(), draft.anchor.clone()))
+            .collect();
+        for draft in drafts {
+            if held.iter().any(|(kind, body, anchor)| {
+                *kind == draft.kind && *body == draft.body && *anchor == draft.anchor
+            }) {
+                continue;
+            }
+            let id = ReviewDraftId(self.next_draft_id);
+            self.next_draft_id = self.next_draft_id.saturating_add(1);
+            self.drafts.insert(id, ReviewDraft { id, ..draft });
+        }
     }
 
     fn insert_draft(
@@ -1242,6 +1347,33 @@ mod tests {
         assert_eq!(anchor.hunk_in(&document, 0, &target), Some(0));
         assert!(!anchor.lands_in(&document, 0, &outside));
         assert_eq!(anchor.hunk_in(&document, 0, &outside), None);
+    }
+
+    #[test]
+    fn line_ranges_follow_hunks_around_them_and_not_through_them() {
+        let hunk = |old_start, old_len, new_start, new_len| LineHunk {
+            old_start,
+            old_len,
+            new_start,
+            new_len,
+        };
+        let lines = ReviewLineRange::new(10, 3);
+        // Two lines inserted after line 2, one deleted at 5, one replaced
+        // by three at 20: only the first two are before lines 10-12.
+        let hunks = [hunk(2, 0, 3, 2), hunk(5, 1, 6, 0), hunk(20, 1, 21, 3)];
+        assert_eq!(lines.follow(&hunks), Some(ReviewLineRange::new(11, 3)));
+        assert_eq!(lines.follow(&[]), Some(lines));
+        // An insertion right after the last line leaves them alone, one
+        // between them splits them.
+        assert_eq!(lines.follow(&[hunk(12, 0, 13, 1)]), Some(lines));
+        assert_eq!(lines.follow(&[hunk(11, 0, 12, 1)]), None);
+        assert_eq!(lines.follow(&[hunk(12, 1, 12, 1)]), None);
+        assert_eq!(lines.follow(&[hunk(8, 3, 8, 3)]), None);
+        // Everything before them deleted.
+        assert_eq!(
+            lines.follow(&[hunk(1, 9, 0, 0)]),
+            Some(ReviewLineRange::new(1, 3))
+        );
     }
 
     #[test]

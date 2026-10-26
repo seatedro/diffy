@@ -1244,6 +1244,11 @@ impl MutationsController {
         if !repo.snapshot.capabilities.remotes {
             return Err(error("This repository backend does not support remotes."));
         }
+        if crate::platform::startup::is_review_cache(&repo.snapshot.path) {
+            return Err(error(
+                "This is Diffy's copy for reviewing pull requests; clone the repository to fetch, pull or push.",
+            ));
+        }
         Ok((repo.snapshot.path.clone(), repo))
     }
 

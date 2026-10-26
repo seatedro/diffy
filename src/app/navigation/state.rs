@@ -21,7 +21,7 @@ use crate::contracts::navigation::{
     RepositorySyncReason, ResolveRefRequest, SelectedFile, SelectionOrigin, SidebarMode,
     SidebarTab, SyncRepositoryRequest,
 };
-use crate::contracts::review::ReviewAction;
+use crate::contracts::review::{ReviewAction, ReviewContext};
 use crate::contracts::shared::{CompareGeneration, FileKey, JobId, SharedContext};
 use crate::contracts::shell::{
     Action, AppStartup, Controller, Effect, Intent, LogicalFocus, Reduction, ShellEffect,
@@ -196,7 +196,7 @@ pub struct NavigationController {
     avatars_requested: HashSet<String>,
     scrollbars: [ScrollbarVisibility; 2],
     watched_worktree: Option<PathBuf>,
-    review_labels: Option<(String, String)>,
+    review: Option<Rc<ReviewContext>>,
     smart: SmartSort,
 }
 
@@ -246,7 +246,7 @@ impl Default for NavigationController {
             avatars_requested: HashSet::new(),
             scrollbars: Default::default(),
             watched_worktree: None,
-            review_labels: None,
+            review: None,
             smart: SmartSort::default(),
         }
     }
@@ -485,8 +485,9 @@ impl NavigationController {
     }
 
     pub fn compare_labels(&self) -> (String, String) {
-        if let Some(labels) = &self.review_labels {
-            return labels.clone();
+        if let Some(review) = &self.review {
+            let pr = &review.pull_request;
+            return (pr.base_branch.clone(), pr.head_branch.clone());
         }
         if self.compare.working_copy {
             let base = self
@@ -1002,7 +1003,7 @@ impl NavigationController {
         }
         self.repo_path = Some(path.to_path_buf());
         self.watched_worktree = None;
-        self.review_labels = None;
+        self.review = None;
         self.status = RepoStatus::Opening;
         self.repository = None;
         self.manifest = None;
@@ -1089,7 +1090,7 @@ impl NavigationController {
         }
         // A pull request that resolved while the repository opened (a link,
         // or a review picked in another repository) already set the compare.
-        if plan.pr_pending || self.review_labels.is_some() {
+        if plan.pr_pending || self.review.is_some() {
             return Reduction::default();
         }
         if plan.auto_compare {
@@ -1747,15 +1748,28 @@ impl NavigationController {
                     CompareMode::ThreeDot
                 };
                 self.compare.working_copy = false;
-                self.review_labels = Some((
-                    review.pull_request.base_branch.clone(),
-                    review.pull_request.head_branch.clone(),
-                ));
-                Reduction::changed()
+                // The refs keep their names when the pull request moves, so
+                // the history cached under them is stale.
+                let moved = self.review.as_ref().is_some_and(|old| {
+                    old.pull_request.head_sha != review.pull_request.head_sha
+                        || old.pull_request.base_sha != review.pull_request.base_sha
+                });
+                self.review = Some(review.clone());
+                if !moved {
+                    return Reduction::changed();
+                }
+                self.history = HistoryState {
+                    generation: self.history.generation,
+                    scroll_px: self.history.scroll_px,
+                    ..HistoryState::default()
+                };
+                let mut reduction = Reduction::changed();
+                if self.tab == SidebarTab::Commits {
+                    reduction.merge(self.load_history());
+                }
+                reduction
             }
-            Intent::SetReviewTarget(None) if self.review_labels.take().is_some() => {
-                Reduction::changed()
-            }
+            Intent::SetReviewTarget(None) if self.review.take().is_some() => Reduction::changed(),
             Intent::RankFilesUnavailable { job, reason } => self.rank_unavailable(*job, reason),
             Intent::SettingsChanged(settings) => match settings.settings.last_compare.as_ref() {
                 Some(last) if last.renderer != self.compare.renderer => {

@@ -891,3 +891,56 @@ fn smart_sort_failure_toasts_and_keeps_role_order() {
     assert_eq!(row_order(&ui, &[1, 2, 3, 4, 5]), [4, 5, 2, 1, 3]);
     assert_eq!(toasts(&ui), 1);
 }
+
+#[test]
+fn history_reloads_when_the_reviewed_pull_request_moves() {
+    use crate::contracts::review::ReviewContext;
+    use crate::core::forge::github::api::PullRequestInfo;
+    use crate::core::review::ReviewTarget;
+
+    fn target(head: &str) -> Intent {
+        Intent::SetReviewTarget(Some(Rc::new(ReviewContext {
+            account: Default::default(),
+            target: ReviewTarget::github("owner", "repo", 3),
+            pull_request: std::sync::Arc::new(PullRequestInfo {
+                base_branch: "main".to_owned(),
+                head_branch: "feature".to_owned(),
+                base_sha: "base".to_owned(),
+                head_sha: head.to_owned(),
+                ..Default::default()
+            }),
+            left_ref: "refs/diffy/pr/3/base".to_owned(),
+            right_ref: "refs/diffy/pr/3/head".to_owned(),
+            left_is_merge_base: false,
+        })))
+    }
+    fn history_requests(ui: &Nav) -> Vec<u64> {
+        ui.app()
+            .effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Navigation(NavigationEffect::LoadHistory(r)) => Some(r.generation.0),
+                _ => None,
+            })
+            .collect()
+    }
+
+    let mut ui = nav_harness();
+    open(&mut ui, three_files());
+    ui.app_mut().inject(target("one"));
+    ui.click_node(By::role_name(Role::Tab, "History"));
+    let first = *history_requests(&ui).last().expect("history request");
+    ui.app_mut().event(NavigationEvent::HistoryReady {
+        generation: CompareGeneration(first),
+        commits: vec![fixtures::change("d4", "First commit")].into(),
+    });
+    ui.app_mut().effects.clear();
+
+    ui.app_mut().inject(target("one"));
+    assert!(history_requests(&ui).is_empty());
+
+    ui.app_mut().inject(target("two"));
+    assert_eq!(history_requests(&ui), [first + 1]);
+    ui.frame();
+    ui.find(By::name("Loading history"));
+}

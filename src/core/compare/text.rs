@@ -77,6 +77,9 @@ mod tests {
 
     #[test]
     fn semantic_text_compare_keeps_change_intensities() {
+        if diffy_syntax::testing::store_with("rust").is_none() {
+            return;
+        }
         let output = compare_text(
             "fn value() -> u32 {\n    1\n}\n",
             "fn value() -> u32 {\n    2\n}\n",

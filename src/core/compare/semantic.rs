@@ -1195,6 +1195,9 @@ mod tests {
 
     #[test]
     fn workdir_compares_read_current_files_and_filter_paths() {
+        if diffy_syntax::testing::store_with("rust").is_none() {
+            return;
+        }
         let dir = tempfile::TempDir::new().unwrap();
         let repo = git2::Repository::init(dir.path()).unwrap();
         commit_file(&repo, "src/other.rs", "stay\n", "other");

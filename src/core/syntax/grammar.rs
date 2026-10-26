@@ -94,7 +94,16 @@ impl Grammars {
 
     pub fn shared() -> &'static Grammars {
         static SHARED: OnceLock<Grammars> = OnceLock::new();
-        SHARED.get_or_init(|| Grammars::new(&GrammarConfig::product()))
+        SHARED.get_or_init(|| {
+            // Tests read the packs `syntax-pack build` writes, never the
+            // network or the user's pack cache.
+            #[cfg(test)]
+            return Grammars::with_store(GrammarStore::new(
+                StoreConfig::new().local_packs(diffy_syntax::testing::pack_root()),
+            ));
+            #[cfg(not(test))]
+            Grammars::new(&GrammarConfig::product())
+        })
     }
 
     pub fn store(&self) -> GrammarStore {

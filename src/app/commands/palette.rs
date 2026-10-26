@@ -6,7 +6,7 @@ use quark_ui::icons::lucide;
 
 use crate::contracts::commands::{CommandDescriptor, CommandsAction};
 use crate::contracts::navigation::{NavigationAction, SelectedFile, SelectionOrigin};
-use crate::contracts::review::{PullsAction, ReviewAction};
+use crate::contracts::review::ReviewAction;
 use crate::contracts::shared::FileKey;
 use crate::contracts::shell::Action;
 use crate::core::forge::github::parse_pr_reference;
@@ -127,7 +127,7 @@ impl PaletteProvider<PaletteSource> for PullRequests {
             PaletteItem::new(
                 quark::stable_hash(&url),
                 format!("Open {}/{}#{}", pr.owner, pr.repo, pr.number),
-                Action::from(ReviewAction::from(PullsAction::ReviewLink { url })),
+                Action::from(ReviewAction::OpenPullRequest { reference: url }),
             )
             .subtitle("Review this pull request")
             .icon(lucide::GIT_PULL_REQUEST),

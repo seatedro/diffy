@@ -952,7 +952,7 @@ fn stale_results_are_rejected_after_an_account_switch() {
     driver.fake.hold = false;
     driver.act(ReviewAction::SignOut);
     driver.act(ReviewAction::StartDeviceFlow);
-    driver.act(ReviewAction::LoadPullRequest {
+    driver.intent(Intent::LoadPullRequest {
         url: URL.to_owned(),
     });
     assert!(driver.review.account().token.is_some());
@@ -973,7 +973,7 @@ fn stale_results_are_rejected_after_a_pull_request_switch() {
     });
     let held = std::mem::take(&mut driver.fake.held);
     driver.fake.hold = false;
-    driver.act(ReviewAction::LoadPullRequest {
+    driver.intent(Intent::LoadPullRequest {
         url: OTHER_URL.to_owned(),
     });
     assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 7);
@@ -1920,10 +1920,10 @@ fn lines_offer_a_comment_control_while_a_pull_request_is_open() {
 }
 
 #[test]
-fn open_pull_request_intent_loads_like_the_action() {
+fn load_pull_request_intent_loads_into_the_open_workspace() {
     let mut driver = Driver::signed_in_with_pr();
 
-    driver.intent(Intent::OpenPullRequest {
+    driver.intent(Intent::LoadPullRequest {
         url: OTHER_URL.to_owned(),
     });
 
@@ -2827,7 +2827,7 @@ fn stale_overview_results_are_dropped_after_switching_pull_requests() {
     driver.act(ReviewAction::RefreshOverview);
     let held = std::mem::take(&mut driver.fake.held);
     driver.fake.hold = false;
-    driver.act(ReviewAction::LoadPullRequest {
+    driver.intent(Intent::LoadPullRequest {
         url: OTHER_URL.to_owned(),
     });
     let current = driver.review.overview().data.clone().unwrap();
@@ -2844,7 +2844,7 @@ fn stale_overview_results_are_dropped_after_switching_pull_requests() {
 fn signed_out_overview_shows_the_description_and_prompts_sign_in() {
     let mut driver = signed_out();
     driver.open_repository();
-    driver.act(ReviewAction::LoadPullRequest {
+    driver.intent(Intent::LoadPullRequest {
         url: URL.to_owned(),
     });
     let mut ui = harness(driver);
@@ -3154,20 +3154,20 @@ fn enter_opens_a_known_clone_or_the_review_cache() {
     assert!(!driver.review.pulls_open());
 }
 
-/// A `diffy://` link names only the repository, so a clone has to be
-/// found, or the review cache made ready, before the review opens.
+/// A link names only the repository, so a clone has to be found, or the
+/// review cache made ready, before the review opens.
 #[test]
 fn links_review_in_a_found_clone_or_the_review_cache() {
     let mut driver = pulls_driver();
-    driver.act(pulls(PullsAction::ReviewLink {
-        url: "https://github.com/owner/gadget/pull/9".to_owned(),
-    }));
+    driver.act(ReviewAction::OpenPullRequest {
+        reference: "https://github.com/owner/gadget/pull/9".to_owned(),
+    });
     assert_eq!(driver.activated, vec![PathBuf::from("/tmp/gadget")]);
     assert_eq!(driver.review.active_pull_request().unwrap().pr.number, 9);
 
-    driver.act(pulls(PullsAction::ReviewLink {
-        url: "https://github.com/elsewhere/thing/pull/3".to_owned(),
-    }));
+    driver.act(ReviewAction::OpenPullRequest {
+        reference: "https://github.com/elsewhere/thing/pull/3".to_owned(),
+    });
     assert!(driver.dialogs.is_empty());
     assert_eq!(
         driver.activated.last(),
@@ -3176,9 +3176,9 @@ fn links_review_in_a_found_clone_or_the_review_cache() {
     let active = driver.review.active_pull_request().unwrap();
     assert_eq!((active.pr.repo.as_str(), active.pr.number), ("thing", 3));
 
-    driver.act(pulls(PullsAction::ReviewLink {
-        url: "https://github.com/owner/repo/issues/1".to_owned(),
-    }));
+    driver.act(ReviewAction::OpenPullRequest {
+        reference: "https://github.com/owner/repo/issues/1".to_owned(),
+    });
     assert_eq!(
         driver.errors(),
         vec!["Not a GitHub pull request link.".to_owned()]

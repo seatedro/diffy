@@ -359,7 +359,6 @@ impl ReviewController {
             PullsAction::CloneChosen { repo, path } => {
                 Reduction::default().effect(ReviewEffect::ValidateClone { repo, path })
             }
-            PullsAction::ReviewLink { url } => self.review_link(url, cx),
         }
     }
 
@@ -509,11 +508,11 @@ impl ReviewController {
         }
     }
 
-    /// Reviews the pull request `url` (a link or `owner/repo#N`) names in a
-    /// local clone of its repository: a known one, else one found among
-    /// recent and scanned repositories, else the review cache.
-    fn review_link(&mut self, url: String, cx: &SharedContext) -> Reduction {
-        let Some(pr) = parse_pr_reference(&url) else {
+    /// Reviews the pull request `reference` (a link or `owner/repo#N`)
+    /// names in a local clone of its repository: a known one, else one
+    /// found among recent and scanned repositories, else the review cache.
+    pub(super) fn open_pull_request(&mut self, reference: String, cx: &SharedContext) -> Reduction {
+        let Some(pr) = parse_pr_reference(&reference) else {
             return Reduction::changed().intent(error("Not a GitHub pull request link."));
         };
         let url = pr.url();
@@ -602,7 +601,7 @@ impl ReviewController {
         if self.repo_path.as_deref() != Some(path.as_path()) {
             reduction = reduction.intent(Intent::ActivateWorkspace { path });
         }
-        reduction.intent(Intent::OpenPullRequest { url })
+        reduction.intent(Intent::LoadPullRequest { url })
     }
 }
 

@@ -11,7 +11,7 @@ members = [
 exclude = ["crates/difftastic"]
 
 [workspace.package]
-version = "0.3.4"
+version = "0.3.5"
 
 [workspace.dependencies]
 quark = { git = "https://github.com/seatedro/quark", rev = "b0d4abf67fb59d9e9fe66fbda78bda62bad160b5" }

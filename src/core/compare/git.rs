@@ -321,8 +321,8 @@ pub fn compare_entry(entry: &CompareEntry, git: &GitService) -> Result<Option<Di
         return Ok(None);
     }
     let repo = open_gix_repo(git)?;
-    let old = load_object(&repo, entry.old_id.as_ref())?;
-    let new = load_object(&repo, entry.new_id.as_ref())?;
+    let old = load_object(&repo, entry.old_id.as_ref(), entry.old_mode.as_deref())?;
+    let new = load_object(&repo, entry.new_id.as_ref(), entry.new_mode.as_deref())?;
     document_from_bytes(meta, old.as_bytes(), new.as_bytes()).map(Some)
 }
 
@@ -547,12 +547,17 @@ pub(crate) fn entry_from_gix_change(change: &GixChange) -> CompareEntry {
 fn load_object<'repo>(
     repo: &'repo gix::Repository,
     id: Option<&ObjectId>,
+    mode: Option<&str>,
 ) -> Result<GixBlobContent<'repo>> {
     match id {
+        Some(id) if mode == Some(GITLINK_MODE) => Ok(submodule_content(id.as_str())),
         Some(id) => load_gix_blob_id(repo, gix_object_id(id.as_str())?),
         None => Ok(GixBlobContent::Empty),
     }
 }
+
+/// The tree mode of a submodule's commit.
+const GITLINK_MODE: &str = "160000";
 
 fn entry_stats_chunk(
     repo_path: &str,
@@ -739,16 +744,22 @@ pub(crate) fn gix_change_contents<'repo>(
 ) -> Result<Option<(GixBlobContent<'repo>, GixBlobContent<'repo>)>> {
     match change {
         GixChange::Addition { entry_mode, id, .. } => {
-            if !entry_mode.is_no_tree() {
+            if entry_mode.is_tree() {
                 return Ok(None);
             }
-            Ok(Some((GixBlobContent::Empty, load_gix_blob_id(repo, *id)?)))
+            Ok(Some((
+                GixBlobContent::Empty,
+                load_gix_entry(repo, *entry_mode, *id)?,
+            )))
         }
         GixChange::Deletion { entry_mode, id, .. } => {
-            if !entry_mode.is_no_tree() {
+            if entry_mode.is_tree() {
                 return Ok(None);
             }
-            Ok(Some((load_gix_blob_id(repo, *id)?, GixBlobContent::Empty)))
+            Ok(Some((
+                load_gix_entry(repo, *entry_mode, *id)?,
+                GixBlobContent::Empty,
+            )))
         }
         GixChange::Modification {
             previous_entry_mode,
@@ -757,12 +768,12 @@ pub(crate) fn gix_change_contents<'repo>(
             id,
             ..
         } => {
-            if !previous_entry_mode.is_no_tree() || !entry_mode.is_no_tree() {
+            if previous_entry_mode.is_tree() || entry_mode.is_tree() {
                 return Ok(None);
             }
             Ok(Some((
-                load_gix_blob_id(repo, *previous_id)?,
-                load_gix_blob_id(repo, *id)?,
+                load_gix_entry(repo, *previous_entry_mode, *previous_id)?,
+                load_gix_entry(repo, *entry_mode, *id)?,
             )))
         }
         GixChange::Rewrite {
@@ -772,12 +783,12 @@ pub(crate) fn gix_change_contents<'repo>(
             id,
             ..
         } => {
-            if !source_entry_mode.is_no_tree() || !entry_mode.is_no_tree() {
+            if source_entry_mode.is_tree() || entry_mode.is_tree() {
                 return Ok(None);
             }
             Ok(Some((
-                load_gix_blob_id(repo, *source_id)?,
-                load_gix_blob_id(repo, *id)?,
+                load_gix_entry(repo, *source_entry_mode, *source_id)?,
+                load_gix_entry(repo, *entry_mode, *id)?,
             )))
         }
     }
@@ -798,6 +809,23 @@ pub(crate) fn load_gix_tree_blob_content<'repo>(
         return Ok(None);
     }
     Ok(Some(load_gix_blob_id(repo, entry.object_id())?))
+}
+
+/// A tree entry's content: a file's blob, or for a submodule the line git
+/// itself shows, since its commit lives in another repository.
+fn load_gix_entry(
+    repo: &gix::Repository,
+    mode: gix::objs::tree::EntryMode,
+    oid: gix::ObjectId,
+) -> Result<GixBlobContent<'_>> {
+    if mode.is_commit() {
+        return Ok(submodule_content(&oid.to_string()));
+    }
+    load_gix_blob_id(repo, oid)
+}
+
+fn submodule_content(oid: &str) -> GixBlobContent<'static> {
+    GixBlobContent::Owned(format!("Subproject commit {oid}\n").into_bytes())
 }
 
 pub(crate) fn load_gix_blob_id(
@@ -835,6 +863,7 @@ pub(crate) fn gix_mode(mode: &gix::objs::tree::EntryMode) -> String {
 pub(crate) enum GixBlobContent<'repo> {
     Empty,
     Blob(gix::Blob<'repo>),
+    Owned(Vec<u8>),
 }
 
 impl GixBlobContent<'_> {
@@ -842,6 +871,7 @@ impl GixBlobContent<'_> {
         match self {
             Self::Empty => &[],
             Self::Blob(blob) => &blob.data,
+            Self::Owned(bytes) => bytes,
         }
     }
 }

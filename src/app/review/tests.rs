@@ -1143,6 +1143,34 @@ fn pushed_repo(dir: &Path) -> (String, String) {
 }
 
 #[test]
+fn refresh_publishes_the_new_head_without_waiting_for_a_check() {
+    let repo = tempfile::tempdir().unwrap();
+    let (first, second) = pushed_repo(repo.path());
+    let mut driver = Driver::new(Fake::new());
+    driver.fake.github.with(|s| s.head = Some(first.clone()));
+    driver.startup(Some(URL));
+    driver.open_repository_at(repo.path().to_path_buf());
+    let head = |driver: &Driver| {
+        driver
+            .shared
+            .review
+            .as_ref()
+            .map(|review| review.pull_request.head_sha.clone())
+    };
+    assert_eq!(head(&driver), Some(first));
+
+    driver.fake.github.with(|s| s.head = Some(second.clone()));
+    let compares = driver.compares;
+    driver.act(ReviewAction::RefreshPullRequest);
+    assert_eq!(driver.compares, compares + 1);
+    assert_eq!(
+        head(&driver),
+        Some(second),
+        "the sidebar reloads its history"
+    );
+}
+
+#[test]
 fn a_push_waits_for_update_and_drafts_follow_their_lines() {
     let repo = tempfile::tempdir().unwrap();
     let (first, second) = pushed_repo(repo.path());

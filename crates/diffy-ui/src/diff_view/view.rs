@@ -71,6 +71,9 @@ struct Look {
 }
 
 const CHANGE_BAR_W: f32 = 3.0;
+/// Alpha of the tint across the hunk keys act on: faint, so the hunk's
+/// own add and delete fills still read through it.
+const TARGET_WASH: u8 = 12;
 
 /// The app's decorator and what identifies its output in cache keys.
 #[derive(Clone)]
@@ -667,7 +670,9 @@ fn paint_gutter(
         Some(Cue::Moved) => colors.tone(HighlightKind::Keyword),
         None => colors.gutter_text,
     };
-    let skip = usize::from(badge.is_some() && numbers.len() > 1);
+    // The badge takes the first number's place: with one column there is
+    // no room beside the number for both.
+    let skip = usize::from(badge.is_some());
     if let Some(count) = badge {
         let small = TextStyle::new(m.font_size * 0.8)
             .kind(FontKind::Mono)
@@ -677,6 +682,8 @@ fn paint_gutter(
             let h = (m.line_h * 0.72).round();
             let pad = (m.char_w * 0.4).round();
             let box_w = (w + pad * 2.0).max(h);
+            // At the leading edge, where a hovered line's gutter utility
+            // covers it.
             let left = bounds.x + m.char_w * 0.5;
             let top = bounds.y + ((m.line_h - h) / 2.0).round();
             scene.rounded_rect(RoundedRectPrimitive::uniform(
@@ -1112,7 +1119,7 @@ fn target_band(frame: &ViewFrame, row: &FrameRow, look: Look) -> AnyElement {
     let color = look.colors.focused_row;
     view! {
         <div class="absolute left-0" top={row.top} w={frame.viewport.0} h={row.height}
-             bg={color.with_alpha(quark_ui::design::Alpha::TINT)}>
+             bg={color.with_alpha(TARGET_WASH)}>
             <div class="absolute left-0 top-0" w={CHANGE_BAR_W} h={row.height} bg={color} />
         </div>
     }

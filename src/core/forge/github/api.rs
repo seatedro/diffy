@@ -555,12 +555,38 @@ impl GitHubApi {
             ));
         }
 
-        let mut result = GitHubPullRequestReviewData::default();
+        let variables = json!({ "owner": owner, "repo": repo, "number": number });
+        let (metadata, threads) = std::thread::scope(|scope| {
+            let metadata = scope.spawn(|| {
+                self.review_pull_request(PULL_REQUEST_REVIEW_METADATA_QUERY, variables.clone())
+            });
+            let threads = self.fetch_pull_request_review_threads(owner, repo, number);
+            let metadata = metadata.join().unwrap_or_else(|_| {
+                Err(DiffyError::General(
+                    "pull request metadata fetch panicked".to_owned(),
+                ))
+            });
+            (metadata, threads)
+        });
+        let metadata = metadata?;
+        Ok(GitHubPullRequestReviewData {
+            metadata: parse_pull_request_review_metadata(&metadata),
+            reviews: parse_pull_request_reviews(metadata.pointer("/latestReviews/nodes")),
+            threads: threads?,
+        })
+    }
+
+    fn fetch_pull_request_review_threads(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+    ) -> Result<Vec<GitHubPullRequestReviewThread>> {
+        let query = review_graphql_query(PULL_REQUEST_REVIEW_THREADS_QUERY);
+        let mut threads = Vec::new();
         let mut after: Option<String> = None;
-        let query = review_graphql_query(PULL_REQUEST_REVIEW_DATA_QUERY);
         loop {
-            let value = transport::graphql_query(
-                &self.token,
+            let pull_request = self.review_pull_request(
                 &query,
                 json!({
                     "owner": owner,
@@ -569,33 +595,7 @@ impl GitHubApi {
                     "after": after,
                 }),
             )?;
-            let errors = transport::graphql_errors(&value);
-            let pull_request = value
-                .pointer("/data/repository/pullRequest")
-                .filter(|pull_request| pull_request.is_object());
-            let pull_request = match pull_request {
-                Some(pull_request) if errors.iter().all(is_withheld_pull_request_field) => {
-                    if !errors.is_empty() {
-                        tracing::warn!(
-                            "GitHub withheld pull request fields: {}",
-                            graphql_error_message(errors)
-                        );
-                    }
-                    pull_request
-                }
-                _ if !errors.is_empty() => return Err(graphql_failure(errors)),
-                _ => {
-                    return Err(DiffyError::Parse(
-                        "missing pull request in GraphQL response".to_owned(),
-                    ));
-                }
-            };
-            if result.metadata.node_id.is_empty() {
-                result.metadata = parse_pull_request_review_metadata(pull_request);
-                result.reviews =
-                    parse_pull_request_reviews(pull_request.pointer("/latestReviews/nodes"));
-            }
-            result.threads.extend(parse_review_threads(
+            threads.extend(parse_review_threads(
                 pull_request.pointer("/reviewThreads/nodes"),
             ));
 
@@ -616,8 +616,33 @@ impl GitHubApi {
             }
             after = next;
         }
+        Ok(threads)
+    }
 
-        Ok(result)
+    fn review_pull_request(&self, query: &str, variables: Value) -> Result<Value> {
+        let mut value = transport::graphql_query(&self.token, query, variables)?;
+        let errors = transport::graphql_errors(&value);
+        let found = value
+            .pointer("/data/repository/pullRequest")
+            .is_some_and(Value::is_object);
+        if found && errors.iter().all(is_withheld_pull_request_field) {
+            if !errors.is_empty() {
+                tracing::warn!(
+                    "GitHub withheld pull request fields: {}",
+                    graphql_error_message(errors)
+                );
+            }
+            return Ok(value
+                .pointer_mut("/data/repository/pullRequest")
+                .map(Value::take)
+                .unwrap_or_default());
+        }
+        if !errors.is_empty() {
+            return Err(graphql_failure(errors));
+        }
+        Err(DiffyError::Parse(
+            "missing pull request in GraphQL response".to_owned(),
+        ))
     }
 
     pub fn create_pull_request_review_comment(
@@ -989,8 +1014,8 @@ query DiffyPullRequestFingerprint($owner: String!, $repo: String!, $number: Int!
 }
 "#;
 
-const PULL_REQUEST_REVIEW_DATA_QUERY: &str = r#"
-query DiffyPullRequestReviewData($owner: String!, $repo: String!, $number: Int!, $after: String) {
+const PULL_REQUEST_REVIEW_METADATA_QUERY: &str = r#"
+query DiffyPullRequestReviewMetadata($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       id
@@ -1061,6 +1086,15 @@ query DiffyPullRequestReviewData($owner: String!, $repo: String!, $number: Int!,
           commit { oid }
         }
       }
+    }
+  }
+}
+"#;
+
+const PULL_REQUEST_REVIEW_THREADS_QUERY: &str = r#"
+query DiffyPullRequestReviewThreads($owner: String!, $repo: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) {
         pageInfo {
           hasNextPage

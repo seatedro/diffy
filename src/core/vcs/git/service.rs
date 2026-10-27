@@ -1760,13 +1760,18 @@ impl GitService {
         self.diff_between_refs(&left, &right)
     }
 
-    fn fetch_refspecs(&self, repo_url: &str, refspecs: &[String]) -> Result<()> {
+    fn fetch_refspecs(
+        &self,
+        repo_url: &str,
+        refspecs: &[String],
+        env: &[(&str, String)],
+    ) -> Result<()> {
         let mut args = Vec::with_capacity(refspecs.len() + 2);
         args.push(OsString::from("fetch"));
         args.push(OsString::from(repo_url));
         args.extend(refspecs.iter().map(OsString::from));
         let started = Instant::now();
-        let result = run_system_git(self.repo_path_ref()?, &args);
+        let result = run_system_git_inner(self.repo_path_ref()?, &args, false, env).map(|_| ());
         tracing::info!(
             refspecs = refspecs.len(),
             elapsed_ms = started.elapsed().as_millis(),
@@ -1974,12 +1979,6 @@ impl GitService {
             elapsed_ms = stage_started.elapsed().as_millis(),
             "github-pr: ref resolver fetched metadata"
         );
-        let fetch_source = github_fetch_source_for_repo(
-            self.repo_path_ref()?,
-            &parsed.owner,
-            &parsed.repo,
-            &info.base_repo_url,
-        );
         let base_source = if info.base_sha.is_empty() {
             format!("refs/heads/{}", info.base_branch)
         } else {
@@ -2003,7 +2002,24 @@ impl GitService {
                 "github-pr: cached refs are current"
             );
         } else {
-            self.fetch_refspecs(&fetch_source, &refspecs)?;
+            let https = if github_token.is_empty() {
+                None
+            } else {
+                let url = format!("https://github.com/{}/{}.git", parsed.owner, parsed.repo);
+                Some(self.fetch_refspecs(&url, &refspecs, &github_auth_env(github_token)))
+            };
+            if let Some(Err(error)) = &https {
+                tracing::warn!("github-pr: https fetch failed, trying the remote: {error}");
+            }
+            if !matches!(https, Some(Ok(()))) {
+                let fetch_source = github_fetch_source_for_repo(
+                    self.repo_path_ref()?,
+                    &parsed.owner,
+                    &parsed.repo,
+                    &info.base_repo_url,
+                );
+                self.fetch_refspecs(&fetch_source, &refspecs, &[])?;
+            }
         }
         tracing::info!(
             owner = %parsed.owner,

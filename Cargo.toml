@@ -112,8 +112,8 @@ notify = "8.2.0"
 ignore = ">= 0.4, < 0.4.24"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-tokio = { version = "1", default-features = false, features = ["rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread"] }
 ring = "0.17"
 mimalloc = { version = "0.1.50", default-features = false }
 

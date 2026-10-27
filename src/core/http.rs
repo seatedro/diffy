@@ -1,23 +1,44 @@
 use std::future::Future;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::core::error::{DiffyError, Result};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+const RUNTIME_THREADS: usize = 2;
+
+static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static RUNTIME: OnceLock<std::result::Result<tokio::runtime::Runtime, String>> = OnceLock::new();
 
 pub(crate) fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .build()
-        .unwrap_or_default()
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+                .build()
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
+pub(crate) fn runtime() -> Result<&'static tokio::runtime::Runtime> {
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(RUNTIME_THREADS)
+                .thread_name("diffy-http")
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| DiffyError::General(format!("failed to start HTTP runtime: {error}")))
 }
 
 pub(crate) fn block_on<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| DiffyError::General(format!("failed to start HTTP runtime: {error}")))?;
-    runtime.block_on(future)
+    runtime()?.block_on(future)
 }
 
 /// Whether a failed HTTP status is worth retrying unchanged.

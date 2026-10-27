@@ -186,6 +186,16 @@ pub fn kbd(label: &str, chrome: &Chrome, fg: Color) -> AnyElement {
 }
 
 pub fn render(control: Control, chrome: &Chrome) -> AnyElement {
+    render_with(control, chrome, None)
+}
+
+/// [`render`] whose presses start `drag` instead of clicking; keys and
+/// accessibility still take the action.
+pub fn render_draggable(control: Control, chrome: &Chrome, drag: DragStart) -> AnyElement {
+    render_with(control, chrome, Some(drag))
+}
+
+fn render_with(control: Control, chrome: &Chrome, drag: Option<DragStart>) -> AnyElement {
     let (bg, hover, fg, border) = match control.tone {
         Tone::Primary => (chrome.accent, chrome.accent_strong, chrome.on_accent, None),
         Tone::Secondary => (
@@ -231,6 +241,7 @@ pub fn render(control: Control, chrome: &Chrome) -> AnyElement {
                 hover_bg={hover}
                 cursor={CursorHint::Pointer}
                 on:click={action.clone()}
+                @when {let Some(drag) = drag} { on_drag_start={drag} }
                 on:key:enter={action.clone()}
                 on:key:space={action}
             }

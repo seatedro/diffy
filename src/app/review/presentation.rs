@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use diffy_ui::diff_view::AnnotationId;
 use diffy_ui::diff_view::decorator::{
     AnnotationContext, DiffDecorator, GutterContext, HeaderContext, HeaderSlot, LineContext,
+    LinePointer,
 };
 use quark::{Px, view};
 use quark_app::ViewContext;
@@ -28,12 +29,13 @@ use super::code_highlighter::ReviewCodeHighlighter;
 use super::composer::{ComposerEditor, ComposerTarget};
 use super::controls::{self, Tone};
 use super::state::{DeleteTarget, ReviewController};
-use crate::app::mutations::{Chrome, Control, Tone as ControlTone, render_control};
+use crate::app::mutations::{Chrome, Control, Tone as ControlTone, render_draggable_control};
 use crate::app::text_targets::REVIEW_COMPOSER;
 use crate::app::tokens::{self, Alpha, Ico, Rad, Sp, TextStyle};
 use crate::contracts::review::{CardKey, ComposerFormat, ReviewAction};
 use crate::contracts::shared::{FileKey, FileRevision, SharedContext, Side, SourceTarget};
 use crate::contracts::viewport::InteractionAction;
+use crate::contracts::viewport::interaction::LineInput;
 use crate::core::forge::github::PullRequestTimelineKind;
 use crate::core::review::{
     ReviewDraft, ReviewDraftKind, ReviewDraftState, ReviewResolution, ReviewSession, ReviewSide,
@@ -1430,16 +1432,72 @@ impl DiffDecorator for ReviewPresentation {
         let control = Control::new(
             format!("review.comment.{}.{side}.{}", source.id.0, cx.line),
             format!("Comment on line {side}{}", cx.line + 1),
-            InteractionAction::AnnotateLine(target),
+            InteractionAction::AnnotateLine(target.clone()),
             ControlTone::Primary,
         )
         .icon_only(lucide::PLUS);
         let chrome = Chrome::from_theme(&self.theme()).square(cx.width.min(cx.height));
+        let drag = DragStart::new(move |_| {
+            Box::new(AnnotateDrag {
+                anchor: target.clone(),
+            }) as Box<dyn DragHandler>
+        });
         Some(view! {
             <div w={cx.width} h={cx.height} class="flex-row items-center justify-center">
-                {render_control(control, &chrome)}
+                {render_draggable_control(control, &chrome, drag)}
             </div>
         })
+    }
+}
+
+/// A press on a line's comment control, as on GitHub: dragging marks the
+/// lines from it to the pointer, and the release comments on them, or on
+/// the line alone without a drag.
+struct AnnotateDrag {
+    anchor: SourceTarget,
+}
+
+impl AnnotateDrag {
+    fn act(action: InteractionAction) -> quark_ui::Action {
+        crate::contracts::shell::Action::from(action).into()
+    }
+}
+
+impl DragHandler for AnnotateDrag {
+    fn on_press(&mut self) -> Vec<quark_ui::Action> {
+        let pointer = LineInput(LinePointer {
+            x: 0.0,
+            y: 0.0,
+            drag: false,
+        });
+        vec![Self::act(InteractionAction::DragAnnotation(
+            self.anchor.clone(),
+            pointer,
+        ))]
+    }
+
+    fn on_move(&mut self, x: f32, y: f32) -> Vec<quark_ui::Action> {
+        let pointer = LineInput(LinePointer { x, y, drag: true });
+        vec![Self::act(InteractionAction::DragAnnotation(
+            self.anchor.clone(),
+            pointer,
+        ))]
+    }
+
+    fn on_release(&mut self) -> DragReleaseResult {
+        DragReleaseResult {
+            actions: vec![Self::act(InteractionAction::AnnotateLine(
+                self.anchor.clone(),
+            ))],
+        }
+    }
+
+    fn on_cancel(&mut self) -> Vec<quark_ui::Action> {
+        vec![Self::act(InteractionAction::ClearSelection)]
+    }
+
+    fn cursor(&self) -> CursorHint {
+        CursorHint::Pointer
     }
 }
 

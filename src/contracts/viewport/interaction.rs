@@ -56,6 +56,10 @@ pub enum InteractionAction {
     /// The gutter comment control of a line: the selection when it covers
     /// the line, else the line.
     AnnotateLine(SourceTarget),
+    /// A drag from a line's gutter comment control: the press
+    /// (`drag: false`, position unused) marks that line, each move the
+    /// lines from it to the one under the pointer.
+    DragAnnotation(SourceTarget, LineInput),
     SetSourceSelection(Option<SourceTarget>),
     ExpandContext {
         file: FileKey,

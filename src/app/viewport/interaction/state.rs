@@ -95,6 +95,9 @@ pub struct InteractionController {
     pub(super) modifiers: LineModifiers,
     pub(super) line_actions: Vec<MutationsAction>,
     pub(super) line_drag: Option<SourceTarget>,
+    /// Lines a drag from a gutter comment control covers, marked whole
+    /// until the next press in the diff.
+    pub(super) comment_lines: Option<SourceTarget>,
     pub(super) stale_view: Option<f32>,
     pub(super) definition: Option<(SourcePoint, String)>,
 }
@@ -156,6 +159,7 @@ impl Default for InteractionController {
             modifiers: LineModifiers::default(),
             line_actions: Vec::new(),
             line_drag: None,
+            comment_lines: None,
             definition: None,
             stale_view: None,
         }
@@ -309,14 +313,16 @@ impl InteractionController {
             search_open: self.search.open,
             scopes: self.scope_revision,
         };
+        let marked = self.comment_lines.as_ref();
         if let Some(current) = &self.decorations
-            && current.matches(&inner, controls, theme)
+            && current.matches(&inner, controls, marked, theme)
         {
             return current.clone();
         }
         let decorations = Rc::new(Decorations::new(
             inner,
             controls,
+            marked.cloned(),
             self.scopes.clone(),
             theme,
         ));
@@ -700,6 +706,40 @@ impl InteractionController {
         };
         self.line_drag = Some(target);
         self.line_actions.push(action);
+        Reduction::changed()
+    }
+
+    /// Marks the lines from `anchor` to the one under the pointer, on the
+    /// anchor's side of its file, as GitHub does; the release then
+    /// comments on them through [`InteractionAction::AnnotateLine`]. The
+    /// press marks the anchor alone and hands focus back to the diff, so
+    /// only the hovered line shows its control.
+    fn drag_annotation(&mut self, anchor: &SourceTarget, pointer: LinePointer) -> Reduction {
+        if !pointer.drag {
+            self.comment_lines = Some(anchor.clone());
+            return Reduction::changed().effect(focus(LogicalFocus::Viewport));
+        }
+        let Some(hit) = self
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.line_at(pointer.x, pointer.y))
+            .filter(|hit| {
+                hit.file == anchor.file
+                    && hit.side == anchor.side
+                    && FileRevision(hit.revision.0) == anchor.revision
+            })
+        else {
+            return Reduction::default();
+        };
+        let start = anchor.lines.start;
+        let lines = start.min(hit.line)..start.max(hit.line) + 1;
+        if self.comment_lines.as_ref().map(|marked| &marked.lines) == Some(&lines) {
+            return Reduction::default();
+        }
+        self.comment_lines = Some(SourceTarget {
+            lines,
+            ..anchor.clone()
+        });
         Reduction::changed()
     }
 
@@ -1224,20 +1264,27 @@ impl Controller for InteractionController {
                     event,
                     DiffEvent::Release | DiffEvent::Key(DiffKey::SelectAll)
                 );
+                let unmarked =
+                    matches!(event, DiffEvent::Press { .. }) && self.comment_lines.take().is_some();
                 let outcome = match &mut self.diff {
                     Some(diff) => diff.handle(event),
                     None => DiffOutcome::Unchanged,
                 };
-                let reduction = self.outcome(outcome);
+                let mut reduction = self.outcome(outcome);
+                reduction.changed |= unmarked;
                 self.follow(reduction, select)
             }
             A::Line(LineInput(pointer)) => self.line_pointer(pointer),
             A::ClearSelection => {
+                let unmarked = self.comment_lines.take().is_some();
                 let Some(diff) = &mut self.diff else {
                     return Reduction::default();
                 };
                 if diff.selection().is_none() {
-                    return Reduction::default();
+                    return Reduction {
+                        changed: unmarked,
+                        ..Reduction::default()
+                    };
                 }
                 diff.set_selection(None, Side::New);
                 self.follow(Reduction::changed(), true)
@@ -1274,18 +1321,28 @@ impl Controller for InteractionController {
                 outcome => self.outcome(outcome),
             },
             A::AnnotateLine(target) => {
-                let covering = self
-                    .diff
+                let covers = |file: FileKey, side: Side, lines: &std::ops::Range<u32>| {
+                    file == target.file
+                        && side == target.side
+                        && lines.contains(&target.lines.start)
+                };
+                let marked = self
+                    .comment_lines
                     .as_ref()
-                    .and_then(|diff| diff.selected_lines())
-                    .filter(|selected| {
-                        selected.file == target.file
-                            && selected.side == target.side
-                            && selected.lines.contains(&target.lines.start)
-                    });
-                let anchor = covering.unwrap_or_else(|| source_anchor(&target));
+                    .filter(|marked| covers(marked.file, marked.side, &marked.lines))
+                    .map(source_anchor);
+                let covering = || {
+                    self.diff
+                        .as_ref()
+                        .and_then(|diff| diff.selected_lines())
+                        .filter(|selected| covers(selected.file, selected.side, &selected.lines))
+                };
+                let anchor = marked
+                    .or_else(covering)
+                    .unwrap_or_else(|| source_anchor(&target));
                 Reduction::changed().intent(Intent::RequestAnnotation(source_target(&anchor)))
             }
+            A::DragAnnotation(anchor, LineInput(pointer)) => self.drag_annotation(&anchor, pointer),
             A::GoToPreviousHunk => self.navigate(DiffKey::PrevHunk),
             A::GoToNextFile => self.navigate(DiffKey::NextFile),
             A::GoToPreviousFile => self.navigate(DiffKey::PrevFile),

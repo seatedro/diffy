@@ -17,6 +17,7 @@ use quark_ui::theme::{Color, Theme};
 use super::scopes::SharedScopes;
 use crate::app::tokens::{self, Ico, Layout, Sp};
 use crate::contracts::commands::{CommandsAction, ContextMenuEntry};
+use crate::contracts::shared::{FileRevision, SourceTarget};
 use crate::contracts::shell::{Action, ShellAction};
 use crate::contracts::viewport::interaction::InteractionAction;
 use crate::core::compare::LayoutMode;
@@ -74,6 +75,8 @@ impl Palette {
 pub struct Decorations {
     inner: Rc<dyn DiffDecorator>,
     controls: HeaderControls,
+    /// Lines a comment drag covers, marked whole as GitHub does.
+    marked: Option<SourceTarget>,
     palette: Palette,
     scopes: SharedScopes,
     revision: u64,
@@ -83,6 +86,7 @@ impl Decorations {
     pub fn new(
         inner: Rc<dyn DiffDecorator>,
         controls: HeaderControls,
+        marked: Option<SourceTarget>,
         scopes: SharedScopes,
         theme: &Theme,
     ) -> Self {
@@ -97,10 +101,12 @@ impl Decorations {
         )
             .hash(&mut hasher);
         palette.key().hash(&mut hasher);
+        marked.hash(&mut hasher);
         Self {
             revision: hasher.finish(),
             inner,
             controls,
+            marked,
             palette,
             scopes,
         }
@@ -110,11 +116,13 @@ impl Decorations {
         &self,
         inner: &Rc<dyn DiffDecorator>,
         controls: HeaderControls,
+        marked: Option<&SourceTarget>,
         theme: &Theme,
     ) -> bool {
         std::ptr::addr_eq(Rc::as_ptr(&self.inner), Rc::as_ptr(inner))
             && self.inner.revision() == inner.revision()
             && self.controls == controls
+            && self.marked.as_ref() == marked
             && self.palette == Palette::new(theme)
     }
 
@@ -306,6 +314,19 @@ impl DiffDecorator for Decorations {
     }
 
     fn line_mark(&self, cx: &LineContext) -> Option<LineMark> {
+        let marked = self
+            .marked
+            .as_ref()
+            .zip(cx.source)
+            .is_some_and(|(marked, source)| {
+                marked.file == source.id
+                    && marked.revision == FileRevision(source.revision.0)
+                    && marked.side == cx.side
+                    && marked.lines.contains(&cx.line)
+            });
+        if marked {
+            return Some(LineMark::Selected);
+        }
         self.inner.line_mark(cx)
     }
 

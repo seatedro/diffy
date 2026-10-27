@@ -7,7 +7,10 @@ mod state;
 mod tests;
 mod view;
 
-pub use controls::{Chrome, Control, Tone, focus_id as control_focus_id, render as render_control};
+pub use controls::{
+    Chrome, Control, Tone, focus_id as control_focus_id, render as render_control,
+    render_draggable as render_draggable_control,
+};
 pub use operations::{
     RowAction, change_actions, context_menu, file_row_actions, group_action, operation_log_actions,
     selection_actions,

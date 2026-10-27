@@ -1241,6 +1241,15 @@ impl NavigationController {
         }))
     }
 
+    fn clear_viewed(&mut self) {
+        if self.viewed.is_empty() {
+            return;
+        }
+        self.viewed.clear();
+        self.expanded_revision += 1;
+        self.clamp_scroll();
+    }
+
     fn mark_viewed_and_next(&mut self) -> Reduction {
         let Some(current) = self.selected_key().and_then(|key| self.file_index(key)) else {
             return Reduction::default();
@@ -1754,6 +1763,13 @@ impl NavigationController {
                     old.pull_request.head_sha != review.pull_request.head_sha
                         || old.pull_request.base_sha != review.pull_request.base_sha
                 });
+                if self
+                    .review
+                    .as_ref()
+                    .is_none_or(|old| old.target != review.target)
+                {
+                    self.clear_viewed();
+                }
                 self.review = Some(review.clone());
                 if !moved {
                     return Reduction::changed();
@@ -1769,7 +1785,10 @@ impl NavigationController {
                 }
                 reduction
             }
-            Intent::SetReviewTarget(None) if self.review.take().is_some() => Reduction::changed(),
+            Intent::SetReviewTarget(None) if self.review.take().is_some() => {
+                self.clear_viewed();
+                Reduction::changed()
+            }
             Intent::RankFilesUnavailable { job, reason } => self.rank_unavailable(*job, reason),
             Intent::SettingsChanged(settings) => match settings.settings.last_compare.as_ref() {
                 Some(last) if last.renderer != self.compare.renderer => {

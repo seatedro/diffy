@@ -46,8 +46,8 @@ use crate::core::forge::github::{
 };
 use crate::core::review::{
     ReviewAnchor, ReviewComment, ReviewCommentId, ReviewDecision, ReviewDraftKind,
-    ReviewDraftState, ReviewLineRange, ReviewResolution, ReviewSession, ReviewSide, ReviewThread,
-    ReviewThreadId, ReviewThreadPermissions, ReviewThreadStatus,
+    ReviewDraftState, ReviewLineRange, ReviewResolution, ReviewSession, ReviewSessionStatus,
+    ReviewSide, ReviewThread, ReviewThreadId, ReviewThreadPermissions, ReviewThreadStatus,
 };
 use crate::platform::persistence::SettingsStore;
 use crate::platform::review_store::ReviewStore;
@@ -912,6 +912,42 @@ fn startup_loads_the_token_then_the_handed_off_pull_request() {
             GitHubRequest::FetchPullRequestOverview { .. }
         ]
     ));
+}
+
+#[test]
+fn review_data_that_lands_before_the_pull_request_is_applied_once_it_loads() {
+    let mut driver = Driver::new(Fake::new());
+    driver.startup(Some(URL));
+    driver.fake.hold = true;
+    driver.open_repository();
+    driver.fake.hold = false;
+
+    let held = std::mem::take(&mut driver.fake.held);
+    let is_load = |effect: &ReviewEffect| {
+        matches!(effect, ReviewEffect::GitHub { request, .. }
+            if matches!(**request, GitHubRequest::LoadPullRequest { .. }))
+    };
+    let (loads, rest): (Vec<_>, Vec<_>) = held.into_iter().partition(is_load);
+    assert_eq!(loads.len(), 1);
+    for effect in rest.into_iter().chain(loads) {
+        for event in driver.fake.run(effect) {
+            driver.deliver(event);
+        }
+    }
+
+    assert_eq!(driver.session().threads.len(), 1);
+    assert_eq!(driver.session().status, ReviewSessionStatus::Ready);
+    assert!(driver.review.overview().data.is_some());
+    let requests = driver.fake.requests();
+    let count = |want: fn(&GitHubRequest) -> bool| requests.iter().filter(|r| want(r)).count();
+    assert_eq!(
+        count(|r| matches!(r, GitHubRequest::FetchReviewData { .. })),
+        1
+    );
+    assert_eq!(
+        count(|r| matches!(r, GitHubRequest::FetchPullRequestOverview { .. })),
+        1
+    );
 }
 
 #[test]

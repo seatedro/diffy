@@ -60,6 +60,13 @@ pub struct CommitComparison {
     /// Commits `head` has that `base` lacks.
     pub ahead_by: u32,
     pub merge_base: String,
+    pub base: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullRequestTarget {
+    pub info: PullRequestInfo,
+    pub repo_size_kb: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
@@ -394,6 +401,16 @@ impl GitHubApi {
         repo: &str,
         number: i32,
     ) -> Result<PullRequestInfo> {
+        self.fetch_pull_request_target(owner, repo, number)
+            .map(|target| target.info)
+    }
+
+    pub fn fetch_pull_request_target(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: i32,
+    ) -> Result<PullRequestTarget> {
         let page = transport::get(
             &self.token,
             &format!("{API_ROOT}/repos/{owner}/{repo}/pulls/{number}"),
@@ -431,7 +448,10 @@ impl GitHubApi {
             ));
         }
 
-        Ok(result)
+        Ok(PullRequestTarget {
+            info: result,
+            repo_size_kb: u64::try_from(int_field(&base_repo, "size")).unwrap_or_default(),
+        })
     }
 
     /// The few fields a watch compares between checks, in one small query:
@@ -484,10 +504,12 @@ impl GitHubApi {
         )?;
         let json: Value = serde_json::from_str(&page.body)?;
         let merge_base = json.get("merge_base_commit").unwrap_or(&Value::Null);
+        let base_commit = json.get("base_commit").unwrap_or(&Value::Null);
         Ok(CommitComparison {
             status: string_field(&json, "status"),
             ahead_by: u32::try_from(int_field(&json, "ahead_by")).unwrap_or_default(),
             merge_base: string_field(merge_base, "sha"),
+            base: string_field(base_commit, "sha"),
         })
     }
 

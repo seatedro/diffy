@@ -13,7 +13,7 @@ use crate::core::compare::output::CompareOutput;
 use crate::core::compare::spec::CompareMode;
 use crate::core::compare::stats::COMPARE_SUMMARY_FILE_LIMIT;
 use crate::core::error::{DiffyError, Result, VcsBackendKind};
-use crate::core::forge::github::{GitHubApi, GitHubPullRequest, PullRequestInfo, parse_pr_url};
+use crate::core::forge::github::{GitHubApi, GitHubPullRequest, parse_pr_url};
 use crate::core::vcs::backend::PullRequestRefs;
 use crate::core::vcs::compare_port::output_from_patch;
 use crate::core::vcs::git::status::{StatusBits, StatusItem, StatusOperation, StatusScope};
@@ -281,6 +281,8 @@ pub struct RefMetadata {
 /// repository that has no clone here.
 const PULL_REQUEST_CACHE_KEY: &str = "diffy.pullRequestCache";
 const PULL_REQUEST_CACHE_REMOTE: &str = "origin";
+const PULL_REQUEST_BASE_KEY: &str = "diffy.pullRequestBase";
+const PULL_REQUEST_FULL_FETCH_MAX_KB: u64 = 16 * 1024;
 
 /// Makes `dir` a repository for reviewing `owner/repo`'s pull requests
 /// without a clone: no checkout, file contents fetched only as diffs need
@@ -1960,6 +1962,9 @@ impl GitService {
         let parsed = parse_pr_url(pull_request_url)
             .ok_or_else(|| DiffyError::Parse("not a valid GitHub pull request URL".to_owned()))?;
         let api = GitHubApi::with_token(github_token.to_owned());
+        if is_pull_request_cache(self.repo_path_ref()?) {
+            return self.fetch_pull_request_shallow(&api, github_token, &parsed);
+        }
         let stage_started = Instant::now();
         let info = api.fetch_pull_request(&parsed.owner, &parsed.repo, parsed.number)?;
         tracing::info!(
@@ -1969,9 +1974,6 @@ impl GitService {
             elapsed_ms = stage_started.elapsed().as_millis(),
             "github-pr: ref resolver fetched metadata"
         );
-        if is_pull_request_cache(self.repo_path_ref()?) {
-            return self.fetch_pull_request_shallow(&api, github_token, &parsed, info);
-        }
         let fetch_source = github_fetch_source_for_repo(
             self.repo_path_ref()?,
             &parsed.owner,
@@ -2034,16 +2036,56 @@ impl GitService {
         api: &GitHubApi,
         token: &str,
         parsed: &GitHubPullRequest,
-        info: PullRequestInfo,
     ) -> Result<PullRequestRefs> {
         let started = Instant::now();
+        let hint = self.pull_request_base_hint();
+        let (target, speculated) = std::thread::scope(|scope| {
+            let speculated = hint.as_deref().map(|base| {
+                let head = format!("refs/pull/{}/head", parsed.number);
+                scope.spawn(move || api.compare_commits(&parsed.owner, &parsed.repo, base, &head))
+            });
+            let target = api.fetch_pull_request_target(&parsed.owner, &parsed.repo, parsed.number);
+            let speculated = speculated
+                .and_then(|handle| handle.join().ok())
+                .and_then(Result::ok);
+            (target, speculated)
+        });
+        let target = target?;
+        let info = target.info;
+        tracing::info!(
+            owner = %parsed.owner,
+            repo = %parsed.repo,
+            number = parsed.number,
+            elapsed_ms = started.elapsed().as_millis(),
+            speculated = speculated.is_some(),
+            "github-pr: ref resolver fetched metadata"
+        );
+        if hint.as_deref() != Some(info.base_branch.as_str()) {
+            let _ = run_system_git(
+                self.repo_path_ref()?,
+                &[
+                    OsString::from("config"),
+                    OsString::from(PULL_REQUEST_BASE_KEY),
+                    OsString::from(&info.base_branch),
+                ],
+            );
+        }
         let (base_target, head_target) =
             pr_ref_paths(parsed.number, &info.base_branch, &info.head_branch);
         let mut merge_base = self.resolve_commit_oid(&base_target).ok();
         let mut refspecs = Vec::with_capacity(2);
         if !self.ref_matches_oid(&head_target, &info.head_sha) || merge_base.is_none() {
-            let compared =
-                api.compare_commits(&parsed.owner, &parsed.repo, &info.base_sha, &info.head_sha)?;
+            let compared = match speculated
+                .filter(|compared| !info.base_sha.is_empty() && compared.base == info.base_sha)
+            {
+                Some(compared) => compared,
+                None => api.compare_commits(
+                    &parsed.owner,
+                    &parsed.repo,
+                    &info.base_sha,
+                    &info.head_sha,
+                )?,
+            };
             if compared.merge_base.is_empty() {
                 return Err(DiffyError::General(
                     "GitHub didn't say where this pull request branched off".to_owned(),
@@ -2058,10 +2100,15 @@ impl GitService {
             }
         }
         if !refspecs.is_empty() {
+            let filter = if (1..=PULL_REQUEST_FULL_FETCH_MAX_KB).contains(&target.repo_size_kb) {
+                "--no-filter"
+            } else {
+                "--filter=blob:none"
+            };
             let mut args = vec![
                 OsString::from("fetch"),
                 OsString::from("--depth=1"),
-                OsString::from("--filter=blob:none"),
+                OsString::from(filter),
                 OsString::from("--no-tags"),
                 OsString::from(PULL_REQUEST_CACHE_REMOTE),
             ];
@@ -2105,6 +2152,20 @@ impl GitService {
             head: head_target,
             merge_base: Some(merge_base),
         })
+    }
+
+    fn pull_request_base_hint(&self) -> Option<String> {
+        let base = self
+            .repo()
+            .ok()?
+            .config_snapshot()
+            .string(PULL_REQUEST_BASE_KEY)?
+            .to_string();
+        let plain = !base.is_empty()
+            && base
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_./".contains(&byte));
+        plain.then_some(base)
     }
 
     fn diff_between_refs(&self, left: &str, right: &str) -> Result<String> {

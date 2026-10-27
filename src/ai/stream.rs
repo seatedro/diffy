@@ -61,10 +61,7 @@ fn key_fingerprint(key: &str) -> String {
 pub fn run_streaming(request: GenerateRequest) -> Receiver<StreamMessage> {
     let (tx, rx) = channel();
     thread::spawn(move || {
-        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
+        let Ok(runtime) = crate::core::http::runtime() else {
             let _ = tx.send(StreamMessage::Failed(
                 "failed to start tokio runtime".to_owned(),
             ));

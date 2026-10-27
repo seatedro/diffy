@@ -235,15 +235,25 @@ impl GitHubApi {
         number: i32,
     ) -> Result<PullRequestOverview> {
         let base = format!("https://api.github.com/repos/{owner}/{repo}");
-        let pull = self.get_json(
-            &format!("{base}/pulls/{number}"),
-            "GitHub pull request fetch",
-        )?;
-        let comments = self.get_json(
-            &format!("{base}/issues/{number}/comments?per_page=100"),
-            "GitHub pull request comments fetch",
-        )?;
-        Ok(parse_public_overview(&pull, &comments))
+        let (pull, comments) = std::thread::scope(|scope| {
+            let comments = scope.spawn(|| {
+                self.get_json(
+                    &format!("{base}/issues/{number}/comments?per_page=100"),
+                    "GitHub pull request comments fetch",
+                )
+            });
+            let pull = self.get_json(
+                &format!("{base}/pulls/{number}"),
+                "GitHub pull request fetch",
+            );
+            let comments = comments.join().unwrap_or_else(|_| {
+                Err(DiffyError::General(
+                    "pull request comments fetch panicked".to_owned(),
+                ))
+            });
+            (pull, comments)
+        });
+        Ok(parse_public_overview(&pull?, &comments?))
     }
 }
 

@@ -25,7 +25,10 @@ use crate::contracts::shared::{AccountEpoch, JobId, SharedContext, SourceTarget}
 use crate::contracts::shell::{Controller, Intent, LogicalFocus, Reduction, ShellEffect};
 use crate::contracts::viewport::CompareIntent;
 use crate::core::compare::RendererKind;
-use crate::core::forge::github::{DeviceFlowState, GitHubUser, parse_pr_url};
+use crate::core::forge::github::{
+    DeviceFlowState, GitHubPullRequestReviewData, GitHubUser, PullRequestReviewComment,
+    parse_pr_url,
+};
 use crate::core::forge::github::{PullRequestFingerprint, PullRequestInfo, PullRequestOverview};
 use crate::core::review::{
     ReviewAnchor, ReviewDecision, ReviewDraftId, ReviewDraftKind, ReviewDraftState,
@@ -146,6 +149,12 @@ struct InFlight {
 }
 
 #[derive(Debug)]
+enum FetchedReview {
+    Data(Box<GitHubPullRequestReviewData>),
+    Comments(Vec<PullRequestReviewComment>),
+}
+
+#[derive(Debug)]
 pub struct ActivePullRequest {
     pub pr: PullRequestRef,
     pub url: String,
@@ -155,6 +164,8 @@ pub struct ActivePullRequest {
     pub error: Option<String>,
     session_dirty: bool,
     review_refetch: bool,
+    review_requested: bool,
+    fetched_review: Option<FetchedReview>,
     /// A push the watch noticed that isn't loaded yet.
     pub update: Option<HeadChange>,
 }
@@ -735,6 +746,8 @@ impl ReviewController {
                 error: None,
                 session_dirty: false,
                 review_refetch: false,
+                review_requested: false,
+                fetched_review: None,
                 update: None,
             });
         } else if let Some(active) = self.pr.as_mut() {
@@ -743,14 +756,26 @@ impl ReviewController {
             active.url = url.clone();
         }
         let token = self.token();
-        reduction.effect(self.github(
+        reduction = reduction.effect(self.github(
             Pending::LoadPullRequest,
             GitHubRequest::LoadPullRequest {
                 url,
                 repo_path,
                 token,
             },
-        ))
+        ));
+        if let Some(active) = self.pr.as_mut() {
+            active.review_requested = true;
+        }
+        if let Some(effect) = self.fetch_review() {
+            reduction = reduction.effect(effect);
+        }
+        if !self.overview.loading
+            && let Some(effect) = self.fetch_overview()
+        {
+            reduction = reduction.effect(effect);
+        }
+        reduction
     }
 
     fn close_pull_request(&mut self) -> Reduction {
@@ -880,6 +905,8 @@ impl ReviewController {
             }
         }
         let pr = active.pr.clone();
+        let requested = std::mem::take(&mut active.review_requested);
+        let fetched = active.fetched_review.take();
         let scope = self.job(Some(pr.clone()), Pending::Session);
         reduction = reduction.effect(ReviewEffect::LoadSession {
             scope,
@@ -890,12 +917,40 @@ impl ReviewController {
             carry,
         });
         reduction = reduction.effect(self.watch(pr, info));
-        if let Some(effect) = self.fetch_review() {
+        if let Some(effect) = fetched.and_then(|review| self.apply_review(review)) {
             reduction = reduction.effect(effect);
         }
-        if !self.overview.loading
-            && let Some(effect) = self.fetch_overview()
-        {
+        if !requested && let Some(effect) = self.fetch_review() {
+            reduction = reduction.effect(effect);
+        }
+        reduction
+    }
+
+    fn apply_review(&mut self, review: FetchedReview) -> Option<ReviewEffect> {
+        let session = self.session_mut()?;
+        match review {
+            FetchedReview::Data(data) => session.apply_github_review_data(*data),
+            FetchedReview::Comments(comments) => {
+                if session.threads.iter().any(|t| t.backend_node_id.is_some()) {
+                    return None;
+                }
+                session.replace_github_comments(comments);
+            }
+        }
+        self.save_session()
+    }
+
+    fn receive_review(&mut self, review: FetchedReview) -> Reduction {
+        let mut reduction = Reduction::changed();
+        match self.pr.as_mut() {
+            Some(active) if active.loading => active.fetched_review = Some(review),
+            _ => {
+                if let Some(effect) = self.apply_review(review) {
+                    reduction = reduction.effect(effect);
+                }
+            }
+        }
+        if let Some(effect) = self.queued_review_fetch() {
             reduction = reduction.effect(effect);
         }
         reduction
@@ -1597,11 +1652,18 @@ impl ReviewController {
             } => self.pull_request_checked(*now, change, remarks_changed, checks_changed),
             GitHubResponse::PullRequestCheckFailed { .. } => Reduction::default(),
             GitHubResponse::PullRequestLoadFailed { message, .. } => {
+                let mut fetched = None;
                 if let Some(active) = self.pr.as_mut() {
                     active.loading = false;
                     active.error = Some(message.clone());
+                    active.review_requested = false;
+                    fetched = active.fetched_review.take();
                 }
-                Reduction::changed().intent(error(message))
+                let mut reduction = Reduction::changed().intent(error(message));
+                if let Some(effect) = fetched.and_then(|review| self.apply_review(review)) {
+                    reduction = reduction.effect(effect);
+                }
+                reduction
             }
             GitHubResponse::UserFetched(user) => {
                 let previous = self.account.user.as_ref().map(|u| u.login.clone());
@@ -1626,17 +1688,7 @@ impl ReviewController {
                 Reduction::default()
             }
             GitHubResponse::ReviewDataLoaded { data, .. } => {
-                if let Some(session) = self.session_mut() {
-                    session.apply_github_review_data(*data);
-                }
-                let mut reduction = Reduction::changed();
-                if let Some(effect) = self.save_session() {
-                    reduction = reduction.effect(effect);
-                }
-                if let Some(effect) = self.queued_review_fetch() {
-                    reduction = reduction.effect(effect);
-                }
-                reduction
+                self.receive_review(FetchedReview::Data(data))
             }
             GitHubResponse::ReviewDataLoadFailed { pr, message } => {
                 tracing::warn!("failed to fetch pull request review data: {message}");
@@ -1652,19 +1704,7 @@ impl ReviewController {
                 ))
             }
             GitHubResponse::ReviewCommentsLoaded { comments, .. } => {
-                let mut reduction = Reduction::changed();
-                if let Some(session) = self.session_mut()
-                    && session.threads.iter().all(|t| t.backend_node_id.is_none())
-                {
-                    session.replace_github_comments(comments);
-                    if let Some(effect) = self.save_session() {
-                        reduction = reduction.effect(effect);
-                    }
-                }
-                if let Some(effect) = self.queued_review_fetch() {
-                    reduction = reduction.effect(effect);
-                }
-                reduction
+                self.receive_review(FetchedReview::Comments(comments))
             }
             GitHubResponse::ReviewCommentsLoadFailed { message, .. } => {
                 if let Some(session) = self.session_mut() {

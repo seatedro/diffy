@@ -944,3 +944,46 @@ fn history_reloads_when_the_reviewed_pull_request_moves() {
     ui.frame();
     ui.find(By::name("Loading history"));
 }
+
+#[test]
+fn viewed_markers_reset_when_another_pull_request_opens() {
+    use crate::contracts::review::ReviewContext;
+    use crate::core::forge::github::api::PullRequestInfo;
+    use crate::core::review::ReviewTarget;
+
+    fn target(number: i32, head: &str) -> Intent {
+        Intent::SetReviewTarget(Some(Rc::new(ReviewContext {
+            account: Default::default(),
+            target: ReviewTarget::github("owner", "repo", number),
+            pull_request: std::sync::Arc::new(PullRequestInfo {
+                head_sha: head.to_owned(),
+                ..Default::default()
+            }),
+            left_ref: format!("refs/diffy/pr/{number}/base"),
+            right_ref: format!("refs/diffy/pr/{number}/head"),
+            left_is_merge_base: false,
+        })))
+    }
+    fn mark_first(ui: &mut Nav) {
+        ui.pointer_move(ui.find(file_node(1)).center());
+        let toggle = ui.find(By::role_name(Role::CheckBox, "Mark viewed"));
+        ui.click(toggle.center());
+        assert!(ui.app().nav.is_viewed("src/a.rs"));
+    }
+
+    let mut ui = nav_harness();
+    open(&mut ui, three_files());
+    ui.app_mut().inject(target(3, "one"));
+    mark_first(&mut ui);
+
+    ui.app_mut().inject(target(3, "two"));
+    assert!(ui.app().nav.is_viewed("src/a.rs"));
+
+    ui.app_mut().inject(target(4, "one"));
+    assert!(!ui.app().nav.is_viewed("src/a.rs"));
+
+    ui.frame();
+    mark_first(&mut ui);
+    ui.app_mut().inject(Intent::SetReviewTarget(None));
+    assert!(!ui.app().nav.is_viewed("src/a.rs"));
+}

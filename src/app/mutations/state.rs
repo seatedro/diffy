@@ -1364,7 +1364,7 @@ impl MutationsController {
         let Some(branch) = active_ref(&repo.snapshot.refs) else {
             return error("No active branch or bookmark to pull into.");
         };
-        let Some((remote, upstream)) = branch.upstream.as_deref().and_then(upstream_pair) else {
+        let Some((remote, _)) = branch.upstream.as_deref().and_then(upstream_pair) else {
             return error(format!(
                 "No upstream configured for {}. Push once to set one.",
                 branch.name
@@ -1380,7 +1380,7 @@ impl MutationsController {
                 job,
                 repo_path: repo.snapshot.path.clone(),
                 remote,
-                branch: upstream,
+                branch: branch.name.clone(),
             })
     }
 

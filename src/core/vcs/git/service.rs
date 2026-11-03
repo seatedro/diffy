@@ -1883,8 +1883,9 @@ impl GitService {
         )
     }
 
-    /// Fast-forward the named local branch to match its upstream on the given
-    /// remote. Fetches first, then updates the ref and checks out the new tip
+    /// Fast-forward `local_branch` to its configured upstream
+    /// (`<branch>@{upstream}`), which may have a different name. Fetches
+    /// `remote_name` first, then updates the ref and checks out the new tip
     /// when HEAD is on that branch.
     ///
     /// Errors:
@@ -1906,9 +1907,9 @@ impl GitService {
         let repo_path = self
             .repo_path_ref()
             .map_err(|e| PullError::Other(e.to_string()))?;
-        let upstream_shorthand = format!("{remote_name}/{local_branch}");
-        let upstream_oid = resolve_commit_oid_at(repo_path, &upstream_shorthand)
-            .map_err(|_| PullError::NoUpstream)?;
+        let upstream = upstream_ref_at(repo_path, local_branch).ok_or(PullError::NoUpstream)?;
+        let upstream_oid =
+            resolve_commit_oid_at(repo_path, &upstream).map_err(|_| PullError::NoUpstream)?;
         let local_oid = resolve_commit_oid_at(repo_path, local_branch)
             .map_err(|e| PullError::Other(e.to_string()))?;
 
@@ -1916,7 +1917,7 @@ impl GitService {
             return Ok(PullOutcome::AlreadyUpToDate);
         }
 
-        let (ahead, behind) = graph_ahead_behind(repo_path, local_branch, &upstream_shorthand)
+        let (ahead, behind) = graph_ahead_behind(repo_path, local_branch, &upstream)
             .map_err(|e| PullError::Other(e.to_string()))?;
         if ahead > 0 {
             return Err(PullError::NonFastForward { ahead, behind });
@@ -1938,7 +1939,7 @@ impl GitService {
                 &[
                     OsString::from("merge"),
                     OsString::from("--ff-only"),
-                    OsString::from(&upstream_shorthand),
+                    OsString::from(&upstream),
                 ],
             )
             .map_err(|e| PullError::Other(e.to_string()))?;
@@ -1949,7 +1950,7 @@ impl GitService {
                     OsString::from("branch"),
                     OsString::from("-f"),
                     OsString::from(local_branch),
-                    OsString::from(&upstream_shorthand),
+                    OsString::from(&upstream),
                 ],
             )
             .map_err(|e| PullError::Other(e.to_string()))?;
@@ -2687,6 +2688,22 @@ fn graph_ahead_behind(repo_path: &Path, left: &str, right: &str) -> Result<(usiz
     let ahead = fields.next().and_then(|v| v.parse().ok()).unwrap_or(0);
     let behind = fields.next().and_then(|v| v.parse().ok()).unwrap_or(0);
     Ok((ahead, behind))
+}
+
+/// Full refname of `local_branch`'s configured upstream, e.g.
+/// `refs/remotes/origin/main` for a `dev` that tracks `origin/main`.
+fn upstream_ref_at(repo_path: &Path, local_branch: &str) -> Option<String> {
+    let output = run_system_git_capture(
+        repo_path,
+        &[
+            OsString::from("rev-parse"),
+            OsString::from("--symbolic-full-name"),
+            OsString::from(format!("{local_branch}@{{upstream}}")),
+        ],
+    )
+    .ok()?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 fn resolve_commit_oid_at(repo_path: &Path, reference: &str) -> Result<String> {
@@ -3438,6 +3455,46 @@ mod tests {
             .pull_ff("origin", "main", |_, _, _| {})
             .expect_err("diverged branch must refuse");
         assert!(matches!(err, super::PullError::NonFastForward { .. }));
+    }
+
+    #[test]
+    fn pull_ff_moves_the_local_branch_when_upstream_name_differs() {
+        let (remote_dir, local_dir) = make_remote_and_clone();
+
+        // Check out `dev` tracking `origin/main`; the clone's own `main`
+        // tracks `origin/main` too and must stay put.
+        let local = Repository::open(local_dir.path()).unwrap();
+        let head = local.head().unwrap().peel_to_commit().unwrap();
+        let mut dev = local.branch("dev", &head, false).unwrap();
+        dev.set_upstream(Some("origin/main")).unwrap();
+        local.set_head("refs/heads/dev").unwrap();
+
+        let advance_dir = TempDir::new().unwrap();
+        let advance =
+            Repository::clone(remote_dir.path().to_str().unwrap(), advance_dir.path()).unwrap();
+        commit_file(&advance, "README.md", "hello\nworld\n", "second");
+        advance
+            .find_remote("origin")
+            .unwrap()
+            .push::<&str>(&["refs/heads/main:refs/heads/main"], None)
+            .unwrap();
+
+        let mut git = GitService::new();
+        git.open(local_dir.path().to_str().unwrap()).unwrap();
+
+        let outcome = git.pull_ff("origin", "dev", |_, _, _| {}).unwrap();
+        assert_eq!(outcome, super::PullOutcome::FastForwarded { behind: 1 });
+
+        let branches = git.branches().unwrap();
+        let ahead_behind = |name: &str| {
+            branches
+                .iter()
+                .find(|branch| !branch.is_remote && branch.name == name)
+                .unwrap()
+                .ahead_behind
+        };
+        assert_eq!(ahead_behind("dev"), Some((0, 0)));
+        assert_eq!(ahead_behind("main"), Some((0, 1)));
     }
 
     #[test]

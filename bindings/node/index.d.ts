@@ -134,7 +134,7 @@ export interface Fallback {
    */
   kind: 'no_grammar' | 'grammar_unavailable' | 'semantic' | 'request_budget'
   /** Present when `kind` is `semantic`. */
-  reason?: 'too_large' | 'parse_errors' | 'error_coverage' | 'unparsed' | 'budget' | 'timeout'
+  reason?: 'too_large' | 'parse_errors' | 'error_coverage' | 'unparsed' | 'budget' | 'timeout' | 'invalid'
   /** For people; wording may change. Branch on `kind` and `reason`. */
   message: string
 }

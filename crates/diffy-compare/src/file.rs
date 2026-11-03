@@ -132,10 +132,22 @@ pub(crate) fn diff_one(
                     })
                     .collect(),
             };
-            Ok(FileDiff {
-                document: document_from_rows(meta, old, new, chunks, true, semantics)?,
-                fallback: None,
-            })
+            match document_from_rows(meta.clone(), old, new, chunks, true, semantics) {
+                Ok(document) => Ok(FileDiff {
+                    document,
+                    fallback: None,
+                }),
+                // A bug in the semantic rows; the file still gets a diff.
+                Err(error) => {
+                    tracing::warn!(
+                        target: "diffy::semantic",
+                        path = input.display_path(),
+                        %error,
+                        "semantic rows did not build; using a line diff"
+                    );
+                    line(meta, Fallback::Invalid(error.to_string()))
+                }
+            }
         }
         Err(fallback) => line(meta, Fallback::Semantic(fallback)),
     }

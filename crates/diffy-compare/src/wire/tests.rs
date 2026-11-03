@@ -683,6 +683,14 @@ fn fallbacks_serialize_as_stable_kinds() {
             }),
         ),
         (
+            crate::Fallback::Invalid("bad rows".into()),
+            serde_json::json!({
+                "kind": "semantic",
+                "reason": "invalid",
+                "message": "semantic result unusable: bad rows",
+            }),
+        ),
+        (
             crate::Fallback::GrammarUnavailable("zig".into()),
             serde_json::json!({
                 "kind": "grammar_unavailable",

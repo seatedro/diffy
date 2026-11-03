@@ -58,7 +58,7 @@ Render order: for each hunk, `gap_before`, header, rows; then `gap_after`.
 | Field | Type | |
 | --- | --- | --- |
 | `kind` | `"no_grammar"` \| `"grammar_unavailable"` \| `"semantic"` \| `"request_budget"` | `no_grammar`: no language for the path. `grammar_unavailable`: the language's grammar failed to load. `semantic`: the semantic diff gave up, see `reason`. `request_budget`: the request's deadline passed before this file was diffed. |
-| `reason` | `"too_large"` \| `"parse_errors"` \| `"error_coverage"` \| `"unparsed"` \| `"budget"` \| `"timeout"`? | Present when `kind` is `semantic`, in order: file too large; too many parse errors; parse errors cover too much; parser gave up; work budget ran out; time budget ran out. |
+| `reason` | `"too_large"` \| `"parse_errors"` \| `"error_coverage"` \| `"unparsed"` \| `"budget"` \| `"timeout"` \| `"invalid"`? | Present when `kind` is `semantic`, in order: file too large; too many parse errors; parse errors cover too much; parser gave up; work budget ran out; time budget ran out; its result was unusable (a bug). |
 | `message` | string | For people, e.g. `"exceeded the semantic time budget"`. Wording may change; branch on `kind` and `reason`. |
 
 ## Hunk
@@ -213,7 +213,7 @@ type File = {
 
 type Fallback = {
   kind: "no_grammar" | "grammar_unavailable" | "semantic" | "request_budget";
-  reason?: "too_large" | "parse_errors" | "error_coverage" | "unparsed" | "budget" | "timeout";
+  reason?: "too_large" | "parse_errors" | "error_coverage" | "unparsed" | "budget" | "timeout" | "invalid";
   message: string;
 };
 

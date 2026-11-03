@@ -628,7 +628,9 @@ pub fn build_selection_patch(
     let mut out = Vec::new();
     write_header(file, &mut out, full, reverse)?;
     let mut delta: i64 = 0;
-    let mut emitted: Vec<(Side, bool)> = Vec::new();
+    // Per side (old, new): whether its "no newline at end of file" line
+    // is already out, after which nothing more may follow on that side.
+    let mut ended = [false; 2];
     for (hunk, flags) in file.hunks.iter().zip(&selected) {
         if !flags.iter().any(|&flag| flag) {
             continue;
@@ -671,12 +673,12 @@ pub fn build_selection_patch(
                 old: None,
                 new: None,
             };
-            for side in [Side::Old, Side::New] {
+            for (index, side) in [Side::Old, Side::New].into_iter().enumerate() {
                 if shown.on_side(side) {
-                    if emitted.contains(&(side, true)) {
+                    if ended[index] {
                         return Err(PatchError::NewlineConflict);
                     }
-                    emitted.push((side, marker.is_some()));
+                    ended[index] |= marker.is_some();
                 }
             }
             match kind {

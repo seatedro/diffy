@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -462,7 +463,15 @@ fn tracing_warn(error: &std::io::Error) {
     let _ = error;
 }
 
-type CacheKey = (u64, LanguageId);
+/// A table's source by its hash and length, and its language: a table
+/// depends on nothing else, whichever client and key ask for it.
+type CacheKey = (u64, usize, LanguageId);
+
+fn table_key(language: &LanguageId, source: &str) -> CacheKey {
+    let mut hasher = std::hash::DefaultHasher::new();
+    source.hash(&mut hasher);
+    (hasher.finish(), source.len(), language.clone())
+}
 
 fn run(messages: &Receiver<Message>, store: &GrammarStore) {
     let mut clients: HashMap<u64, (Sender<ScopeResult>, Wake)> = HashMap::new();
@@ -513,7 +522,7 @@ fn run(messages: &Receiver<Message>, store: &GrammarStore) {
             let Some(job) = queued.remove(&slot) else {
                 continue;
             };
-            let cache_key = (job.key, job.language.clone());
+            let cache_key = table_key(&job.language, &job.source);
             let cached = cache
                 .iter()
                 .find(|(key, _)| *key == cache_key)
@@ -540,6 +549,11 @@ fn run(messages: &Receiver<Message>, store: &GrammarStore) {
             };
             if pending {
                 parked.insert(slot, job);
+            } else if latest.get(&slot) == Some(&job.generation) {
+                // Answered for good: an entry per key ever asked would grow
+                // with every revision. A client asks for a key in order, so
+                // no older generation follows.
+                latest.remove(&slot);
             }
             if let Some((reply, wake)) = clients.get(&slot.0) {
                 if reply.send(result).is_err() {

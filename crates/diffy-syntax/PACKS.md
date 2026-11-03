@@ -89,8 +89,8 @@ their line ranges; `ScopeTable::at(line)` returns the ones enclosing a
 0-based line, outermost first. `ScopeWorker` does the same on its own
 thread: `request(key, generation, language, source)` answers with a
 `ScopeResult`, keeps only the newest generation per key, caches tables
-per key, and answers again when a pending grammar arrives. A key names
-one source at one revision.
+by language and source text, and answers again when a pending grammar
+arrives. A key names one source at one revision.
 
 Built-in queries cover Rust, TypeScript/TSX/JavaScript, Go, Python,
 C/C++, Zig and Nix; each pattern that does not compile against a pack's

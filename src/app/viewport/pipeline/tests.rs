@@ -159,6 +159,30 @@ fn stale_compare_generations_are_rejected() {
 }
 
 #[test]
+fn a_failed_compare_tells_the_viewport() {
+    let cx = SharedContext::default();
+    let mut controller = PipelineController::default();
+    let generation = request(&mut controller);
+    controller.take_batch();
+    controller.reduce_event(
+        PipelineEvent::CompareFailed {
+            generation,
+            failure: PipelineFailure::Failed("bad revision".into()),
+        },
+        &cx,
+    );
+    assert_eq!(
+        controller.status(),
+        &PipelineStatus::Failed("bad revision".into())
+    );
+    assert!(matches!(
+        controller.take_installs().as_slice(),
+        [ViewportInstall::CompareFailed { generation: g, message }]
+            if *g == generation && message == "bad revision"
+    ));
+}
+
+#[test]
 fn selecting_a_file_loads_it_once_at_interactive_priority() {
     let cx = SharedContext::default();
     let mut controller = PipelineController::default();

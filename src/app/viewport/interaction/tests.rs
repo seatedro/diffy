@@ -885,6 +885,33 @@ fn a_refresh_keeps_the_shown_diff_until_its_files_arrive() {
 }
 
 #[test]
+fn a_failed_compare_replaces_the_loading_and_refreshing_views() {
+    let mut ui = harness(Host::new(), SIZE);
+    ui.app_mut().install(ViewportInstall::Begin {
+        generation: GENERATION,
+    });
+    ui.app_mut().install(ViewportInstall::CompareFailed {
+        generation: GENERATION,
+        message: "unknown revision".to_owned(),
+    });
+    ui.frame();
+    assert!(!ui.painted_text().contains("Loading diff"));
+    assert!(ui.painted_text().contains("unknown revision"));
+
+    let mut ui = loaded(Host::new());
+    let next = CompareGeneration(GENERATION.0 + 1);
+    ui.app_mut()
+        .install(ViewportInstall::Begin { generation: next });
+    ui.app_mut().install(ViewportInstall::CompareFailed {
+        generation: next,
+        message: "unknown revision".to_owned(),
+    });
+    ui.frame();
+    assert!(ui.painted_text().contains("unknown revision"));
+    assert!(!line_names(&ui).iter().any(|n| n == "changed ten"));
+}
+
+#[test]
 fn a_folded_reformat_exposes_its_toggle_as_a_button() {
     use diffy_diff::{
         AlignedRow, ChangeIntensity, DocumentBuilder, FileDiffSnapshot, FileMeta, LineGroupSpan,

@@ -80,6 +80,8 @@ so an unknown language costs one map lookup afterwards.
 
 - `HighlightWorker` answers a pending language with a plain result marked
   `pending`, then sends the real result for the same slot and generation.
+- `GrammarStore::resolved` reports what lookups found without resolving,
+  and never waits for a pack that is loading, so the UI thread may call it.
 
 ### Enclosing scopes
 

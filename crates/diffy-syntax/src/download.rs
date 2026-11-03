@@ -140,20 +140,23 @@ impl Remote {
     }
 }
 
+/// The cached index's packs, each with its directory and whether all its
+/// files are there; the files are checked without the state lock.
 pub(crate) fn packs(
     downloads: &Downloads,
-    state: &mut State,
+    inner: &Inner,
 ) -> Vec<(PathBuf, Arc<PackManifest>, bool)> {
-    let cached = state
+    let cached = lock(&inner.state)
         .remote
         .cached
-        .get_or_insert_with(|| read_cached_index(downloads));
+        .get_or_insert_with(|| read_cached_index(downloads))
+        .clone();
     cached
-        .iter()
+        .into_iter()
         .map(|manifest| {
-            let dir = downloads.pack_dir(manifest);
+            let dir = downloads.pack_dir(&manifest);
             let installed = manifest.files().all(|f| dir.join(&f.path).is_file());
-            (dir, manifest.clone(), installed)
+            (dir, manifest, installed)
         })
         .collect()
 }
@@ -172,18 +175,19 @@ pub(crate) fn ships_tags(downloads: &Downloads, state: &mut State, tag: &str) ->
     find(cached, tag).is_some_and(|manifest| manifest.tags.is_some())
 }
 
-/// Resolves `tag` from the cache, or queues it for the fetch thread.
-pub(crate) fn resolve(
-    inner: &Arc<Inner>,
-    downloads: &Downloads,
-    state: &mut State,
-    tag: &str,
-) -> Tag {
-    let cached = state
-        .remote
-        .cached
-        .get_or_insert_with(|| read_cached_index(downloads));
-    let entry = find(cached, tag).cloned();
+/// Resolves `tag` from the cache, or queues it for the fetch thread, and
+/// records the outcome. Cached files are checked and loaded without the
+/// state lock.
+pub(crate) fn resolve(inner: &Arc<Inner>, downloads: &Downloads, tag: &str) -> Tag {
+    let (entry, fetched) = {
+        let mut state = lock(&inner.state);
+        let cached = state
+            .remote
+            .cached
+            .get_or_insert_with(|| read_cached_index(downloads));
+        let entry = find(cached, tag).cloned();
+        (entry, state.remote.fetched)
+    };
     if let Some(manifest) = &entry {
         let dir = downloads.pack_dir(manifest);
         // Files that are all present and intact decide the outcome: a pack
@@ -192,16 +196,26 @@ pub(crate) fn resolve(
         if manifest.files().all(|f| dir.join(&f.path).is_file())
             && pack::verify_files(&dir, manifest).is_ok()
         {
-            return load(state, &dir, manifest);
+            let found = load(inner, &dir, manifest);
+            return inner.record(tag, found);
         }
     }
+    // Held while queuing, so the tag is recorded as pending before the
+    // fetch thread can lock the state to record its answer.
+    let mut state = lock(&inner.state);
     // After this session's fetch the cached index is the fresh one, so a
-    // tag it lacks is unknown.
-    if state.remote.fetched && entry.is_none() {
-        return Tag::Unavailable;
-    }
-    queue(inner, tag);
-    Tag::Pending
+    // tag it lacks is unknown. `fetched` is read with `entry`: the fetch
+    // may have replaced the index since.
+    let found = if fetched && entry.is_none() {
+        Tag::Unavailable
+    } else if queue(inner, tag) {
+        Tag::Pending
+    } else {
+        // Without the fetch thread it would stay pending forever.
+        Tag::Unavailable
+    };
+    state.tags.insert(tag.to_owned(), found.clone());
+    found
 }
 
 fn read_cached_index(downloads: &Downloads) -> Vec<Arc<PackManifest>> {
@@ -217,12 +231,14 @@ fn read_cached_index(downloads: &Downloads) -> Vec<Arc<PackManifest>> {
     }
 }
 
-fn queue(inner: &Arc<Inner>, tag: &str) {
+/// Hands `tag` to the fetch thread, starting it if needed. Returns whether
+/// it was queued: `false` when the thread could not be spawned.
+fn queue(inner: &Arc<Inner>, tag: &str) -> bool {
     let mut fetcher = lock(&inner.fetcher);
     if let Some(sender) = &*fetcher
         && sender.send(tag.to_owned()).is_ok()
     {
-        return;
+        return true;
     }
     let (sender, receiver) = channel();
     let _ = sender.send(tag.to_owned());
@@ -230,15 +246,11 @@ fn queue(inner: &Arc<Inner>, tag: &str) {
     let spawned = std::thread::Builder::new()
         .name("diffy-syntax-fetch".to_owned())
         .spawn(move || fetch_loop(&weak, &receiver));
-    if spawned.is_ok() {
+    let queued = spawned.is_ok();
+    if queued {
         *fetcher = Some(sender);
-    } else {
-        // Without the thread the tag stays pending forever; give up on it.
-        drop(fetcher);
-        lock(&inner.state)
-            .tags
-            .insert(tag.to_owned(), Tag::Unavailable);
     }
+    queued
 }
 
 /// Serves queued tags until every store handle is gone, which drops the

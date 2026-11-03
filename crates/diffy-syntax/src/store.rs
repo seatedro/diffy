@@ -93,6 +93,8 @@ pub enum LanguageStatus {
 /// [`GrammarStore::none`] (the default) has no grammars: everything is
 /// plain. Lookups may read and load packs from disk, so they belong off the
 /// UI thread; [`crate::HighlightWorker`] makes them on its own thread.
+/// [`GrammarStore::resolved`] only reads what lookups found, so the UI
+/// thread may call it.
 #[derive(Clone, Default)]
 pub struct GrammarStore {
     #[cfg(feature = "runtime")]
@@ -117,6 +119,7 @@ impl GrammarStore {
             inner: Some(Arc::new(Inner {
                 config,
                 state: Mutex::default(),
+                resolving: Mutex::default(),
                 listeners: Mutex::default(),
                 status_listeners: Mutex::default(),
                 #[cfg(feature = "download")]
@@ -129,6 +132,8 @@ impl GrammarStore {
         #[cfg(feature = "runtime")]
         if let Some(inner) = &self.inner {
             let tag = tag.to_ascii_lowercase();
+            // A tag resolving now is recorded before this clears it.
+            let _resolving = lock(&inner.resolving);
             let mut state = lock(&inner.state);
             #[cfg(feature = "download")]
             let failed = state.remote.forget_failure(&tag);
@@ -220,14 +225,25 @@ impl GrammarStore {
     pub fn status(&self, language: &LanguageId) -> LanguageStatus {
         #[cfg(feature = "runtime")]
         if let Some(inner) = &self.inner {
-            return match inner.lookup(language.as_str()) {
-                Tag::Ready(_) => LanguageStatus::Ready,
-                Tag::Pending => LanguageStatus::Pending,
-                Tag::Unavailable => LanguageStatus::Unavailable,
-            };
+            return inner.lookup(language.as_str()).status();
         }
         let _ = language;
         LanguageStatus::Unavailable
+    }
+
+    /// [`Self::status`] without resolving: what lookups found for
+    /// `language`, or `None` while none has resolved it (or after
+    /// [`Self::retry`] forgot it). It never reads or loads a pack, nor
+    /// waits for one that is loading.
+    pub fn resolved(&self, language: &LanguageId) -> Option<LanguageStatus> {
+        #[cfg(feature = "runtime")]
+        if let Some(inner) = &self.inner {
+            return inner
+                .resolved(language.as_str())
+                .map(|found| found.status());
+        }
+        let _ = language;
+        Some(LanguageStatus::Unavailable)
     }
 
     /// Calls `listener` (on a background thread) each time a pending
@@ -604,12 +620,29 @@ pub(crate) enum Tag {
 }
 
 #[cfg(feature = "runtime")]
+impl Tag {
+    fn status(&self) -> LanguageStatus {
+        match self {
+            Self::Ready(_) => LanguageStatus::Ready,
+            Self::Pending => LanguageStatus::Pending,
+            Self::Unavailable => LanguageStatus::Unavailable,
+        }
+    }
+}
+
+#[cfg(feature = "runtime")]
 type Listener = Box<dyn Fn() -> bool + Send>;
 
 #[cfg(feature = "runtime")]
 pub(crate) struct Inner {
     pub(crate) config: StoreConfig,
+    /// Guards the maps only: nothing reads, verifies, or loads a pack
+    /// while holding it (apart from the first scan of local roots and read
+    /// of the cached index), so resolved tags answer at once.
     pub(crate) state: Mutex<State>,
+    /// Held while a tag resolves, so one tag (and the pack its aliases
+    /// share) loads once even when several threads ask for it.
+    resolving: Mutex<()>,
     listeners: Mutex<Vec<Listener>>,
     status_listeners: Mutex<Vec<Listener>>,
     #[cfg(feature = "download")]
@@ -681,16 +714,30 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(feature = "runtime")]
 impl Inner {
     pub(crate) fn lookup(self: &Arc<Self>, tag: &str) -> Tag {
-        let mut state = lock(&self.state);
-        if let Some(found) = state.tags.get(tag) {
-            return found.clone();
+        if let Some(found) = self.resolved(tag) {
+            return found;
         }
-        let found = self.resolve(&mut state, tag);
-        state.tags.insert(tag.to_owned(), found.clone());
-        drop(state);
+        let resolving = lock(&self.resolving);
+        // Another thread may have resolved it while this one waited.
+        if let Some(found) = self.resolved(tag) {
+            return found;
+        }
+        let found = self.resolve(tag);
+        drop(resolving);
         if !matches!(found, Tag::Unavailable) {
             self.notify_status();
         }
+        found
+    }
+
+    /// What `tag` resolved to, without resolving it.
+    pub(crate) fn resolved(&self, tag: &str) -> Option<Tag> {
+        lock(&self.state).tags.get(tag).cloned()
+    }
+
+    /// Remembers what `tag` resolved to.
+    pub(crate) fn record(&self, tag: &str, found: Tag) -> Tag {
+        lock(&self.state).tags.insert(tag.to_owned(), found.clone());
         found
     }
 
@@ -722,46 +769,57 @@ impl Inner {
         false
     }
 
-    fn resolve(self: &Arc<Self>, state: &mut State, tag: &str) -> Tag {
+    /// Resolves `tag` and records what it resolved to. Called with the
+    /// resolve lock held; packs load without the state lock.
+    fn resolve(self: &Arc<Self>, tag: &str) -> Tag {
         #[cfg(feature = "engine")]
-        if let Some((dir, manifest)) = state
-            .local
-            .get_or_insert_with(|| scan_local(&self.config.local_packs))
-            .get(tag)
-            .cloned()
         {
-            if !state.released && self.config.deferred.contains(&manifest.language) {
-                state.deferred.push(tag.to_owned());
-                return Tag::Pending;
+            let mut state = lock(&self.state);
+            let local = state
+                .local
+                .get_or_insert_with(|| scan_local(&self.config.local_packs))
+                .get(tag)
+                .cloned();
+            if let Some((dir, manifest)) = local {
+                if !state.released && self.config.deferred.contains(&manifest.language) {
+                    // Recorded with the deferral, so a release in between
+                    // cannot miss it.
+                    state.deferred.push(tag.to_owned());
+                    state.tags.insert(tag.to_owned(), Tag::Pending);
+                    return Tag::Pending;
+                }
+                drop(state);
+                let found = load(self, &dir, &manifest);
+                return self.record(tag, found);
             }
-            return load(state, &dir, &manifest);
         }
         #[cfg(feature = "bundled")]
         if self.config.bundled
             && let Some(bundled) = crate::bundled::find(tag)
         {
-            return load_with(state, Origin::Bundled(bundled.name), || {
+            let found = load_with(self, Origin::Bundled(bundled.name), || {
                 Grammar::bundled(bundled)
             });
+            return self.record(tag, found);
         }
         #[cfg(feature = "download")]
         if let Some(downloads) = &self.config.downloads {
-            return crate::download::resolve(self, downloads, state, tag);
+            return crate::download::resolve(self, downloads, tag);
         }
-        Tag::Unavailable
+        self.record(tag, Tag::Unavailable)
     }
 
     fn catalog(&self) -> Catalog {
-        #[cfg_attr(not(feature = "engine"), allow(unused_mut))]
-        let mut state = lock(&self.state);
         let mut known: Vec<Known> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         #[cfg(feature = "engine")]
         {
-            let local = state
+            let mut local_packs: Vec<_> = lock(&self.state)
                 .local
-                .get_or_insert_with(|| scan_local(&self.config.local_packs));
-            let mut local_packs: Vec<_> = local.values().cloned().collect();
+                .get_or_insert_with(|| scan_local(&self.config.local_packs))
+                .values()
+                .cloned()
+                .collect();
             local_packs.sort_by(|a, b| a.0.cmp(&b.0));
             for (dir, manifest) in local_packs {
                 if seen.insert(manifest.language.clone()) {
@@ -784,12 +842,13 @@ impl Inner {
         }
         #[cfg(feature = "download")]
         if let Some(downloads) = &self.config.downloads {
-            for (dir, manifest, installed) in crate::download::packs(downloads, &mut state) {
+            for (dir, manifest, installed) in crate::download::packs(downloads, self) {
                 if seen.insert(manifest.language.clone()) {
                     known.push(Known::pack(dir, &manifest, installed));
                 }
             }
         }
+        let state = lock(&self.state);
         let mut catalog = Catalog {
             languages: known.len(),
             ..Catalog::default()
@@ -846,30 +905,42 @@ impl Inner {
 
 /// Loads (once per directory) the pack in `dir`.
 #[cfg(feature = "engine")]
-pub(crate) fn load(state: &mut State, dir: &Path, manifest: &PackManifest) -> Tag {
-    load_with(state, Origin::Pack(dir.to_path_buf()), || {
+pub(crate) fn load(inner: &Inner, dir: &Path, manifest: &PackManifest) -> Tag {
+    load_with(inner, Origin::Pack(dir.to_path_buf()), || {
         Grammar::load(dir, manifest)
     })
 }
 
+/// The grammar from `origin`, loaded with `load` the first time. Callers
+/// hold the resolve lock, so `load` runs once per origin; it runs without
+/// the state lock, which checking files, opening a library, and compiling
+/// queries would hold for as long as they take.
 #[cfg(feature = "runtime")]
 pub(crate) fn load_with<E: std::fmt::Display>(
-    state: &mut State,
+    inner: &Inner,
     origin: Origin,
     load: impl FnOnce() -> Result<Grammar, E>,
 ) -> Tag {
-    let grammar = state
-        .loaded
-        .entry(origin)
-        .or_insert_with_key(|origin| match load() {
-            Ok(grammar) => Some(Arc::new(grammar)),
-            Err(error) => {
-                tracing::warn!(?origin, %error, "grammar failed to load");
-                None
-            }
-        });
+    let loaded = lock(&inner.state).loaded.get(&origin).cloned();
+    let grammar = match loaded {
+        Some(grammar) => grammar,
+        None => {
+            let grammar = match load() {
+                Ok(grammar) => Some(Arc::new(grammar)),
+                Err(error) => {
+                    tracing::warn!(?origin, %error, "grammar failed to load");
+                    None
+                }
+            };
+            lock(&inner.state)
+                .loaded
+                .entry(origin)
+                .or_insert(grammar)
+                .clone()
+        }
+    };
     match grammar {
-        Some(grammar) => Tag::Ready(grammar.clone()),
+        Some(grammar) => Tag::Ready(grammar),
         None => Tag::Unavailable,
     }
 }
@@ -903,4 +974,54 @@ fn scan_local(roots: &[PathBuf]) -> HashMap<String, (PathBuf, Arc<PackManifest>)
         }
     }
     tags
+}
+
+#[cfg(all(test, feature = "runtime"))]
+mod tests {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    use super::*;
+
+    // Catches a pack load holding the lock every lookup takes, so the UI
+    // thread's check of a language resolved long ago waits while another
+    // pack is verified, opened, and compiled.
+    #[test]
+    fn resolved_languages_answer_while_a_pack_loads() {
+        let store = GrammarStore::new(StoreConfig::new());
+        let klingon = LanguageId::from_fence("klingon").unwrap();
+        store.status(&klingon);
+        let inner = store.inner.clone().unwrap();
+        let (started_tx, started) = channel();
+        let (release_tx, release) = channel::<()>();
+        let loader = std::thread::spawn(move || {
+            // As `lookup` resolves a tag.
+            let _resolving = lock(&inner.resolving);
+            load_with(&inner, Origin::Bundled("slow"), || {
+                started_tx.send(()).unwrap();
+                release.recv().unwrap();
+                Err::<Grammar, _>("never loads")
+            })
+        });
+        started.recv_timeout(Duration::from_secs(60)).unwrap();
+        let (answer_tx, answer) = channel();
+        let asking = store.clone();
+        std::thread::spawn(move || {
+            let _ = answer_tx.send((asking.resolved(&klingon), asking.status(&klingon)));
+        });
+        let answered = answer.recv_timeout(Duration::from_secs(10));
+        release_tx.send(()).unwrap();
+        let loaded = loader.join().ok().map(|found| found.status());
+
+        assert_eq!(
+            (answered, loaded),
+            (
+                Ok((
+                    Some(LanguageStatus::Unavailable),
+                    LanguageStatus::Unavailable
+                )),
+                Some(LanguageStatus::Unavailable)
+            )
+        );
+    }
 }

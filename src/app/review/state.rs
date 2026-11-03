@@ -138,7 +138,9 @@ pub(super) enum Pending {
     Mutation,
     SubmitDrafts,
     Session,
-    LoadSession,
+    /// Reading the stored session; drafts from this id on were written
+    /// while it loads.
+    LoadSession(ReviewDraftId),
     Peek,
     Overview,
     Comment,
@@ -637,15 +639,32 @@ impl ReviewController {
         self.epoch = AccountEpoch(self.epoch.0 + 1);
         // A session still loading is kept: its drafts aren't the account's.
         self.in_flight
-            .retain(|_, entry| matches!(entry.kind, Pending::LoadSession));
+            .retain(|_, entry| matches!(entry.kind, Pending::LoadSession(_)));
         self.overview.loading = false;
         self.overview.request = None;
         self.pulls.reset();
         Intent::AccountChanged
     }
 
+    /// The open pull request's stored session is still being read.
+    fn session_loading(&self) -> bool {
+        let Some(active) = self.pr.as_ref() else {
+            return false;
+        };
+        self.in_flight.values().any(|entry| {
+            matches!(entry.kind, Pending::LoadSession(_)) && entry.pr.as_ref() == Some(&active.pr)
+        })
+    }
+
     fn save_session(&mut self) -> Option<ReviewEffect> {
+        let loading = self.session_loading();
         let active = self.pr.as_mut()?;
+        if loading {
+            // Written now, it would replace the drafts being read: it's
+            // saved once they're merged in.
+            active.session_dirty = true;
+            return None;
+        }
         active.session_dirty = false;
         let session = Box::new(active.session.clone()?);
         let pr = Some(active.pr.clone());
@@ -957,10 +976,23 @@ impl ReviewController {
                 active.session = Some(session);
             }
         }
+        let mut fresh = active
+            .session
+            .as_ref()
+            .map_or(ReviewDraftId(0), ReviewSession::next_draft_id);
         let pr = active.pr.clone();
         let requested = std::mem::take(&mut active.review_requested);
         let fetched = active.fetched_review.take();
-        let scope = self.job(Some(pr.clone()), Pending::LoadSession);
+        // A load still under way gives way to this one, not to be merged
+        // twice: the drafts written since it began are unsaved yet.
+        self.in_flight.retain(|_, entry| match &entry.kind {
+            Pending::LoadSession(earlier) if entry.pr.as_ref() == Some(&pr) => {
+                fresh = fresh.min(*earlier);
+                false
+            }
+            _ => true,
+        });
+        let scope = self.job(Some(pr.clone()), Pending::LoadSession(fresh));
         reduction = reduction.effect(ReviewEffect::LoadSession {
             scope,
             target,
@@ -2265,9 +2297,9 @@ impl ReviewController {
                 target,
                 session,
             } => {
-                if self.accept_session(scope).is_none() {
+                let Some(Pending::LoadSession(fresh)) = self.accept_session(scope) else {
                     return Reduction::default();
-                }
+                };
                 let Some(active) = self.pr.as_mut() else {
                     return Reduction::default();
                 };
@@ -2275,7 +2307,7 @@ impl ReviewController {
                     return Reduction::default();
                 }
                 match active.session.as_mut() {
-                    Some(current) => current.merge_persisted_state(*session),
+                    Some(current) => current.merge_persisted_state(*session, fresh),
                     None => active.session = Some(*session),
                 }
                 self.fail_interrupted_drafts();
@@ -2675,7 +2707,9 @@ impl TextHost for ReviewController {
     }
 
     fn after_edit(&mut self, target: FocusId, _cx: &SharedContext) -> Reduction {
-        if target != REVIEW_COMPOSER {
+        // While the stored session loads, the edit stays dirty and is
+        // saved with it.
+        if target != REVIEW_COMPOSER || self.session_loading() {
             return Reduction::default();
         }
         let Some(active) = self.pr.as_mut().filter(|pr| pr.session_dirty) else {

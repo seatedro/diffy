@@ -2094,6 +2094,63 @@ fn load_pull_request_intent_loads_into_the_open_workspace() {
 }
 
 #[test]
+fn comments_written_while_the_session_loads_keep_the_saved_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut driver = Driver::new(Fake::at(dir.path()));
+        driver.startup(Some(URL));
+        driver.open_repository();
+        driver.act(ReviewAction::OpenComposerAt(target(4..5)));
+        driver.type_text("Saved earlier.");
+        driver.act(ReviewAction::SubmitComment);
+    }
+
+    let mut driver = Driver::new(Fake::at(dir.path()));
+    driver.startup(Some(URL));
+    driver.fake.hold = true;
+    driver.open_repository();
+    // The pull request loads; the session saved for it is still on its way.
+    for effect in std::mem::take(&mut driver.fake.held) {
+        driver.fake.hold = false;
+        let events = driver.fake.run(effect);
+        driver.fake.hold = true;
+        for event in events {
+            driver.deliver(event);
+        }
+    }
+    assert!(
+        driver
+            .fake
+            .held
+            .iter()
+            .any(|effect| matches!(effect, ReviewEffect::LoadSession { .. }))
+    );
+    driver.act(ReviewAction::OpenComposerAt(target(19..21)));
+    driver.type_text("Written while");
+    driver.release();
+    driver.type_text(" it loaded.");
+    driver.act(ReviewAction::SubmitComment);
+
+    let bodies = |driver: &Driver| {
+        let mut bodies: Vec<String> = driver
+            .session()
+            .drafts
+            .values()
+            .map(|draft| draft.body.clone())
+            .collect();
+        bodies.sort();
+        bodies
+    };
+    let expected = ["Saved earlier.", "Written while it loaded."];
+    assert_eq!(bodies(&driver), expected);
+
+    let mut driver = Driver::new(Fake::at(dir.path()));
+    driver.startup(Some(URL));
+    driver.open_repository();
+    assert_eq!(bodies(&driver), expected);
+}
+
+#[test]
 fn unsent_comments_survive_quitting_right_after_typing() {
     let dir = tempfile::tempdir().unwrap();
     {

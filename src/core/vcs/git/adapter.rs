@@ -837,6 +837,7 @@ fn sanitize_status_bits(status: StatusBits) -> StatusBits {
             | StatusBits::WT_DELETED
             | StatusBits::WT_TYPECHANGE
             | StatusBits::WT_RENAMED
+            | StatusBits::WT_INTENT_TO_ADD
             | StatusBits::CONFLICTED)
 }
 

@@ -518,3 +518,22 @@ fn modify_delete_conflict_still_opens_the_working_tree() {
     assert_eq!(output.entries[at].bucket, Some(ChangeBucket::Conflicted));
     assert!(output.document(at).is_some());
 }
+
+#[test]
+fn stages_lines_of_an_intent_to_add_file() {
+    let dir = repo();
+    commit(dir.path(), &[("base.txt", b"base\n")]);
+    write(dir.path(), "new.txt", b"one\ntwo\nthree\n");
+    git(dir.path(), &["add", "-N", "new.txt"]);
+    let added = change(dir.path(), "new.txt", ChangeBucket::Unstaged);
+    assert_eq!(added.status, FileChangeStatus::Added);
+    apply(
+        dir.path(),
+        "new.txt",
+        ChangeBucket::Unstaged,
+        lines(&[(Side::New, 0..1)]),
+        FileOperation::Stage,
+    )
+    .unwrap();
+    assert_eq!(index(dir.path(), "new.txt"), b"one\n");
+}

@@ -2674,6 +2674,8 @@ fn status_bits_from_xy(x: char, y: char) -> StatusBits {
     }
     match y {
         '?' => bits |= StatusBits::WT_NEW,
+        // Outside a conflict, `A` here only means `git add -N`.
+        'A' => bits |= StatusBits::WT_INTENT_TO_ADD,
         'M' => bits |= StatusBits::WT_MODIFIED,
         'D' => bits |= StatusBits::WT_DELETED,
         'R' | 'C' => bits |= StatusBits::WT_RENAMED,
@@ -2969,6 +2971,13 @@ mod tests {
             assert_eq!(bits(path), Some(super::StatusBits::CONFLICTED), "{path}");
         }
         assert_eq!(bits("edited.rs"), Some(super::StatusBits::WT_MODIFIED));
+    }
+
+    #[test]
+    fn parses_intent_to_add_porcelain_entries() {
+        let entries = parse_porcelain_status(b" A new.rs\0");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].2, super::StatusBits::WT_INTENT_TO_ADD);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { availableParallelism } from 'node:os'
-import { afterEach, describe, it } from 'node:test'
+import { afterEach, beforeEach, describe, it } from 'node:test'
 
 import { FORMAT_VERSION, configure, diff, diffJson, expand, languages } from '../index.js'
 
@@ -271,6 +271,15 @@ describe('diffJson', () => {
 describe('queue', () => {
   const { max_concurrent_requests: initial } = configure()
   const small = () => diff({ files: [modified('a.rs', 'a\n', 'b\n')] })
+  // Aborted requests from earlier tests reject at once but leave the queue
+  // only when their native work stops.
+  beforeEach(async () => {
+    const deadline = Date.now() + 30_000
+    while (native.queue().running + native.queue().queued > 0) {
+      assert.ok(Date.now() < deadline, 'queue never drained')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  })
   afterEach(() => configure({ max_concurrent_requests: initial }))
 
   it('defaults to a quarter of the cores, at least one', () => {

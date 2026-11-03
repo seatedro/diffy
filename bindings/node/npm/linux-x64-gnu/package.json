@@ -1,7 +1,7 @@
 {
-  "name": "@seatedro/diffy-linux-x64-gnu",
+  "name": "libdiffy-linux-x64-gnu",
   "version": "0.1.0",
-  "description": "The @seatedro/diffy binary for Linux x64 with glibc 2.28 or newer.",
+  "description": "The libdiffy binary for Linux x64 with glibc 2.28 or newer.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",

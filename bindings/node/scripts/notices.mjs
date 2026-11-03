@@ -81,7 +81,7 @@ const theirs = crates.filter((pkg) => !workspace.has(pkg.id))
 const out = [
   '# Rust crates in this binary',
   '',
-  `The Rust crates compiled into \`@seatedro/diffy\` for \`${target}\`, with their licenses and the license files each one ships. The tree-sitter grammars compiled in are listed in THIRD_PARTY_NOTICES.md.`,
+  `The Rust crates compiled into \`libdiffy\` for \`${target}\`, with their licenses and the license files each one ships. The tree-sitter grammars compiled in are listed in THIRD_PARTY_NOTICES.md.`,
   '',
   `Diffy's own crates (${ours.map((pkg) => `\`${pkg.name}\``).join(', ')}) are ${[...new Set(ours.map((pkg) => pkg.license))].join('; ')}: see LICENSE-MIT and LICENSE-APACHE.`,
 ]

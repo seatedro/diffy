@@ -1,6 +1,6 @@
 [package]
 name = "diffy-node"
-description = "Node binding for diffy-compare, published as @seatedro/diffy."
+description = "Node binding for diffy-compare, published as libdiffy."
 version.workspace = true
 edition = "2024"
 rust-version = "1.92"

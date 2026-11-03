@@ -1,5 +1,5 @@
-# `@seatedro/diffy-darwin-x64`
+# `libdiffy-darwin-x64`
 
-The prebuilt [`@seatedro/diffy`](https://www.npmjs.com/package/@seatedro/diffy) binary for macOS on Intel. Install `@seatedro/diffy`, not this package.
+The prebuilt [`libdiffy`](https://www.npmjs.com/package/libdiffy) binary for macOS on Intel. Install `libdiffy`, not this package.
 
 `THIRD_PARTY_NOTICES.md` credits the tree-sitter grammars compiled in; `RUST_NOTICES.md` the Rust crates.

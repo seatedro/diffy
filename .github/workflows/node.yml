@@ -228,11 +228,11 @@ jobs:
           const read = (path) => JSON.parse(readFileSync(path, 'utf8'))
           const main = read('bindings/node/package.json')
           const problems = []
-          if (main.version !== version) problems.push(`@seatedro/diffy is ${main.version}`)
+          if (main.version !== version) problems.push(`libdiffy is ${main.version}`)
           for (const platform of readdirSync('bindings/node/npm')) {
             const pkg = read(`bindings/node/npm/${platform}/package.json`)
             if (pkg.version !== version) problems.push(`${pkg.name} is ${pkg.version}`)
-            if (main.optionalDependencies[pkg.name] !== version) problems.push(`@seatedro/diffy pins ${pkg.name}@${main.optionalDependencies[pkg.name]}`)
+            if (main.optionalDependencies[pkg.name] !== version) problems.push(`libdiffy pins ${pkg.name}@${main.optionalDependencies[pkg.name]}`)
           }
           if (Object.keys(main.optionalDependencies).length !== readdirSync('bindings/node/npm').length) problems.push('optionalDependencies and npm/ differ')
           if (problems.length) {
@@ -241,7 +241,7 @@ jobs:
           }
           EOF
 
-      # Platform packages first, so @seatedro/diffy never names a missing one.
+      # Platform packages first, so libdiffy never names a missing one.
       # Published versions are skipped, so a failed run can be rerun.
       - name: Publish
         env:

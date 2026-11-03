@@ -1,4 +1,4 @@
-//! Native half of `@seatedro/diffy`; `index.js` is the API.
+//! Native half of `libdiffy`; `index.js` is the API.
 //!
 //! Input is copied on the JS thread; work runs on threads of its own, not
 //! libuv's pool (shared with fs, DNS and zlib), and settles through a

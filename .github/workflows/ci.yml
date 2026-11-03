@@ -69,11 +69,14 @@ jobs:
           key: ci-linux-v1
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
-      # semantic-eval turns on diffy's difftastic feature, which builds the
-      # vendored crates/difftastic; clippy lints it as a local crate, and
-      # it isn't ours to clean up. The test step still compiles semantic-eval.
+      # Compiler warnings and clippy's correctness and suspicious lints fail
+      # the build. Style, complexity and perf lints are allowed until the
+      # ones already on master are cleaned up; that also covers the vendored
+      # difftastic, which semantic-eval builds.
       - name: Clippy
-        run: cargo clippy --workspace --exclude semantic-eval --all-targets --locked -- -D warnings
+        run: >-
+          cargo clippy --workspace --all-targets --locked --
+          -D warnings -A clippy::style -A clippy::complexity -A clippy::perf
 
       - name: Test
         run: cargo test --workspace --locked

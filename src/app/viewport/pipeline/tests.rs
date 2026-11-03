@@ -408,6 +408,40 @@ fn large_installs_spread_across_frames() {
 }
 
 #[test]
+fn install_pacing_rearms_after_a_workspace_switch() {
+    let cx = SharedContext::default();
+    let mut controller = PipelineController::default();
+    let lines = INSTALL_LINES_PER_FRAME as usize / 2 + 1;
+    let mut paced = 0;
+    for _ in 0..2 {
+        let generation = deferred_compare(&mut controller, 3);
+        controller.take_batch();
+        for key in 0..3 {
+            let reduction = controller.reduce_event(
+                PipelineEvent::FileLoaded {
+                    generation,
+                    prepared: big(generation, key, lines),
+                },
+                &cx,
+            );
+            paced += pipeline_effects(&reduction)
+                .iter()
+                .filter(|effect| matches!(effect, PipelineEffect::ResumeInstalls(_)))
+                .count();
+        }
+        // The wake armed above never comes back: the shell drops it with
+        // the old workspace's events.
+        controller.apply_intent(
+            &Intent::ActivateWorkspace {
+                path: PathBuf::from("/other"),
+            },
+            &cx,
+        );
+    }
+    assert_eq!(paced, 2);
+}
+
+#[test]
 fn the_working_set_evicts_least_recently_used_files_but_keeps_the_selection() {
     let cx = SharedContext::default();
     let mut controller = PipelineController::default();

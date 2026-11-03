@@ -2654,6 +2654,10 @@ fn parse_shortstat(bytes: &[u8]) -> Option<(i32, i32)> {
 }
 
 fn status_bits_from_xy(x: char, y: char) -> StatusBits {
+    // Unmerged pairs: both added, both deleted, or a `U` on either side.
+    if matches!((x, y), ('A', 'A') | ('D', 'D') | ('U', _) | (_, 'U')) {
+        return StatusBits::CONFLICTED;
+    }
     let mut bits = StatusBits::default();
     match x {
         'A' => bits |= StatusBits::INDEX_NEW,
@@ -2661,7 +2665,6 @@ fn status_bits_from_xy(x: char, y: char) -> StatusBits {
         'D' => bits |= StatusBits::INDEX_DELETED,
         'R' | 'C' => bits |= StatusBits::INDEX_RENAMED,
         'T' => bits |= StatusBits::INDEX_TYPECHANGE,
-        'U' => bits |= StatusBits::CONFLICTED,
         '?' => bits |= StatusBits::WT_NEW,
         _ => {}
     }
@@ -2671,7 +2674,6 @@ fn status_bits_from_xy(x: char, y: char) -> StatusBits {
         'D' => bits |= StatusBits::WT_DELETED,
         'R' | 'C' => bits |= StatusBits::WT_RENAMED,
         'T' => bits |= StatusBits::WT_TYPECHANGE,
-        'U' => bits |= StatusBits::CONFLICTED,
         _ => {}
     }
     bits
@@ -2946,6 +2948,23 @@ mod tests {
         assert_eq!(entries[0].0, "src/new.rs");
         assert_eq!(entries[0].1.as_deref(), Some("src/old.rs"));
         assert!(entries[0].2.contains(super::StatusBits::INDEX_RENAMED));
+    }
+
+    #[test]
+    fn parses_unmerged_porcelain_entries_as_conflicts() {
+        let entries = parse_porcelain_status(
+            b"UU both.rs\0AA added.rs\0DD gone.rs\0AU ours.rs\0UD theirs.rs\0 M edited.rs\0",
+        );
+        let bits = |path: &str| {
+            entries
+                .iter()
+                .find(|(entry, _, _)| entry == path)
+                .map(|(_, _, status)| *status)
+        };
+        for path in ["both.rs", "added.rs", "gone.rs", "ours.rs", "theirs.rs"] {
+            assert_eq!(bits(path), Some(super::StatusBits::CONFLICTED), "{path}");
+        }
+        assert_eq!(bits("edited.rs"), Some(super::StatusBits::WT_MODIFIED));
     }
 
     #[test]

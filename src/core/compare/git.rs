@@ -115,7 +115,7 @@ fn item_paths(item: &StatusItem) -> (Option<&str>, Option<&str>) {
 
 pub fn worktree_entry(item: &StatusItem) -> CompareEntry {
     let (old, new) = item_paths(item);
-    CompareEntry::deferred(old, new, item_status(item)).with_bucket(bucket_of(item.scope))
+    CompareEntry::deferred(old, new, item_status(item)).with_bucket(item.bucket())
 }
 
 pub fn compare_worktree(
@@ -146,6 +146,9 @@ pub fn compare_worktree(
             });
         }
         let from_patch = match item.scope {
+            // Git prints a conflict as a combined diff or a bare "Unmerged
+            // path" line, neither of which has hunks; read both sides instead.
+            _ if item.bucket() == ChangeBucket::Conflicted => None,
             StatusScope::Staged => staged.get(&item.path),
             StatusScope::Unstaged => unstaged.get(&item.path),
             StatusScope::Untracked => None,
@@ -163,7 +166,7 @@ pub fn compare_worktree(
             output.push_entry(worktree_entry(item));
             continue;
         };
-        let mut entry = CompareEntry::from_document(&doc, 0).with_bucket(bucket_of(item.scope));
+        let mut entry = CompareEntry::from_document(&doc, 0).with_bucket(item.bucket());
         entry.paths = worktree_entry(item).paths;
         output.entries.push(entry);
         output.documents.resize(output.entries.len() - 1, None);
@@ -181,6 +184,7 @@ pub fn compare_worktree_entry(
     let Some(bucket) = entry.bucket else {
         return Ok(None);
     };
+    let conflicted = bucket == ChangeBucket::Conflicted;
     let item = StatusItem {
         path: entry.path().into_owned(),
         old_path: entry
@@ -190,6 +194,7 @@ pub fn compare_worktree_entry(
             .map(|old| old.into_owned()),
         scope: scope_of(bucket),
         status: match entry.status() {
+            _ if conflicted => "!",
             FileStatus::Added if bucket == ChangeBucket::Untracked => "U",
             FileStatus::Added => "A",
             FileStatus::Deleted => "D",
@@ -199,7 +204,7 @@ pub fn compare_worktree_entry(
         }
         .to_owned(),
     };
-    let meta = if item.scope == StatusScope::Untracked {
+    let meta = if item.scope == StatusScope::Untracked || conflicted {
         None
     } else {
         let patch = CompareOutput::from_patch_bytes(&git.status_item_exact_patch(&item)?)?;
@@ -218,7 +223,12 @@ fn bucket_documents(
     items: &[StatusItem],
 ) -> Result<std::collections::HashMap<String, DiffDocument>> {
     let mut docs = std::collections::HashMap::new();
-    if !items.iter().any(|item| item.scope == scope) {
+    // Conflicts never use these documents, and a patch holding only their
+    // "Unmerged path" lines has no files to parse.
+    if !items
+        .iter()
+        .any(|item| item.scope == scope && item.bucket() != ChangeBucket::Conflicted)
+    {
         return Ok(docs);
     }
     let raw = git.diff_for_commit(scope == StatusScope::Staged)?;
@@ -239,15 +249,26 @@ fn worktree_document(
 ) -> Result<Option<DiffDocument>> {
     let (old_ref, new_ref) = bucket_refs(bucket_of(item.scope));
     let (old_path, new_path) = item_paths(item);
+    // A conflict can lack "ours" in the index (modify/delete, add/add by
+    // them) or the file on disk; show that side empty under its path rather
+    // than failing the whole compare.
+    let conflicted = item.bucket() == ChangeBucket::Conflicted;
     let read = |reference: Option<&str>, path: Option<&str>| match (reference, path) {
-        (Some(reference), Some(path)) => git.read_file_bytes_at(reference, path).map(Some),
+        (Some(reference), Some(path)) => match git.read_file_bytes_at(reference, path) {
+            Err(_) if conflicted => Ok(None),
+            bytes => bytes.map(Some),
+        },
         _ => Ok(None),
     };
     let old = read(old_ref, old_path)?;
     let new = read(Some(new_ref), new_path)?;
+    let shown = |content: &Option<Vec<u8>>, path: Option<&str>| -> Option<Arc<str>> {
+        path.filter(|_| conflicted || content.is_some())
+            .map(Arc::from)
+    };
     let meta = meta.unwrap_or_else(|| FileMeta {
-        old_path: old.as_ref().and(old_path).map(Arc::from),
-        new_path: new.as_ref().and(new_path).map(Arc::from),
+        old_path: shown(&old, old_path),
+        new_path: shown(&new, new_path),
         status: item_status(item),
         ..FileMeta::default()
     });

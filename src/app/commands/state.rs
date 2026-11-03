@@ -831,6 +831,33 @@ impl CommandsController {
         reduction
     }
 
+    /// A Go to File picker opened before the symbol index or the open
+    /// document were ready picks them up when they arrive.
+    fn refresh_file_picker(&mut self, cx: &SharedContext) -> Reduction {
+        let Some(picker) = self
+            .picker
+            .as_mut()
+            .filter(|picker| picker.kind == PickerKind::File)
+        else {
+            return Reduction::default();
+        };
+        let same_symbols = match (&picker.symbols, &cx.symbols) {
+            (Some(shown), Some(published)) => Arc::ptr_eq(shown, published),
+            (None, None) => true,
+            _ => false,
+        };
+        if same_symbols && picker.document == cx.document {
+            return Reduction::default();
+        }
+        picker.symbols = cx.symbols.clone();
+        picker.document = cx.document.clone();
+        if picker.symbol_mode().is_none() {
+            return Reduction::default();
+        }
+        picker.refresh();
+        Reduction::changed()
+    }
+
     fn prefetch_files(&mut self, cx: &SharedContext) -> Reduction {
         let Some(key) = file_list_key(cx) else {
             return Reduction::default();
@@ -2566,6 +2593,7 @@ impl Controller for CommandsController {
                 self.prefetch_files(cx)
             }
             Intent::PublishManifest(_) => self.prefetch_files(cx),
+            Intent::PublishSymbols(_) | Intent::PublishDocument(_) => self.refresh_file_picker(cx),
             Intent::Toast(update) => {
                 let mut reduction = Reduction::changed();
                 if let ToastUpdate::Undo { id, expires_ms, .. } = update {

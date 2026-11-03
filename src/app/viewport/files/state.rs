@@ -8,6 +8,7 @@ use diffy_ui::{
 };
 
 use crate::app::text_targets::VIEWPORT;
+use crate::contracts::navigation::RepositoryContext;
 use crate::contracts::shared::SharedContext;
 use crate::contracts::shell::{Intent, LogicalFocus, Reduction, ShellEffect};
 use crate::contracts::viewport::InteractionAction;
@@ -186,8 +187,17 @@ impl FilesController {
     }
 
     fn open(&mut self, file: FileAt, cx: &SharedContext) -> Reduction {
-        if let Some(tab) = self.tabs.iter().find(|tab| tab.file == file) {
-            return self.activate(Some(tab.id));
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.file == file) {
+            let id = tab.id;
+            // Reopening a tab that failed to load tries it again.
+            if matches!(tab.state, TabState::Failed(_))
+                && let Some(repository) = cx.repository.as_ref()
+            {
+                tab.state = TabState::Loading;
+                self.active = Some(id);
+                return load(id, repository, file);
+            }
+            return self.activate(Some(id));
         }
         let Some(repository) = cx.repository.as_ref() else {
             return Reduction::default();
@@ -201,13 +211,7 @@ impl FilesController {
             reveal: None,
         });
         self.active = Some(id);
-        Reduction::changed()
-            .effect(FilesEffect::Load(Box::new(FileLoadRequest {
-                tab: id,
-                repo_path: repository.snapshot.path.clone(),
-                file,
-            })))
-            .effect(focus_viewport())
+        load(id, repository, file)
     }
 
     fn activate(&mut self, id: Option<TabId>) -> Reduction {
@@ -340,6 +344,16 @@ impl FilesController {
             _ => Reduction::default(),
         }
     }
+}
+
+fn load(tab: TabId, repository: &RepositoryContext, file: FileAt) -> Reduction {
+    Reduction::changed()
+        .effect(FilesEffect::Load(Box::new(FileLoadRequest {
+            tab,
+            repo_path: repository.snapshot.path.clone(),
+            file,
+        })))
+        .effect(focus_viewport())
 }
 
 fn focus_viewport() -> ShellEffect {

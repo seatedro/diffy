@@ -127,7 +127,7 @@ pub fn parse_diff_summary_line(line: &str) -> Option<FileChange> {
     if rest.is_empty() {
         return None;
     }
-    let (path, old_path) = if code == 'R' {
+    let (path, old_path) = if matches!(code, 'R' | 'C') {
         parse_rename_path(rest)
             .map(|(old_path, path)| (path, Some(old_path)))
             .unwrap_or_else(|| (rest.to_owned(), None))
@@ -145,8 +145,8 @@ pub fn parse_diff_summary_line(line: &str) -> Option<FileChange> {
 pub fn parse_conflict_list(output: &str) -> Vec<FileChange> {
     output
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .map(|line| conflict_path(line.trim()))
+        .filter(|path| !path.is_empty())
         .map(|path| FileChange {
             path: path.to_owned(),
             old_path: None,
@@ -154,6 +154,19 @@ pub fn parse_conflict_list(output: &str) -> Vec<FileChange> {
             bucket: ChangeBucket::Conflicted,
         })
         .collect()
+}
+
+/// `jj resolve --list` pads each path to a shared width, then describes the
+/// conflict: `src/lib.rs   2-sided conflict including an executable`.
+fn conflict_path(line: &str) -> &str {
+    let Some(sided) = line.rfind("-sided conflict") else {
+        return line;
+    };
+    let before = line[..sided].trim_end_matches(|c: char| c.is_ascii_digit());
+    if before.len() == sided || !before.ends_with(' ') {
+        return line;
+    }
+    before.trim_end()
 }
 
 fn summary_status(code: char) -> FileChangeStatus {
@@ -173,10 +186,13 @@ fn parse_rename_path(path: &str) -> Option<(String, String)> {
     let (old, new) = inner.split_once(" => ")?;
     let prefix = &path[..start];
     let suffix = &path[end + 1..];
-    Some((
-        format!("{prefix}{old}{suffix}"),
-        format!("{prefix}{new}{suffix}"),
-    ))
+    let join = |middle: &str| match suffix.strip_prefix('/') {
+        // A move into or out of a folder shows the separator on both sides
+        // of an empty brace side: `src/{ => util}/a.rs`.
+        Some(rest) if middle.is_empty() && prefix.ends_with('/') => format!("{prefix}{rest}"),
+        _ => format!("{prefix}{middle}{suffix}"),
+    };
+    Some((join(old), join(new)))
 }
 
 #[cfg(test)]
@@ -283,9 +299,39 @@ mod tests {
     }
 
     #[test]
+    fn parses_braced_copies_and_folder_moves() {
+        let copied = parse_diff_summary_line("C src/{old => new}.rs").unwrap();
+        assert_eq!(copied.status, FileChangeStatus::Copied);
+        assert_eq!(copied.old_path.as_deref(), Some("src/old.rs"));
+        assert_eq!(copied.path, "src/new.rs");
+
+        let moved_in = parse_diff_summary_line("R src/{ => util}/a.rs").unwrap();
+        assert_eq!(moved_in.old_path.as_deref(), Some("src/a.rs"));
+        assert_eq!(moved_in.path, "src/util/a.rs");
+
+        let moved_out = parse_diff_summary_line("R src/{util => }/a.rs").unwrap();
+        assert_eq!(moved_out.old_path.as_deref(), Some("src/util/a.rs"));
+        assert_eq!(moved_out.path, "src/a.rs");
+    }
+
+    #[test]
     fn parses_conflict_rows_as_conflicted_file_changes() {
-        let conflicts = parse_conflict_list("src/lib.rs\n\nCargo.toml\n");
-        assert_eq!(conflicts.len(), 2);
+        // `jj resolve --list` pads paths to min(longest, 32) + 3 columns.
+        let conflicts = parse_conflict_list(concat!(
+            "src/lib.rs    2-sided conflict\n",
+            "\n",
+            "my notes.txt  3-sided conflict including 1 deletion and an executable\n",
+            "a/path/longer/than/thirty-two/columns.rs 2-sided conflict\n",
+        ));
+        let paths: Vec<&str> = conflicts.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "src/lib.rs",
+                "my notes.txt",
+                "a/path/longer/than/thirty-two/columns.rs"
+            ]
+        );
         assert_eq!(conflicts[0].status, FileChangeStatus::Conflicted);
         assert_eq!(conflicts[0].bucket, ChangeBucket::Conflicted);
     }

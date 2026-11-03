@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 clap = { version = "4.5", default-features = false, features = ["derive", "error-context", "help", "std", "usage"] }
 diffy = { path = "../..", features = ["difftastic"] }
+diffy-compare = { path = "../../crates/diffy-compare" }
 diffy-diff = { path = "../../crates/diffy-diff" }
 diffy-syntax = { path = "../../crates/diffy-syntax", features = ["download"] }
 diffy-semantic = { path = "../../crates/diffy-semantic", features = ["eval"] }

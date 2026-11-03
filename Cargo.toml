@@ -95,6 +95,7 @@ parking_lot = "0.12"
 libc = "0.2"
 tempfile = "3.14"
 webbrowser = "1.0"
+diffy-compare = { path = "crates/diffy-compare" }
 diffy-diff = { path = "crates/diffy-diff" }
 diffy-semantic = { path = "crates/diffy-semantic" }
 diffy-syntax = { path = "crates/diffy-syntax", features = ["download"] }

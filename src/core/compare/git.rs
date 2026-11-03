@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
-use diffy_diff::{
-    DiffDocument, DiffStats, DocumentBuilder, FileMeta, FileStatus, ObjectId, SourceCoverage,
-    TextStore, diff_from_changes, myers::Change,
-};
+use diffy_compare::{FileInput, binary_document, is_binary, line_diff};
+use diffy_diff::{DiffDocument, DiffStats, FileMeta, FileStatus, ObjectId};
 use gix::bstr::{BStr, ByteSlice};
 use gix::diff::blob::{Algorithm, InternedInput, diff_with_slider_heuristics};
 
@@ -21,7 +19,6 @@ use crate::core::vcs::model::ChangeBucket;
 const LOADING_FILE_EMIT_STRIDE: usize = 16;
 const LINE_STATS_MAX_WORKERS: usize = 8;
 const DEFERRED_STATS_MIN_FILES_PER_WORKER: usize = 16;
-pub const CONTEXT_LINES: u32 = 3;
 
 pub fn compare(
     spec: &CompareSpec,
@@ -256,12 +253,12 @@ fn worktree_document(
     });
     let (old, new) = (old.unwrap_or_default(), new.unwrap_or_default());
     if renderer == RendererKind::Semantic {
-        let changed = crate::core::compare::semantic::ChangedPath {
+        let changed = FileInput {
             status: meta.status,
             old_path: meta.old_path.as_deref().map(str::to_owned),
             new_path: meta.new_path.as_deref().map(str::to_owned),
-            old_content: old,
-            new_content: new,
+            old,
+            new,
         };
         let mut doc = crate::core::compare::semantic::document_from_changed(&changed)?;
         doc.set_identity(
@@ -272,7 +269,7 @@ fn worktree_document(
         return Ok(Some(doc));
     }
     let _ = renderer;
-    document_from_bytes(meta, &old, &new).map(Some)
+    Ok(Some(line_diff(meta, &old, &new)?))
 }
 
 pub fn compare_path(
@@ -302,7 +299,7 @@ fn push_untracked(output: &mut CompareOutput, git: &GitService, only: Option<&st
             status: FileStatus::Added,
             ..FileMeta::default()
         };
-        output.push_document(Arc::new(document_from_bytes(meta, &[], &new)?));
+        output.push_document(Arc::new(line_diff(meta, &[], &new)?));
     }
     Ok(())
 }
@@ -310,7 +307,7 @@ fn push_untracked(output: &mut CompareOutput, git: &GitService, only: Option<&st
 pub fn compare_entry(entry: &CompareEntry, git: &GitService) -> Result<Option<DiffDocument>> {
     let meta = entry.file_meta();
     if entry.is_binary() {
-        return binary_document(meta).map(Some);
+        return Ok(Some(binary_document(meta)?));
     }
     let loadable = match entry.status() {
         FileStatus::Added => entry.new_id.is_some(),
@@ -323,7 +320,7 @@ pub fn compare_entry(entry: &CompareEntry, git: &GitService) -> Result<Option<Di
     let repo = open_gix_repo(git)?;
     let old = load_object(&repo, entry.old_id.as_ref(), entry.old_mode.as_deref())?;
     let new = load_object(&repo, entry.new_id.as_ref(), entry.new_mode.as_deref())?;
-    document_from_bytes(meta, old.as_bytes(), new.as_bytes()).map(Some)
+    Ok(Some(line_diff(meta, old.as_bytes(), new.as_bytes())?))
 }
 
 pub fn compare_text(left: &str, right: &str, display_path: &str) -> Result<CompareOutput> {
@@ -344,7 +341,7 @@ pub fn compare_text(left: &str, right: &str, display_path: &str) -> Result<Compa
         status,
         ..FileMeta::default()
     };
-    let doc = document_from_bytes(meta, left.as_bytes(), right.as_bytes())?;
+    let doc = line_diff(meta, left.as_bytes(), right.as_bytes())?;
     output.push_document(Arc::new(doc));
     Ok(output)
 }
@@ -391,47 +388,6 @@ pub fn entry_stats(
     results
 }
 
-pub(crate) fn document_from_bytes(
-    mut meta: FileMeta,
-    old: &[u8],
-    new: &[u8],
-) -> Result<DiffDocument> {
-    if is_binary_bytes(old) || is_binary_bytes(new) {
-        return binary_document(meta);
-    }
-    let changes = line_changes(old, new);
-    let (old, new) = (TextStore::from_bytes(old), TextStore::from_bytes(new));
-    meta.binary = false;
-    diff_from_changes(meta, old, new, &changes, CONTEXT_LINES)
-        .map_err(|error| DiffyError::Parse(error.to_string()))
-}
-
-pub(crate) fn binary_document(mut meta: FileMeta) -> Result<DiffDocument> {
-    meta.binary = true;
-    let mut builder = DocumentBuilder::new();
-    builder
-        .file(
-            meta,
-            SourceCoverage::PatchOnly,
-            TextStore::default(),
-            TextStore::default(),
-        )
-        .finish()
-        .map_err(|error| DiffyError::Parse(error.to_string()))?;
-    Ok(builder.build())
-}
-
-pub(crate) fn line_changes(old: &[u8], new: &[u8]) -> Vec<Change> {
-    let input = InternedInput::new(old, new);
-    diff_with_slider_heuristics(Algorithm::Histogram, &input)
-        .hunks()
-        .map(|hunk| Change {
-            old: hunk.before,
-            new: hunk.after,
-        })
-        .collect()
-}
-
 pub(crate) fn line_stats(old: &[u8], new: &[u8]) -> (u32, u32) {
     let input = InternedInput::new(old, new);
     let diff = diff_with_slider_heuristics(Algorithm::Histogram, &input);
@@ -469,7 +425,7 @@ fn output_from_gix_changes(
             continue;
         };
         let meta = entry_from_gix_change(change).file_meta();
-        let doc = document_from_bytes(meta, old.as_bytes(), new.as_bytes())?;
+        let doc = line_diff(meta, old.as_bytes(), new.as_bytes())?;
         output.push_document(Arc::new(doc));
     }
     Ok(output)
@@ -612,7 +568,7 @@ fn entry_stats_with_trees(
     let (Some(old), Some(new)) = (old, new) else {
         return Ok(None);
     };
-    if is_binary_bytes(old.as_bytes()) || is_binary_bytes(new.as_bytes()) {
+    if is_binary(old.as_bytes()) || is_binary(new.as_bytes()) {
         return Ok(Some(known(0, 0)));
     }
     let (additions, deletions) = line_stats(old.as_bytes(), new.as_bytes());
@@ -838,10 +794,6 @@ pub(crate) fn load_gix_blob_id(
     Ok(GixBlobContent::Blob(
         repo.find_blob(oid).map_err(gix_error)?,
     ))
-}
-
-pub(crate) fn is_binary_bytes(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|byte| *byte == 0)
 }
 
 pub(crate) fn deferred_stats_worker_count(file_count: usize) -> usize {

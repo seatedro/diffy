@@ -1,4 +1,4 @@
-# @diffy/node
+# @seatedro/diffy
 
 Semantic file diffs for Node. Pass file contents, get back a JSON document
 to render. The format is in
@@ -6,7 +6,7 @@ to render. The format is in
 `index.d.ts` types it.
 
 ```js
-const { diff, expand } = require('@diffy/node')
+const { diff, expand } = require('@seatedro/diffy')
 
 const doc = await diff(
   { files: [{ status: 'modified', old_path: 'a.rs', new_path: 'a.rs', old, new: next }], syntax: true, budget_ms: 2000 },
@@ -42,11 +42,11 @@ An aborted `signal` rejects with `AbortError`. Bad input rejects with a
 
 | Package | Platform |
 | --- | --- |
-| `@diffy/node-darwin-arm64` | macOS 11+, Apple silicon |
-| `@diffy/node-darwin-x64` | macOS 11+, Intel |
-| `@diffy/node-linux-x64-gnu` | Linux x64, glibc 2.28+ |
-| `@diffy/node-linux-arm64-gnu` | Linux arm64, glibc 2.28+ |
-| `@diffy/node-win32-x64-msvc` | Windows x64 |
+| `@seatedro/diffy-darwin-arm64` | macOS 11+, Apple silicon |
+| `@seatedro/diffy-darwin-x64` | macOS 11+, Intel |
+| `@seatedro/diffy-linux-x64-gnu` | Linux x64, glibc 2.28+ |
+| `@seatedro/diffy-linux-arm64-gnu` | Linux arm64, glibc 2.28+ |
+| `@seatedro/diffy-win32-x64-msvc` | Windows x64 |
 
 Each ships `THIRD_PARTY_NOTICES.md` (grammars) and `RUST_NOTICES.md` (Rust crates).
 

@@ -1,5 +1,5 @@
 {
-  "name": "@diffy/node",
+  "name": "@seatedro/diffy",
   "version": "0.1.0",
   "description": "Diffy's semantic file diff for Node: hand it file contents, get back a JSON diff to render.",
   "license": "MIT OR Apache-2.0",
@@ -35,11 +35,11 @@
     "test": "node --test test/diffy.test.mjs"
   },
   "optionalDependencies": {
-    "@diffy/node-darwin-arm64": "0.1.0",
-    "@diffy/node-darwin-x64": "0.1.0",
-    "@diffy/node-linux-x64-gnu": "0.1.0",
-    "@diffy/node-linux-arm64-gnu": "0.1.0",
-    "@diffy/node-win32-x64-msvc": "0.1.0"
+    "@seatedro/diffy-darwin-arm64": "0.1.0",
+    "@seatedro/diffy-darwin-x64": "0.1.0",
+    "@seatedro/diffy-linux-x64-gnu": "0.1.0",
+    "@seatedro/diffy-linux-arm64-gnu": "0.1.0",
+    "@seatedro/diffy-win32-x64-msvc": "0.1.0"
   },
   "publishConfig": {
     "access": "public",

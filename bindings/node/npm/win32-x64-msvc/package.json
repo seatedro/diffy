@@ -1,7 +1,7 @@
 {
-  "name": "@diffy/node-win32-x64-msvc",
+  "name": "@seatedro/diffy-win32-x64-msvc",
   "version": "0.1.0",
-  "description": "The @diffy/node binary for Windows x64.",
+  "description": "The @seatedro/diffy binary for Windows x64.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",

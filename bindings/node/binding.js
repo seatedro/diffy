@@ -27,10 +27,10 @@ function load() {
   const local = join(__dirname, `diffy.${name}.node`)
   if (existsSync(local)) return require(local)
   try {
-    return require(`@diffy/node-${name}`)
+    return require(`@seatedro/diffy-${name}`)
   } catch (error) {
     throw new Error(
-      `@diffy/node has no binary for ${name}: install @diffy/node-${name} ` +
+      `@seatedro/diffy has no binary for ${name}: install @seatedro/diffy-${name} ` +
         '(npm skips optional dependencies with --omit=optional), or set DIFFY_NODE_BINARY',
       { cause: error },
     )

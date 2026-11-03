@@ -1,7 +1,7 @@
 {
-  "name": "@diffy/node-darwin-arm64",
+  "name": "@seatedro/diffy-darwin-arm64",
   "version": "0.1.0",
-  "description": "The @diffy/node binary for macOS on Apple silicon.",
+  "description": "The @seatedro/diffy binary for macOS on Apple silicon.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",

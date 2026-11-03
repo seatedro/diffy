@@ -143,6 +143,7 @@ impl AppEvent {
             Self::Review(event) => event.account_scoped(),
             Self::Mutations(event) => event.app_scoped(),
             Self::Commands(event) => event.app_scoped(),
+            Self::Delivery(event) => event.app_scoped(),
             _ => false,
         }
     }

@@ -338,10 +338,10 @@ impl Controller for DeliveryController {
     fn apply_intent(&mut self, intent: &Intent, _cx: &SharedContext) -> Reduction {
         match intent {
             Intent::Startup(startup) => self.startup(startup.settings.auto_update),
+            // Update events outlive the workspace, so the poll timer keeps
+            // running instead of restarting on every switch.
             Intent::ActivateWorkspace { .. } => {
-                let mut reduction = Reduction::default().effect(DeliveryEffect::WatchGrammars);
-                reduction.merge(self.schedule_poll());
-                reduction
+                Reduction::default().effect(DeliveryEffect::WatchGrammars)
             }
             Intent::PublishManifest(manifest) => self.manifest(manifest),
             Intent::SettingsChanged(snapshot) => {

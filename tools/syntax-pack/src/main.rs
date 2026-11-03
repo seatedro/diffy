@@ -965,6 +965,7 @@ fn third_party_notices(lock: &Lock, options: &Options) -> Result<String, String>
         "# Third-party notices\n\n\
          These tree-sitter grammars and queries are compiled into this software.\n",
     );
+    let mut nvim_queries = false;
     for language in &options.languages {
         let grammar = lock
             .get(language)
@@ -984,7 +985,15 @@ fn third_party_notices(lock: &Lock, options: &Options) -> Result<String, String>
                     "{language}: {repo} at {rev} has no license file to ship"
                 ));
             }
-            if licenses.is_empty() {
+            if licenses.is_empty() && repo.contains("nvim-treesitter-queries-") {
+                // These repositories split out nvim-treesitter's queries,
+                // which it licenses Apache-2.0; the text follows the list.
+                nvim_queries = true;
+                text.push_str(
+                    "Queries from nvim-treesitter, licensed Apache-2.0 \
+                     (text at the end of this file).\n\n",
+                );
+            } else if licenses.is_empty() {
                 text.push_str("This repository has no license file.\n\n");
             }
             for path in licenses {
@@ -997,8 +1006,19 @@ fn third_party_notices(lock: &Lock, options: &Options) -> Result<String, String>
             }
         }
     }
+    if nvim_queries {
+        text.push_str(&format!(
+            "\n## nvim-treesitter queries\n\n\
+             Source: https://github.com/nvim-treesitter/nvim-treesitter\n\n\
+             ```text\n{}\n```\n",
+            APACHE_2_0.trim_end()
+        ));
+    }
     Ok(text)
 }
+
+/// The Apache License 2.0, verbatim.
+const APACHE_2_0: &str = include_str!("../../../crates/diffy-syntax/LICENSE-APACHE");
 
 /// The repository, commit, and checkout of every source a language's
 /// build reads: its grammar, its query repository, and other entries'

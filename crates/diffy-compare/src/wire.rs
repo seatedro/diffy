@@ -333,6 +333,9 @@ pub struct OutlineItem {
     pub side: Side,
     /// One-based first line of the item on `side`.
     pub line: u32,
+    /// One-based last line of the item on `side`, inclusive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
     /// The grammar's item kind, such as `function_item`.
     pub kind: String,
     pub name: String,
@@ -515,7 +518,8 @@ fn outline_item(item: &diffy_diff::OutlineItem) -> OutlineItem {
     };
     OutlineItem {
         side: item.side.into(),
-        line: item.line + 1,
+        line: item.lines.start + 1,
+        end_line: Some(item.lines.end),
         kind: item.kind.to_string(),
         name: item.name.to_string(),
         change,
@@ -731,9 +735,9 @@ impl<'a> Projector<'a> {
         }
     }
 
-    /// The item enclosing the hunk's first change: the nearest changed
-    /// item of the semantic outline starting at or before it, else the
-    /// innermost scope of the grammar's scope table.
+    /// The innermost item whose lines contain the hunk's first changed
+    /// line with text: a changed item of the semantic outline, else a
+    /// scope of the grammar's scope table. `None` when nothing contains it.
     fn header(&self, hunk: u32) -> Option<String> {
         let (h, b) = (self.doc.hunks(), self.doc.blocks());
         let hi = hunk as usize;
@@ -741,46 +745,69 @@ impl<'a> Projector<'a> {
             .clone()
             .map(|block| block as usize)
             .find(|&bi| b.kind[bi] == BlockKind::Change);
-        // Zero-based anchors on each side, and the side the change shows.
-        let (old, new, side) = match first_change {
-            Some(bi) => (
-                b.old_line[bi] - 1,
-                b.new_line[bi] - 1,
-                if b.new_len[bi] > 0 {
-                    DocSide::New
-                } else {
-                    DocSide::Old
-                },
-            ),
+        // Zero-based first line of the change on each side, and whether
+        // the side has changed lines there; a side without them holds the
+        // change between the anchor line and the one before.
+        let (old, new) = match first_change {
+            Some(bi) => {
+                // Blank lines lead most added and removed items and belong
+                // to the scope around them, so the first one with text
+                // anchors the change.
+                let first_text = |side: DocSide, store: u32, len: u32| {
+                    (0..len)
+                        .find(|&k| {
+                            self.display(side, store + k)
+                                .bytes()
+                                .any(|byte| !byte.is_ascii_whitespace())
+                        })
+                        .unwrap_or(0)
+                };
+                let old_skip = first_text(DocSide::Old, b.old_store[bi], b.old_len[bi]);
+                let new_skip = first_text(DocSide::New, b.new_store[bi], b.new_len[bi]);
+                (
+                    (b.old_line[bi] - 1 + old_skip, b.old_len[bi] > 0),
+                    (b.new_line[bi] - 1 + new_skip, b.new_len[bi] > 0),
+                )
+            }
             None => (
-                h.old_start[hi].saturating_sub(1),
-                h.new_start[hi].saturating_sub(1),
-                DocSide::New,
+                (h.old_start[hi].saturating_sub(1), false),
+                (h.new_start[hi].saturating_sub(1), true),
             ),
         };
-        if let Some(semantics) = self.doc.semantics(0) {
-            // Items list no end line, so the nearest start before the
-            // change stands in for the enclosing item. Edited items sit on
-            // the new side, removed ones on the old; ties go to new.
-            let nearest = semantics
-                .outline()
-                .iter()
-                .filter_map(|item| {
-                    let anchor = match item.side {
-                        DocSide::Old => old,
-                        DocSide::New => new,
-                    };
-                    (item.line <= anchor).then(|| (anchor - item.line, item.side, item))
-                })
-                .min_by_key(|&(distance, side, _)| (distance, side == DocSide::Old));
-            if let Some((_, _, item)) = nearest {
-                return Some(item.name.to_string());
-            }
-        }
-        let line = match side {
+        // The change shows on the new side when it has lines there.
+        let (side, other) = if new.1 {
+            (DocSide::New, DocSide::Old)
+        } else {
+            (DocSide::Old, DocSide::New)
+        };
+        let anchor = |side: DocSide| match side {
             DocSide::Old => old,
             DocSide::New => new,
         };
+        if let Some(semantics) = self.doc.semantics(0) {
+            // Edited items sit on the new side and removed ones on the
+            // old, so a side with no containing item defers to the other.
+            // Items on one side nest, so the shortest is the innermost.
+            let innermost = |side: DocSide| {
+                let (line, lines) = anchor(side);
+                semantics
+                    .outline()
+                    .iter()
+                    .filter(|item| item.side == side)
+                    .filter(|item| {
+                        if lines {
+                            item.lines.contains(&line)
+                        } else {
+                            item.lines.start < line && line < item.lines.end
+                        }
+                    })
+                    .min_by_key(|item| item.lines.len())
+            };
+            if let Some(item) = innermost(side).or_else(|| innermost(other)) {
+                return Some(item.name.to_string());
+            }
+        }
+        let (line, _) = anchor(side);
         // Sorted by start, longer first, so the last span containing the
         // line is the innermost.
         self.scopes(side)

@@ -116,7 +116,8 @@ pub struct Rename {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct OutlineItem {
     pub side: Side,
-    pub line: u32,
+    /// Zero-based lines the item spans on `side`; never empty.
+    pub lines: Range<u32>,
     pub kind: Arc<str>,
     pub name: Arc<str>,
     pub change: ItemChange,

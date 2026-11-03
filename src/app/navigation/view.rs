@@ -729,7 +729,7 @@ fn item_row(file: &ManifestFile, index: u32, tree: bool, theme: &Theme) -> AnyEl
         file: file.key,
         revision: file.revision,
         side: item.side,
-        lines: item.line..item.line + 1,
+        lines: item.lines.start..item.lines.start + 1,
     };
     let mono = TextStyle::MonoSmall.font_size(theme);
     let small = TextStyle::BodySmall.font_size(theme);

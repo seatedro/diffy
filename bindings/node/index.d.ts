@@ -245,6 +245,8 @@ export interface OutlineItem {
   side: 'old' | 'new'
   /** The item's first line. */
   line: number
+  /** The item's last line, inclusive. */
+  end_line?: number
   /** The grammar's node kind, e.g. `function_item`. */
   kind: string
   name: string

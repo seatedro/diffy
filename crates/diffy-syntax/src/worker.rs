@@ -133,7 +133,8 @@ enum Message {
         slot: u64,
         priority: Priority,
     },
-    /// A pending grammar resolved: rerun the jobs waiting for one.
+    /// A pending grammar resolved: rerun the jobs waiting for one, and
+    /// start over the long passes that colored windows without one.
     Retry,
     /// A handle was dropped: drop its jobs.
     Forget(u64),
@@ -513,6 +514,19 @@ fn run(
         // Slots rerun for a retry carry what each last published: a rerun
         // that changes nothing is parked again without another result.
         if retry {
+            // A long pass that yielded colored its first windows without
+            // the grammars it was waiting for, and only a pass from the
+            // start recolors them.
+            for held in queued.values_mut() {
+                if held.job.resume.0 != 0
+                    && held
+                        .previous
+                        .as_ref()
+                        .is_some_and(|previous| !previous.unresolved.is_empty())
+                {
+                    held.job.resume = (0, None);
+                }
+            }
             for (key, waiting) in parked.drain() {
                 order.push(key);
                 queued.insert(
@@ -603,8 +617,13 @@ fn run(
             }
         }
         if outcome.streamed {
-            // Languages still arriving over every turn of this pass.
-            let mut unresolved = previous.map_or_else(Vec::new, |p| p.unresolved);
+            // Languages still arriving over every turn of this pass. A turn
+            // from the start begins a new pass, which owes nothing to the
+            // languages the last one was missing.
+            let mut unresolved = match previous {
+                Some(previous) if job.resume.0 != 0 => previous.unresolved,
+                _ => Vec::new(),
+            };
             for language in outcome.unresolved {
                 if !unresolved.contains(&language) {
                     unresolved.push(language);
@@ -818,6 +837,101 @@ mod tests {
                 (2, Some(1)),
                 (2, Some(2)),
             ]
+        );
+    }
+
+    // Catches a grammar that arrives while a long pass waits for its turn
+    // never reaching the windows that pass colored before it arrived: the
+    // pass starts over, and once nothing is missing it is not run again on
+    // a later arrival.
+    #[test]
+    fn grammar_arriving_mid_pass_restarts_the_pass_once() {
+        let arrived = Arc::new(AtomicBool::new(false));
+        let (started_tx, started) = channel();
+        let (resume_tx, resume) = channel::<()>();
+        let resume = Mutex::new(resume);
+        let seen = arrived.clone();
+        let worker = HighlightWorker::with_highlighter(Arc::new(
+            move |request: &HighlightRequest,
+                  slice: &Slice,
+                  cancelled: &_,
+                  emit: &mut dyn FnMut(Part)| {
+                if &*request.source != "long" {
+                    if matches!(&*request.source, "hold" | "other") {
+                        started_tx.send(()).unwrap();
+                        resume.lock().unwrap().recv().unwrap();
+                    }
+                    return panics_on_boom(request, slice, cancelled, emit);
+                }
+                let unresolved = if seen.load(Ordering::Relaxed) {
+                    Vec::new()
+                } else {
+                    vec![LanguageId::from_fence("html").unwrap()]
+                };
+                let mut handed = 0;
+                for k in slice.from as u32..3 {
+                    emit(Part {
+                        range: k..k + 1,
+                        exact: true,
+                        spans: Vec::new(),
+                        unresolved: unresolved.clone(),
+                    });
+                    handed += 1;
+                    if k + 1 < 3 && (slice.yield_after)(handed) {
+                        return Outcome {
+                            unresolved,
+                            streamed: true,
+                            resume: Some((k as usize + 1, None)),
+                            ..Outcome::default()
+                        };
+                    }
+                }
+                Outcome {
+                    unresolved,
+                    streamed: true,
+                    ..Outcome::default()
+                }
+            },
+        ));
+        let next = || {
+            worker
+                .done
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .ok()
+                .map(|r| (r.slot, r.part.map(|p| p.range.start)))
+        };
+        worker.request(9, 1, rust(), Arc::from("hold"));
+        started.recv().unwrap();
+        worker.request(1, 1, rust(), Arc::from("long"));
+        worker.request(2, 1, rust(), Arc::from("other"));
+        resume_tx.send(()).unwrap();
+        // The long pass took one turn with HTML missing and waits behind
+        // "other", which runs now.
+        started.recv().unwrap();
+        arrived.store(true, Ordering::Relaxed);
+        let _ = worker.thread.jobs.send(Message::Retry);
+        resume_tx.send(()).unwrap();
+        let seen: Vec<_> = (0..6).map(|_| next()).collect();
+        let _ = worker.thread.jobs.send(Message::Retry);
+        worker.request_with(
+            3,
+            1,
+            HighlightRequest::new(rust(), Arc::from("after")).priority(Priority::Background),
+        );
+
+        assert_eq!(
+            (seen, next()),
+            (
+                vec![
+                    Some((9, None)),
+                    Some((1, Some(0))),
+                    Some((2, None)),
+                    Some((1, Some(0))),
+                    Some((1, Some(1))),
+                    Some((1, Some(2))),
+                ],
+                Some((3, None))
+            )
         );
     }
 

@@ -258,6 +258,12 @@ impl PullsPage {
             .is_none_or(|at| now_secs().saturating_sub(at) > STALE_SECS)
     }
 
+    /// Forgets a link still waiting for its clone: the user went to
+    /// another workspace or pull request, and it mustn't pull them back.
+    pub(super) fn drop_link(&mut self) {
+        self.link = None;
+    }
+
     pub(super) fn reset(&mut self) {
         self.loading = false;
         self.request = None;

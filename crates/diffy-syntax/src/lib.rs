@@ -1,12 +1,15 @@
 //! Tree-sitter syntax highlighting for code blocks, with grammars loaded at
 //! runtime.
 //!
-//! No grammar is compiled in. Each language arrives as a pack, a shared
-//! library exporting the tree-sitter language function plus its queries
-//! and a manifest (see [`pack`]), from a [`GrammarStore`] the app
+//! No grammar is compiled in by default. Each language arrives as a pack,
+//! a shared library exporting the tree-sitter language function plus its
+//! queries and a manifest (see [`pack`]), from a [`GrammarStore`] the app
 //! configures: local pack directories it trusts, and with the `download`
 //! feature a signed index it downloads missing packs from. Until a
-//! language's grammar is available its code renders plain.
+//! language's grammar is available its code renders plain. The exception
+//! is the `bundled` feature, for builds that cannot load packs: it links
+//! the grammars `syntax-pack bundle` compiled (see [`bundled`] and
+//! PACKS.md), used after [`StoreConfig::bundled`].
 //!
 //! [`highlight`] runs synchronously; [`HighlightWorker`] runs it on a
 //! background thread and drops requests superseded by a newer generation
@@ -24,9 +27,9 @@
 //! an embedded grammar downloads, its region keeps the host's colors, and
 //! the worker sends a newer revision of the result when it arrives.
 //!
-//! Features: `engine` (the tree-sitter runtime and local packs) and
-//! `download` (fetching packs). Without `engine` every lookup is plain and
-//! the crate has no dependencies.
+//! Features: `engine` (the tree-sitter runtime and local packs),
+//! `download` (fetching packs), and `bundled` (grammars linked in). Without
+//! `engine` every lookup is plain and the crate has no dependencies.
 //!
 //! # Threat model
 //!
@@ -56,7 +59,12 @@
 //! - Grammars parse untrusted text (chat output, diffs). A parser crash
 //!   takes the process down; a panic in the highlighter is caught by the
 //!   worker. Packs come from pinned, hashed grammar sources built in CI.
+//! - Bundled grammars are part of the binary, built from the same pinned,
+//!   hashed sources, so they are as trusted as the rest of it; nothing is
+//!   loaded or hashed at run time.
 
+#[cfg(feature = "bundled")]
+pub mod bundled;
 #[cfg(feature = "download")]
 mod download;
 #[cfg(feature = "engine")]

@@ -67,19 +67,55 @@ impl Grammar {
             None => Ok(None),
         };
         let injections = read(&manifest.injections)?;
-        let grammar = Self::compile(
-            &dir.join(&manifest.library.path),
-            &manifest.symbol,
-            Some(manifest.abi),
-            &highlights,
-            injections.as_deref(),
-        )?;
+        let library_path = dir.join(&manifest.library.path);
+        // SAFETY: loading a library runs its initializers, and calling the
+        // symbol runs its code. The pack passed its SHA-256 check against a
+        // manifest that is either signed (downloaded packs) or in a
+        // directory the app opted into (local packs); see the threat model
+        // in the crate docs.
+        let language = unsafe {
+            let library = libloading::Library::new(&library_path)
+                .map_err(|e| PackError::Library(e.to_string()))?;
+            let library: &'static libloading::Library = Box::leak(Box::new(library));
+            let mut name = manifest.symbol.as_bytes().to_vec();
+            name.push(0);
+            let symbol = library
+                .get::<unsafe extern "C" fn() -> *const ()>(&name)
+                .map_err(|e| PackError::Library(e.to_string()))?;
+            tree_sitter_language::LanguageFn::from_raw(*symbol)
+        };
+        let grammar = Self::compile(language, manifest.abi, &highlights, injections.as_deref())?;
         Ok(Self {
             name: Some(Arc::from(manifest.language.as_str())),
             locals: read(&manifest.locals)?.map(Arc::from),
             semantic: read(&manifest.semantic)?.map(Arc::from),
             tags: read(&manifest.tags)?.map(Arc::from),
             library: Some(Arc::from(manifest.library.sha256.as_str())),
+            ..grammar
+        })
+    }
+
+    /// A grammar compiled into the binary, with its queries.
+    #[cfg(feature = "bundled")]
+    pub(crate) fn bundled(bundled: &crate::bundled::Bundled) -> Result<Self, PackError> {
+        // SAFETY: the function is the tree-sitter language function of a
+        // grammar `syntax-pack bundle` compiled from pinned, hashed sources
+        // and linked into this binary.
+        let language = unsafe { tree_sitter_language::LanguageFn::from_raw(bundled.language) };
+        let grammar = Self::compile(
+            language,
+            bundled.abi,
+            bundled.highlights,
+            bundled.injections,
+        )?;
+        Ok(Self {
+            name: Some(Arc::from(bundled.name)),
+            locals: bundled.locals.map(Arc::from),
+            semantic: bundled.semantic.map(Arc::from),
+            tags: bundled.tags.map(Arc::from),
+            // Identifies the grammar build for tag caches, as a pack's
+            // library hash does.
+            library: Some(Arc::from(bundled.source)),
             ..grammar
         })
     }
@@ -112,32 +148,18 @@ impl Grammar {
         self.tags.as_ref()
     }
 
-    pub(crate) fn compile(
-        library_path: &Path,
-        symbol: &str,
-        expected_abi: Option<u32>,
+    /// Checks `language`'s ABI against the one its pack or bundle
+    /// declares and compiles its highlight and injection queries.
+    fn compile(
+        language: tree_sitter_language::LanguageFn,
+        expected_abi: u32,
         highlights: &str,
         injections: Option<&str>,
     ) -> Result<Self, PackError> {
-        // SAFETY: loading a library runs its initializers, and calling the
-        // symbol runs its code. The pack passed its SHA-256 check against a
-        // manifest that is either signed (downloaded packs) or in a
-        // directory the app opted into (local packs); see the threat model
-        // in the crate docs.
-        let language = unsafe {
-            let library = libloading::Library::new(library_path)
-                .map_err(|e| PackError::Library(e.to_string()))?;
-            let library: &'static libloading::Library = Box::leak(Box::new(library));
-            let mut name = symbol.as_bytes().to_vec();
-            name.push(0);
-            let symbol = library
-                .get::<unsafe extern "C" fn() -> *const ()>(&name)
-                .map_err(|e| PackError::Library(e.to_string()))?;
-            ts::Language::new(tree_sitter_language::LanguageFn::from_raw(*symbol))
-        };
-        // The manifest's ABI was checked; this checks the library agrees.
+        let language = ts::Language::new(language);
+        // The declared ABI was checked; this checks the grammar agrees.
         let abi = language.abi_version() as u32;
-        if expected_abi.is_some_and(|expected| expected != abi) || !supported_abi().contains(&abi) {
+        if expected_abi != abi || !supported_abi().contains(&abi) {
             let range = supported_abi();
             return Err(PackError::Abi {
                 abi,

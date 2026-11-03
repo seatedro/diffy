@@ -79,12 +79,14 @@ pub enum LanguageStatus {
 /// The grammars an app can highlight with, shared by every highlighter.
 /// Cloning is cheap and clones share state.
 ///
-/// Packs come from, in order:
+/// Grammars come from, in order:
 ///
 /// 1. local pack roots the app opts into ([`StoreConfig::local_packs`]),
 ///    such as packs bundled with the app or built by `syntax-pack` in
 ///    development;
-/// 2. with the `download` feature, the cache of a signed index the app
+/// 2. with the `bundled` feature, the grammars compiled into the binary
+///    ([`StoreConfig::bundled`]);
+/// 3. with the `download` feature, the cache of a signed index the app
 ///    configures ([`StoreConfig::downloads`]), downloading a missing pack
 ///    on a background thread the first time its language is asked for.
 ///
@@ -536,6 +538,8 @@ impl Outcome {
 #[derive(Debug, Clone, Default)]
 pub struct StoreConfig {
     local_packs: Vec<PathBuf>,
+    #[cfg(feature = "bundled")]
+    bundled: bool,
     /// Languages whose local packs stay pending until
     /// [`GrammarStore::release_deferred`], as if they were downloading.
     deferred: Vec<String>,
@@ -566,6 +570,14 @@ impl StoreConfig {
     pub fn defer(mut self, languages: &[&str]) -> Self {
         self.deferred
             .extend(languages.iter().map(|l| (*l).to_owned()));
+        self
+    }
+
+    /// Uses the grammars compiled into the binary ([`crate::bundled`]),
+    /// after the local pack roots and before any download.
+    #[cfg(feature = "bundled")]
+    pub fn bundled(mut self) -> Self {
+        self.bundled = true;
         self
     }
 
@@ -607,15 +619,47 @@ pub(crate) struct State {
     pub(crate) tags: HashMap<String, Tag>,
     /// Tag to pack directory over the local roots, scanned on first lookup.
     local: Option<HashMap<String, (PathBuf, Arc<PackManifest>)>>,
-    /// Grammars by pack directory, so a language's aliases share one load.
-    /// `None` records a pack that failed to load.
-    pub(crate) loaded: HashMap<PathBuf, Option<Arc<Grammar>>>,
+    /// Grammars by where they came from, so a language's aliases share one
+    /// load. `None` records a grammar that failed to load.
+    pub(crate) loaded: HashMap<Origin, Option<Arc<Grammar>>>,
     /// [`StoreConfig::defer`]red packs have been released.
     released: bool,
     /// Tags left pending by [`StoreConfig::defer`].
     deferred: Vec<String>,
     #[cfg(feature = "download")]
     pub(crate) remote: crate::download::Remote,
+}
+
+/// Where a grammar comes from.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Origin {
+    /// A pack directory, local or in the download cache.
+    Pack(PathBuf),
+    /// A grammar compiled in, by name.
+    #[cfg_attr(not(feature = "bundled"), allow(dead_code))]
+    Bundled(&'static str),
+}
+
+/// A language the catalog lists.
+#[cfg(feature = "engine")]
+struct Known {
+    origin: Origin,
+    language: String,
+    tags: Vec<String>,
+    installed: bool,
+}
+
+#[cfg(feature = "engine")]
+impl Known {
+    fn pack(dir: PathBuf, manifest: &PackManifest, installed: bool) -> Self {
+        Self {
+            origin: Origin::Pack(dir),
+            language: manifest.language.clone(),
+            tags: manifest.tags().map(str::to_owned).collect(),
+            installed,
+        }
+    }
 }
 
 #[cfg(feature = "engine")]
@@ -653,6 +697,12 @@ impl Inner {
         if let Some((_, manifest)) = local.get(tag) {
             return manifest.tags.is_some();
         }
+        #[cfg(feature = "bundled")]
+        if self.config.bundled
+            && let Some(bundled) = crate::bundled::find(tag)
+        {
+            return bundled.tags.is_some();
+        }
         #[cfg(feature = "download")]
         if let Some(downloads) = &self.config.downloads {
             return crate::download::ships_tags(downloads, &mut state, tag);
@@ -671,6 +721,14 @@ impl Inner {
             }
             return load(state, &dir, &manifest);
         }
+        #[cfg(feature = "bundled")]
+        if self.config.bundled
+            && let Some(bundled) = crate::bundled::find(tag)
+        {
+            return load_with(state, Origin::Bundled(bundled.name), || {
+                Grammar::bundled(bundled)
+            });
+        }
         #[cfg(feature = "download")]
         if let Some(downloads) = &self.config.downloads {
             return crate::download::resolve(self, downloads, state, tag);
@@ -684,58 +742,71 @@ impl Inner {
             .local
             .get_or_insert_with(|| scan_local(&self.config.local_packs))
             .clone();
-        let mut packs: Vec<(PathBuf, Arc<PackManifest>, bool)> = Vec::new();
+        let mut known: Vec<Known> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut local_packs: Vec<_> = local.values().cloned().collect();
         local_packs.sort_by(|a, b| a.0.cmp(&b.0));
         for (dir, manifest) in local_packs {
             if seen.insert(manifest.language.clone()) {
-                packs.push((dir, manifest, true));
+                known.push(Known::pack(dir, &manifest, true));
+            }
+        }
+        #[cfg(feature = "bundled")]
+        if self.config.bundled {
+            for bundled in crate::bundled::GRAMMARS {
+                if seen.insert(bundled.name.to_owned()) {
+                    known.push(Known {
+                        origin: Origin::Bundled(bundled.name),
+                        language: bundled.name.to_owned(),
+                        tags: bundled.tags().map(str::to_owned).collect(),
+                        installed: true,
+                    });
+                }
             }
         }
         #[cfg(feature = "download")]
         if let Some(downloads) = &self.config.downloads {
             for (dir, manifest, installed) in crate::download::packs(downloads, &mut state) {
                 if seen.insert(manifest.language.clone()) {
-                    packs.push((dir, manifest, installed));
+                    known.push(Known::pack(dir, &manifest, installed));
                 }
             }
         }
         let mut catalog = Catalog {
-            languages: packs.len(),
+            languages: known.len(),
             ..Catalog::default()
         };
-        for (dir, manifest, installed) in &packs {
-            for tag in manifest.tags() {
+        for entry in &known {
+            for tag in &entry.tags {
                 catalog
                     .tags
                     .entry(tag.to_ascii_lowercase())
-                    .or_insert_with(|| manifest.language.clone());
+                    .or_insert_with(|| entry.language.clone());
             }
-            let pending = manifest.tags().any(|tag| {
+            let pending = entry.tags.iter().any(|tag| {
                 matches!(
                     state.tags.get(&tag.to_ascii_lowercase()),
                     Some(Tag::Pending)
                 )
             });
             #[cfg(feature = "download")]
-            let failure = state.remote.failure(&manifest.language);
+            let failure = state.remote.failure(&entry.language);
             #[cfg(not(feature = "download"))]
             let failure: Option<String> = None;
-            let grammar_state = if matches!(state.loaded.get(dir), Some(Some(_))) {
+            let grammar_state = if matches!(state.loaded.get(&entry.origin), Some(Some(_))) {
                 Some(GrammarState::Ready)
             } else if let Some(reason) = failure {
                 Some(GrammarState::Failed(reason))
             } else if pending {
                 Some(GrammarState::Downloading)
-            } else if *installed {
+            } else if entry.installed {
                 Some(GrammarState::Installed)
             } else {
                 None
             };
             if let Some(grammar_state) = grammar_state {
                 catalog.statuses.push(GrammarStatus {
-                    language: manifest.language.clone(),
+                    language: entry.language.clone(),
                     state: grammar_state,
                 });
             }
@@ -757,22 +828,24 @@ impl Inner {
 /// Loads (once per directory) the pack in `dir`.
 #[cfg(feature = "engine")]
 pub(crate) fn load(state: &mut State, dir: &Path, manifest: &PackManifest) -> Tag {
-    load_with(state, dir, || Grammar::load(dir, manifest))
+    load_with(state, Origin::Pack(dir.to_path_buf()), || {
+        Grammar::load(dir, manifest)
+    })
 }
 
 #[cfg(feature = "engine")]
 pub(crate) fn load_with(
     state: &mut State,
-    dir: &Path,
+    origin: Origin,
     load: impl FnOnce() -> Result<Grammar, pack::PackError>,
 ) -> Tag {
     let grammar = state
         .loaded
-        .entry(dir.to_path_buf())
-        .or_insert_with(|| match load() {
+        .entry(origin)
+        .or_insert_with_key(|origin| match load() {
             Ok(grammar) => Some(Arc::new(grammar)),
             Err(error) => {
-                tracing::warn!(pack = %dir.display(), %error, "syntax pack failed to load");
+                tracing::warn!(?origin, %error, "grammar failed to load");
                 None
             }
         });

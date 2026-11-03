@@ -5,7 +5,8 @@ use diffy_ui::SourcePoint;
 use quark_ui::element::ScrollHandle;
 
 use crate::contracts::commands::ToastUpdate;
-use crate::contracts::shared::SharedContext;
+use crate::contracts::navigation::RepositoryRevision;
+use crate::contracts::shared::{CompareGeneration, SharedContext};
 use crate::contracts::shell::{Intent, Reduction};
 use crate::contracts::viewport::files::{FileAt, head_revision};
 use crate::contracts::viewport::symbols::{
@@ -30,10 +31,29 @@ pub enum Place {
     },
 }
 
+/// What the files behind a symbolic head (the working tree, `HEAD`)
+/// follow: the compare once there is one, else the repository snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stamp {
+    Compare(CompareGeneration),
+    Repository(RepositoryRevision),
+}
+
+fn head_stamp(cx: &SharedContext) -> Option<Stamp> {
+    match cx.manifest.as_deref() {
+        Some(manifest) => Some(Stamp::Compare(manifest.generation)),
+        None => cx
+            .repository
+            .as_ref()
+            .map(|repository| Stamp::Repository(repository.revision)),
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct SymbolsController {
     generation: u64,
     key: Option<(PathBuf, RevisionId)>,
+    stamp: Option<Stamp>,
     progress: Option<(usize, usize)>,
     index: Option<Arc<SymbolIndex>>,
     failure: Option<String>,
@@ -136,12 +156,17 @@ impl SymbolsController {
         if key.1.backend != VcsKind::GIT {
             return Reduction::default();
         }
-        let fresh = self.key.as_ref() == Some(&key) && is_full_hex_oid(&key.1.id);
+        // The manifest republishes for every stats chunk and outline update;
+        // a symbolic head's files only change with a new compare.
+        let stamp = head_stamp(cx);
+        let fresh =
+            self.key.as_ref() == Some(&key) && (is_full_hex_oid(&key.1.id) || self.stamp == stamp);
         if fresh && !force {
             return Reduction::default();
         }
         self.generation += 1;
         self.key = Some(key.clone());
+        self.stamp = stamp;
         self.failure = None;
         Reduction::default().effect(SymbolsEffect::Index(Box::new(IndexRequest {
             generation: self.generation,
@@ -197,6 +222,7 @@ impl SymbolsController {
                 self.generation += 1;
                 self.resolving += 1;
                 self.key = None;
+                self.stamp = None;
                 self.progress = None;
                 self.index = None;
                 self.failure = None;

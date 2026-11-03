@@ -184,7 +184,7 @@ pub fn overlay(
 
 fn update_row(update: &UpdateState, theme: &Theme) -> AnyElement {
     let (detail, button) = match update {
-        UpdateState::Idle => (String::new(), check_button(false)),
+        UpdateState::Idle | UpdateState::CheckingSilently => (String::new(), check_button(false)),
         UpdateState::Checking => ("Checking for updates".to_owned(), check_button(true)),
         UpdateState::Downloading(update) => (
             format!("Downloading Diffy {}", update.version),

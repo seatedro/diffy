@@ -16,7 +16,9 @@ use crate::app::testing::*;
 use crate::contracts::commands::{
     CommandDescriptor, CommandSource, CommandsAction, SettingsSnapshot,
 };
-use crate::contracts::delivery::{DeliveryEffect, DeliveryEvent, GrammarAvailability};
+use crate::contracts::delivery::{
+    DeliveryAction, DeliveryEffect, DeliveryEvent, GrammarAvailability,
+};
 use crate::contracts::shared::{SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{Action, Controller, Effect, Intent, ShellEvent};
 use crate::core::update::{AvailableUpdate, StagedUpdate, UpdateFormat, UpdatePlatform};
@@ -385,6 +387,7 @@ fn update_polling_follows_settings_and_drops_superseded_timers() {
     let enabled = reduce_effects(delivery.apply_intent(&settings(true), &cx));
     let stale =
         reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 0 }, &cx));
+    delivery.reduce_event(DeliveryEvent::UpdateNotAvailable { silent: true }, &cx);
     let due =
         reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 1 }, &cx));
     delivery.reduce_event(DeliveryEvent::UpdateNotAvailable { silent: true }, &cx);
@@ -414,6 +417,48 @@ fn staged_update_stops_polling() {
     assert!(
         reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 1 }, &cx))
             .is_empty()
+    );
+}
+
+#[test]
+fn a_manual_check_adopts_the_running_background_check() {
+    let cx = SharedContext::default();
+    let mut delivery = DeliveryController::new(true);
+    delivery.apply_intent(&settings(true), &cx);
+
+    let due =
+        reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 1 }, &cx));
+    let manual = reduce_effects(delivery.reduce_action(DeliveryAction::CheckForUpdates, &cx));
+    assert_eq!(delivery.update(), &UpdateState::Checking);
+    let available = delivery.reduce_event(
+        DeliveryEvent::UpdateAvailable {
+            update: Box::new(staged().update),
+            silent: true,
+        },
+        &cx,
+    );
+    let stray = delivery.reduce_event(DeliveryEvent::UpdateNotAvailable { silent: true }, &cx);
+
+    assert_eq!(
+        due,
+        vec![DeliveryEffect::ScheduleUpdatePoll {
+            generation: 2,
+            after: UPDATE_POLL_INTERVAL,
+        }]
+    );
+    assert!(manual.is_empty());
+    assert!(matches!(available.intents.as_slice(), [Intent::Toast(_)]));
+    assert_eq!(
+        reduce_effects(available),
+        vec![DeliveryEffect::StageUpdate {
+            update: Box::new(staged().update),
+            silent: false,
+        }]
+    );
+    assert!(!stray.changed && stray.effects.is_empty() && stray.intents.is_empty());
+    assert_eq!(
+        delivery.update(),
+        &UpdateState::Downloading(staged().update)
     );
 }
 

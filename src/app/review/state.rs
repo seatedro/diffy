@@ -2339,6 +2339,7 @@ impl ReviewController {
             Intent::ActivateWorkspace { path } => {
                 self.repo_path = Some(path.clone());
                 self.pulls.open = false;
+                self.pulls.drop_link();
                 if self.pr.is_some() {
                     let mut reduction = self.close_pull_request();
                     reduction
@@ -2355,6 +2356,7 @@ impl ReviewController {
             Intent::PublishManifest(_) => Reduction::changed(),
             Intent::LoadPullRequest { url } => {
                 self.pulls.open = false;
+                self.pulls.drop_link();
                 self.load_pull_request(url.clone())
             }
             Intent::FocusReviewCard(card) => {

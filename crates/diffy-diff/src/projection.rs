@@ -844,6 +844,7 @@ mod verification {
                 reveal_step: REVEAL_STEP,
                 min_hidden: kani::any::<u8>().into(),
             },
+            reflows: Vec::new(),
         };
         let min_hidden = expansion.policy.min_hidden;
         expansion.reveal_of(id, len, any_reveal(), kani::any());

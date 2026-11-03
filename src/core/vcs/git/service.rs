@@ -1400,6 +1400,7 @@ impl GitService {
         let mut args = vec![
             OsString::from("diff"),
             OsString::from("--no-ext-diff"),
+            OsString::from("--no-color"),
             OsString::from("--find-renames"),
             OsString::from("--src-prefix=a/"),
             OsString::from("--dst-prefix=b/"),
@@ -1419,6 +1420,7 @@ impl GitService {
         let mut args = vec![
             OsString::from("diff"),
             OsString::from("--no-ext-diff"),
+            OsString::from("--no-color"),
             OsString::from("--src-prefix=a/"),
             OsString::from("--dst-prefix=b/"),
         ];
@@ -2188,6 +2190,7 @@ impl GitService {
         let mut args = vec![
             OsString::from("diff"),
             OsString::from("--no-ext-diff"),
+            OsString::from("--no-color"),
             OsString::from("--find-renames"),
             OsString::from("--src-prefix=a/"),
             OsString::from("--dst-prefix=b/"),
@@ -2210,6 +2213,7 @@ impl GitService {
         let mut args = vec![
             OsString::from("diff"),
             OsString::from("--no-ext-diff"),
+            OsString::from("--no-color"),
             OsString::from(if find_renames {
                 "--find-renames"
             } else {

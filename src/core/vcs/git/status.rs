@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::core::vcs::model::ChangeBucket;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StatusBits(u32);
 
@@ -93,6 +95,21 @@ pub struct StatusItem {
     pub status: String,
 }
 
+impl StatusItem {
+    /// The bucket the item lists under. An unmerged path is one unstaged
+    /// item marked `!`, kept apart so staging and line actions skip it.
+    pub fn bucket(&self) -> ChangeBucket {
+        if self.status == "!" {
+            return ChangeBucket::Conflicted;
+        }
+        match self.scope {
+            StatusScope::Staged => ChangeBucket::Staged,
+            StatusScope::Unstaged => ChangeBucket::Unstaged,
+            StatusScope::Untracked => ChangeBucket::Untracked,
+        }
+    }
+}
+
 pub fn status_items_from_entry(path: String, status: StatusBits) -> Vec<StatusItem> {
     status_items_from_entry_with_old_path(path, None, status)
 }
@@ -102,13 +119,17 @@ pub fn status_items_from_entry_with_old_path(
     old_path: Option<String>,
     status: StatusBits,
 ) -> Vec<StatusItem> {
+    if status.contains(StatusBits::CONFLICTED) {
+        // The index holds conflict stages rather than a staged change, so
+        // the path lists once, against the worktree.
+        return vec![item(path, None, StatusScope::Unstaged, "!")];
+    }
+
     let mut items = Vec::new();
 
     if status.contains(StatusBits::INDEX_NEW) {
         items.push(item(path.clone(), None, StatusScope::Staged, "A"));
-    } else if status.intersects(
-        StatusBits::INDEX_MODIFIED | StatusBits::INDEX_TYPECHANGE | StatusBits::CONFLICTED,
-    ) {
+    } else if status.intersects(StatusBits::INDEX_MODIFIED | StatusBits::INDEX_TYPECHANGE) {
         items.push(item(path.clone(), None, StatusScope::Staged, "M"));
     } else if status.contains(StatusBits::INDEX_DELETED) {
         items.push(item(path.clone(), None, StatusScope::Staged, "D"));
@@ -123,9 +144,7 @@ pub fn status_items_from_entry_with_old_path(
 
     if status.contains(StatusBits::WT_NEW) {
         items.push(item(path.clone(), None, StatusScope::Untracked, "U"));
-    } else if status
-        .intersects(StatusBits::WT_MODIFIED | StatusBits::WT_TYPECHANGE | StatusBits::CONFLICTED)
-    {
+    } else if status.intersects(StatusBits::WT_MODIFIED | StatusBits::WT_TYPECHANGE) {
         items.push(item(path.clone(), None, StatusScope::Unstaged, "M"));
     } else if status.contains(StatusBits::WT_DELETED) {
         items.push(item(path.clone(), None, StatusScope::Unstaged, "D"));
@@ -163,6 +182,7 @@ mod tests {
     use super::{
         StatusBits, StatusScope, status_items_from_entry, status_items_from_entry_with_old_path,
     };
+    use crate::core::vcs::model::ChangeBucket;
 
     #[test]
     fn flattens_staged_and_unstaged_entries() {
@@ -182,6 +202,15 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].scope, StatusScope::Untracked);
         assert_eq!(items[0].status, "U");
+    }
+
+    #[test]
+    fn lists_conflicts_once_as_conflicted() {
+        let items = status_items_from_entry("src/lib.rs".to_owned(), StatusBits::CONFLICTED);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].scope, StatusScope::Unstaged);
+        assert_eq!(items[0].status, "!");
+        assert_eq!(items[0].bucket(), ChangeBucket::Conflicted);
     }
 
     #[test]

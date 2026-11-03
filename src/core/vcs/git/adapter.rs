@@ -782,17 +782,9 @@ pub fn git_file_changes(status_items: &[StatusItem]) -> Vec<FileChange> {
             path: item.path.clone(),
             old_path: item.old_path.clone(),
             status: git_file_status(item),
-            bucket: git_change_bucket(item.scope),
+            bucket: item.bucket(),
         })
         .collect()
-}
-
-pub fn git_change_bucket(scope: StatusScope) -> ChangeBucket {
-    match scope {
-        StatusScope::Staged => ChangeBucket::Staged,
-        StatusScope::Unstaged => ChangeBucket::Unstaged,
-        StatusScope::Untracked => ChangeBucket::Untracked,
-    }
 }
 
 pub fn git_file_status(item: &StatusItem) -> FileChangeStatus {
@@ -801,6 +793,7 @@ pub fn git_file_status(item: &StatusItem) -> FileChangeStatus {
         "D" => FileChangeStatus::Deleted,
         "R" => FileChangeStatus::Renamed,
         "U" => FileChangeStatus::Untracked,
+        "!" => FileChangeStatus::Conflicted,
         "M" => FileChangeStatus::Modified,
         _ => FileChangeStatus::Modified,
     }
@@ -856,7 +849,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        GitBackend, GitRepository, completed_publish_label, git_compare_spec,
+        GitBackend, GitRepository, completed_publish_label, git_compare_spec, git_file_changes,
         git_location_or_error, preferred_git_remote, status_item_from_file_change, upstream_pair,
     };
     use crate::contracts::navigation::RepositorySyncReason;
@@ -1304,6 +1297,15 @@ mod tests {
         });
         assert_eq!(conflicted.scope, StatusScope::Unstaged);
         assert_eq!(conflicted.status, "!");
+        assert_eq!(
+            git_file_changes(std::slice::from_ref(&conflicted)),
+            vec![FileChange {
+                path: "src/lib.rs".to_owned(),
+                old_path: None,
+                status: FileChangeStatus::Conflicted,
+                bucket: ChangeBucket::Conflicted,
+            }]
+        );
 
         let renamed = status_item_from_file_change(&FileChange {
             path: "src/new.rs".to_owned(),

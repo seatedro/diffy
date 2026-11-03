@@ -115,7 +115,7 @@ fn item_paths(item: &StatusItem) -> (Option<&str>, Option<&str>) {
 
 pub fn worktree_entry(item: &StatusItem) -> CompareEntry {
     let (old, new) = item_paths(item);
-    CompareEntry::deferred(old, new, item_status(item)).with_bucket(bucket_of(item.scope))
+    CompareEntry::deferred(old, new, item_status(item)).with_bucket(item.bucket())
 }
 
 pub fn compare_worktree(
@@ -163,7 +163,7 @@ pub fn compare_worktree(
             output.push_entry(worktree_entry(item));
             continue;
         };
-        let mut entry = CompareEntry::from_document(&doc, 0).with_bucket(bucket_of(item.scope));
+        let mut entry = CompareEntry::from_document(&doc, 0).with_bucket(item.bucket());
         entry.paths = worktree_entry(item).paths;
         output.entries.push(entry);
         output.documents.resize(output.entries.len() - 1, None);

@@ -140,4 +140,14 @@ impl DiffyError {
     }
 }
 
+impl From<diffy_compare::Error> for DiffyError {
+    fn from(error: diffy_compare::Error) -> Self {
+        match error {
+            // Keeps the message document builds have always surfaced.
+            diffy_compare::Error::Build(error) => Self::Parse(error),
+            error => Self::General(error.to_string()),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, DiffyError>;

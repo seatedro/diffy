@@ -13,6 +13,11 @@ publish = false
 diffy-diff = { path = "../diffy-diff" }
 diffy-semantic = { path = "../diffy-semantic" }
 diffy-syntax = { path = "../diffy-syntax", features = ["engine"] }
+# The line diff gix runs (histogram plus Git's slider heuristics), the same
+# crate and version gix already pulls into the app, so line diffs match Git
+# and the app links one copy.
+imara-diff = { package = "gix-imara-diff", version = "0.2.1", default-features = false }
+tracing = "0.1.44"
 # Only for `wire`; diffy-syntax's engine already builds serde, so the
 # feature adds no new crate.
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }

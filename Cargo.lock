@@ -1205,6 +1205,7 @@ dependencies = [
  "arboard",
  "clap",
  "difftastic",
+ "diffy-compare",
  "diffy-diff",
  "diffy-semantic",
  "diffy-syntax",
@@ -1250,8 +1251,10 @@ dependencies = [
  "diffy-diff",
  "diffy-semantic",
  "diffy-syntax",
+ "gix-imara-diff",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -5741,6 +5744,7 @@ version = "0.3.7"
 dependencies = [
  "clap",
  "diffy",
+ "diffy-compare",
  "diffy-diff",
  "diffy-semantic",
  "diffy-syntax",

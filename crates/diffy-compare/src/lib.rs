@@ -16,17 +16,29 @@
 //! With the `serde` feature, [`wire`] projects results into a versioned
 //! display format that non-Rust clients render from.
 
-// CONTRACT SKELETON: the types and signatures below are the agreed API.
-// Bodies marked `todo!` are filled in by the compare-core change.
-
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-pub use diffy_diff::{DiffDocument, FileStatus};
+pub use diffy_diff::{DiffDocument, FileMeta, FileStatus};
 pub use diffy_syntax::{GrammarStore, LanguageId};
 
+mod document;
+mod file;
+mod grammar;
+mod line;
+mod run;
+#[cfg(test)]
+mod tests;
 #[cfg(feature = "serde")]
 pub mod wire;
+
+#[doc(hidden)]
+pub use document::{Semantics, clean_spans, document_from_rows};
+#[doc(hidden)]
+pub use file::{Prepared, prepare};
+pub use grammar::{SemanticGrammar, semantic_grammar};
+pub use line::{CONTEXT_LINES, binary_document, line_diff};
 
 /// The semantic diff's default time budget per file.
 pub const FILE_BUDGET: Duration = Duration::from_millis(400);
@@ -50,6 +62,16 @@ impl FileInput {
             .as_deref()
             .or(self.old_path.as_deref())
             .unwrap_or_default()
+    }
+
+    /// The document metadata for this file: paths and status.
+    pub fn meta(&self) -> FileMeta {
+        FileMeta {
+            old_path: self.old_path.as_deref().map(Arc::from),
+            new_path: self.new_path.as_deref().map(Arc::from),
+            status: self.status,
+            ..FileMeta::default()
+        }
     }
 }
 
@@ -163,15 +185,35 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Diffs one file on the calling thread.
 pub fn diff_file(input: &FileInput, options: &Options<'_>) -> Result<FileDiff> {
-    let _ = (input, options);
-    todo!("compare core")
+    diff_file_with(input, options, &|tag| {
+        semantic_grammar(options.grammars, tag)
+    })
+}
+
+/// [`diff_file`] with grammars from `grammars` instead of
+/// [`Options::grammars`], for tools that wait on or swap grammars.
+#[doc(hidden)]
+pub fn diff_file_with(
+    input: &FileInput,
+    options: &Options<'_>,
+    grammars: &dyn Fn(&LanguageId) -> Option<SemanticGrammar>,
+) -> Result<FileDiff> {
+    if run::cancelled(options) {
+        return Err(Error::Cancelled);
+    }
+    let diff = run::observed(input, options, grammars)?;
+    if let Some(observer) = options.observer {
+        observer.progress(1, 1);
+    }
+    Ok(diff)
 }
 
 /// Diffs every file, in parallel when there are several, and returns the
 /// results in input order.
 pub fn diff_files(inputs: &[FileInput], options: &Options<'_>) -> Result<Vec<FileDiff>> {
-    let _ = (inputs, options);
-    todo!("compare core")
+    run::diff_all(inputs, options, &|tag| {
+        semantic_grammar(options.grammars, tag)
+    })
 }
 
 /// The language tag the semantic diff uses for `path`: JavaScript is

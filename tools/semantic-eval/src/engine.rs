@@ -1,11 +1,9 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use diffy::core::compare::semantic::{
-    ChangedPath, SemanticGrammar, document_from_difftastic, document_from_native_with,
-    semantic_grammar, semantic_tag,
-};
+use diffy::core::compare::semantic::document_from_difftastic;
 use diffy::core::syntax::grammar::GrammarConfig;
+use diffy_compare::{FileInput, Options, SemanticGrammar, semantic_grammar, semantic_tag};
 use diffy_diff::{DEFAULT_CONTEXT, DiffDocument, FileStatus, diff_texts};
 use diffy_syntax::{GrammarStore, LanguageId, LanguageStatus};
 use serde::{Deserialize, Serialize};
@@ -37,23 +35,23 @@ pub struct Run {
 }
 
 pub fn run(engine: Engine, path: &str, old: &[u8], new: &[u8]) -> Result<Run, String> {
-    let changed = || ChangedPath {
+    let changed = || FileInput {
         status: FileStatus::Modified,
         old_path: Some(path.to_owned()),
         new_path: Some(path.to_owned()),
-        old_content: old.to_vec(),
-        new_content: new.to_vec(),
+        old: old.to_vec(),
+        new: new.to_vec(),
     };
     match engine {
         Engine::Native => {
             let changed = changed();
             let start = Instant::now();
-            let (doc, fallback) = document_from_native_with(&changed, tagged, None)
+            let diff = diffy_compare::diff_file_with(&changed, &Options::new(grammars()), &tagged)
                 .map_err(|error| error.to_string())?;
             Ok(Run {
-                doc,
+                doc: diff.document,
                 micros: start.elapsed().as_micros() as u64,
-                fallback,
+                fallback: diff.fallback.map(|fallback| fallback.to_string()),
             })
         }
         Engine::Difftastic => {

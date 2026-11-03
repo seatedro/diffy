@@ -59,7 +59,10 @@ impl ToastHost {
         &self.items
     }
 
-    pub fn apply(&mut self, update: ToastUpdate) {
+    /// Applies `update` and returns the `expired` hooks of the undo offers
+    /// it ended, for the caller to dispatch.
+    #[must_use]
+    pub fn apply(&mut self, update: ToastUpdate) -> Vec<Action> {
         match update {
             ToastUpdate::Show {
                 id,
@@ -75,7 +78,7 @@ impl ToastHost {
                     item.description = description;
                     item.progress = None;
                     item.shown_at_ms = None;
-                    return;
+                    return Vec::new();
                 }
                 // The same message again restarts the one showing rather
                 // than stacking a copy per repeated key press.
@@ -89,7 +92,7 @@ impl ToastHost {
                     })
                 {
                     item.shown_at_ms = None;
-                    return;
+                    return Vec::new();
                 }
                 self.push(ToastItem {
                     id: 0,
@@ -101,7 +104,7 @@ impl ToastHost {
                     shown_at_ms: None,
                     undo: None,
                     expired: None,
-                });
+                })
             }
             ToastUpdate::Progress {
                 id,
@@ -117,7 +120,7 @@ impl ToastHost {
                     if finished_now {
                         item.shown_at_ms = None;
                     }
-                    return;
+                    return Vec::new();
                 }
                 self.push(ToastItem {
                     id: 0,
@@ -129,9 +132,9 @@ impl ToastHost {
                     shown_at_ms: None,
                     undo: None,
                     expired: None,
-                });
+                })
             }
-            ToastUpdate::Dismiss(job) => self.items.retain(|t| t.job != Some(job)),
+            ToastUpdate::Dismiss(job) => self.remove(|t| t.job == Some(job)),
             ToastUpdate::Undo {
                 id,
                 kind,
@@ -140,6 +143,7 @@ impl ToastHost {
                 expired,
                 ..
             } => {
+                // The job's new toast replaces its old one and carries its hook.
                 self.items.retain(|t| t.job != Some(id));
                 self.push(ToastItem {
                     id: 0,
@@ -151,9 +155,22 @@ impl ToastHost {
                     shown_at_ms: None,
                     undo: Some(*undo),
                     expired: expired.map(|a| *a),
-                });
+                })
             }
         }
+    }
+
+    /// Ends the toasts of the workspace being left: its undo offers, and its
+    /// running jobs whose results the next workspace never receives. Jobs
+    /// `outlives` names keep theirs.
+    #[must_use]
+    pub fn leave_workspace(&mut self, outlives: impl Fn(JobId) -> bool) -> Vec<Action> {
+        self.remove(|t| {
+            let running = t
+                .progress
+                .is_some_and(|(done, total)| total == 0 || done < total);
+            (t.undo.is_some() || running) && !matches!(t.job, Some(job) if outlives(job))
+        })
     }
 
     pub fn take_by_job(&mut self, job: JobId) -> Option<ToastItem> {
@@ -166,22 +183,28 @@ impl ToastHost {
         Some(self.items.remove(index))
     }
 
-    fn push(&mut self, mut item: ToastItem) {
+    #[must_use]
+    fn push(&mut self, mut item: ToastItem) -> Vec<Action> {
         self.next_id += 1;
         item.id = self.next_id;
         self.items.push(item);
-        if self.items.len() > MAX_TOASTS {
-            let excess = self.items.len() - MAX_TOASTS;
-            self.items.drain(..excess);
-        }
+        let excess = self.items.len().saturating_sub(MAX_TOASTS);
+        self.items
+            .drain(..excess)
+            .filter_map(|t| t.expired)
+            .collect()
     }
 
-    pub fn dismiss(&mut self, id: u64) -> bool {
-        let before = self.items.len();
-        self.items.retain(|t| t.id != id);
-        self.items.len() != before
+    #[must_use]
+    fn remove(&mut self, ends: impl Fn(&ToastItem) -> bool) -> Vec<Action> {
+        let (ended, kept): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.items).into_iter().partition(ends);
+        self.items = kept;
+        ended.into_iter().filter_map(|t| t.expired).collect()
     }
 
+    /// Drops toasts whose lifetime ran out. Undo offers have none, so no
+    /// `expired` hook ends here.
     pub fn tick(&mut self, now_ms: u64) -> Option<u64> {
         for item in &mut self.items {
             if item.shown_at_ms.is_none() {
@@ -214,19 +237,21 @@ mod tests {
     fn progress_updates_in_place_then_expires_after_completion() {
         let mut host = ToastHost::default();
         let job = JobId(7);
-        host.apply(ToastUpdate::Progress {
+        let ended = host.apply(ToastUpdate::Progress {
             id: job,
             message: "Fetching".to_owned(),
             completed: 1,
             total: 4,
         });
+        assert!(ended.is_empty());
         assert_eq!(host.tick(0), None);
-        host.apply(ToastUpdate::Progress {
+        let ended = host.apply(ToastUpdate::Progress {
             id: job,
             message: "Fetching".to_owned(),
             completed: 4,
             total: 4,
         });
+        assert!(ended.is_empty());
         assert_eq!(host.items().len(), 1);
         assert_eq!(host.items()[0].fraction(), Some(1.0));
         assert_eq!(host.tick(100), Some(FINISHED_PROGRESS_LIFETIME_MS));
@@ -237,14 +262,14 @@ mod tests {
     #[test]
     fn errors_outlive_info_and_dismiss_by_id() {
         let mut host = ToastHost::default();
-        host.apply(ToastUpdate::info("Saved"));
-        host.apply(ToastUpdate::error("Failed"));
+        assert!(host.apply(ToastUpdate::info("Saved")).is_empty());
+        assert!(host.apply(ToastUpdate::error("Failed")).is_empty());
         host.tick(0);
         host.tick(INFO_LIFETIME_MS);
         assert_eq!(host.items().len(), 1);
         assert_eq!(host.items()[0].kind, ToastKind::Error);
         let id = host.items()[0].id;
-        assert!(host.dismiss(id));
-        assert!(!host.dismiss(id));
+        assert!(host.take(id).is_some());
+        assert!(host.take(id).is_none());
     }
 }

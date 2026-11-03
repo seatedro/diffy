@@ -261,6 +261,19 @@ impl CommandsController {
         &mut self.toasts
     }
 
+    /// Every toast change goes through here so an undo offer it ends still
+    /// tells its owner.
+    fn toast(&mut self, update: ToastUpdate) {
+        let ended = self.toasts.apply(update);
+        self.dispatch_all(ended);
+    }
+
+    fn dispatch_all(&self, actions: Vec<Action>) {
+        for action in actions {
+            self.request(PlatformRequest::Dispatch(action));
+        }
+    }
+
     pub(super) fn context_menu_mut(&mut self) -> &mut ContextMenuState {
         &mut self.context_menu
     }
@@ -396,7 +409,7 @@ impl CommandsController {
                 }),
             ),
             LauncherChoice::Clone(None) => {
-                self.toasts.apply(ToastUpdate::info(
+                self.toast(ToastUpdate::info(
                     "Type owner/repo or a GitHub URL, then choose Clone",
                 ));
                 Reduction::changed()
@@ -409,7 +422,7 @@ impl CommandsController {
             LauncherFolder::CloneInto { url, name } => {
                 self.next_clone += 1;
                 let job = JobId(CLONE_JOBS | self.next_clone);
-                self.toasts.apply(ToastUpdate::Progress {
+                self.toast(ToastUpdate::Progress {
                     id: job,
                     message: format!("Cloning {name}\u{2026}"),
                     completed: 0,
@@ -838,7 +851,7 @@ impl CommandsController {
         let files = match files {
             Ok(files) => files,
             Err(message) if showing => {
-                self.toasts.apply(ToastUpdate::error(format!(
+                self.toast(ToastUpdate::error(format!(
                     "Couldn't list files: {message}"
                 )));
                 return Reduction::changed();
@@ -2319,7 +2332,7 @@ impl Controller for CommandsController {
         match event {
             CommandsEvent::SettingsSaved => Reduction::default(),
             CommandsEvent::SettingsSaveFailed { message } => {
-                self.toasts.apply(ToastUpdate::error(format!(
+                self.toast(ToastUpdate::error(format!(
                     "Settings were not saved: {message}"
                 )));
                 Reduction::changed()
@@ -2410,7 +2423,7 @@ impl Controller for CommandsController {
                     return Reduction::default();
                 };
                 let message = format!("Cloning {name}: {received}/{total} objects\u{2026}");
-                self.toasts.apply(ToastUpdate::Progress {
+                self.toast(ToastUpdate::Progress {
                     id: job,
                     message,
                     completed: received as u64,
@@ -2443,7 +2456,7 @@ impl Controller for CommandsController {
                         NavigationAction::OpenRepository(path).into(),
                     ));
                 }
-                self.toasts.apply(ToastUpdate::Show {
+                self.toast(ToastUpdate::Show {
                     id: Some(job),
                     kind,
                     message,
@@ -2474,6 +2487,13 @@ impl Controller for CommandsController {
                 if let Some(launcher) = &mut self.launcher {
                     launcher.reset();
                 }
+                // The workspace's jobs and undo entries end with it; clones
+                // report across workspaces.
+                let clones = &self.clones;
+                let ended = self
+                    .toasts
+                    .leave_workspace(|job| clones.iter().any(|(id, _)| *id == job));
+                self.dispatch_all(ended);
                 if self.layers.is_empty() && self.view_focus == Some(LAUNCHER) {
                     self.view_focus = Some(crate::app::text_targets::SIDEBAR);
                     self.focus(self.view_focus);
@@ -2510,7 +2530,7 @@ impl Controller for CommandsController {
                         after_ms: *expires_ms,
                     });
                 }
-                self.toasts.apply(update.clone());
+                self.toast(update.clone());
                 reduction
             }
             Intent::ChooseDefinition(targets) => {

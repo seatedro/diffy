@@ -1018,7 +1018,7 @@ fn third_party_notices(lock: &Lock, options: &Options) -> Result<String, String>
 }
 
 /// The Apache License 2.0, verbatim.
-const APACHE_2_0: &str = include_str!("../../../crates/diffy-syntax/LICENSE-APACHE");
+const APACHE_2_0: &str = include_str!("../APACHE-2.0.txt");
 
 /// The repository, commit, and checkout of every source a language's
 /// build reads: its grammar, its query repository, and other entries'

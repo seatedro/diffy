@@ -527,8 +527,9 @@ impl DiffSyntax {
         };
         held.status = Some(if done.unresolved.contains(language) {
             SyntaxStatus::Pending
-        } else if self.store.status(language) == LanguageStatus::Unavailable {
-            // Resolved by the worker already, so this is a map lookup.
+        } else if self.store.resolved(language) == Some(LanguageStatus::Unavailable) {
+            // Only reads what the worker found: this runs on the UI thread,
+            // and resolving could load a pack.
             SyntaxStatus::MissingGrammar
         } else if streaming {
             let permille = (u64::from(held.exact_end) * 1000 / len.max(1) as u64) as u16;

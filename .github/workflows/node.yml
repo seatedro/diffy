@@ -1,0 +1,254 @@
+name: Node binding
+
+# Builds @diffy/node for every platform it ships, tests each on a native
+# runner, and publishes the packages on a `node-v<version>` tag.
+
+on:
+  push:
+    tags: ["node-v*"]
+  pull_request:
+    paths:
+      - "bindings/node/**"
+      - "crates/diffy-compare/**"
+      - "crates/diffy-diff/**"
+      - "crates/diffy-semantic/**"
+      - "crates/diffy-syntax/**"
+      - "tools/syntax-pack/**"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/node.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  TREE_SITTER_CLI: 0.26.8
+  NODE_VERSION: "22"
+  # Node 22 and Electron need macOS 11; C grammars and Rust agree on it.
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  # The oldest glibc the Linux binaries may need (manylinux_2_28).
+  MAX_GLIBC: "2.28"
+
+jobs:
+  build:
+    name: build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            target: aarch64-apple-darwin
+            os: macos-26
+          # Cross-built on Apple silicon; tested with an x64 Node under Rosetta.
+          - platform: darwin-x64
+            target: x86_64-apple-darwin
+            os: macos-26
+            node-arch: x64
+          # Built and tested inside manylinux_2_28 (glibc 2.28), so the
+          # grammars' C and the Rust link both see that glibc and nothing newer.
+          - platform: linux-x64-gnu
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - platform: linux-arm64-gnu
+            target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
+          - platform: win32-x64-msvc
+            target: x86_64-pc-windows-msvc
+            os: windows-2025
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      # Before checkout: it needs git for the submodule. The image's GCC
+      # toolset compiles the grammars and links Rust (in place of the clang
+      # .cargo/config.toml names, keeping its -fuse-ld=lld), so both build
+      # against the image's glibc.
+      - name: Install build tools (manylinux)
+        if: matrix.container
+        run: |
+          dnf install -y git lld
+          echo "CC=gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_$(echo "$TARGET" | tr 'a-z-' 'A-Z_')_LINKER=gcc" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install rustup (manylinux)
+        if: matrix.container
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: node-${{ matrix.target }}-v1
+          save-if: ${{ github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Install lld (macOS)
+        if: runner.os == 'macOS'
+        run: brew install lld
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          architecture: ${{ matrix.node-arch }}
+
+      - name: Install tree-sitter CLI (npm)
+        if: ${{ !matrix.container }}
+        run: |
+          npm install --global "tree-sitter-cli@${TREE_SITTER_CLI}"
+          cli="$(npm root -g)/tree-sitter-cli/tree-sitter"
+          if [ "${{ runner.os }}" = Windows ]; then cli="$cli.exe"; fi
+          "$cli" --version
+          echo "TREE_SITTER=$cli" >> "$GITHUB_ENV"
+
+      # npm's prebuilt CLI needs a newer glibc than the container has.
+      - uses: actions/cache@v4
+        if: matrix.container
+        id: tree-sitter
+        with:
+          path: ~/tree-sitter-cli
+          key: tree-sitter-cli-${{ env.TREE_SITTER_CLI }}-${{ matrix.target }}-manylinux_2_28
+
+      - name: Install tree-sitter CLI (cargo)
+        if: matrix.container
+        run: |
+          if [ "${{ steps.tree-sitter.outputs.cache-hit }}" != true ]; then
+            cargo install --locked --root "$HOME/tree-sitter-cli" tree-sitter-cli --version "$TREE_SITTER_CLI"
+          fi
+          cli="$HOME/tree-sitter-cli/bin/tree-sitter"
+          "$cli" --version
+          echo "TREE_SITTER=$cli" >> "$GITHUB_ENV"
+
+      - name: Bundle grammars
+        run: |
+          bundle="$GITHUB_WORKSPACE/target/syntax-bundle"
+          echo "DIFFY_SYNTAX_BUNDLE=$bundle" >> "$GITHUB_ENV"
+          cargo run --locked --release -p syntax-pack -- bundle --target "$TARGET" --out "$bundle" --jobs 4
+
+      - name: Build the binding
+        run: |
+          out="bindings/node/npm/$PLATFORM"
+          node bindings/node/scripts/build.mjs --locked --target "$TARGET" --out "$out"
+          cp bindings/node/LICENSE-MIT bindings/node/LICENSE-APACHE "$out/"
+          cp "target/syntax-bundle/$TARGET/THIRD_PARTY_NOTICES.md" "$out/"
+          ls -l "$out"
+
+      - name: Sign ad hoc (macOS)
+        if: runner.os == 'macOS'
+        run: codesign --force --sign - "bindings/node/npm/$PLATFORM/diffy.$PLATFORM.node"
+
+      - name: Check the glibc it needs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          node="bindings/node/npm/$PLATFORM/diffy.$PLATFORM.node"
+          need=$(objdump -T "$node" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)
+          echo "needs glibc $need"
+          if [ "$(printf '%s\n%s\n' "$need" "$MAX_GLIBC" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then
+            echo "::error::$PLATFORM needs glibc $need, newer than $MAX_GLIBC"
+            exit 1
+          fi
+
+      - name: Test
+        working-directory: bindings/node
+        run: |
+          node -p "'node ' + process.version + ' ' + process.platform + '-' + process.arch"
+          DIFFY_NODE_BINARY="npm/$PLATFORM/diffy.$PLATFORM.node" npm test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-${{ matrix.platform }}
+          path: bindings/node/npm/${{ matrix.platform }}/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/node-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # npm provenance.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: node-*
+          path: artifacts
+
+      - name: Assemble the platform packages
+        run: |
+          for dir in bindings/node/npm/*/; do
+            platform=$(basename "$dir")
+            cp -R "artifacts/node-$platform/." "$dir"
+            test -f "$dir/diffy.$platform.node"
+            test -f "$dir/THIRD_PARTY_NOTICES.md"
+          done
+
+      - name: Check versions against the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          node - <<'EOF'
+          const { readFileSync, readdirSync } = require('node:fs')
+          const version = process.env.TAG.replace(/^node-v/, '')
+          const read = (path) => JSON.parse(readFileSync(path, 'utf8'))
+          const main = read('bindings/node/package.json')
+          const problems = []
+          if (main.version !== version) problems.push(`@diffy/node is ${main.version}`)
+          for (const platform of readdirSync('bindings/node/npm')) {
+            const pkg = read(`bindings/node/npm/${platform}/package.json`)
+            if (pkg.version !== version) problems.push(`${pkg.name} is ${pkg.version}`)
+            if (main.optionalDependencies[pkg.name] !== version) problems.push(`@diffy/node pins ${pkg.name}@${main.optionalDependencies[pkg.name]}`)
+          }
+          if (Object.keys(main.optionalDependencies).length !== readdirSync('bindings/node/npm').length) problems.push('optionalDependencies and npm/ differ')
+          if (problems.length) {
+            console.error(`tag ${process.env.TAG} wants ${version}:\n  ${problems.join('\n  ')}`)
+            process.exit(1)
+          }
+          EOF
+
+      # Platform packages first, so @diffy/node never names a missing one.
+      # A version already on npm is skipped, so a failed run can be rerun.
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          publish() {
+            name=$(node -p "require('./$1/package.json').name")
+            version=$(node -p "require('./$1/package.json').version")
+            if npm view "$name@$version" version > /dev/null 2>&1; then
+              echo "$name@$version is already published"
+            else
+              npm publish "./$1" --provenance --access public
+            fi
+          }
+          for dir in bindings/node/npm/*; do publish "$dir"; done
+          publish bindings/node

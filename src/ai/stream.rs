@@ -322,6 +322,9 @@ fn parse_anthropic_event(event: &str) -> Result<Option<String>, String> {
         let value: Value = serde_json::from_str(data)
             .map_err(|error| format!("failed to decode Anthropic stream event: {error}"))?;
         let event_type = value.get("type").and_then(Value::as_str);
+        if event_type == Some("error") {
+            return Err(anthropic_error_message(&value));
+        }
         if event_type != Some("content_block_delta") {
             continue;
         }
@@ -334,6 +337,18 @@ fn parse_anthropic_event(event: &str) -> Result<Option<String>, String> {
         }
     }
     Ok(None)
+}
+
+fn anthropic_error_message(value: &Value) -> String {
+    let error = value.get("error").unwrap_or(value);
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("Anthropic response stream failed");
+    match error.get("type").and_then(Value::as_str) {
+        Some(kind) if !kind.is_empty() => format!("Anthropic API returned {kind}: {message}"),
+        _ => format!("Anthropic API returned an error: {message}"),
+    }
 }
 
 #[cfg(test)]
@@ -375,6 +390,17 @@ data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}
         assert_eq!(
             parse_anthropic_event(event).unwrap().as_deref(),
             Some("hello")
+        );
+    }
+
+    #[test]
+    fn reports_anthropic_stream_errors() {
+        let event = r#"event: error
+data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
+"#;
+        assert_eq!(
+            parse_anthropic_event(event).unwrap_err(),
+            "Anthropic API returned overloaded_error: Overloaded"
         );
     }
 }

@@ -36,6 +36,7 @@ pub struct SymbolsController {
     key: Option<(PathBuf, RevisionId)>,
     progress: Option<(usize, usize)>,
     index: Option<Arc<SymbolIndex>>,
+    failure: Option<String>,
     resolving: u64,
     jump: Option<DefinitionTarget>,
     back: Vec<Place>,
@@ -123,6 +124,11 @@ impl SymbolsController {
         self.progress
     }
 
+    /// Why the latest index run failed, until the next one starts.
+    pub fn failure(&self) -> Option<&str> {
+        self.failure.as_deref()
+    }
+
     fn refresh(&mut self, cx: &SharedContext, force: bool) -> Reduction {
         let Some(key) = head_revision(cx) else {
             return Reduction::default();
@@ -136,6 +142,7 @@ impl SymbolsController {
         }
         self.generation += 1;
         self.key = Some(key.clone());
+        self.failure = None;
         Reduction::default().effect(SymbolsEffect::Index(Box::new(IndexRequest {
             generation: self.generation,
             repo_path: key.0,
@@ -160,6 +167,7 @@ impl SymbolsController {
             }
             SymbolsEvent::Indexed { generation, index } if generation == self.generation => {
                 self.progress = None;
+                self.failure = None;
                 self.index = Some(index.clone());
                 Reduction::changed().intent(Intent::PublishSymbols(Some(index)))
             }
@@ -172,6 +180,7 @@ impl SymbolsController {
             } if generation == self.generation => {
                 tracing::warn!(%message, "symbol indexing failed");
                 self.progress = None;
+                self.failure = Some(message);
                 Reduction::changed()
             }
             _ => Reduction::default(),
@@ -190,6 +199,7 @@ impl SymbolsController {
                 self.key = None;
                 self.progress = None;
                 self.index = None;
+                self.failure = None;
                 self.jump = None;
                 self.back.clear();
                 self.forward.clear();

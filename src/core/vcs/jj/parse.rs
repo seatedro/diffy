@@ -13,7 +13,7 @@ pub fn parse_change_log(output: &str) -> Vec<VcsChange> {
 }
 
 pub fn parse_change_log_line(line: &str) -> Option<VcsChange> {
-    let mut fields = line.splitn(9, '\t');
+    let mut fields = line.splitn(9, '\0');
     let change_id = fields.next()?.to_owned();
     let short_change_prefix = fields.next()?.to_owned();
     let short_change_rest = fields.next()?.to_owned();
@@ -188,11 +188,23 @@ mod tests {
     };
     use crate::core::vcs::model::{ChangeBucket, FileChangeStatus, VcsKind};
 
+    /// One change-log row as the snapshot template prints it.
+    fn row(fields: &[&str]) -> String {
+        fields.join("\0")
+    }
+
     #[test]
     fn parses_change_log_rows() {
-        let change =
-            parse_change_log_line("change123\tch\tange\tabcdef1234567890\tmy change\tro\tignored")
-                .unwrap();
+        let change = parse_change_log_line(&row(&[
+            "change123",
+            "ch",
+            "ange",
+            "abcdef1234567890",
+            "my change",
+            "ro",
+            "ignored",
+        ]))
+        .unwrap();
         assert_eq!(change.revision.backend, VcsKind::JJ);
         assert_eq!(change.revision.id, "abcdef1234567890");
         assert_eq!(change.change_id.as_deref(), Some("change123"));
@@ -205,30 +217,82 @@ mod tests {
 
     #[test]
     fn parses_author_email_and_parents() {
-        let change = parse_change_log_line(
-            "change123\tch\tange\tabcdef1234567890\tmerge\tro\t2024-01-01 00:00:00.000 +00:00\tro@example.com\t1111aaaa 2222bbbb",
-        )
+        let change = parse_change_log_line(&row(&[
+            "change123",
+            "ch",
+            "ange",
+            "abcdef1234567890",
+            "merge",
+            "ro",
+            "2024-01-01 00:00:00.000 +00:00",
+            "ro@example.com",
+            "1111aaaa 2222bbbb",
+        ]))
         .unwrap();
         assert_eq!(change.author_email.as_deref(), Some("ro@example.com"));
         assert_eq!(change.parents, ["1111aaaa", "2222bbbb"]);
-        let old =
-            parse_change_log_line("change123\tch\tange\tabcdef1234567890\ts\tro\tignored").unwrap();
+        let old = parse_change_log_line(&row(&[
+            "change123",
+            "ch",
+            "ange",
+            "abcdef1234567890",
+            "s",
+            "ro",
+            "ignored",
+        ]))
+        .unwrap();
         assert_eq!(old.author_email, None);
         assert!(old.parents.is_empty());
     }
 
     #[test]
+    fn keeps_tabs_in_descriptions_inside_the_summary() {
+        let change = parse_change_log_line(&row(&[
+            "change123",
+            "ch",
+            "ange",
+            "abcdef1234567890",
+            "fix:\tthe\tparser",
+            "ro",
+            "2024-01-01 00:00:00.000 +00:00",
+            "ro@example.com",
+            "1111aaaa",
+        ]))
+        .unwrap();
+        assert_eq!(change.summary, "fix:\tthe\tparser");
+        assert_eq!(change.author_name, "ro");
+        assert_eq!(change.author_email.as_deref(), Some("ro@example.com"));
+        assert_eq!(change.parents, ["1111aaaa"]);
+    }
+
+    #[test]
     fn preserves_empty_change_descriptions() {
-        let change =
-            parse_change_log_line("change123\tch\tange\tabcdef1234567890\t\tro\tignored").unwrap();
+        let change = parse_change_log_line(&row(&[
+            "change123",
+            "ch",
+            "ange",
+            "abcdef1234567890",
+            "",
+            "ro",
+            "ignored",
+        ]))
+        .unwrap();
         assert_eq!(change.summary, "");
     }
 
     #[test]
     fn marks_first_change_log_row_as_working_copy() {
-        let changes = parse_change_log(
-            "change1\tch\t1\tabcdef1234567890\tcurrent\tro\tignored\nchange2\tch\t2\t123456abcdef\tparent\tro\tignored\n",
-        );
+        let current = row(&[
+            "change1",
+            "ch",
+            "1",
+            "abcdef1234567890",
+            "current",
+            "ro",
+            "x",
+        ]);
+        let parent = row(&["change2", "ch", "2", "123456abcdef", "parent", "ro", "x"]);
+        let changes = parse_change_log(&format!("{current}\n{parent}\n"));
         assert!(changes[0].flags.current);
         assert!(changes[0].flags.working_copy);
         assert!(!changes[1].flags.current);

@@ -537,8 +537,9 @@ impl VcsRepository for JjRepository {
             OsString::from("--revisions"),
             OsString::from("ancestors(@, 200) ~ root()"),
             OsString::from("-T"),
+            // NUL-separated: a description's first line may hold tabs.
             OsString::from(
-                "change_id ++ \"\\t\" ++ change_id.shortest(8).prefix() ++ \"\\t\" ++ change_id.shortest(8).rest() ++ \"\\t\" ++ commit_id ++ \"\\t\" ++ description.first_line() ++ \"\\t\" ++ author.name() ++ \"\\t\" ++ committer.timestamp() ++ \"\\t\" ++ author.email() ++ \"\\t\" ++ parents.map(|c| c.commit_id()).join(\" \") ++ \"\\n\"",
+                "change_id ++ \"\\0\" ++ change_id.shortest(8).prefix() ++ \"\\0\" ++ change_id.shortest(8).rest() ++ \"\\0\" ++ commit_id ++ \"\\0\" ++ description.first_line() ++ \"\\0\" ++ author.name() ++ \"\\0\" ++ committer.timestamp() ++ \"\\0\" ++ author.email() ++ \"\\0\" ++ parents.map(|c| c.commit_id()).join(\" \") ++ \"\\n\"",
             ),
         ])?;
         let bookmarks = self.cli.run_ignored_wc(&[
@@ -585,8 +586,9 @@ impl VcsRepository for JjRepository {
             .iter()
             .any(|file| file.status == crate::core::vcs::model::FileChangeStatus::Conflicted);
         let mut changes = parse_change_log(&change_log);
-        for change in &mut changes {
-            change.flags.conflicted = conflicted;
+        // `jj resolve --list -r @` speaks only for the working-copy change.
+        if let Some(working_copy) = changes.first_mut() {
+            working_copy.flags.conflicted = conflicted;
         }
         let current_revision = changes
             .first()

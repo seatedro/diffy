@@ -419,7 +419,10 @@ impl DiffSyntax {
                 Priority::Background
             };
             for (side, held) in [Side::Old, Side::New].into_iter().zip(sides.iter_mut()) {
-                if held.request != 0 && !held.answered && held.priority != priority {
+                // An answered side can still have work queued: a long one
+                // streams in turns, and one missing a grammar reruns when it
+                // arrives. For a finished side the worker ignores it.
+                if held.request != 0 && held.priority != priority {
                     held.priority = priority;
                     worker.prioritize(slot(file, side), priority);
                 }

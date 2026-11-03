@@ -1051,6 +1051,34 @@ fn device_flow_signs_in_and_changes_the_account() {
 }
 
 #[test]
+fn signing_in_while_a_pull_request_loads_loads_it_again() {
+    let mut driver = Driver::new(Fake::new());
+    driver.startup(None);
+    driver.act(ReviewAction::SignOut);
+    driver.open_repository();
+    driver.fake.hold = true;
+    driver.intent(Intent::LoadPullRequest {
+        url: URL.to_owned(),
+    });
+    let signed_out = std::mem::take(&mut driver.fake.held);
+    driver.fake.hold = false;
+
+    driver.act(ReviewAction::StartDeviceFlow);
+    // What the signed-out load finds lands after the sign-in.
+    driver.fake.held = signed_out;
+    driver.release();
+
+    let active = driver.review.active_pull_request().unwrap();
+    assert!(!active.loading);
+    assert_eq!(active.comparison, Some(comparison(42)));
+    assert_eq!(driver.session().threads.len(), 1);
+    assert!(driver.fake.requests().iter().any(|request| matches!(
+        request,
+        GitHubRequest::LoadPullRequest { token: Some(_), .. }
+    )));
+}
+
+#[test]
 fn sign_out_clears_the_account_and_review_target() {
     let mut driver = Driver::signed_in_with_pr();
     let epoch = driver.shared.account;

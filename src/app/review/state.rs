@@ -135,6 +135,7 @@ pub(super) enum Pending {
     Mutation,
     SubmitDrafts,
     Session,
+    LoadSession,
     Peek,
     Overview,
     Comment,
@@ -609,6 +610,16 @@ impl ReviewController {
         }
     }
 
+    /// `accept` for reading the stored session: drafts are kept per pull
+    /// request, so no change of account makes it stale.
+    fn accept_session(&mut self, scope: ReviewScope) -> Option<Pending> {
+        let scope = ReviewScope {
+            account: self.epoch,
+            ..scope
+        };
+        self.accept(scope, false)
+    }
+
     fn require_token(&mut self, why: &str) -> Result<Secret, Reduction> {
         match self.token() {
             Some(token) => Ok(token),
@@ -621,7 +632,9 @@ impl ReviewController {
 
     fn bump_account(&mut self) -> Intent {
         self.epoch = AccountEpoch(self.epoch.0 + 1);
-        self.in_flight.clear();
+        // A session still loading is kept: its drafts aren't the account's.
+        self.in_flight
+            .retain(|_, entry| matches!(entry.kind, Pending::LoadSession));
         self.overview.loading = false;
         self.overview.request = None;
         self.pulls.reset();
@@ -943,7 +956,7 @@ impl ReviewController {
         let pr = active.pr.clone();
         let requested = std::mem::take(&mut active.review_requested);
         let fetched = active.fetched_review.take();
-        let scope = self.job(Some(pr.clone()), Pending::Session);
+        let scope = self.job(Some(pr.clone()), Pending::LoadSession);
         reduction = reduction.effect(ReviewEffect::LoadSession {
             scope,
             target,
@@ -2173,17 +2186,26 @@ impl ReviewController {
                 }) {
                     reduction = reduction.effect(self.watch(pr, info));
                 }
+                // It dropped a load still under way too, which would leave
+                // the pull request loading for good: load it again, which
+                // reads its comments and overview with it.
+                let reload = self.pr.as_ref().is_some_and(|active| active.loading);
+                if reload && self.pending_url.is_none() {
+                    self.pending_url = self.pr.as_ref().map(|active| active.url.clone());
+                }
                 reduction.merge(self.fetch_user());
                 reduction.merge(self.load_pending());
-                if self.pr.as_ref().is_some_and(|pr| pr.comparison.is_some())
-                    && let Some(effect) = self.fetch_review()
-                {
-                    reduction = reduction.effect(effect);
-                }
-                if self.pr.is_some()
-                    && let Some(effect) = self.fetch_overview()
-                {
-                    reduction = reduction.effect(effect);
+                if !reload {
+                    if self.pr.as_ref().is_some_and(|pr| pr.comparison.is_some())
+                        && let Some(effect) = self.fetch_review()
+                    {
+                        reduction = reduction.effect(effect);
+                    }
+                    if self.pr.is_some()
+                        && let Some(effect) = self.fetch_overview()
+                    {
+                        reduction = reduction.effect(effect);
+                    }
                 }
                 if self.pulls.open {
                     reduction.merge(self.fetch_pulls());
@@ -2217,7 +2239,7 @@ impl ReviewController {
                 target,
                 session,
             } => {
-                if self.accept(scope, false).is_none() {
+                if self.accept_session(scope).is_none() {
                     return Reduction::default();
                 }
                 let Some(active) = self.pr.as_mut() else {
@@ -2244,7 +2266,7 @@ impl ReviewController {
                 reduction
             }
             ReviewEvent::SessionLoadFailed { scope, message, .. } => {
-                if self.accept(scope, false).is_some() {
+                if self.accept_session(scope).is_some() {
                     tracing::warn!("failed to load review session: {message}");
                 }
                 Reduction::default()

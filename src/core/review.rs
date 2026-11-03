@@ -686,14 +686,41 @@ impl ReviewSession {
         self.status_message = None;
     }
 
-    pub fn merge_persisted_state(&mut self, persisted: ReviewSession) {
+    /// The id the next draft written here will get.
+    pub fn next_draft_id(&self) -> ReviewDraftId {
+        ReviewDraftId(self.next_draft_id)
+    }
+
+    /// Takes in the session saved for this head. Drafts written here from
+    /// `fresh` on, while it loaded, stay as they are, since the composer
+    /// and requests in flight know them by id; a saved draft holding one
+    /// of their ids moves to a new one, as nothing knows it yet.
+    pub fn merge_persisted_state(&mut self, persisted: ReviewSession, fresh: ReviewDraftId) {
         if self.threads.is_empty() {
             self.metadata = persisted.metadata;
             self.reviews = persisted.reviews;
             self.threads = persisted.threads;
         }
-        self.drafts = persisted.drafts;
-        self.next_draft_id = self.next_draft_id.max(persisted.next_draft_id);
+        let written = std::mem::replace(&mut self.drafts, persisted.drafts);
+        // Sessions saved before ids were counted read the count as 0.
+        let after_saved = self
+            .drafts
+            .keys()
+            .next_back()
+            .map_or(0, |id| id.0.saturating_add(1));
+        self.next_draft_id = self
+            .next_draft_id
+            .max(persisted.next_draft_id)
+            .max(after_saved);
+        for (id, draft) in written.into_iter().filter(|(id, _)| *id >= fresh) {
+            if let Some(saved) = self.drafts.remove(&id) {
+                let moved = ReviewDraftId(self.next_draft_id);
+                self.next_draft_id = self.next_draft_id.saturating_add(1);
+                self.drafts
+                    .insert(moved, ReviewDraft { id: moved, ..saved });
+            }
+            self.drafts.insert(id, draft);
+        }
     }
 
     pub fn apply_github_comment(&mut self, comment: PullRequestReviewComment) {

@@ -1390,7 +1390,7 @@ impl CommandsController {
             self.go_since.set(None);
             return Reduction::changed();
         }
-        if command == ShortcutCommand::OpenRepository && self.launcher.is_some() {
+        if command == ShortcutCommand::OpenRepository && on_launcher(cx) {
             return self.reduce_action(CommandsAction::OpenRepositoryFolder, cx);
         }
         if let Some(external) = self.external.iter().find(|d| d.shortcut == Some(command)) {
@@ -1606,6 +1606,11 @@ fn file_list_key(cx: &SharedContext) -> Option<FileListKey> {
         repo_path,
         revision,
     })
+}
+
+/// The launcher stands in for the workspace whenever no repository is open.
+fn on_launcher(cx: &SharedContext) -> bool {
+    cx.repository.is_none()
 }
 
 fn layer_focus(kind: LayerKind) -> FocusId {
@@ -2418,15 +2423,22 @@ impl Controller for CommandsController {
                     return Reduction::default();
                 };
                 let (_, name) = self.clones.remove(index);
+                // A clone that finishes after the user opened something else
+                // only reports where it went; switching would pull them out.
+                let open = on_launcher(cx);
                 let (kind, message, description) = match result {
-                    Ok(()) => (ToastKind::Success, format!("Cloned {name}"), None),
+                    Ok(()) => (
+                        ToastKind::Success,
+                        format!("Cloned {name}"),
+                        (!open).then(|| path.display().to_string()),
+                    ),
                     Err(error) => (
                         ToastKind::Error,
                         format!("Couldn't clone {name}"),
                         Some(error),
                     ),
                 };
-                if kind == ToastKind::Success && self.launcher.is_some() {
+                if kind == ToastKind::Success && open {
                     self.request(PlatformRequest::Dispatch(
                         NavigationAction::OpenRepository(path).into(),
                     ));

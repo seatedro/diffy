@@ -1,0 +1,32 @@
+[package]
+name = "diffy-node"
+description = "Node binding for diffy-compare, published as @diffy/node."
+version.workspace = true
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Build with `--profile node` (see the workspace manifest): release panics
+# abort, which would take the host Node process down with them.
+[dependencies]
+diffy-compare = { path = "../../crates/diffy-compare", features = ["serde"] }
+# Grammars compiled in from $DIFFY_SYNTAX_BUNDLE; no packs, no network.
+diffy-syntax = { path = "../../crates/diffy-syntax", features = ["bundled"] }
+# Node-API bindings. `napi4` is the lowest version with thread-safe
+# functions, which settle a promise from the request's own thread;
+# `dyn-symbols` resolves Node-API from the host process at load time, so
+# the same file loads in Node and Electron and needs no node.lib on Windows.
+napi = { version = "3", default-features = false, features = ["napi4", "dyn-symbols"] }
+# The `#[napi]` attribute. Without `type-def`: index.d.ts is written by
+# hand from FORMAT.md, which generated types cannot express.
+napi-derive = { version = "3", default-features = false, features = ["strict"] }
+# Results cross into JS as one JSON string; already built by diffy-syntax.
+serde_json = "1.0"
+
+[build-dependencies]
+# Emits the platform link flags a Node addon needs (macOS dynamic lookup).
+napi-build = "2"

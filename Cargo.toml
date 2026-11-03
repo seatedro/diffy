@@ -1,6 +1,7 @@
 [workspace]
 members = [
   ".",
+  "bindings/node",
   "crates/diffy-compare",
   "crates/diffy-diff",
   "crates/diffy-semantic",
@@ -135,6 +136,12 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# The Node binding (bindings/node): release, but a Rust panic unwinds to the
+# binding boundary and rejects the call instead of aborting the host process.
+[profile.node]
+inherits = "release"
+panic = "unwind"
 
 [patch.crates-io]
 accesskit_unix = { git = "https://github.com/seatedro/quark", rev = "b0d4abf67fb59d9e9fe66fbda78bda62bad160b5" }

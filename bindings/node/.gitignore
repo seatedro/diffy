@@ -1,0 +1,5 @@
+*.node
+node_modules/
+# Copied into each platform package at publish time.
+npm/*/LICENSE-*
+npm/*/THIRD_PARTY_NOTICES.md

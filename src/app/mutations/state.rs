@@ -1497,6 +1497,9 @@ impl MutationsController {
         self.publish = None;
         self.ai.active = false;
         self.ai.error = None;
+        // A ranking queued behind the CLI scan belongs to the old
+        // workspace; run later, it would only spend a request.
+        self.ai.waiting.clear();
     }
 }
 

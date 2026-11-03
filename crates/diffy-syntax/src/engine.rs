@@ -1,5 +1,6 @@
-//! Loading grammars from packs, parsing, and query evaluation, including
-//! languages embedded in others (tree-sitter injections).
+//! Loading grammars from packs or the bundle, parsing, and query
+//! evaluation, including languages embedded in others (tree-sitter
+//! injections).
 //!
 //! A [`Grammar`] is shared by every thread; parsers are not `Sync`, so each
 //! thread keeps its own per grammar.
@@ -13,6 +14,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::ControlFlow;
+#[cfg(feature = "engine")]
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,9 +22,42 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tree_sitter as ts;
 use tree_sitter::StreamingIterator;
 
-use crate::pack::{PackError, PackManifest, supported_abi, verify_files};
+#[cfg(feature = "engine")]
+use crate::pack::{PackError, PackManifest, verify_files};
 use crate::store::Tag;
 use crate::{HighlightKind, HighlightSpan, LanguageId};
+
+/// Grammar ABI versions (tree-sitter `LANGUAGE_VERSION`) this runtime can
+/// load.
+pub fn supported_abi() -> std::ops::RangeInclusive<u32> {
+    ts::MIN_COMPATIBLE_LANGUAGE_VERSION as u32..=ts::LANGUAGE_VERSION as u32
+}
+
+/// Why a grammar, from a pack or the bundle, did not compile. Packs report
+/// it as the matching `pack::PackError`.
+#[derive(Debug)]
+pub(crate) enum GrammarError {
+    Abi { abi: u32, min: u32, max: u32 },
+    Query(String),
+    InjectionQuery(String),
+}
+
+impl std::fmt::Display for GrammarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Abi { abi, min, max } => {
+                write!(
+                    f,
+                    "grammar ABI {abi} is outside the supported {min}..={max}"
+                )
+            }
+            Self::Query(error) => write!(f, "the highlight query does not compile: {error}"),
+            Self::InjectionQuery(error) => {
+                write!(f, "the injection query does not compile: {error}")
+            }
+        }
+    }
+}
 
 /// A loaded language: its tree-sitter grammar, compiled highlight query,
 /// and compiled injection query when its pack has one.
@@ -59,6 +94,7 @@ impl Grammar {
     /// The library stays loaded for the rest of the process: tree-sitter
     /// languages, parsers, and trees on other threads point into it, and
     /// nothing tracks when the last of them is gone.
+    #[cfg(feature = "engine")]
     pub(crate) fn load(dir: &Path, manifest: &PackManifest) -> Result<Self, PackError> {
         verify_files(dir, manifest)?;
         let highlights = std::fs::read_to_string(dir.join(&manifest.highlights.path))?;
@@ -97,7 +133,7 @@ impl Grammar {
 
     /// A grammar compiled into the binary, with its queries.
     #[cfg(feature = "bundled")]
-    pub(crate) fn bundled(bundled: &crate::bundled::Bundled) -> Result<Self, PackError> {
+    pub(crate) fn bundled(bundled: &crate::bundled::Bundled) -> Result<Self, GrammarError> {
         // SAFETY: the function is the tree-sitter language function of a
         // grammar `syntax-pack bundle` compiled from pinned, hashed sources
         // and linked into this binary.
@@ -155,20 +191,20 @@ impl Grammar {
         expected_abi: u32,
         highlights: &str,
         injections: Option<&str>,
-    ) -> Result<Self, PackError> {
+    ) -> Result<Self, GrammarError> {
         let language = ts::Language::new(language);
         // The declared ABI was checked; this checks the grammar agrees.
         let abi = language.abi_version() as u32;
         if expected_abi != abi || !supported_abi().contains(&abi) {
             let range = supported_abi();
-            return Err(PackError::Abi {
+            return Err(GrammarError::Abi {
                 abi,
                 min: *range.start(),
                 max: *range.end(),
             });
         }
         let query =
-            lenient_query(&language, highlights).map_err(|e| PackError::Query(e.to_string()))?;
+            lenient_query(&language, highlights).map_err(|e| GrammarError::Query(e.to_string()))?;
         let capture_kinds = query
             .capture_names()
             .iter()
@@ -360,9 +396,9 @@ struct InjectionPattern {
 }
 
 impl Injections {
-    fn compile(language: &ts::Language, text: &str) -> Result<Self, PackError> {
-        let query =
-            lenient_query(language, text).map_err(|e| PackError::InjectionQuery(e.to_string()))?;
+    fn compile(language: &ts::Language, text: &str) -> Result<Self, GrammarError> {
+        let query = lenient_query(language, text)
+            .map_err(|e| GrammarError::InjectionQuery(e.to_string()))?;
         let patterns = (0..query.pattern_count())
             .map(|index| {
                 let mut pattern = InjectionPattern::default();

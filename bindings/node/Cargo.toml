@@ -24,7 +24,7 @@ napi = { version = "3", default-features = false, features = ["napi4", "dyn-symb
 # The `#[napi]` attribute. Without `type-def`: index.d.ts is written by
 # hand from FORMAT.md, which generated types cannot express.
 napi-derive = { version = "3", default-features = false, features = ["strict"] }
-# Results cross into JS as one JSON string; already built by diffy-syntax.
+# Results cross into JS as one JSON string.
 serde_json = "1.0"
 
 [build-dependencies]

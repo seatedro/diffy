@@ -7,10 +7,13 @@ pack directories the app trusts or, with the `download` feature, from a
 signed index. Code renders plain until its grammar is available. Builds that
 cannot load packs (a headless server) link a fixed set with `bundled`.
 
-Features: `engine` (the tree-sitter runtime and local packs), `download`
-(fetching packs over HTTPS with Ed25519-verified indexes), and `bundled`
-(grammars compiled in from `syntax-pack bundle`). Without `engine` the crate
-has no dependencies and every lookup falls back to plain text.
+Features: `runtime` (the tree-sitter runtime: highlighting, injections,
+scopes, symbols), `engine` (`runtime` plus local packs), `download`
+(`engine` plus fetching packs over HTTPS with Ed25519-verified indexes), and
+`bundled` (`runtime` plus grammars compiled in from `syntax-pack bundle`,
+with no pack loading, `libloading`, `ring`, or JSON manifests). Without
+`runtime` the crate has no dependencies and every lookup falls back to
+plain text.
 
 `highlight` runs synchronously; `HighlightWorker` runs on a background
 thread and drops requests a newer generation superseded, which suits code

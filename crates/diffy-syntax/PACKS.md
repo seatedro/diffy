@@ -151,6 +151,9 @@ as a headless server. The Diffy app does not use it.
   links it.
 - Without `DIFFY_SYNTAX_BUNDLE` the feature builds with an empty bundle and
   a cargo warning.
+- `bundled` needs only the `runtime` tier, so a bundled-only build links no
+  pack loader (`libloading`, `ring`, JSON manifests) and has no
+  `StoreConfig::local_packs`. Turn on `engine` too to also load packs.
 - Bundled grammars get the same tags, queries, ABI check, and `catalog()`
   entries as packs; nothing is loaded or hashed at run time.
 - `diffy_syntax::bundled::languages()` lists what a build has.

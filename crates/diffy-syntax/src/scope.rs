@@ -8,7 +8,7 @@ use crate::{GrammarStore, LanguageId};
 
 const CACHE_LIMIT: usize = 128;
 const SOURCE_LIMIT: usize = 16 << 20;
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 const LABEL_LIMIT: usize = 48;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +39,7 @@ impl ScopeTable {
             .collect()
     }
 
-    #[cfg_attr(not(feature = "engine"), allow(dead_code))]
+    #[cfg_attr(not(feature = "runtime"), allow(dead_code))]
     fn from_spans(mut spans: Vec<ScopeSpan>) -> Self {
         spans.sort_by(|a, b| {
             a.lines
@@ -61,7 +61,7 @@ fn scope_table_pending(
     language: &LanguageId,
     source: &str,
 ) -> (ScopeTable, bool) {
-    #[cfg(feature = "engine")]
+    #[cfg(feature = "runtime")]
     {
         if source.is_empty() || source.len() > SOURCE_LIMIT {
             return (ScopeTable::default(), false);
@@ -84,14 +84,14 @@ fn scope_table_pending(
             crate::store::Tag::Unavailable => (ScopeTable::default(), false),
         }
     }
-    #[cfg(not(feature = "engine"))]
+    #[cfg(not(feature = "runtime"))]
     {
         let _ = (store, language, source, SOURCE_LIMIT);
         (ScopeTable::default(), false)
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 fn scope_language(tag: &str) -> &str {
     match tag {
         "rs" => "rust",
@@ -104,14 +104,14 @@ fn scope_language(tag: &str) -> &str {
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 struct Pattern {
     query: &'static str,
     prefix: &'static str,
     suffix: &'static str,
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 const fn pattern(query: &'static str, prefix: &'static str, suffix: &'static str) -> Pattern {
     Pattern {
         query,
@@ -120,7 +120,7 @@ const fn pattern(query: &'static str, prefix: &'static str, suffix: &'static str
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 const RUST: &[Pattern] = &[
     pattern(
         "(mod_item name: (identifier) @name body: (_)) @scope",
@@ -139,7 +139,7 @@ const RUST: &[Pattern] = &[
     pattern("(function_item name: (_) @name) @scope", "fn ", ""),
 ];
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 const ECMA: &[Pattern] = &[
     pattern("(class_declaration name: (_) @name) @scope", "class ", ""),
     pattern(
@@ -172,7 +172,7 @@ const ECMA: &[Pattern] = &[
     ),
 ];
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 const GO: &[Pattern] = &[
     pattern("(type_spec name: (_) @name) @scope", "type ", ""),
     pattern(
@@ -183,13 +183,13 @@ const GO: &[Pattern] = &[
     pattern("(function_declaration name: (_) @name) @scope", "func ", ""),
 ];
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 const PYTHON: &[Pattern] = &[
     pattern("(class_definition name: (_) @name) @scope", "class ", ""),
     pattern("(function_definition name: (_) @name) @scope", "def ", ""),
 ];
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 const C: &[Pattern] = &[
     pattern(
         "(namespace_definition name: (_) @name) @scope",
@@ -228,7 +228,7 @@ const C: &[Pattern] = &[
     ),
 ];
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 const ZIG: &[Pattern] = &[
     pattern(
         "(variable_declaration (identifier) @name [(struct_declaration) (enum_declaration) (union_declaration)]) @scope",
@@ -239,14 +239,14 @@ const ZIG: &[Pattern] = &[
     pattern("(test_declaration (_) @name) @scope", "test ", ""),
 ];
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 const NIX: &[Pattern] = &[pattern(
     "(binding attrpath: (_) @name expression: [(function_expression) (attrset_expression) (rec_attrset_expression) (let_expression)]) @scope",
     "",
     "",
 )];
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 fn patterns(language: &str) -> &'static [Pattern] {
     match language {
         "rust" => RUST,
@@ -260,7 +260,7 @@ fn patterns(language: &str) -> &'static [Pattern] {
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 pub(crate) struct ScopeQuery {
     query: tree_sitter::Query,
     labels: Vec<(&'static str, &'static str)>,
@@ -270,7 +270,7 @@ pub(crate) struct ScopeQuery {
     receiver: Option<u32>,
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 impl ScopeQuery {
     pub(crate) fn compile(grammar: &tree_sitter::Language, language: &str) -> Option<Self> {
         let usable: Vec<&Pattern> = patterns(language)
@@ -334,7 +334,7 @@ impl ScopeQuery {
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 fn clean(text: &str) -> String {
     let mut out = String::new();
     for word in text.split_whitespace() {
@@ -456,9 +456,9 @@ impl Drop for ScopeWorker {
 }
 
 fn tracing_warn(error: &std::io::Error) {
-    #[cfg(feature = "engine")]
+    #[cfg(feature = "runtime")]
     tracing::warn!(%error, "scope worker unavailable");
-    #[cfg(not(feature = "engine"))]
+    #[cfg(not(feature = "runtime"))]
     let _ = error;
 }
 

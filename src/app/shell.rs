@@ -7,7 +7,9 @@ use std::time::Duration;
 use quark::view;
 use quark_app::platform::dialog::{DialogId, FileDialog, FileDialogKind};
 use quark_app::platform::single_instance::PrimaryInstance;
-use quark_app::{AppEvent as WindowEvent, InputEvent, UiApp, UiContext, UiSender, ViewContext};
+use quark_app::{
+    AppEvent as WindowEvent, InputEvent, UiApp, UiContext, UiSender, ViewContext, Waker,
+};
 use quark_components::tooltip::{TooltipSide, tooltip_layer};
 use quark_components::{Axis, Pane, Split, SplitEvent, SplitState};
 use quark_ui::FocusId;
@@ -129,6 +131,10 @@ pub struct DiffyApp<D> {
     shell: ShellState,
     slots: DiffSlots,
     deferred: Vec<ShellEffect>,
+    /// Platform requests taken from the stream outboxes outside `flush`;
+    /// `wake` applies them.
+    requests: Vec<commands::PlatformRequest>,
+    waker: Option<Waker>,
     startup: Option<Rc<AppStartup>>,
     instance: Option<PrimaryInstance>,
     clock_ms: u64,
@@ -144,6 +150,8 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             shell: ShellState::new(display_name.into()),
             slots: DiffSlots::default(),
             deferred: Vec::new(),
+            requests: Vec::new(),
+            waker: None,
             startup: None,
             instance: None,
             clock_ms: 0,
@@ -345,9 +353,24 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         }
     }
 
+    /// Text edits get no `UiContext`, and frames and hover run outside an
+    /// action, so nothing would flush what they queue until the next
+    /// action or runtime message. Waking runs `wake`, which does.
+    fn wake_if_pending(&mut self) {
+        self.requests
+            .extend(commands::take_requests(&self.controllers));
+        if self.requests.is_empty() && self.deferred.is_empty() {
+            return;
+        }
+        if let Some(waker) = &self.waker {
+            waker.wake();
+        }
+    }
+
     fn flush(&mut self, cx: &mut UiContext) {
         for _ in 0..16 {
-            let requests = commands::take_requests(&self.controllers);
+            let mut requests = std::mem::take(&mut self.requests);
+            requests.extend(commands::take_requests(&self.controllers));
             if requests.is_empty() {
                 break;
             }
@@ -895,6 +918,7 @@ impl<D: EffectDispatcher> DiffyApp<D> {
         if self.reduce(reduction) {
             cx.window.request_redraw();
         }
+        self.wake_if_pending();
         if self.controllers.viewport.link_active() {
             cx.window.set_cursor(CursorIcon::Pointer);
         } else if linked {
@@ -909,6 +933,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
     fn init(&mut self, cx: &mut UiContext) {
         self.tick(cx);
+        self.waker = Some(cx.window.waker().clone());
         self.dispatcher.attach(cx.sender::<AppMessage>());
         self.controllers
             .review
@@ -1004,6 +1029,8 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
 
         let tooltip = tooltip(cx, width, height);
         let energy = self.shell.debug_overlay.then(|| self.energy_hud.view(cx));
+        // The sidebar asks for stats of rows this frame revealed.
+        self.wake_if_pending();
         view! {
             <div w={width} h={height} class="flex-col relative overflow-hidden" bg={theme.colors.app_bg}>
                 {title}
@@ -1070,6 +1097,16 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
         }
     }
 
+    fn wake(&mut self, cx: &mut UiContext) {
+        self.requests
+            .extend(commands::take_requests(&self.controllers));
+        if self.requests.is_empty() && self.deferred.is_empty() {
+            return;
+        }
+        self.tick(cx);
+        self.flush(cx);
+    }
+
     fn app_event(&mut self, event: WindowEvent, cx: &mut UiContext) {
         self.tick(cx);
         if let WindowEvent::OpenUrls(args) = &event {
@@ -1123,6 +1160,7 @@ impl<D: EffectDispatcher> UiApp for DiffyApp<D> {
             .unwrap_or_default();
         let reduction = self.controllers.after_edit(target, &self.shared);
         self.reduce(reduction);
+        self.wake_if_pending();
         outcome
     }
 

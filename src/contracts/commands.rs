@@ -9,13 +9,14 @@ use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{Action, LogicalFocus};
 use crate::contracts::viewport::pipeline::{DiffSize, DiffSizeRequest};
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
+use crate::core::forge::github::GitHubUser;
 use crate::core::keymap::ShortcutCommand;
 use crate::core::ref_catalog::{RefCatalog, RefResults};
 use crate::core::repo_discovery::RepoScan;
 use crate::core::theme_types::ThemeMode;
 use crate::core::vcs::model::RevisionId;
 use crate::fonts::FontFamilyEntry;
-use crate::platform::persistence::{RepoDiscovery, Settings};
+use crate::platform::persistence::{PersistedCompare, RepoDiscovery, Settings};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -398,6 +399,35 @@ impl CommandsEvent {
 pub struct SettingsSnapshot {
     pub revision: u64,
     pub settings: Settings,
+}
+
+/// A settings change another stream asks for. Commands is the only writer
+/// and applies it to its newest snapshot, so edits made in the same turn
+/// don't overwrite each other with copies of an older one.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettingsEdit {
+    LastCompare(PersistedCompare),
+    CompareRenderer(RendererKind),
+    GitHubUser(Option<GitHubUser>),
+    GitHubClone { repo: String, root: PathBuf },
+}
+
+impl SettingsEdit {
+    pub fn apply(&self, settings: &mut Settings) {
+        match self {
+            Self::LastCompare(compare) => settings.last_compare = Some(compare.clone()),
+            Self::CompareRenderer(renderer) => {
+                settings
+                    .last_compare
+                    .get_or_insert_with(PersistedCompare::default)
+                    .renderer = *renderer;
+            }
+            Self::GitHubUser(user) => settings.github_user = user.clone(),
+            Self::GitHubClone { repo, root } => {
+                settings.github_clones.insert(repo.clone(), root.clone());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

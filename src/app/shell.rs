@@ -340,7 +340,8 @@ impl<D: EffectDispatcher> DiffyApp<D> {
             | Intent::RequestConfirmation(_)
             | Intent::Toast(_)
             | Intent::RankFiles(_)
-            | Intent::RankFilesUnavailable { .. } => false,
+            | Intent::RankFilesUnavailable { .. }
+            | Intent::EditSettings(_) => false,
         }
     }
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use diffy_compare::semantic_tag;
 use diffy_diff::{OutlineItem, Placeholder, SlotState, SourceCoverage, SourcePurpose};
 
-use crate::contracts::commands::{SettingsSnapshot, ToastKind, ToastUpdate};
+use crate::contracts::commands::{SettingsEdit, ToastKind, ToastUpdate};
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, SharedContext};
 use crate::contracts::shell::{Controller, Intent, Reduction};
 use crate::contracts::viewport::PipelineAction;
@@ -23,7 +23,6 @@ pub use crate::contracts::viewport::pipeline::{
 use crate::core::compare::git::bucket_refs;
 use crate::core::compare::{CompareEntry, ComparePhase, RendererKind};
 use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
-use crate::platform::persistence::{PersistedCompare, Settings};
 
 pub use crate::contracts::viewport::interaction::ViewportInstall;
 
@@ -837,21 +836,11 @@ impl Controller for PipelineController {
                     }
                     None => Reduction::default(),
                 };
-                let settings = &cx.settings;
-                let saved = settings.settings.last_compare.as_ref();
+                let saved = cx.settings.settings.last_compare.as_ref();
                 if saved.map(|compare| compare.renderer) != Some(renderer) {
-                    let last_compare = PersistedCompare {
-                        renderer,
-                        ..saved.cloned().unwrap_or_default()
-                    };
-                    reduction =
-                        reduction.intent(Intent::SettingsChanged(Rc::new(SettingsSnapshot {
-                            revision: settings.revision + 1,
-                            settings: Settings {
-                                last_compare: Some(last_compare),
-                                ..settings.settings.clone()
-                            },
-                        })));
+                    reduction = reduction.intent(Intent::EditSettings(
+                        SettingsEdit::CompareRenderer(renderer),
+                    ));
                     reduction.changed = true;
                 }
                 reduction

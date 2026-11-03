@@ -243,6 +243,8 @@ fn startup_refs_persist_the_compare_without_resetting_saved_settings() {
         (compare.left_ref.as_str(), compare.right_ref.as_str()),
         ("main", "feature")
     );
+    // Written by commands in the same turn; the compare must not undo it.
+    assert_eq!(last.tips.sessions, 1);
 }
 
 #[test]

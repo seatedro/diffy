@@ -194,6 +194,8 @@ pub enum Intent {
     ChooseDefinition(Vec<DefinitionTarget>),
     PublishDocument(Option<crate::contracts::viewport::files::FileAt>),
     SettingsChanged(Rc<SettingsSnapshot>),
+    /// Asks commands, the only settings writer, for a change.
+    EditSettings(crate::contracts::commands::SettingsEdit),
     RequestConfirmation(ConfirmationRequest),
     Toast(ToastUpdate),
     RankFiles(Rc<RankFilesRequest>),

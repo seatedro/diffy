@@ -8,6 +8,7 @@ use super::state::{
     INSTALL_LINES_PER_FRAME, PipelineInstall, PipelineStatus, ViewportInstall, WORKING_SET_LINES,
 };
 use crate::apprt::services::viewport::pipeline::compare_result;
+use crate::contracts::commands::SettingsEdit;
 use crate::contracts::navigation::{SelectedFile, SelectionOrigin};
 use crate::contracts::shared::{CompareGeneration, FileKey, FileRevision, SharedContext};
 use crate::contracts::shell::{Controller, Effect, Intent, Reduction};
@@ -267,11 +268,7 @@ fn renderer_changes_rerun_the_current_compare_and_persist() {
     let mut controller = PipelineController::default();
     let persisted = |reduction: &Reduction| {
         reduction.intents.iter().find_map(|intent| match intent {
-            Intent::SettingsChanged(snapshot) => snapshot
-                .settings
-                .last_compare
-                .as_ref()
-                .map(|compare| compare.renderer),
+            Intent::EditSettings(SettingsEdit::CompareRenderer(renderer)) => Some(*renderer),
             _ => None,
         })
     };

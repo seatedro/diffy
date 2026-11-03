@@ -8,7 +8,7 @@ use quark_ui::text_input::{TextEditCommand, TextEditOutcome, TextField};
 
 use super::state::{Pending, ReviewController, ReviewOverlay, error, info};
 use crate::app::text_targets::workspace_focus;
-use crate::contracts::commands::SettingsSnapshot;
+use crate::contracts::commands::SettingsEdit;
 use crate::contracts::review::{GitHubRequest, PullsAction, ReviewEffect};
 use crate::contracts::shared::{JobId, SharedContext};
 use crate::contracts::shell::{Intent, LogicalFocus, Reduction, ShellEffect};
@@ -536,16 +536,12 @@ impl ReviewController {
             Ok(root) => root,
             Err(message) => return Reduction::changed().intent(error(message)),
         };
-        let mut settings = cx.settings.settings.clone();
-        settings
-            .github_clones
-            .insert(repo.to_ascii_lowercase(), root.clone());
-        let snapshot = Rc::new(SettingsSnapshot {
-            revision: cx.settings.revision + 1,
-            settings,
-        });
+        let link = SettingsEdit::GitHubClone {
+            repo: repo.to_ascii_lowercase(),
+            root: root.clone(),
+        };
         let mut reduction = Reduction::changed()
-            .intent(Intent::SettingsChanged(snapshot))
+            .intent(Intent::EditSettings(link))
             .intent(info(format!("Linked {repo} to {}", root.display())));
         self.pulls
             .clones

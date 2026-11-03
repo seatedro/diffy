@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify::event::{EventKind, MetadataKind, ModifyKind};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -14,6 +14,9 @@ use crate::core::vcs::discovery;
 use crate::core::vcs::git::all_ignored;
 
 const REPO_WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
+/// Changes that never pause, such as a running build, still flush this
+/// often.
+const REPO_WATCH_MAX_WAIT: Duration = Duration::from_secs(1);
 
 pub struct RepoWatchWorker {
     sender: Sender<WatchCommand>,
@@ -75,13 +78,27 @@ fn repo_watch_worker_loop(
     // Working-tree files of the open repository changed since the last
     // flush, to tell edits git shows from ignored build output.
     let mut pending_content: HashSet<PathBuf> = HashSet::new();
+    // Something other than a working-tree file changed since the last
+    // flush, which always needs a sync.
+    let mut pending_other = false;
+    let mut pending_since: Option<Instant> = None;
 
     loop {
-        let command = if pending_dirty.is_some() || !pending_worktree.is_empty() {
-            match receiver.recv_timeout(REPO_WATCH_DEBOUNCE) {
-                Ok(command) => Some(command),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => break,
+        let pending = pending_dirty.is_some() || !pending_worktree.is_empty();
+        if !pending {
+            pending_since = None;
+        }
+        let command = if pending {
+            let since = *pending_since.get_or_insert_with(Instant::now);
+            let wait = REPO_WATCH_DEBOUNCE.min(REPO_WATCH_MAX_WAIT.saturating_sub(since.elapsed()));
+            if wait.is_zero() {
+                None
+            } else {
+                match receiver.recv_timeout(wait) {
+                    Ok(command) => Some(command),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
             }
         } else {
             match receiver.recv() {
@@ -95,6 +112,7 @@ fn repo_watch_worker_loop(
                 pending_dirty = None;
                 pending_worktree.clear();
                 pending_content.clear();
+                pending_other = false;
                 if let Some(old) = worktree.take() {
                     unwatch_paths(&mut watcher, &[old]);
                 }
@@ -145,17 +163,16 @@ fn repo_watch_worker_loop(
                 if let Some(active_watch) = active.as_ref()
                     && !is_ignored_metadata_event(active_watch, &event)
                 {
-                    if let Some(workdir) = active_watch.workdir.as_ref() {
-                        pending_content.extend(
-                            event
-                                .paths
-                                .iter()
-                                .filter(|path| {
-                                    path.starts_with(workdir)
-                                        && !path.starts_with(&active_watch.metadata_dir)
-                                })
-                                .cloned(),
-                        );
+                    for path in &event.paths {
+                        let content = active_watch.workdir.as_ref().is_some_and(|workdir| {
+                            path.starts_with(workdir)
+                                && !path.starts_with(&active_watch.metadata_dir)
+                        });
+                        if content {
+                            pending_content.insert(path.clone());
+                        } else {
+                            pending_other = true;
+                        }
                     }
                     let change_kind = classify_event(active_watch, &event);
                     pending_dirty = Some(match pending_dirty {
@@ -167,12 +184,14 @@ fn repo_watch_worker_loop(
             Some(WatchCommand::Notify(Err(error))) => {
                 tracing::warn!("repository watcher error: {error}");
                 pending_dirty = Some(RepositoryChangeKind::Both);
+                pending_other = true;
             }
             None => {
                 let Some(active_watch) = active.as_ref() else {
                     pending_dirty = None;
                     pending_worktree.clear();
                     pending_content.clear();
+                    pending_other = false;
                     continue;
                 };
                 if let Some(root) = worktree.as_ref()
@@ -204,6 +223,11 @@ fn repo_watch_worker_loop(
                         .workdir
                         .as_ref()
                         .is_some_and(|workdir| !all_ignored(workdir, &paths));
+                // Ignored files cannot change the snapshot, so a flush of
+                // build output alone needs no sync.
+                if !std::mem::take(&mut pending_other) && !content {
+                    continue;
+                }
                 let _ = dirty_sender.send(VcsWorkerCommand {
                     workspace: active_watch.workspace,
                     command: VcsCommand::Dirty {

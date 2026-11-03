@@ -22,7 +22,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use diffy_diff::{
-    InlineDetail, InlineMode, InlineOptions, LineDetail, line_detail, paired_inline_diff,
+    InlineDetail, InlineMode, InlineOptions, LineDetail, Side, line_detail, paired_inline_diff,
 };
 
 use super::prepared::LineWindow;
@@ -44,8 +44,13 @@ const KEPT_MAPS: usize = 16;
 /// Word diffs of long pairs kept.
 const KEPT_DIFFS: usize = 64;
 
-/// A line's identity for caching: its text's address and where it starts.
-type LineKey = (usize, usize);
+/// A text's identity for caching: the generation of the segment holding it,
+/// its file, and its side. Generations are never reused, unlike the
+/// address of a freed text, which a later revision may be given.
+pub(crate) type TextKey = (u64, u32, Side);
+
+/// A line's identity for caching: its text and where it starts.
+type LineKey = (TextKey, usize);
 
 /// A pair's identity for caching: both lines and the options' bits.
 type PairKey = (LineKey, LineKey, (InlineMode, u32, usize));
@@ -204,12 +209,13 @@ pub(crate) struct LongLines {
 }
 
 impl LongLines {
-    /// The window of `line` (starting at byte `start` of `text`) to shape
-    /// when its column is scrolled `scroll_x` points and shows `view_w`
-    /// points, with characters `char_w` wide; `None` for a line short
-    /// enough to shape whole.
+    /// The window of `line` (starting at byte `start` of `text`, the text
+    /// `id` names) to shape when its column is scrolled `scroll_x` points
+    /// and shows `view_w` points, with characters `char_w` wide; `None`
+    /// for a line short enough to shape whole.
     pub(crate) fn window(
         &self,
+        id: TextKey,
         text: &Arc<str>,
         line: Range<usize>,
         scroll_x: f64,
@@ -219,7 +225,7 @@ impl LongLines {
         if line.len() <= WINDOW_LINE_BYTES || char_w <= 0.0 {
             return None;
         }
-        let key = (Arc::as_ptr(text) as *const u8 as usize, line.start);
+        let key = (id, line.start);
         let line_text = &text[line];
         let map = self.map(key, line_text);
         let total = map.total(line_text);
@@ -242,12 +248,13 @@ impl LongLines {
     /// the line's start, in points.
     pub(crate) fn x_of(
         &self,
+        id: TextKey,
         text: &Arc<str>,
         line: Range<usize>,
         byte: usize,
         char_w: f32,
     ) -> f64 {
-        let key = (Arc::as_ptr(text) as *const u8 as usize, line.start);
+        let key = (id, line.start);
         let line_text = &text[line];
         let byte = line_text.floor_char_boundary(byte);
         self.map(key, line_text).column_of(line_text, byte) as f64 * f64::from(char_w)
@@ -288,18 +295,20 @@ impl LongLines {
     }
 
     /// The changed words of a long pair of display lines (byte ranges of
-    /// their stores' texts) under `options`, from the word thread: `None`
-    /// while it works. `wake` is called when a result lands.
+    /// their stores' texts, which `ids` name, old then new) under
+    /// `options`, from the word thread: `None` while it works. `wake` is
+    /// called when a result lands.
     pub(crate) fn words(
         &self,
+        ids: [TextKey; 2],
         old: (&Arc<str>, Range<usize>),
         new: (&Arc<str>, Range<usize>),
         options: &InlineOptions,
         wake: Option<Wake>,
     ) -> Option<Words> {
         let key = (
-            (Arc::as_ptr(old.0) as *const u8 as usize, old.1.start),
-            (Arc::as_ptr(new.0) as *const u8 as usize, new.1.start),
+            (ids[0], old.1.start),
+            (ids[1], new.1.start),
             options_key(options),
         );
         if let Some(words) = self.diffs.borrow().get(&key) {
@@ -387,7 +396,14 @@ mod tests {
     fn shown(line: &str, scroll_x: f64) -> (String, f64, f64) {
         let text: Arc<str> = Arc::from(line);
         let w = LongLines::default()
-            .window(&text, 0..line.len(), scroll_x, 100.0, 10.0)
+            .window(
+                (0, 0, Side::New),
+                &text,
+                0..line.len(),
+                scroll_x,
+                100.0,
+                10.0,
+            )
             .unwrap();
         (line[w.start..w.end].to_owned(), w.x, w.width)
     }

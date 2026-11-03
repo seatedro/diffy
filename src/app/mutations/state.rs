@@ -268,6 +268,14 @@ fn error(message: impl Into<String>) -> Reduction {
     Reduction::changed().intent(Intent::Toast(ToastUpdate::error(message)))
 }
 
+/// File and line changes apply one at a time; one asked for meanwhile
+/// says so rather than doing nothing.
+fn still_applying() -> Reduction {
+    Reduction::changed().intent(Intent::Toast(ToastUpdate::info(
+        "Wait for the previous change to finish.",
+    )))
+}
+
 fn progress(id: JobId, message: impl Into<String>) -> Intent {
     Intent::Toast(ToastUpdate::Progress {
         id,
@@ -618,7 +626,7 @@ impl MutationsController {
             return error("Select lines from one file at a time.");
         };
         if self.busy() {
-            return Reduction::default();
+            return still_applying();
         }
         let current = cx.manifest.as_ref().and_then(|manifest| {
             manifest
@@ -756,8 +764,11 @@ impl MutationsController {
         if operation != FileOperation::Discard && !capabilities.staging_area {
             return error("This repository backend does not support staging.");
         }
-        if files.is_empty() || self.busy() {
+        if files.is_empty() {
             return Reduction::default();
+        }
+        if self.busy() {
+            return still_applying();
         }
         let mut changes = Vec::with_capacity(files.len());
         for file in &files {
@@ -799,8 +810,11 @@ impl MutationsController {
         let Some(repo_path) = repo_path(cx) else {
             return error("Open a repository before changing files.");
         };
-        if file_changes.is_empty() || self.busy() {
+        if file_changes.is_empty() {
             return Reduction::default();
+        }
+        if self.busy() {
+            return still_applying();
         }
         let job = self.job(Job::Files);
         Reduction::changed().effect(MutationsEffect::ApplyFileOperation(FileOperationRequest {
@@ -843,8 +857,10 @@ impl MutationsController {
             return error("Select changed lines first.");
         }
         let targets = line_ranges(self.selection.iter().copied());
+        let queued = self.pending.len();
         let reduction = self.request_patch(MutationSelection::Lines(targets), operation, cx);
-        if !reduction.effects.is_empty() || !self.pending.is_empty() {
+        // Only a request that was sent or queued uses up the selection.
+        if !reduction.effects.is_empty() || self.pending.len() > queued {
             self.selection.clear();
             self.anchor = None;
             self.refresh_presentation(cx);

@@ -101,6 +101,46 @@ pub(crate) fn diff_all(
     done.into_iter().map(|(_, diff)| diff).collect()
 }
 
+/// Runs `work` for every index in `0..len` on worker threads and returns
+/// the results in index order. The calling thread works too, so a worker
+/// that cannot start only costs parallelism; a worker's panic is resumed
+/// on the caller.
+#[cfg(feature = "serde")]
+pub(crate) fn map_parallel<T: Send>(len: usize, work: &(dyn Fn(usize) -> T + Sync)) -> Vec<T> {
+    let next = AtomicUsize::new(0);
+    let run = || {
+        let mut done = Vec::new();
+        loop {
+            let at = next.fetch_add(1, Ordering::Relaxed);
+            if at >= len {
+                return done;
+            }
+            done.push((at, work(at)));
+        }
+    };
+    let mut done = std::thread::scope(|scope| {
+        let handles: Vec<_> = (1..worker_count(len))
+            .filter_map(|index| {
+                std::thread::Builder::new()
+                    .name(format!("diffy-wire-{index}"))
+                    .stack_size(WORKER_STACK_BYTES)
+                    .spawn_scoped(scope, run)
+                    .ok()
+            })
+            .collect();
+        let mut done = run();
+        for handle in handles {
+            match handle.join() {
+                Ok(part) => done.extend(part),
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
+        }
+        done
+    });
+    done.sort_unstable_by_key(|(at, _)| *at);
+    done.into_iter().map(|(_, value)| value).collect()
+}
+
 fn worker_count(files: usize) -> usize {
     if files < MIN_FILES_FOR_PARALLEL {
         return 1;

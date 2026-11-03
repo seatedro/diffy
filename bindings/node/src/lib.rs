@@ -128,7 +128,15 @@ pub fn diff<'env>(
         // No `vet`: renames are detected but not confirmed against the rest
         // of the repository, which the binding never sees.
         let diffs = diffy_compare::diff_files(&inputs, &options).map_err(compare_error)?;
-        let document = wire::document(&inputs, &diffs, &wire.options(grammars));
+        let document = wire::document(
+            &inputs,
+            &diffs,
+            &WireOptions {
+                deadline,
+                cancel: Some(&flag),
+                ..wire.options(grammars)
+            },
+        );
         serde_json::to_string(&document).map_err(json_error)
     })
 }
@@ -166,6 +174,7 @@ impl WireSettings {
         WireOptions {
             syntax: self.syntax.then_some(grammars),
             syntax_max_bytes: self.syntax_max_bytes,
+            ..WireOptions::default()
         }
     }
 }

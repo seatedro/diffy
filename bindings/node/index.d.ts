@@ -54,6 +54,8 @@ export interface DiffRequest {
   /**
    * Time budget for the whole request, from the call. Files started after
    * it get line diffs, with `fallback.kind === "request_budget"`.
+   * With `syntax`, files projected after it get no syntax spans or scope
+   * headers.
    */
   budget_ms?: number
   /** Time budget for each file's semantic diff. Default 400. */

@@ -691,6 +691,7 @@ fn syntax_spans_are_classes_sliced_per_line_in_utf16() {
     let capped = WireOptions {
         syntax: Some(&store),
         syntax_max_bytes: 8,
+        ..WireOptions::default()
     };
     let file = super::file(&input, &diff, &capped);
     assert_eq!(file.hunks[0].header, None);
@@ -745,5 +746,27 @@ fn aligned_rows_that_miss_lines_fall_back_to_positional_pairs() {
     for (row, number) in rows.iter().zip(1..) {
         let (old_line, new_line) = modified(row);
         assert_eq!((old_line.line, new_line.line), (number, number));
+    }
+}
+
+#[test]
+fn files_projected_past_the_deadline_skip_syntax() {
+    let Some(store) = diffy_syntax::testing::store_with("rust") else {
+        return;
+    };
+    let (input, diff) = rust_change();
+    let options = WireOptions {
+        syntax: Some(&store),
+        deadline: Some(std::time::Instant::now()),
+        ..WireOptions::default()
+    };
+    let doc = document(&[input.clone(), input], &[diff.clone(), diff], &options);
+    for file in &doc.files {
+        assert!(file.hunks[0].rows.iter().all(|row| match row {
+            Row::Context { syntax, .. } => syntax.is_empty(),
+            Row::Removed { old: line } | Row::Added { new: line } => line.syntax.is_empty(),
+            Row::Modified { old, new } => old.syntax.is_empty() && new.syntax.is_empty(),
+        }));
+        assert!(!file.hunks.is_empty());
     }
 }

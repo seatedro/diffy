@@ -221,12 +221,14 @@ describe('diff', () => {
   })
 
   it('expands the gaps it returns', async () => {
-    const doc = await diff({ files: [modified('src/view.rs', OLD_RS, NEW_RS)] })
-    const [file] = doc.files
-    const gaps = [...file.hunks.map((h) => h.gap_before), file.gap_after].filter(Boolean)
-    assert.ok(gaps.length > 0)
+    // Unchanged functions on both ends, so context collapses before and after.
+    const pad = Array.from({ length: 12 }, (_, i) => `fn pad${i}() {}`).join('\n')
+    const file = modified('src/view.rs', `${pad}\n${OLD_RS}${pad}\n`, `${pad}\n${NEW_RS}${pad}\n`)
+    const doc = await diff({ files: [file] })
+    const gaps = [...doc.files[0].hunks.map((h) => h.gap_before), doc.files[0].gap_after].filter(Boolean)
+    assert.equal(gaps.length, 2)
     for (const gap of gaps) {
-      const rows = await expand(modified('src/view.rs', OLD_RS, NEW_RS), gap)
+      const rows = await expand(file, gap)
       assert.equal(rows.length, gap.len)
     }
   })

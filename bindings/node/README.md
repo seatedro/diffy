@@ -28,6 +28,8 @@ const rows = await expand(sameFileInput, doc.files[0].gap_after, { syntax: true 
   which are taken as UTF-8.
   - `budget_ms` caps the whole request, counted from the call. Files that
     start after it get line diffs, with `fallback.kind === "request_budget"`.
+    With `syntax`, files projected after it also come back without syntax
+    spans or scope headers.
   - `file_budget_ms` (default 400) caps each file's semantic diff.
   - `syntax` adds syntax spans. `syntax_max_bytes` (default 1 MiB) skips
     them for larger sides.

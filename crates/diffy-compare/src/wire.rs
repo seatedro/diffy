@@ -24,6 +24,8 @@
 use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use diffy_diff::{
     AlignedRow, BlockKind, ChangeIntensity, DiffDocument, FileStatus, ItemChange, Side as DocSide,
@@ -49,6 +51,11 @@ pub struct WireOptions<'a> {
     /// Sides longer than this, in bytes, get no syntax spans or scope
     /// headers.
     pub syntax_max_bytes: usize,
+    /// Files projected after this get no syntax spans or scope headers, so
+    /// highlighting cannot run a request past its budget.
+    pub deadline: Option<Instant>,
+    /// Once set, the remaining files get no syntax spans or scope headers.
+    pub cancel: Option<&'a AtomicBool>,
 }
 
 impl Default for WireOptions<'_> {
@@ -56,6 +63,8 @@ impl Default for WireOptions<'_> {
         Self {
             syntax: None,
             syntax_max_bytes: SYNTAX_MAX_BYTES,
+            deadline: None,
+            cancel: None,
         }
     }
 }
@@ -379,19 +388,35 @@ fn is_false(value: &bool) -> bool {
 /// Projects every file; `inputs` and `diffs` pair up by index, and extra
 /// entries of the longer slice are ignored.
 pub fn document(inputs: &[FileInput], diffs: &[FileDiff], options: &WireOptions<'_>) -> Document {
+    let len = inputs.len().min(diffs.len());
+    // Highlighting parses both sides of every file, so files are projected
+    // on workers like the diff itself.
+    let files = if options.syntax.is_some() {
+        crate::run::map_parallel(len, &|at| file(&inputs[at], &diffs[at], options))
+    } else {
+        (0..len)
+            .map(|at| file(&inputs[at], &diffs[at], options))
+            .collect()
+    };
     Document {
         version: FORMAT_VERSION,
-        files: inputs
-            .iter()
-            .zip(diffs)
-            .map(|(input, diff)| file(input, diff, options))
-            .collect(),
+        files,
     }
 }
 
 /// Projects one file. Highlighting and scope headers parse each side once;
 /// everything else is linear in the rows shown.
 pub fn file(input: &FileInput, diff: &FileDiff, options: &WireOptions<'_>) -> File {
+    let late = options
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+        || options
+            .cancel
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed));
+    let options = &WireOptions {
+        syntax: options.syntax.filter(|_| !late),
+        ..*options
+    };
     let doc = &diff.document;
     let has_file = doc.file_count() > 0;
     let binary = crate::is_binary(&input.old)

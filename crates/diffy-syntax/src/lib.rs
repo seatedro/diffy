@@ -27,9 +27,11 @@
 //! an embedded grammar downloads, its region keeps the host's colors, and
 //! the worker sends a newer revision of the result when it arrives.
 //!
-//! Features: `engine` (the tree-sitter runtime and local packs),
-//! `download` (fetching packs), and `bundled` (grammars linked in). Without
-//! `engine` every lookup is plain and the crate has no dependencies.
+//! Features: `runtime` (the tree-sitter runtime: highlighting, injections,
+//! scopes, and symbols), `engine` (`runtime` plus loading local packs),
+//! `download` (`engine` plus fetching packs), and `bundled` (`runtime` plus
+//! grammars linked in, with no pack loading). Without `runtime` every
+//! lookup is plain and the crate has no dependencies.
 //!
 //! # Threat model
 //!
@@ -63,11 +65,19 @@
 //!   hashed sources, so they are as trusted as the rest of it; nothing is
 //!   loaded or hashed at run time.
 
+// `runtime` alone has no grammar source: it is for libraries that take a
+// store from a crate turning on `bundled` or `engine`, which Cargo unifies
+// in. Until then the code only a source reaches is dead.
+#![cfg_attr(
+    all(feature = "runtime", not(any(feature = "engine", feature = "bundled"))),
+    allow(dead_code, unused_mut, unused_variables)
+)]
+
 #[cfg(feature = "bundled")]
 pub mod bundled;
 #[cfg(feature = "download")]
 mod download;
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 mod engine;
 mod navigate;
 #[cfg(feature = "engine")]
@@ -89,10 +99,10 @@ pub use navigate::{DefinitionLookup, SourcePos};
 pub use quark_update::PublicKey;
 pub use scope::{ScopeResult, ScopeSpan, ScopeTable, ScopeWorker, scope_table};
 pub use store::{Catalog, GrammarState, GrammarStatus, GrammarStore, LanguageStatus};
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 pub use store::{GrammarQueries, Injector, StoreConfig};
 pub use symbols::{Symbol, SymbolKind};
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 pub use symbols::{Tagger, TaggerLookup};
 pub use worker::{
     HighlightFocus, HighlightPart, HighlightRequest, HighlightWorker, Highlighted, Priority,

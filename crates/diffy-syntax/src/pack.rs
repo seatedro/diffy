@@ -50,11 +50,7 @@ pub const TARGET: &str = env!("DIFFY_SYNTAX_TARGET");
 /// File name of a pack's manifest.
 pub const MANIFEST: &str = "manifest.json";
 
-/// Grammar ABI versions (tree-sitter `LANGUAGE_VERSION`) this runtime can
-/// load.
-pub fn supported_abi() -> std::ops::RangeInclusive<u32> {
-    tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION as u32..=tree_sitter::LANGUAGE_VERSION as u32
-}
+pub use crate::engine::supported_abi;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackManifest {
@@ -143,6 +139,17 @@ pub enum PackError {
     Query(String),
     #[error("the injection query does not compile: {0}")]
     InjectionQuery(String),
+}
+
+impl From<crate::engine::GrammarError> for PackError {
+    fn from(error: crate::engine::GrammarError) -> Self {
+        use crate::engine::GrammarError;
+        match error {
+            GrammarError::Abi { abi, min, max } => Self::Abi { abi, min, max },
+            GrammarError::Query(error) => Self::Query(error),
+            GrammarError::InjectionQuery(error) => Self::InjectionQuery(error),
+        }
+    }
 }
 
 impl PackManifest {

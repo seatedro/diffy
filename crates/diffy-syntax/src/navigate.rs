@@ -15,14 +15,14 @@ pub struct DefinitionLookup {
     pub symbols: Vec<Symbol>,
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 pub(crate) struct LocalsQuery {
     query: tree_sitter::Query,
     scope: Option<u32>,
     definitions: Vec<Option<bool>>,
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 impl LocalsQuery {
     pub(crate) fn compile(grammar: &tree_sitter::Language, source: &str) -> Option<Self> {
         let query = match tree_sitter::Query::new(grammar, source) {
@@ -123,7 +123,7 @@ impl LocalsQuery {
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 fn line_start(source: &str, line: u32) -> Option<usize> {
     if line == 0 {
         return Some(0);
@@ -134,7 +134,7 @@ fn line_start(source: &str, line: u32) -> Option<usize> {
         .map(|(index, _)| index + 1)
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 fn word_node(tree: &tree_sitter::Tree, byte: usize) -> Option<tree_sitter::Node<'_>> {
     let root = tree.root_node();
     let leaf = |at: usize| {
@@ -145,7 +145,7 @@ fn word_node(tree: &tree_sitter::Tree, byte: usize) -> Option<tree_sitter::Node<
     leaf(byte).or_else(|| byte.checked_sub(1).and_then(leaf))
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 impl crate::GrammarStore {
     pub fn lookup_definition(
         &self,

@@ -80,8 +80,11 @@ impl AvatarCache {
         self.entries.insert(url, (login, AvatarState::Fetching));
         let mut evicted = Vec::new();
         while self.order.len() > AVATAR_CACHE_LIMIT {
+            // Faces are kept by login, and one login can have more than
+            // one address: the face goes only with the last of them.
             if let Some(old) = self.order.pop_front()
                 && let Some((login, _)) = self.entries.remove(&old)
+                && !self.entries.values().any(|(other, _)| *other == login)
             {
                 evicted.push(login);
             }

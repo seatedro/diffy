@@ -64,6 +64,24 @@ pub enum DeliveryEvent {
     },
 }
 
+impl DeliveryEvent {
+    /// Update checks, downloads and the poll timer belong to the app, not
+    /// to the workspace that was open when they started.
+    pub fn app_scoped(&self) -> bool {
+        match self {
+            Self::UpdateAvailable { .. }
+            | Self::UpdateNotAvailable { .. }
+            | Self::UpdateCheckFailed { .. }
+            | Self::UpdateStaged { .. }
+            | Self::UpdateInstallFailed { .. }
+            | Self::UpdatePollDue { .. } => true,
+            // Each workspace rebinds the grammar watcher, which reports the
+            // current catalog again.
+            Self::GrammarsChanged(_) => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GrammarAvailability {
     pub revision: u64,

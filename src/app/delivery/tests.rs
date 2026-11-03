@@ -17,8 +17,8 @@ use crate::contracts::commands::{
     CommandDescriptor, CommandSource, CommandsAction, SettingsSnapshot,
 };
 use crate::contracts::delivery::{DeliveryEffect, DeliveryEvent, GrammarAvailability};
-use crate::contracts::shared::SharedContext;
-use crate::contracts::shell::{Action, Controller, Effect, Intent};
+use crate::contracts::shared::{SharedContext, WorkspaceEpoch};
+use crate::contracts::shell::{Action, Controller, Effect, Intent, ShellEvent};
 use crate::core::update::{AvailableUpdate, StagedUpdate, UpdateFormat, UpdatePlatform};
 
 fn staged() -> StagedUpdate {
@@ -414,6 +414,61 @@ fn staged_update_stops_polling() {
     assert!(
         reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 1 }, &cx))
             .is_empty()
+    );
+}
+
+#[test]
+fn update_check_finishes_after_a_workspace_switch() {
+    let mut ui = harness();
+    ui.click_node(By::role_name(Role::Button, "Syntax languages"));
+    ui.click_node(By::role_name(Role::Button, "Check for updates"));
+    assert_eq!(
+        ui.app().controllers().delivery.update(),
+        &UpdateState::Checking
+    );
+
+    deliver_current(
+        &mut ui,
+        ShellEvent::RepositoryDialogClosed {
+            path: Some(PathBuf::from("/fixtures/alpha")),
+        },
+    );
+    deliver(
+        &mut ui,
+        WorkspaceEpoch(0),
+        DeliveryEvent::UpdateNotAvailable { silent: false },
+    );
+
+    assert_eq!(ui.app().shared().workspace, WorkspaceEpoch(1));
+    assert_eq!(ui.app().controllers().delivery.update(), &UpdateState::Idle);
+}
+
+#[test]
+fn workspace_switch_keeps_the_update_poll_timer() {
+    let cx = SharedContext::default();
+    let mut delivery = DeliveryController::new(true);
+    delivery.apply_intent(&settings(true), &cx);
+    delivery.reduce_event(DeliveryEvent::UpdateNotAvailable { silent: true }, &cx);
+
+    let switched = reduce_effects(delivery.apply_intent(
+        &Intent::ActivateWorkspace {
+            path: PathBuf::from("/fixtures/alpha"),
+        },
+        &cx,
+    ));
+    let due =
+        reduce_effects(delivery.reduce_event(DeliveryEvent::UpdatePollDue { generation: 1 }, &cx));
+
+    assert_eq!(switched, vec![DeliveryEffect::WatchGrammars]);
+    assert_eq!(
+        due,
+        vec![
+            DeliveryEffect::CheckForUpdates { silent: true },
+            DeliveryEffect::ScheduleUpdatePoll {
+                generation: 2,
+                after: UPDATE_POLL_INTERVAL,
+            },
+        ]
     );
 }
 

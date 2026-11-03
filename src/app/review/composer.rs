@@ -18,6 +18,9 @@ pub enum ComposerTarget {
     Reply {
         thread: ReviewThreadId,
         draft: ReviewDraftId,
+        /// The draft was made for this composer, not reopened: cancelling
+        /// discards it.
+        fresh: bool,
     },
     Edit {
         thread: ReviewThreadId,

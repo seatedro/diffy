@@ -1203,15 +1203,23 @@ impl ReviewController {
             matches!(&draft.kind, ReviewDraftKind::Reply { thread_id } if *thread_id == thread)
                 && !matches!(draft.state, ReviewDraftState::Submitting)
         });
-        let (draft, body) = match existing {
-            Some(draft) => (draft.id, draft.body.clone()),
+        let (draft, body, fresh) = match existing {
+            Some(draft) => (draft.id, draft.body.clone(), false),
             None => (
                 session.create_reply_draft(thread.clone(), ""),
                 String::new(),
+                true,
             ),
         };
         self.expanded.insert(thread.clone(), true);
-        self.open_composer(ComposerTarget::Reply { thread, draft }, &body)
+        self.open_composer(
+            ComposerTarget::Reply {
+                thread,
+                draft,
+                fresh,
+            },
+            &body,
+        )
     }
 
     fn edit_comment(&mut self, comment_node_id: String) -> Reduction {
@@ -1250,6 +1258,7 @@ impl ReviewController {
             ReviewDraftKind::Reply { thread_id } => ComposerTarget::Reply {
                 thread: thread_id.clone(),
                 draft: id,
+                fresh: false,
             },
             ReviewDraftKind::InlineComment | ReviewDraftKind::General => ComposerTarget::Draft(id),
         };
@@ -1284,7 +1293,7 @@ impl ReviewController {
         self.close_composer();
         let mut reduction = Reduction::changed();
         let fresh = match &target {
-            ComposerTarget::Reply { draft, .. } => Some(*draft),
+            ComposerTarget::Reply { draft, fresh, .. } => fresh.then_some(*draft),
             ComposerTarget::Inline { draft, .. } | ComposerTarget::General { draft } => *draft,
             ComposerTarget::Draft(_)
             | ComposerTarget::Edit { .. }
@@ -1358,7 +1367,7 @@ impl ReviewController {
                     session.update_draft_body(id, body);
                 }
             }
-            ComposerTarget::Reply { thread, draft } => {
+            ComposerTarget::Reply { thread, draft, .. } => {
                 let Some(node) = self.session().and_then(|s| s.thread_node_id(&thread)) else {
                     return reduction.intent(error("This review thread cannot be replied to."));
                 };

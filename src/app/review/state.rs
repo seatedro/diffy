@@ -2231,6 +2231,13 @@ impl ReviewController {
                 }
                 reduction
             }
+            // A sign-in (or sign-out) before the keyring answered settled
+            // the account: the stored token is older than that.
+            ReviewEvent::TokenLoaded { .. } | ReviewEvent::TokenLoadFailed { .. }
+                if self.account.token_loaded =>
+            {
+                Reduction::default()
+            }
             ReviewEvent::TokenLoaded { token } => {
                 self.account.token_loaded = true;
                 self.account.token = token.filter(|token| !token.is_empty());

@@ -28,7 +28,7 @@ use crate::contracts::commands::{
 };
 use crate::contracts::mutations::MutationsAction;
 use crate::contracts::navigation::{
-    CompareField, NavigationAction, RepositorySyncReason, SidebarTab,
+    CompareField, NavigationAction, RepositoryRevision, RepositorySyncReason, SidebarTab,
 };
 use crate::contracts::review::{PullsAction, ReviewAction};
 use crate::contracts::shared::{JobId, SharedContext};
@@ -118,7 +118,7 @@ pub struct CommandsController {
     picker: Option<PickerState>,
     ref_picker: Option<RefPicker>,
     ref_generation: u64,
-    ref_catalog: Option<(usize, Arc<RefCatalog>)>,
+    ref_catalog: Option<(RepositoryRevision, Arc<RefCatalog>)>,
     confirmation: Option<ConfirmationRequest>,
     context_menu: ContextMenuState,
     context_entries: Vec<Action>,
@@ -978,9 +978,8 @@ impl CommandsController {
         let Some(repo) = cx.repository.as_ref() else {
             return Reduction::changed();
         };
-        let identity = Arc::as_ptr(&repo.snapshot) as usize;
         if let Some((cached, catalog)) = &self.ref_catalog
-            && *cached == identity
+            && *cached == repo.revision
         {
             let catalog = catalog.clone();
             return self.install_ref_catalog(catalog);
@@ -1000,6 +999,7 @@ impl CommandsController {
             .unwrap_or_default();
         if let Some(picker) = &mut self.ref_picker {
             picker.catalog_generation = self.ref_generation;
+            picker.catalog_revision = Some(repo.revision);
         }
         Reduction::changed().effect(CommandsEffect::LoadRefCatalog(Box::new(
             RefCatalogRequest {
@@ -2364,16 +2364,16 @@ impl Controller for CommandsController {
                 generation,
                 catalog,
             } => {
-                let current = self
-                    .ref_picker
-                    .as_ref()
-                    .is_some_and(|p| p.catalog_generation == generation);
-                if !current {
-                    return Reduction::default();
-                }
-                if let Some(repo) = cx.repository.as_ref() {
-                    self.ref_catalog =
-                        Some((Arc::as_ptr(&repo.snapshot) as usize, catalog.clone()));
+                let revision = match &self.ref_picker {
+                    Some(picker) if picker.catalog_generation == generation => {
+                        picker.catalog_revision
+                    }
+                    _ => return Reduction::default(),
+                };
+                // Kept under the snapshot it was built from; a refresh during
+                // the build has already replaced the current one.
+                if let Some(revision) = revision {
+                    self.ref_catalog = Some((revision, catalog.clone()));
                 }
                 self.install_ref_catalog(catalog)
             }

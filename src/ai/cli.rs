@@ -278,6 +278,7 @@ pub fn run(
     let deadline = Instant::now() + RUN_TIMEOUT;
     let mut failure = None;
     let mut warning = None;
+    let mut answered = false;
     let mut exited_at = None;
     let status = loop {
         let closed = match rx.recv_timeout(POLL) {
@@ -286,6 +287,7 @@ pub fn run(
                     stop(&mut child);
                     return Ok(RunOutcome::Cancelled);
                 }
+                answered = true;
                 continue;
             }
             Ok(CliEvent::Warning(message)) => {
@@ -332,6 +334,14 @@ pub fn run(
     }
     if !status.success() {
         return Err(exit_message(label, status, warning, &stderr));
+    }
+    // A clean exit can still carry no answer, as when Codex stops before
+    // `turn.completed`; that must not pass for an empty message.
+    if !answered {
+        return Err(match warning {
+            Some(warning) => format!("{label} gave no answer: {warning}"),
+            None => format!("{label} gave no answer"),
+        });
     }
     Ok(RunOutcome::Finished)
 }

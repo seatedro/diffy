@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::contracts::mutations::{MutationSource, MutationSourceKey};
 use crate::contracts::navigation::{
@@ -22,6 +22,8 @@ use crate::core::vcs::{
 };
 
 const VCS_DIRTY_DEBOUNCE: Duration = Duration::from_millis(150);
+/// A steady stream of changes still syncs this often.
+const VCS_DIRTY_MAX_WAIT: Duration = Duration::from_secs(1);
 
 pub(crate) trait VcsEvents: Send + Sync + 'static {
     fn emit(&self, workspace: WorkspaceEpoch, event: VcsWorkerEvent);
@@ -344,6 +346,9 @@ struct VcsWorkerState {
     active_path: Option<PathBuf>,
     last_snapshot: Option<VcsSnapshot>,
     snapshot_revision: u64,
+    /// A watcher change waiting out the debounce. It outlives other
+    /// commands so none of them can drop it.
+    pending_dirty: Option<PendingDirty>,
 }
 
 struct PendingDirty {
@@ -351,28 +356,35 @@ struct PendingDirty {
     path: PathBuf,
     change_hint: RepositoryChangeKind,
     content: bool,
+    since: Instant,
 }
 
 fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerCommand>) {
     let mut state = VcsWorkerState::default();
-    let mut pending_dirty: Option<PendingDirty> = None;
 
     loop {
-        let command = if pending_dirty.is_some() {
-            match receiver.recv_timeout(VCS_DIRTY_DEBOUNCE) {
-                Ok(command) => Some(command),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => break,
+        let command = match state.pending_dirty.as_ref() {
+            Some(pending) => {
+                let wait = VCS_DIRTY_DEBOUNCE
+                    .min(VCS_DIRTY_MAX_WAIT.saturating_sub(pending.since.elapsed()));
+                if wait.is_zero() {
+                    None
+                } else {
+                    match receiver.recv_timeout(wait) {
+                        Ok(command) => Some(command),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                }
             }
-        } else {
-            match receiver.recv() {
+            None => match receiver.recv() {
                 Ok(command) => Some(command),
                 Err(_) => break,
-            }
+            },
         };
 
         let Some(VcsWorkerCommand { workspace, command }) = command else {
-            let Some(dirty) = pending_dirty.take() else {
+            let Some(dirty) = state.pending_dirty.take() else {
                 continue;
             };
             let emitter = Emitter {
@@ -402,7 +414,7 @@ fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerComma
             content,
         } = command
         {
-            pending_dirty = Some(match pending_dirty.take() {
+            state.pending_dirty = Some(match state.pending_dirty.take() {
                 Some(pending) if pending.path == path && pending.workspace == workspace => {
                     PendingDirty {
                         change_hint: pending.change_hint.merge(change_hint),
@@ -415,6 +427,7 @@ fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerComma
                     path,
                     change_hint,
                     content,
+                    since: Instant::now(),
                 },
             });
             continue;
@@ -424,7 +437,16 @@ fn vcs_worker_loop(events: Arc<dyn VcsEvents>, receiver: Receiver<VcsWorkerComma
             continue;
         }
 
-        pending_dirty = None;
+        // A change parked for an earlier workspace is stale. One for this
+        // workspace stays parked: a forced sync after the command absorbs
+        // it, and otherwise it runs once the debounce ends.
+        if state
+            .pending_dirty
+            .as_ref()
+            .is_some_and(|pending| pending.workspace != workspace)
+        {
+            state.pending_dirty = None;
+        }
         let emitter = Emitter {
             events: Arc::clone(&events),
             workspace,
@@ -947,7 +969,15 @@ fn sync_repository_forced(
     path: PathBuf,
     reason: RepositorySyncReason,
 ) {
-    sync_repository_inner(state, emitter, path, reason, true, None, None);
+    // The sync reads the whole repository, so it settles a parked change of
+    // the same workspace; keeping its hint keeps metadata refreshes.
+    let parked = state
+        .pending_dirty
+        .take_if(|pending| pending.workspace == emitter.workspace);
+    let hint = parked.map_or(RepositoryChangeKind::Worktree, |pending| {
+        pending.change_hint.merge(RepositoryChangeKind::Worktree)
+    });
+    sync_repository_inner(state, emitter, path, reason, true, Some(hint), None);
 }
 
 fn sync_repository(

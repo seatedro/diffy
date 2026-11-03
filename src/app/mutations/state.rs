@@ -1392,6 +1392,12 @@ impl MutationsController {
         self.ai
             .waiting
             .retain(|task| !matches!(task, AiTask::CommitMessage));
+        self.stop_generation()
+    }
+
+    /// Ends the running generation and stops its worker, which would
+    /// otherwise stream on with nobody reading.
+    fn stop_generation(&mut self) -> Reduction {
         if !self.ai.active {
             return Reduction::default();
         }
@@ -1821,7 +1827,10 @@ impl Controller for MutationsController {
                 }
                 let amended = self.amend.take().is_some();
                 self.commit.set_text("");
-                self.ai.active = false;
+                // The commit took the message, so any generation still
+                // writing one is moot.
+                let mut reduction = self.stop_generation();
+                reduction.changed = true;
                 let message = if amended {
                     format!("Amended {}", commit.short)
                 } else {
@@ -1837,17 +1846,9 @@ impl Controller for MutationsController {
                 );
                 if amended {
                     self.take_undo(job);
-                    return Reduction::changed().intent(toast(
-                        ToastKind::Success,
-                        Some(job),
-                        message,
-                    ));
+                    return reduction.intent(toast(ToastKind::Success, Some(job), message));
                 }
-                Reduction::changed().intent(undo_toast(
-                    job,
-                    message,
-                    MutationsAction::UndoCommit(job),
-                ))
+                reduction.intent(undo_toast(job, message, MutationsAction::UndoCommit(job)))
             }
             E::CommitFailed { job, message, .. } => {
                 if self.finish(job).is_none() {

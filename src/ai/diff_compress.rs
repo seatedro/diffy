@@ -28,29 +28,18 @@ struct FileSummary {
 }
 
 impl FilePatch {
+    /// Everything before the first hunk is the header, so `diff --git`,
+    /// `index` and mode lines stay with their file.
     fn parse(patch_str: &str) -> Option<Self> {
-        let lines: Vec<&str> = patch_str.lines().collect();
-        if lines.len() < 2 {
-            return None;
-        }
-        let header = format!("{}\n{}\n", lines[0], lines[1]);
-
-        let mut hunks = Vec::new();
-        let mut current = String::new();
-        for line in &lines[2..] {
+        let mut header = String::new();
+        let mut hunks: Vec<String> = Vec::new();
+        for line in patch_str.lines() {
             if line.starts_with("@@") {
-                if !current.is_empty() {
-                    hunks.push(std::mem::take(&mut current));
-                }
-                current.push_str(line);
-                current.push('\n');
-            } else if !current.is_empty() {
-                current.push_str(line);
-                current.push('\n');
+                hunks.push(String::new());
             }
-        }
-        if !current.is_empty() {
-            hunks.push(current);
+            let out = hunks.last_mut().unwrap_or(&mut header);
+            out.push_str(line);
+            out.push('\n');
         }
         if hunks.is_empty() {
             return None;
@@ -85,14 +74,33 @@ impl FilePatch {
     }
 }
 
+/// Splits a patch at each file's `diff` line, or at `---` in a patch
+/// without them. Hunk bodies are skipped by their line counts: a deleted
+/// `-- comment` line reads `--- comment` there.
 fn split_by_file(patch: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut current = String::new();
+    // Old and new lines the open hunk has left.
+    let mut hunk = (0_u32, 0_u32);
+    // Past a file's first line but before its first hunk.
+    let mut header = false;
 
     for line in patch.lines() {
-        if line.starts_with("---") && !current.is_empty() {
-            result.push(current.trim_end_matches('\n').into());
-            current = String::new();
+        if hunk != (0, 0) && take_hunk_line(line, &mut hunk) {
+            current.push_str(line);
+            current.push('\n');
+            continue;
+        }
+        hunk = (0, 0);
+        if line.starts_with("diff ") || (!header && line.starts_with("---")) {
+            if !current.is_empty() {
+                result.push(current.trim_end_matches('\n').into());
+                current = String::new();
+            }
+            header = true;
+        } else if let Some(lengths) = hunk_lengths(line) {
+            hunk = lengths;
+            header = false;
         }
         current.push_str(line);
         current.push('\n');
@@ -101,6 +109,38 @@ fn split_by_file(patch: &str) -> Vec<String> {
         result.push(current.trim_end_matches('\n').into());
     }
     result
+}
+
+/// Counts `line` against the open hunk, or returns false when it cannot be
+/// a hunk line, which means the hunk's counts were wrong.
+fn take_hunk_line(line: &str, left: &mut (u32, u32)) -> bool {
+    let (old, new) = left;
+    match line.as_bytes().first() {
+        Some(b' ') => {
+            *old = old.saturating_sub(1);
+            *new = new.saturating_sub(1);
+        }
+        Some(b'-') => *old = old.saturating_sub(1),
+        Some(b'+') => *new = new.saturating_sub(1),
+        Some(b'\\') => {}
+        _ => return false,
+    }
+    true
+}
+
+/// The old and new line counts of a `@@ -a,b +c,d @@` hunk header.
+fn hunk_lengths(line: &str) -> Option<(u32, u32)> {
+    let ranges = line.strip_prefix("@@ -")?;
+    let (old, rest) = ranges.split_once(" +")?;
+    let (new, _) = rest.split_once(" @@")?;
+    Some((range_length(old)?, range_length(new)?))
+}
+
+fn range_length(range: &str) -> Option<u32> {
+    match range.split_once(',') {
+        Some((_, length)) => length.parse().ok(),
+        None => range.parse::<u32>().ok().map(|_| 1),
+    }
 }
 
 fn drop_hunks_until(patch: &str, max_bytes: usize) -> String {
@@ -375,6 +415,22 @@ mod tests {
         let diff = format!("{big_file}\n{small_file}");
         let compressed = compress_commit_diff(&diff, big_file.len() / 2);
         assert!(compressed.contains("[...skipped"));
+    }
+
+    #[test]
+    fn deleted_dash_lines_and_git_headers_stay_with_their_file() {
+        let hunk = "@@ -1,2 +1,1 @@\n--- drop me\n context\n";
+        let first = format!(
+            "diff --git a/schema.sql b/schema.sql\nindex 1111111..2222222 100644\n--- a/schema.sql\n+++ b/schema.sql\n{}",
+            hunk.repeat(6)
+        );
+        let second = "diff --git a/notes.md b/notes.md\nindex 3333333..4444444 100644\n--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-old\n+new\n";
+        let diff = format!("{first}{second}");
+        let compressed = compress_commit_diff(&diff, diff.len() / 2);
+        assert!(compressed.starts_with(&format!(
+            "diff --git a/schema.sql b/schema.sql\nindex 1111111..2222222 100644\n--- a/schema.sql\n+++ b/schema.sql\n{hunk}[...skipped 5 hunks...]\n"
+        )));
+        assert!(compressed.ends_with(second));
     }
 
     #[test]

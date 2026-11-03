@@ -549,7 +549,7 @@ impl DiffViewState {
                         let store = segment.doc.text(file, side);
                         let range = store.display_range(index).unwrap_or(0..0);
                         if range.len() > super::long_lines::WINDOW_LINE_BYTES {
-                            let window = self.line_window(store, range, side, columns);
+                            let window = self.line_window(segment, file, range, side, columns);
                             window.map(|w| w.start).hash(&mut h);
                         }
                     }
@@ -873,8 +873,13 @@ impl DiffViewState {
                     let detail = line_detail(line, cap);
                     let shown = shown_len(line, cap);
                     let range = store.display_range(index).unwrap_or(0..0);
-                    let window =
-                        self.line_window(store, range.start..range.start + shown, side, columns);
+                    let window = self.line_window(
+                        segment,
+                        file,
+                        range.start..range.start + shown,
+                        side,
+                        columns,
+                    );
                     let (from, to) = window.map_or((0, shown), |w| (w.start, w.end));
                     let line = &line[from..to];
                     let range = range.start + from..range.start + to;
@@ -1141,7 +1146,8 @@ impl DiffViewState {
         let long = a.1.len() + b.1.len() > super::long_lines::SYNC_PAIR_BYTES;
         if long && a.1.len().max(b.1.len()) <= options.max_line_bytes {
             let wake = self.syntax_wake.clone();
-            return match self.long_lines.words(a, b, &options, wake) {
+            let ids = [Side::Old, Side::New].map(|side| (segment.generation, pair.file, side));
+            return match self.long_lines.words(ids, a, b, &options, wake) {
                 Some(words) => (words.0.clone(), WordDetail::Done(words.1)),
                 None => (Default::default(), WordDetail::Pending),
             };
@@ -1175,7 +1181,10 @@ impl DiffViewState {
             return;
         }
         let m = self.metrics();
-        let x = self.long_lines.x_of(store.shared(), range, byte, m.char_w);
+        let id = (self.segments[seg].generation, file, side);
+        let x = self
+            .long_lines
+            .x_of(id, store.shared(), range, byte, m.char_w);
         let columns = Columns::new(self.mode, self.viewport.0, &m, &self.presentation);
         let view_w = f64::from(columns.of(side).text_w - m.text_pad * 2.0);
         let handle = &self.hscroll[column_slot(self.mode, side)];
@@ -1191,12 +1200,13 @@ impl DiffViewState {
         }
     }
 
-    /// The window of a long line (`line`, a range of `store`'s text) to
-    /// shape at its column's sideways scroll; `None` with wrap on or for a
-    /// line short enough to shape whole.
+    /// The window of a long line (`line`, a range of the text of `file`'s
+    /// `side` in `segment`) to shape at its column's sideways scroll; `None`
+    /// with wrap on or for a line short enough to shape whole.
     fn line_window(
         &self,
-        store: &diffy_diff::TextStore,
+        segment: &Segment,
+        file: u32,
         line: Range<usize>,
         side: Side,
         columns: &Columns,
@@ -1211,8 +1221,15 @@ impl DiffViewState {
             .expected_scroll(slot, self.frame_id)
             .unwrap_or_else(|| self.hscroll[slot].offset_f64().0);
         let view_w = columns.of(side).text_w;
-        self.long_lines
-            .window(store.shared(), line, scroll, view_w, m.char_w)
+        let store = segment.doc.text(file, side);
+        self.long_lines.window(
+            (segment.generation, file, side),
+            store.shared(),
+            line,
+            scroll,
+            view_w,
+            m.char_w,
+        )
     }
 }
 

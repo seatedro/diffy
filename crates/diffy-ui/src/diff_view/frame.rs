@@ -192,6 +192,21 @@ impl DiffViewState {
             .map_or_else(|| self.estimated_metrics(), |(m, _)| m)
     }
 
+    /// Sizes the line numbers for the rows now held with the font as last
+    /// measured. The measurement keeps the fonts it was taken under, so a
+    /// font change in the same frame still reshapes every row.
+    pub(crate) fn refit_numbers(&mut self) {
+        if let Some((m, measured)) = self.metrics {
+            let m = metrics_for(
+                self.style.font_size,
+                self.style.line_height,
+                m.char_w,
+                &self.segments,
+            );
+            self.metrics = Some((m, measured));
+        }
+    }
+
     /// Metrics before the font has been measured.
     fn estimated_metrics(&self) -> Metrics {
         let font_size = self.style.font_size;

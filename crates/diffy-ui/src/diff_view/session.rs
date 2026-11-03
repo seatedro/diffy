@@ -245,7 +245,7 @@ impl DiffSessionViewState {
     fn finish(&mut self, anchor: Option<Anchor>) {
         let view = &mut self.view;
         // Line numbers may need another digit.
-        view.metrics = None;
+        view.refit_numbers();
         view.rerun_search();
         view.rebuild_rows(anchor);
     }

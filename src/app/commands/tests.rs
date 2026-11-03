@@ -785,6 +785,24 @@ fn confirmation_traps_focus_and_escape_cancels_back_to_the_caller() {
 }
 
 #[test]
+fn switching_workspaces_cancels_a_confirmation_for_the_old_one() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.inject(Intent::RequestConfirmation(discard_request()));
+    assert_eq!(ui.app().commands.top_layer(), Some(LayerKind::Confirmation));
+    ui.inject(Intent::ActivateWorkspace {
+        path: PathBuf::from("/w/other"),
+    });
+    assert_eq!(ui.app().commands.top_layer(), None);
+    assert!(ui.app().commands.confirmation().is_none());
+    assert!(
+        ui.try_find(By::role_name(Role::Dialog, "Confirm discard"))
+            .is_none()
+    );
+    assert!(ui.app().dispatched.is_empty());
+}
+
+#[test]
 fn confirming_dispatches_the_requested_action() {
     let mut ui = cmd_harness(Settings::default());
     focus_anchor(&mut ui);
@@ -1106,6 +1124,52 @@ fn undo_toasts_dispatch_undo_or_expiry_once() {
     assert_eq!(
         ui.app().dispatched[1..],
         [Action::from(NavigationAction::StartCompare)]
+    );
+}
+
+#[test]
+fn undo_offers_end_with_their_toast_when_pushed_out_or_the_workspace_changes() {
+    let mut ui = cmd_harness(Settings::default());
+    let forgot = |id: u64| {
+        Action::from(NavigationAction::SetRef {
+            field: CompareField::Left,
+            value: format!("forgot-{id}"),
+        })
+    };
+    let undo = |id: u64| {
+        Intent::Toast(ToastUpdate::Undo {
+            id: JobId(id),
+            kind: crate::contracts::commands::ToastKind::Success,
+            message: format!("Discarded change {id}"),
+            undo: Box::new(NavigationAction::RefreshRepository.into()),
+            expires_ms: 8000,
+            expired: Some(Box::new(forgot(id))),
+        })
+    };
+    ui.inject(undo(1));
+    for n in 0..5 {
+        ui.inject(Intent::Toast(ToastUpdate::info(format!("Notice {n}"))));
+    }
+    assert_eq!(ui.app().dispatched, vec![forgot(1)]);
+    assert!(ui.try_find(By::role_name(Role::Button, "Undo")).is_none());
+
+    ui.inject(undo(2));
+    ui.inject(Intent::Toast(ToastUpdate::Progress {
+        id: JobId(9),
+        message: "Pushing main".to_owned(),
+        completed: 0,
+        total: 0,
+    }));
+    ui.find(By::role_name(Role::Button, "Undo"));
+    ui.find(By::role_name(Role::Status, "Pushing main"));
+    ui.inject(Intent::ActivateWorkspace {
+        path: PathBuf::from("/w/other"),
+    });
+    assert_eq!(ui.app().dispatched, vec![forgot(1), forgot(2)]);
+    assert!(ui.try_find(By::role_name(Role::Button, "Undo")).is_none());
+    assert!(
+        ui.try_find(By::role_name(Role::Status, "Pushing main"))
+            .is_none()
     );
 }
 

@@ -67,6 +67,8 @@ const REF_FRECENCY_PREFIX: &str = "ref:";
 const CLONE_JOBS: u64 = 1 << 48;
 
 const TIP_DELAY_MS: u64 = 8_000;
+// The click that activates the window lands right after the focus change.
+const ACTIVATION_CLICK: std::time::Duration = std::time::Duration::from_millis(1_000);
 
 #[derive(Debug, Clone, Copy)]
 enum TipSession {
@@ -136,7 +138,7 @@ pub struct CommandsController {
     file_lists: Vec<FileList>,
     file_pending: Option<FileListKey>,
     file_generation: u64,
-    go_prefix: bool,
+    go_prefix: Cell<bool>,
     tip: Cell<TipSession>,
     tip_since: Cell<Option<u64>>,
     shortcuts_reviewing: bool,
@@ -144,7 +146,7 @@ pub struct CommandsController {
     go_since: Cell<Option<u64>>,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
-    activation_click: Cell<bool>,
+    activation_click: Cell<Option<std::time::Instant>>,
 }
 
 impl std::fmt::Debug for CommandsController {
@@ -194,7 +196,7 @@ impl Default for CommandsController {
             file_lists: Vec::new(),
             file_pending: None,
             file_generation: 0,
-            go_prefix: false,
+            go_prefix: Cell::new(false),
             tip: Cell::new(TipSession::Pending),
             tip_since: Cell::new(None),
             shortcuts_reviewing: false,
@@ -202,7 +204,7 @@ impl Default for CommandsController {
             go_since: Cell::new(None),
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
-            activation_click: Cell::new(false),
+            activation_click: Cell::new(None),
         }
     }
 }
@@ -221,12 +223,26 @@ impl CommandsController {
     }
 
     pub(super) fn observe_window_focus(&self, focused: bool) {
+        self.cancel_go();
         self.activation_click
-            .set(focused && !self.layers.is_empty());
+            .set((focused && !self.layers.is_empty()).then(std::time::Instant::now));
     }
 
     pub(super) fn observe_key(&self) {
-        self.activation_click.set(false);
+        self.activation_click.set(None);
+    }
+
+    pub(super) fn observe_pointer_press(&self) {
+        self.cancel_go();
+    }
+
+    /// Whether this dismissal comes from the click that brought the window
+    /// forward, which shouldn't close the overlay it landed on. A later
+    /// first click, after refocusing from the keyboard, is the user's own.
+    fn takes_activation_click(&self) -> bool {
+        self.activation_click
+            .take()
+            .is_some_and(|at| at.elapsed() < ACTIVATION_CLICK)
     }
 
     pub fn editing_ref(&self) -> Option<CompareField> {
@@ -261,6 +277,19 @@ impl CommandsController {
         &mut self.toasts
     }
 
+    /// Every toast change goes through here so an undo offer it ends still
+    /// tells its owner.
+    fn toast(&mut self, update: ToastUpdate) {
+        let ended = self.toasts.apply(update);
+        self.dispatch_all(ended);
+    }
+
+    fn dispatch_all(&self, actions: Vec<Action>) {
+        for action in actions {
+            self.request(PlatformRequest::Dispatch(action));
+        }
+    }
+
     pub(super) fn context_menu_mut(&mut self) -> &mut ContextMenuState {
         &mut self.context_menu
     }
@@ -282,7 +311,12 @@ impl CommandsController {
     }
 
     pub fn go_pending(&self) -> bool {
-        self.go_prefix
+        self.go_prefix.get()
+    }
+
+    fn cancel_go(&self) {
+        self.go_prefix.set(false);
+        self.go_since.set(None);
     }
 
     pub(super) fn go_since(&self, now_ms: u64) -> u64 {
@@ -292,8 +326,7 @@ impl CommandsController {
     }
 
     fn leader(&mut self, binding: &str, cx: &SharedContext) -> Reduction {
-        self.go_prefix = false;
-        self.go_since.set(None);
+        self.cancel_go();
         match keymap::leader(binding) {
             Some(leader) => {
                 let mut reduction = self.run(leader.action(), cx);
@@ -396,7 +429,7 @@ impl CommandsController {
                 }),
             ),
             LauncherChoice::Clone(None) => {
-                self.toasts.apply(ToastUpdate::info(
+                self.toast(ToastUpdate::info(
                     "Type owner/repo or a GitHub URL, then choose Clone",
                 ));
                 Reduction::changed()
@@ -409,7 +442,7 @@ impl CommandsController {
             LauncherFolder::CloneInto { url, name } => {
                 self.next_clone += 1;
                 let job = JobId(CLONE_JOBS | self.next_clone);
-                self.toasts.apply(ToastUpdate::Progress {
+                self.toast(ToastUpdate::Progress {
                     id: job,
                     message: format!("Cloning {name}\u{2026}"),
                     completed: 0,
@@ -521,6 +554,8 @@ impl CommandsController {
         if self.modal_open() && kind != LayerKind::Confirmation {
             return None;
         }
+        // Keys belong to the overlay now, not a leader sequence begun earlier.
+        self.cancel_go();
         let mut return_focus = self.current_focus();
         while let Some(layer) = self.layers.pop() {
             self.clear_layer(layer.kind);
@@ -838,7 +873,7 @@ impl CommandsController {
         let files = match files {
             Ok(files) => files,
             Err(message) if showing => {
-                self.toasts.apply(ToastUpdate::error(format!(
+                self.toast(ToastUpdate::error(format!(
                     "Couldn't list files: {message}"
                 )));
                 return Reduction::changed();
@@ -1246,6 +1281,7 @@ impl CommandsController {
         if self.modal_open() {
             return Reduction::default();
         }
+        self.cancel_go();
         while let Some(kind) = self.top_layer() {
             self.pop_layer(kind);
         }
@@ -1386,7 +1422,7 @@ impl CommandsController {
 
     fn run_shortcut(&mut self, command: ShortcutCommand, cx: &SharedContext) -> Reduction {
         if command == ShortcutCommand::GoPrefix {
-            self.go_prefix = true;
+            self.go_prefix.set(true);
             self.go_since.set(None);
             return Reduction::changed();
         }
@@ -2064,7 +2100,7 @@ impl Controller for CommandsController {
             A::OpenKeymaps => self.open_settings(Some(SettingsSection::Keymaps)),
             A::CloseOverlay => self.close_top(),
             A::BackdropDismiss => {
-                if self.activation_click.replace(false) {
+                if self.takes_activation_click() {
                     Reduction::default()
                 } else {
                     self.close_top()
@@ -2146,11 +2182,11 @@ impl Controller for CommandsController {
                 Some(LayerKind::ContextMenu) => self.context_menu_key(&binding, cx),
                 _ => Reduction::default(),
             },
-            A::Palette(PaletteEvent::Dismiss) if self.activation_click.replace(false) => {
+            A::Palette(PaletteEvent::Dismiss) if self.takes_activation_click() => {
                 Reduction::default()
             }
             A::Palette(event) => {
-                self.activation_click.set(false);
+                self.activation_click.set(None);
                 let outcome = self.palette.apply(event);
                 self.palette_outcome(outcome, cx)
             }
@@ -2319,7 +2355,7 @@ impl Controller for CommandsController {
         match event {
             CommandsEvent::SettingsSaved => Reduction::default(),
             CommandsEvent::SettingsSaveFailed { message } => {
-                self.toasts.apply(ToastUpdate::error(format!(
+                self.toast(ToastUpdate::error(format!(
                     "Settings were not saved: {message}"
                 )));
                 Reduction::changed()
@@ -2410,7 +2446,7 @@ impl Controller for CommandsController {
                     return Reduction::default();
                 };
                 let message = format!("Cloning {name}: {received}/{total} objects\u{2026}");
-                self.toasts.apply(ToastUpdate::Progress {
+                self.toast(ToastUpdate::Progress {
                     id: job,
                     message,
                     completed: received as u64,
@@ -2443,7 +2479,7 @@ impl Controller for CommandsController {
                         NavigationAction::OpenRepository(path).into(),
                     ));
                 }
-                self.toasts.apply(ToastUpdate::Show {
+                self.toast(ToastUpdate::Show {
                     id: Some(job),
                     kind,
                     message,
@@ -2474,6 +2510,21 @@ impl Controller for CommandsController {
                 if let Some(launcher) = &mut self.launcher {
                     launcher.reset();
                 }
+                // The workspace's jobs and undo entries end with it; clones
+                // report across workspaces.
+                let clones = &self.clones;
+                let ended = self
+                    .toasts
+                    .leave_workspace(|job| clones.iter().any(|(id, _)| *id == job));
+                self.dispatch_all(ended);
+                // Overlays act on the workspace they were opened in: a pending
+                // discard could delete a same-named file in the next one. Its
+                // pending file listing never reports back either.
+                while let Some(kind) = self.top_layer() {
+                    self.pop_layer(kind);
+                }
+                self.file_pending = None;
+                self.cancel_go();
                 if self.layers.is_empty() && self.view_focus == Some(LAUNCHER) {
                     self.view_focus = Some(crate::app::text_targets::SIDEBAR);
                     self.focus(self.view_focus);
@@ -2510,7 +2561,7 @@ impl Controller for CommandsController {
                         after_ms: *expires_ms,
                     });
                 }
-                self.toasts.apply(update.clone());
+                self.toast(update.clone());
                 reduction
             }
             Intent::ChooseDefinition(targets) => {

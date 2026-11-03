@@ -99,6 +99,14 @@ pub fn key_action(
         controllers.commands.observe_window_focus(*focused);
         return None;
     }
+    // A click ends a pending leader sequence; the press still goes on to
+    // the element under the pointer.
+    if let InputEvent::PointerButton { state, .. } = event {
+        if state.is_pressed() {
+            controllers.commands.observe_pointer_press();
+        }
+        return None;
+    }
     let InputEvent::KeyPress(chord) = event else {
         return None;
     };

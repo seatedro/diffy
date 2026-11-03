@@ -2494,6 +2494,13 @@ impl Controller for CommandsController {
                     .toasts
                     .leave_workspace(|job| clones.iter().any(|(id, _)| *id == job));
                 self.dispatch_all(ended);
+                // Overlays act on the workspace they were opened in: a pending
+                // discard could delete a same-named file in the next one. Its
+                // pending file listing never reports back either.
+                while let Some(kind) = self.top_layer() {
+                    self.pop_layer(kind);
+                }
+                self.file_pending = None;
                 if self.layers.is_empty() && self.view_focus == Some(LAUNCHER) {
                     self.view_focus = Some(crate::app::text_targets::SIDEBAR);
                     self.focus(self.view_focus);

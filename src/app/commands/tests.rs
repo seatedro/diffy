@@ -785,6 +785,24 @@ fn confirmation_traps_focus_and_escape_cancels_back_to_the_caller() {
 }
 
 #[test]
+fn switching_workspaces_cancels_a_confirmation_for_the_old_one() {
+    let mut ui = cmd_harness(Settings::default());
+    focus_anchor(&mut ui);
+    ui.inject(Intent::RequestConfirmation(discard_request()));
+    assert_eq!(ui.app().commands.top_layer(), Some(LayerKind::Confirmation));
+    ui.inject(Intent::ActivateWorkspace {
+        path: PathBuf::from("/w/other"),
+    });
+    assert_eq!(ui.app().commands.top_layer(), None);
+    assert!(ui.app().commands.confirmation().is_none());
+    assert!(
+        ui.try_find(By::role_name(Role::Dialog, "Confirm discard"))
+            .is_none()
+    );
+    assert!(ui.app().dispatched.is_empty());
+}
+
+#[test]
 fn confirming_dispatches_the_requested_action() {
     let mut ui = cmd_harness(Settings::default());
     focus_anchor(&mut ui);

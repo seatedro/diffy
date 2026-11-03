@@ -1,6 +1,8 @@
 [workspace]
 members = [
   ".",
+  "bindings/node",
+  "crates/diffy-compare",
   "crates/diffy-diff",
   "crates/diffy-semantic",
   "crates/diffy-syntax",
@@ -94,6 +96,7 @@ parking_lot = "0.12"
 libc = "0.2"
 tempfile = "3.14"
 webbrowser = "1.0"
+diffy-compare = { path = "crates/diffy-compare" }
 diffy-diff = { path = "crates/diffy-diff" }
 diffy-semantic = { path = "crates/diffy-semantic" }
 diffy-syntax = { path = "crates/diffy-syntax", features = ["download"] }
@@ -134,6 +137,11 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# bindings/node: a panic rejects the call instead of aborting the Node process.
+[profile.node]
+inherits = "release"
+panic = "unwind"
 
 [patch.crates-io]
 accesskit_unix = { git = "https://github.com/seatedro/quark", rev = "b0d4abf67fb59d9e9fe66fbda78bda62bad160b5" }

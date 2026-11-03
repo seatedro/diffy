@@ -1,0 +1,32 @@
+{
+  "name": "@diffy/node-win32-x64-msvc",
+  "version": "0.1.0",
+  "description": "The @diffy/node binary for Windows x64.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seatedro/diffy.git",
+    "directory": "bindings/node/npm/win32-x64-msvc"
+  },
+  "main": "diffy.win32-x64-msvc.node",
+  "files": [
+    "diffy.win32-x64-msvc.node",
+    "THIRD_PARTY_NOTICES.md",
+    "RUST_NOTICES.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

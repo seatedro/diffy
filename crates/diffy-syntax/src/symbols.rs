@@ -1,7 +1,7 @@
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 use std::sync::Arc;
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 use crate::{GrammarStore, LanguageId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,7 +40,7 @@ impl SymbolKind {
             .unwrap_or(Self::Other)
     }
 
-    #[cfg(feature = "engine")]
+    #[cfg(feature = "runtime")]
     fn from_capture(name: &str) -> Option<Self> {
         let kind = name.strip_prefix("definition.")?;
         Some(match kind {
@@ -68,7 +68,7 @@ pub struct Symbol {
     pub end_line: u32,
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 pub(crate) struct TagsQuery {
     query: tree_sitter::Query,
     kinds: Vec<Option<SymbolKind>>,
@@ -76,7 +76,7 @@ pub(crate) struct TagsQuery {
     fingerprint: u64,
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 impl TagsQuery {
     pub(crate) fn compile(
         grammar: &tree_sitter::Language,
@@ -148,7 +148,7 @@ impl TagsQuery {
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 fn fnv1a(parts: &[&[u8]]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for part in parts {
@@ -162,14 +162,14 @@ fn fnv1a(parts: &[&[u8]]) -> u64 {
     hash
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 #[derive(Clone)]
 pub struct Tagger {
     grammar: Arc<crate::engine::Grammar>,
     query: Arc<TagsQuery>,
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 impl std::fmt::Debug for Tagger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Tagger")
@@ -179,14 +179,14 @@ impl std::fmt::Debug for Tagger {
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 pub enum TaggerLookup {
     Ready(Tagger),
     Pending,
     Unsupported,
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 impl Tagger {
     pub fn fingerprint(&self) -> u64 {
         self.query.fingerprint
@@ -204,7 +204,7 @@ impl Tagger {
     }
 }
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "runtime")]
 impl GrammarStore {
     pub fn tagger(&self, language: &LanguageId) -> TaggerLookup {
         if !self.ships_tags(language) {

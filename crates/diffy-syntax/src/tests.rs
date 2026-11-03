@@ -1535,3 +1535,206 @@ mod navigate {
         assert_eq!(lookup.import, Some(pos(0, 26)));
     }
 }
+
+#[cfg(feature = "bundled")]
+mod bundled {
+    use super::*;
+    use HighlightKind::*;
+
+    /// Language, a tag that reaches it, sample (file in
+    /// tools/syntax-pack/samples, or inline source), and text that must get
+    /// each kind.
+    type Case = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static [(&'static str, HighlightKind)],
+    );
+    const CASES: &[Case] = &[
+        (
+            "c",
+            "h",
+            "c.c",
+            &[
+                ("static", Keyword),
+                ("greet", Function),
+                ("/* Prints", Comment),
+            ],
+        ),
+        (
+            "cpp",
+            "cc",
+            "cpp.cpp",
+            &[("namespace", Keyword), ("\"hello, \"", String)],
+        ),
+        (
+            "css",
+            "css",
+            "css.css",
+            &[("@media", Keyword), ("color", Property), ("4px", Number)],
+        ),
+        (
+            "go",
+            "golang",
+            "go.go",
+            &[("func", Keyword), ("Greeter", Type), ("42", Number)],
+        ),
+        (
+            "html",
+            "htm",
+            "html.html",
+            &[("html", Tag), ("lang", Attribute)],
+        ),
+        (
+            "javascript",
+            "jsx",
+            "javascript.js",
+            &[("function", Keyword), ("p", Tag)],
+        ),
+        (
+            "json",
+            "jsonc",
+            "json.json",
+            &[("\"quark\"", String), ("1", Number), ("true", Constant)],
+        ),
+        (
+            "kotlin",
+            "kts",
+            "fun main() {\n    val greeting = \"hi\"\n}\n",
+            &[("fun", Keyword), ("\"hi\"", String)],
+        ),
+        // Inline spans and the fence arrive through injections.
+        (
+            "markdown",
+            "md",
+            "markdown.md",
+            &[("Hello", Keyword), ("bold", Type), ("fn", Keyword)],
+        ),
+        (
+            "markdown_inline",
+            "markdown_inline",
+            "markdown_inline.md",
+            &[("emphasis", Attribute), ("code", String)],
+        ),
+        (
+            "python",
+            "py",
+            "python.py",
+            &[("class", Keyword), ("greet", Function), ("42", Number)],
+        ),
+        (
+            "rust",
+            "rs",
+            "rust.rs",
+            &[("fn", Keyword), ("Greeter", Type), ("// Says", Comment)],
+        ),
+        (
+            "swift",
+            "swift",
+            "func greet(name: String) -> String {\n    return \"hi\"\n}\n",
+            &[("func", Keyword), ("\"hi\"", String)],
+        ),
+        (
+            "toml",
+            "toml",
+            "toml.toml",
+            &[
+                ("# Package", Comment),
+                ("\"quark\"", String),
+                ("true", Constant),
+            ],
+        ),
+        (
+            "tsx",
+            "tsx",
+            "tsx.tsx",
+            &[("type", Keyword), ("Props", Type), ("div", Tag)],
+        ),
+        (
+            "typescript",
+            "mts",
+            "typescript.ts",
+            &[("interface", Keyword), ("Greeter", Type)],
+        ),
+        (
+            "yaml",
+            "yml",
+            "yaml.yaml",
+            &[
+                ("name", Property),
+                ("true", Constant),
+                ("# Workflow", Comment),
+            ],
+        ),
+    ];
+
+    fn sample(sample: &str) -> std::string::String {
+        if sample.contains('\n') {
+            return sample.to_owned();
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/syntax-pack/samples")
+            .join(sample);
+        std::fs::read_to_string(&path).unwrap()
+    }
+
+    // Needs a default-set bundle (`syntax-pack bundle`, then
+    // DIFFY_SYNTAX_BUNDLE).
+    #[test]
+    fn bundled_grammars_resolve_by_tag_and_highlight_their_samples() {
+        if crate::bundled::languages().len() == 0 {
+            eprintln!("skipping: built without DIFFY_SYNTAX_BUNDLE");
+            return;
+        }
+        let store = GrammarStore::new(StoreConfig::new().bundled());
+
+        for &(name, tag, file, expected) in CASES {
+            assert!(
+                crate::bundled::languages().any(|l| l == name),
+                "{name} is not bundled"
+            );
+            assert_eq!(store.status(&language(tag)), LanguageStatus::Ready, "{tag}");
+            let source = sample(file);
+            let spans = highlight(&store, &language(tag), &source);
+            for &(text, kind) in expected {
+                let found = source.match_indices(text).any(|(at, _)| {
+                    spans
+                        .iter()
+                        .any(|span| span.kind == kind && span.range().contains(&at))
+                });
+                assert!(found, "{name}: {text:?} is not {kind:?}");
+            }
+        }
+        let rust = LanguageId::from_path("src/lib.rs").unwrap();
+        assert_eq!(store.status(&rust), LanguageStatus::Ready);
+    }
+
+    #[test]
+    fn the_catalog_lists_bundled_grammars_only_when_the_store_opts_in() {
+        if crate::bundled::languages().len() == 0 {
+            return;
+        }
+        let store = GrammarStore::new(StoreConfig::new().bundled());
+        store.status(&language("rs"));
+
+        let catalog = store.catalog();
+
+        assert_eq!(catalog.languages, crate::bundled::languages().len());
+        assert_eq!(
+            catalog.tags.get("rs").map(std::string::String::as_str),
+            Some("rust")
+        );
+        let state = |name: &str| {
+            catalog
+                .statuses
+                .iter()
+                .find(|status| status.language == name)
+                .map(|status| status.state.clone())
+        };
+        assert_eq!(state("rust"), Some(GrammarState::Ready));
+        assert_eq!(state("go"), Some(GrammarState::Installed));
+        let plain = GrammarStore::new(StoreConfig::new());
+        assert_eq!(plain.status(&language("rs")), LanguageStatus::Unavailable);
+        assert_eq!(plain.catalog().languages, 0);
+    }
+}

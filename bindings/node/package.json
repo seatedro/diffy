@@ -1,0 +1,48 @@
+{
+  "name": "@diffy/node",
+  "version": "0.1.0",
+  "description": "Diffy's semantic file diff for Node: hand it file contents, get back a JSON diff to render.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seatedro/diffy.git",
+    "directory": "bindings/node"
+  },
+  "homepage": "https://github.com/seatedro/diffy/tree/master/bindings/node",
+  "keywords": ["diff", "semantic-diff", "tree-sitter", "git"],
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "binding.js",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "notices": "node scripts/notices.mjs",
+    "test": "node --test test/diffy.test.mjs"
+  },
+  "optionalDependencies": {
+    "@diffy/node-darwin-arm64": "0.1.0",
+    "@diffy/node-darwin-x64": "0.1.0",
+    "@diffy/node-linux-x64-gnu": "0.1.0",
+    "@diffy/node-linux-arm64-gnu": "0.1.0",
+    "@diffy/node-win32-x64-msvc": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

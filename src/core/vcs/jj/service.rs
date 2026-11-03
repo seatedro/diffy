@@ -191,7 +191,7 @@ impl JjRepository {
         change: &FileChange,
         old_rev: &str,
         new_rev: &str,
-    ) -> Result<semantic::ChangedPath> {
+    ) -> Result<diffy_compare::FileInput> {
         use crate::core::vcs::compare_port::file_status;
         use crate::core::vcs::model::FileChangeStatus;
         let old_path = match change.status {
@@ -212,10 +212,10 @@ impl JjRepository {
             .transpose()
             .map(Option::unwrap_or_default)
         };
-        Ok(semantic::ChangedPath {
+        Ok(diffy_compare::FileInput {
             status: file_status(change.status),
-            old_content: read(old_rev, old_path)?,
-            new_content: read(new_rev, new_path)?,
+            old: read(old_rev, old_path)?,
+            new: read(new_rev, new_path)?,
             old_path: old_path.map(str::to_owned),
             new_path: new_path.map(str::to_owned),
         })

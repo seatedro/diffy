@@ -2,7 +2,8 @@
 
 Load tree-sitter grammars at runtime, from packs, to highlight diffs.
 
-- No grammar is compiled into the app.
+- No grammar is compiled into the app; other builds can use
+  [bundled grammars](#bundled-grammars).
 - A pack is a shared library exporting the tree-sitter language function,
   plus its highlight query, an optional injection query, and a manifest.
 - A `GrammarStore` feeds the diff view; an app adapts it to Quark's
@@ -16,6 +17,7 @@ Load tree-sitter grammars at runtime, from packs, to highlight diffs.
 |---|---|---|---|
 | Local pack roots | `StoreConfig::local_packs(root)` | `diffy-syntax/engine` | Unsigned; the app opts in |
 | Signed index | `StoreConfig::downloads(Downloads::new(app_id, url, &keys))` | `diffy-syntax/download` | Ed25519 signature over the index |
+| Bundled grammars | `StoreConfig::bundled()` | `diffy-syntax/bundled` | Part of the binary |
 
 From [diff_demo.rs](../diffy-ui/examples/diff_demo.rs):
 
@@ -26,8 +28,8 @@ let store = GrammarStore::new(StoreConfig::new().local_packs(root));
 diff.enable_syntax(store); // DiffViewState
 ```
 
-- Search order: local roots (in the order added), then the download cache,
-  then the network.
+- Search order: local roots (in the order added), then bundled grammars,
+  then the download cache, then the network.
 - No default root and no default index URL.
 - A pack root holds `<target triple>/<language>/`, as `syntax-pack` writes
   it.
@@ -66,12 +68,14 @@ A fence tag or file extension resolves once per store; the result is kept,
 so an unknown language costs one map lookup afterwards.
 
 1. A local pack whose name, alias, or extension matches loads at once.
-2. A pack in the cached signed index, with every file present and matching
+2. With `StoreConfig::bundled`, a bundled grammar that matches loads at
+   once.
+3. A pack in the cached signed index, with every file present and matching
    its SHA-256, loads at once.
-3. Otherwise, with downloads configured, the language is pending. The fetch
+4. Otherwise, with downloads configured, the language is pending. The fetch
    thread downloads the index (at most once per store, cached) and then the
    pack.
-4. A language missing from the fresh index, or whose download fails, is
+5. A language missing from the fresh index, or whose download fails, is
    unavailable until `GrammarStore::retry` (which refetches the index).
 
 - `HighlightWorker` answers a pending language with a plain result marked
@@ -128,6 +132,38 @@ cargo run -p syntax-pack -- check                 # re-check built packs for thi
   - TypeScript and TSX also read JavaScript's queries from
     `DIR/javascript/`.
 
+## Bundled grammars
+
+Compiled-in grammars, for builds without packs or downloads (such as a
+headless server). The app does not use them.
+
+- Default set: C, C++, CSS, Go, HTML, JavaScript, JSON, Kotlin, Markdown
+  (with `markdown_inline`), Python, Rust, Swift, TOML, TSX, TypeScript,
+  YAML.
+- `syntax-pack bundle` writes `<out>/<target>/`: `lib/` (static
+  libraries), `queries/`, `bundle.tsv`, `THIRD_PARTY_NOTICES.md`.
+- Build with `--features bundled` and `DIFFY_SYNTAX_BUNDLE` set to the
+  absolute `<out>`. Unset, the bundle is empty and cargo warns.
+- `bundled` needs only `runtime`: no `libloading`, `ring`, JSON manifests,
+  or `StoreConfig::local_packs`. Add `engine` to also load packs.
+- Same tags, queries, ABI check, and `catalog()` entries as packs.
+- `diffy_syntax::bundled::languages()` lists what a build has.
+- Ship `THIRD_PARTY_NOTICES.md` with anything you distribute; the grammar
+  licenses require it.
+
+```sh
+cargo run -p syntax-pack -- bundle --out "$PWD/target/syntax-bundle"            # default set, this host
+cargo run -p syntax-pack -- bundle --out "$PWD/target/syntax-bundle" rust go    # just these
+cargo run -p syntax-pack -- bundle --out "$PWD/target/syntax-bundle" --target x86_64-apple-darwin
+DIFFY_SYNTAX_BUNDLE="$PWD/target/syntax-bundle" cargo build -p my-server --features diffy-syntax/bundled
+```
+
+```rust
+use diffy_syntax::{GrammarStore, StoreConfig};
+
+let store = GrammarStore::new(StoreConfig::new().bundled());
+```
+
 Maintainer details (pinning, cross-target checks, publishing) are in
 [tools/syntax-pack/README.md](../../tools/syntax-pack/README.md).
 
@@ -175,5 +211,7 @@ Loading a pack runs native code with the app's privileges. Full model:
 - **The cache** is not defended against anyone who can already write the
   user's files (including swapping a library between hash check and
   `dlopen`).
+- **Bundled grammars** are part of the binary, built from the same pinned,
+  hashed sources; nothing is loaded at run time.
 - **Parsers** see untrusted text. A crash in a grammar's C code kills the
   process; a panic in highlighting is caught by the worker.

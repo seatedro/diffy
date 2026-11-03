@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use diffy_compare::semantic_tag;
 use diffy_diff::{OutlineItem, Placeholder, SlotState, SourceCoverage, SourcePurpose};
 
 use crate::contracts::commands::{SettingsSnapshot, ToastKind, ToastUpdate};
@@ -20,7 +21,6 @@ pub use crate::contracts::viewport::pipeline::{
     WORKING_SET_LINES,
 };
 use crate::core::compare::git::bucket_refs;
-use crate::core::compare::semantic::semantic_tag;
 use crate::core::compare::{CompareEntry, ComparePhase, RendererKind};
 use crate::core::vcs::model::{ChangeBucket, VcsCompareSpec};
 use crate::platform::persistence::{PersistedCompare, Settings};

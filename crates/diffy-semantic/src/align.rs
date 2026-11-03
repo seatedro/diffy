@@ -680,7 +680,7 @@ fn outline(sides: &[Side<'_, '_>; 2], matching: &Matching) -> Vec<OutlineItem> {
             };
             out.push(OutlineItem {
                 side: which,
-                line: item.lines.start,
+                lines: item.lines.clone(),
                 kind: item.kind.into(),
                 name: side.tree.text(item.name.clone()).into(),
                 change,

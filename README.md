@@ -48,4 +48,6 @@ dx serve --hot-patch --features hot-reload
 
 ## License
 
-GPL-3.0
+- The app: GPL-3.0.
+- `diffy-diff`, `diffy-semantic`, `diffy-syntax`, `diffy-compare`, and the
+  Node binding: MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE` in each).

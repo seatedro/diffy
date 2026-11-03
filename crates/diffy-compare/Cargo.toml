@@ -1,0 +1,27 @@
+[package]
+name = "diffy-compare"
+description = "Headless file comparison for Diffy: semantic diff where a grammar exists, line diff otherwise."
+version.workspace = true
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+diffy-diff = { path = "../diffy-diff" }
+diffy-semantic = { path = "../diffy-semantic" }
+diffy-syntax = { path = "../diffy-syntax", features = ["runtime"] }
+# gix's own line diff: matches Git, and the app links one copy.
+imara-diff = { package = "gix-imara-diff", version = "0.2.1", default-features = false }
+tracing = "0.1.44"
+serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
+
+[features]
+default = []
+# Enables `wire`.
+serde = ["dep:serde"]
+
+[dev-dependencies]
+serde_json = "1.0"
+# For `diffy_syntax::testing` packs.
+diffy-syntax = { path = "../diffy-syntax", features = ["engine"] }

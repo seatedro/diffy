@@ -20,6 +20,32 @@ subcommand.
   to one language and is lowercase, and that each expected injection is a
   pinned language's tag.
 
+## Bundles
+
+`bundle` compiles grammars into static libraries for diffy-syntax's
+`bundled` feature ([usage](../../crates/diffy-syntax/PACKS.md#bundled-grammars)).
+
+- Each language is first built and checked as a host pack from the same
+  sources, which adapts its queries for any target.
+- Static libraries: `-fvisibility=hidden`, PIC, and `/MD` on MSVC (Rust's
+  default CRT).
+- All libraries are linked into one throwaway shared library for the
+  target, so a global symbol two grammars define fails the bundle.
+- C++ scanners are refused: consumers would need the C++ runtime.
+- `THIRD_PARTY_NOTICES.md` copies the top-level license files of each
+  grammar repository (required) and query repository;
+  nvim-treesitter-queries-* repositories have none, so nvim-treesitter's
+  Apache-2.0 text is appended.
+- Cross-target bundles need `CC_<target>` and `AR_<target>`, as `build`
+  does, plus the host compiler.
+
+```sh
+# Per target, on any runner with that target's C toolchain:
+cargo run -p syntax-pack -- bundle --out "$PWD/bundle" --target aarch64-apple-darwin
+# Then, for the consumer:
+DIFFY_SYNTAX_BUNDLE="$PWD/bundle" cargo build --release --target aarch64-apple-darwin --features diffy-syntax/bundled
+```
+
 ## Languages
 
 - [grammars.toml](grammars.toml): the hand-pinned core languages, each with

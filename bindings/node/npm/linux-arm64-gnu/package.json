@@ -1,0 +1,35 @@
+{
+  "name": "@diffy/node-linux-arm64-gnu",
+  "version": "0.1.0",
+  "description": "The @diffy/node binary for Linux arm64 with glibc 2.28 or newer.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seatedro/diffy.git",
+    "directory": "bindings/node/npm/linux-arm64-gnu"
+  },
+  "main": "diffy.linux-arm64-gnu.node",
+  "files": [
+    "diffy.linux-arm64-gnu.node",
+    "THIRD_PARTY_NOTICES.md",
+    "RUST_NOTICES.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

@@ -1,0 +1,8 @@
+*.node
+node_modules/
+# Copied into each platform package at publish time.
+npm/*/LICENSE-*
+npm/*/THIRD_PARTY_NOTICES.md
+npm/*/RUST_NOTICES.md
+# Written by `npm run notices`.
+/RUST_NOTICES.md

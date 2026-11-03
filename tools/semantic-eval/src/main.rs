@@ -154,9 +154,10 @@ fn show(args: ShowArgs) -> Result<(), String> {
     if let Some(semantics) = run.doc.semantics(0) {
         for item in semantics.outline() {
             println!(
-                "outline {:?} {} {} {} {:?}",
+                "outline {:?} {}-{} {} {} {:?}",
                 item.side,
-                item.line + 1,
+                item.lines.start + 1,
+                item.lines.end,
                 item.kind,
                 item.name,
                 item.change

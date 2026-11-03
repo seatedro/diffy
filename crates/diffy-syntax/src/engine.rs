@@ -1,5 +1,6 @@
-//! Loading grammars from packs, parsing, and query evaluation, including
-//! languages embedded in others (tree-sitter injections).
+//! Loading grammars from packs or the bundle, parsing, and query
+//! evaluation, including languages embedded in others (tree-sitter
+//! injections).
 //!
 //! A [`Grammar`] is shared by every thread; parsers are not `Sync`, so each
 //! thread keeps its own per grammar.
@@ -13,6 +14,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::ControlFlow;
+#[cfg(feature = "engine")]
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,9 +22,41 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tree_sitter as ts;
 use tree_sitter::StreamingIterator;
 
-use crate::pack::{PackError, PackManifest, supported_abi, verify_files};
+#[cfg(feature = "engine")]
+use crate::pack::{PackError, PackManifest, verify_files};
 use crate::store::Tag;
 use crate::{HighlightKind, HighlightSpan, LanguageId};
+
+/// Grammar ABI versions (tree-sitter `LANGUAGE_VERSION`) this runtime can
+/// load.
+pub fn supported_abi() -> std::ops::RangeInclusive<u32> {
+    ts::MIN_COMPATIBLE_LANGUAGE_VERSION as u32..=ts::LANGUAGE_VERSION as u32
+}
+
+/// Why a grammar did not compile; packs map it to `pack::PackError`.
+#[derive(Debug)]
+pub(crate) enum GrammarError {
+    Abi { abi: u32, min: u32, max: u32 },
+    Query(String),
+    InjectionQuery(String),
+}
+
+impl std::fmt::Display for GrammarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Abi { abi, min, max } => {
+                write!(
+                    f,
+                    "grammar ABI {abi} is outside the supported {min}..={max}"
+                )
+            }
+            Self::Query(error) => write!(f, "the highlight query does not compile: {error}"),
+            Self::InjectionQuery(error) => {
+                write!(f, "the injection query does not compile: {error}")
+            }
+        }
+    }
+}
 
 /// A loaded language: its tree-sitter grammar, compiled highlight query,
 /// and compiled injection query when its pack has one.
@@ -59,6 +93,7 @@ impl Grammar {
     /// The library stays loaded for the rest of the process: tree-sitter
     /// languages, parsers, and trees on other threads point into it, and
     /// nothing tracks when the last of them is gone.
+    #[cfg(feature = "engine")]
     pub(crate) fn load(dir: &Path, manifest: &PackManifest) -> Result<Self, PackError> {
         verify_files(dir, manifest)?;
         let highlights = std::fs::read_to_string(dir.join(&manifest.highlights.path))?;
@@ -67,19 +102,52 @@ impl Grammar {
             None => Ok(None),
         };
         let injections = read(&manifest.injections)?;
-        let grammar = Self::compile(
-            &dir.join(&manifest.library.path),
-            &manifest.symbol,
-            Some(manifest.abi),
-            &highlights,
-            injections.as_deref(),
-        )?;
+        let library_path = dir.join(&manifest.library.path);
+        // SAFETY: loading a library runs its initializers, and calling the
+        // symbol runs its code. The pack passed its SHA-256 check against a
+        // manifest that is either signed (downloaded packs) or in a
+        // directory the app opted into (local packs); see the threat model
+        // in the crate docs.
+        let language = unsafe {
+            let library = libloading::Library::new(&library_path)
+                .map_err(|e| PackError::Library(e.to_string()))?;
+            let library: &'static libloading::Library = Box::leak(Box::new(library));
+            let mut name = manifest.symbol.as_bytes().to_vec();
+            name.push(0);
+            let symbol = library
+                .get::<unsafe extern "C" fn() -> *const ()>(&name)
+                .map_err(|e| PackError::Library(e.to_string()))?;
+            tree_sitter_language::LanguageFn::from_raw(*symbol)
+        };
+        let grammar = Self::compile(language, manifest.abi, &highlights, injections.as_deref())?;
         Ok(Self {
             name: Some(Arc::from(manifest.language.as_str())),
             locals: read(&manifest.locals)?.map(Arc::from),
             semantic: read(&manifest.semantic)?.map(Arc::from),
             tags: read(&manifest.tags)?.map(Arc::from),
             library: Some(Arc::from(manifest.library.sha256.as_str())),
+            ..grammar
+        })
+    }
+
+    #[cfg(feature = "bundled")]
+    pub(crate) fn bundled(bundled: &crate::bundled::Bundled) -> Result<Self, GrammarError> {
+        // SAFETY: a tree-sitter language function linked in from pinned,
+        // hashed sources by `syntax-pack bundle`.
+        let language = unsafe { tree_sitter_language::LanguageFn::from_raw(bundled.language) };
+        let grammar = Self::compile(
+            language,
+            bundled.abi,
+            bundled.highlights,
+            bundled.injections,
+        )?;
+        Ok(Self {
+            name: Some(Arc::from(bundled.name)),
+            locals: bundled.locals.map(Arc::from),
+            semantic: bundled.semantic.map(Arc::from),
+            tags: bundled.tags.map(Arc::from),
+            // Keys tag caches, like a pack's library hash.
+            library: Some(Arc::from(bundled.source)),
             ..grammar
         })
     }
@@ -112,41 +180,26 @@ impl Grammar {
         self.tags.as_ref()
     }
 
-    pub(crate) fn compile(
-        library_path: &Path,
-        symbol: &str,
-        expected_abi: Option<u32>,
+    /// Checks the ABI against `expected_abi` and compiles the queries.
+    fn compile(
+        language: tree_sitter_language::LanguageFn,
+        expected_abi: u32,
         highlights: &str,
         injections: Option<&str>,
-    ) -> Result<Self, PackError> {
-        // SAFETY: loading a library runs its initializers, and calling the
-        // symbol runs its code. The pack passed its SHA-256 check against a
-        // manifest that is either signed (downloaded packs) or in a
-        // directory the app opted into (local packs); see the threat model
-        // in the crate docs.
-        let language = unsafe {
-            let library = libloading::Library::new(library_path)
-                .map_err(|e| PackError::Library(e.to_string()))?;
-            let library: &'static libloading::Library = Box::leak(Box::new(library));
-            let mut name = symbol.as_bytes().to_vec();
-            name.push(0);
-            let symbol = library
-                .get::<unsafe extern "C" fn() -> *const ()>(&name)
-                .map_err(|e| PackError::Library(e.to_string()))?;
-            ts::Language::new(tree_sitter_language::LanguageFn::from_raw(*symbol))
-        };
-        // The manifest's ABI was checked; this checks the library agrees.
+    ) -> Result<Self, GrammarError> {
+        let language = ts::Language::new(language);
+        // The declared ABI was checked; this checks the grammar agrees.
         let abi = language.abi_version() as u32;
-        if expected_abi.is_some_and(|expected| expected != abi) || !supported_abi().contains(&abi) {
+        if expected_abi != abi || !supported_abi().contains(&abi) {
             let range = supported_abi();
-            return Err(PackError::Abi {
+            return Err(GrammarError::Abi {
                 abi,
                 min: *range.start(),
                 max: *range.end(),
             });
         }
         let query =
-            lenient_query(&language, highlights).map_err(|e| PackError::Query(e.to_string()))?;
+            lenient_query(&language, highlights).map_err(|e| GrammarError::Query(e.to_string()))?;
         let capture_kinds = query
             .capture_names()
             .iter()
@@ -338,9 +391,9 @@ struct InjectionPattern {
 }
 
 impl Injections {
-    fn compile(language: &ts::Language, text: &str) -> Result<Self, PackError> {
-        let query =
-            lenient_query(language, text).map_err(|e| PackError::InjectionQuery(e.to_string()))?;
+    fn compile(language: &ts::Language, text: &str) -> Result<Self, GrammarError> {
+        let query = lenient_query(language, text)
+            .map_err(|e| GrammarError::InjectionQuery(e.to_string()))?;
         let patterns = (0..query.pattern_count())
             .map(|index| {
                 let mut pattern = InjectionPattern::default();

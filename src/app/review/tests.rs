@@ -1441,6 +1441,45 @@ fn submit_review_failure_marks_the_batch_failed() {
 }
 
 #[test]
+fn drafts_saved_mid_send_can_be_retried_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut driver = Driver::new(Fake::at(dir.path()));
+        driver.startup(Some(URL));
+        driver.open_repository();
+        driver.act(ReviewAction::OpenComposerAt(target(2..3)));
+        driver.type_text("Inline note");
+        driver.act(ReviewAction::SubmitComment);
+        driver.fake.hold = true;
+        driver.act(ReviewAction::SubmitReview {
+            decision: ReviewDecision::Comment,
+        });
+        // The app quits mid-send: the save lands, the answer never does.
+        driver.fake.hold = false;
+        for effect in std::mem::take(&mut driver.fake.held) {
+            if matches!(effect, ReviewEffect::SaveSession { .. }) {
+                for event in driver.fake.run(effect) {
+                    driver.deliver(event);
+                }
+            }
+        }
+        let draft = driver.session().drafts.values().next().unwrap();
+        assert_eq!(draft.state, ReviewDraftState::Submitting);
+    }
+
+    let mut driver = Driver::new(Fake::at(dir.path()));
+    driver.startup(Some(URL));
+    driver.open_repository();
+
+    let draft = driver.session().drafts.values().next().unwrap();
+    assert!(matches!(draft.state, ReviewDraftState::Failed(_)));
+    driver.act(ReviewAction::SubmitReview {
+        decision: ReviewDecision::Comment,
+    });
+    assert!(driver.session().drafts.is_empty());
+}
+
+#[test]
 fn resolve_and_reopen_update_the_thread() {
     let mut driver = Driver::signed_in_with_pr();
 

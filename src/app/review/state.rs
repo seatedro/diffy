@@ -649,6 +649,42 @@ impl ReviewController {
         self.pr.as_mut()?.session.as_mut()
     }
 
+    /// Fails drafts saved mid-send whose answer this run won't get: the
+    /// app quit, or the pull request closed, before it came. Left
+    /// `Submitting`, nothing could retry, edit or delete them.
+    fn fail_interrupted_drafts(&mut self) {
+        let Some(pr) = self.pr.as_ref().map(|active| active.pr.clone()) else {
+            return;
+        };
+        let ours = |entry: &InFlight| entry.pr.as_ref() == Some(&pr);
+        let batch = self
+            .in_flight
+            .values()
+            .any(|entry| ours(entry) && entry.kind == Pending::SubmitDrafts);
+        let replies: Vec<ReviewDraftId> = self
+            .in_flight
+            .values()
+            .filter_map(|entry| match &entry.kind {
+                Pending::Reply(id) if ours(entry) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let Some(session) = self.session_mut() else {
+            return;
+        };
+        for draft in session.drafts.values_mut() {
+            let sending = match draft.kind {
+                ReviewDraftKind::Reply { .. } => replies.contains(&draft.id),
+                ReviewDraftKind::InlineComment | ReviewDraftKind::General => batch,
+            };
+            if draft.state == ReviewDraftState::Submitting && !sending {
+                draft.state = ReviewDraftState::Failed(
+                    "Sending was interrupted. Check GitHub before retrying.".to_owned(),
+                );
+            }
+        }
+    }
+
     fn fetch_review(&mut self) -> Option<ReviewEffect> {
         let pr = self.pr.as_ref()?.pr.clone();
         let in_flight = self.in_flight.values().any(|entry| {
@@ -2189,6 +2225,7 @@ impl ReviewController {
                     Some(current) => current.merge_persisted_state(*session),
                     None => active.session = Some(*session),
                 }
+                self.fail_interrupted_drafts();
                 // Drafts that followed a push were saved with the session,
                 // but a save queued while it loaded can land after that.
                 let mut reduction = Reduction::changed();

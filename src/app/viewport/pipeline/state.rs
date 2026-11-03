@@ -874,6 +874,9 @@ impl Controller for PipelineController {
             Intent::ActivateWorkspace { .. } => {
                 retire(self.active.take());
                 self.queue.clear();
+                // The shell drops the pending wake with the old workspace's
+                // events, so nothing else would clear this.
+                self.resuming = false;
                 self.status = PipelineStatus::Idle;
                 Reduction::changed()
             }

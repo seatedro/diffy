@@ -162,6 +162,10 @@ struct SideSyntax {
     exact_end: u32,
     /// Its focus colored on its own, ahead of the exact parts.
     inexact: Option<(Range<u32>, Arc<[HighlightSpan]>)>,
+    /// Set by [`DiffSyntax::forget_requests`]: the next request asks again
+    /// even for the same source, and keeps showing its colors until the
+    /// new result lands.
+    stale: bool,
 }
 
 impl SideSyntax {
@@ -226,10 +230,13 @@ impl DiffSyntax {
         self.visible.as_ref().is_some_and(|v| !v.is_empty())
     }
 
+    /// Makes the next [`Self::request`] ask for every side again, as after
+    /// a grammar arrives. Sides keep their colors until the new results
+    /// replace them, unless their source changed.
     pub fn forget_requests(&mut self) {
         self.document = 0;
         for side in self.sides.iter_mut().flatten() {
-            side.source = None;
+            side.stale = true;
             side.request = 0;
         }
     }
@@ -285,8 +292,10 @@ impl DiffSyntax {
     /// Asks the worker for every side of `doc` (the document of
     /// `generation`) whose language is known, unless the side already
     /// asked for the same source, language, and coverage: an unchanged
-    /// side keeps its colors. A side whose source changed drops its old
-    /// colors at once, since their offsets belong to the old text.
+    /// side keeps its colors (after [`Self::forget_requests`] it asks again
+    /// and keeps them until the new result lands). A side whose source
+    /// changed drops its old colors at once, since their offsets belong to
+    /// the old text.
     pub fn request(&mut self, doc: &DiffDocument, generation: u64) {
         self.document = generation;
         if self.sides.len() != doc.file_count() as usize {
@@ -320,6 +329,11 @@ impl DiffSyntax {
             return;
         }
         held.language_override = language;
+        // A forgotten side asks again, as this language, at the next
+        // `request`; asking now would race the document it belongs to.
+        if held.stale {
+            return;
+        }
         let (Some(source), fragments) = (held.source.clone(), held.fragments.clone()) else {
             return;
         };
@@ -358,9 +372,11 @@ impl DiffSyntax {
         };
         let language = held.language_override.clone().or(path_language.clone());
         held.path_language = path_language;
-        if held.asked(&language, source, &fragments) {
+        let same = held.asked(&language, source, &fragments);
+        if same && !held.stale {
             return;
         }
+        held.stale = false;
         let status = if source.is_empty() {
             None
         } else if language.is_none() {
@@ -370,14 +386,22 @@ impl DiffSyntax {
         } else {
             Some(SyntaxStatus::Pending)
         };
+        // Asked again for what it holds (a grammar arrived): its colors and
+        // status still describe this text, so they stay until the new
+        // result replaces them instead of flashing plain meanwhile.
+        let keep = same && status == Some(SyntaxStatus::Pending);
         held.language = language.clone();
         held.source = Some(source.clone());
         held.fragments = fragments.clone();
-        held.status = status;
-        held.spans = None;
-        held.parts.clear();
+        if !keep {
+            held.status = status;
+            held.spans = None;
+            held.parts.clear();
+            held.inexact = None;
+        }
+        // Kept exact parts go when the new pass's first one lands; until
+        // then the focus it colors first shows past them.
         held.exact_end = 0;
-        held.inexact = None;
         held.revision = None;
         held.answered = false;
         held.request = 0;

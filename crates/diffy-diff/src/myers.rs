@@ -244,8 +244,7 @@ fn solve(
     if search.run(whole, removed, added).is_ok() {
         return;
     }
-    removed.fill(false);
-    added.fill(false);
+    // The boxes it finished stay marked; only those it left are split.
     let left = std::mem::take(&mut search.left);
     Anchors::new(ids).run(&mut search, left, removed, added, budget);
 }
@@ -825,6 +824,28 @@ mod tests {
             }
         }
         row[b.len()]
+    }
+
+    // Catches a search that runs out of budget after finishing some boxes
+    // dropping their marks: those boxes are not searched again, so the
+    // script would misalign the sides. Every budget from none to plenty
+    // must give a valid script.
+    #[test]
+    fn budget_spent_midway_keeps_finished_boxes() {
+        let a: Vec<u32> = [0, 1, 2, 0, 1, 1, 0].repeat(4);
+        let b: Vec<u32> = [2, 1, 0, 1, 0, 2].repeat(4);
+        for base in 0..1_024 {
+            let budget = Budget {
+                per_item: 0,
+                base,
+                small: 0,
+            };
+            let changes = diff_with(&a, &b, budget);
+            let removed: usize = changes.iter().map(|c| c.old.len()).sum();
+            let added: usize = changes.iter().map(|c| c.new.len()).sum();
+            assert_eq!(a.len() + added, b.len() + removed, "budget {base}");
+            assert_eq!(apply(&a, &b, &changes), b, "budget {base}");
+        }
     }
 
     proptest! {

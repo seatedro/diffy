@@ -76,7 +76,10 @@ pub fn view(
         );
     }
     let Some(index) = shared.symbols.as_ref() else {
-        return empty_state("Indexing symbols", &document.path, theme);
+        return match viewport.symbols.failure() {
+            Some(message) => empty_state("Couldn't index symbols", message, theme),
+            None => empty_state("Indexing symbols", &document.path, theme),
+        };
     };
     let Some(file) = index.file(&document.path) else {
         return empty_state("No symbols", &document.path, theme);

@@ -223,6 +223,15 @@ impl PipelineJob {
             },
         }
     }
+
+    /// Takes over a queued job with the same key. A stats batch replaces
+    /// one for other files, which the controller won't ask for again.
+    fn absorb(&mut self, replaced: PipelineJob) {
+        let (Self::FileStats(request), Self::FileStats(replaced)) = (self, replaced) else {
+            return;
+        };
+        request.files.extend(replaced.files);
+    }
 }
 
 struct QueuedJob {
@@ -319,7 +328,7 @@ impl PipelineQueue {
             .retain(|job| !self.is_stale(job.job.generation()));
     }
 
-    fn enqueue(&self, job: PipelineJob, events: ScopedEventSender) {
+    fn enqueue(&self, mut job: PipelineJob, events: ScopedEventSender) {
         let generation = job.generation();
         let previous = self.current_epoch.fetch_max(generation.0, Ordering::AcqRel);
         let key = job.key();
@@ -331,7 +340,9 @@ impl PipelineQueue {
         if generation.0 < previous || self.is_stale(generation) {
             return;
         }
-        state.jobs.retain(|queued| queued.key != key);
+        if let Some(index) = state.jobs.iter().position(|queued| queued.key == key) {
+            job.absorb(state.jobs.swap_remove(index).job);
+        }
         let sequence = state.next_sequence;
         state.next_sequence = state.next_sequence.saturating_add(1);
         state.jobs.push(QueuedJob {
@@ -501,5 +512,45 @@ mod tests {
         let second = queue.next();
         assert_eq!(second.priority, CompareWorkPriority::Warmup);
         assert!(queue.lock().jobs.is_empty());
+    }
+
+    #[test]
+    fn a_replaced_stats_batch_keeps_its_files() {
+        let stats = |keys: &[u64]| {
+            PipelineJob::FileStats(Box::new(FileStatsRequest {
+                generation: CompareGeneration(1),
+                repo_path: PathBuf::from("/repo"),
+                request: VcsCompareRequest {
+                    spec: VcsCompareSpec::WorkingCopy,
+                    layout: LayoutMode::Unified,
+                    renderer: RendererKind::Builtin,
+                },
+                files: keys
+                    .iter()
+                    .map(|&key| FileTarget {
+                        key: FileKey(key),
+                        revision: FileRevision(1),
+                        entry: CompareEntry::deferred(
+                            Some("a.rs"),
+                            Some("a.rs"),
+                            diffy_diff::FileStatus::Modified,
+                        ),
+                    })
+                    .collect(),
+                priority: CompareWorkPriority::VisibleSidebarStats,
+            }))
+        };
+        let queue = PipelineQueue::default();
+        queue.enqueue(stats(&[1, 2]), events());
+        queue.enqueue(stats(&[3]), events());
+
+        let state = queue.lock();
+        assert_eq!(state.jobs.len(), 1);
+        let PipelineJob::FileStats(request) = &state.jobs[0].job else {
+            panic!("expected a stats job");
+        };
+        let mut keys: Vec<u64> = request.files.iter().map(|file| file.key.0).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, [1, 2, 3]);
     }
 }

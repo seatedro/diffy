@@ -825,9 +825,8 @@ impl NavigationController {
                 "Provide the required refs for the selected mode.",
             )));
         }
-        self.history.commits = None;
+        self.invalidate_history();
         self.compare_requested = true;
-        self.history.range = None;
         let worktree = self.compare_worktree();
         let intent = match &worktree {
             Some(path) => CompareIntent {
@@ -895,6 +894,16 @@ impl NavigationController {
             }
             _ => None,
         }
+    }
+
+    /// Forgets the loaded range. A reply still on its way is for the old
+    /// one, so the generation moves past it.
+    fn invalidate_history(&mut self) {
+        self.history.generation += 1;
+        self.history.range = None;
+        self.history.commits = None;
+        self.history.loading = false;
+        self.history.error = None;
     }
 
     fn load_history(&mut self) -> Reduction {
@@ -1774,8 +1783,9 @@ impl NavigationController {
                 if !moved {
                     return Reduction::changed();
                 }
+                // Past the generation of a reply still loading the old head.
                 self.history = HistoryState {
-                    generation: self.history.generation,
+                    generation: self.history.generation + 1,
                     scroll_px: self.history.scroll_px,
                     ..HistoryState::default()
                 };

@@ -1937,6 +1937,17 @@ impl ReviewController {
                 Reduction::changed()
             }
             ReviewAction::CloseOverlay => {
+                // Closing sign-in cancels it: its browser page, code and
+                // outcome would otherwise turn up unasked.
+                if self.overlay == Some(ReviewOverlay::Auth)
+                    && matches!(
+                        self.account.auth,
+                        AuthStatus::Starting | AuthStatus::Awaiting(_)
+                    )
+                {
+                    self.account.flow = None;
+                    self.account.auth = AuthStatus::Idle;
+                }
                 self.close_overlay();
                 Reduction::changed()
             }

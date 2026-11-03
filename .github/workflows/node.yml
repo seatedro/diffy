@@ -229,20 +229,22 @@ jobs:
           const main = read('bindings/node/package.json')
           const problems = []
           if (main.version !== version) problems.push(`libdiffy is ${main.version}`)
-          for (const platform of readdirSync('bindings/node/npm')) {
-            const pkg = read(`bindings/node/npm/${platform}/package.json`)
-            if (pkg.version !== version) problems.push(`${pkg.name} is ${pkg.version}`)
-            if (main.optionalDependencies[pkg.name] !== version) problems.push(`libdiffy pins ${pkg.name}@${main.optionalDependencies[pkg.name]}`)
+          const platforms = Object.fromEntries(readdirSync('bindings/node/npm').map((dir) => [read(`bindings/node/npm/${dir}/package.json`).name, dir]))
+          for (const [name, pinned] of Object.entries(main.optionalDependencies)) {
+            if (!platforms[name]) { problems.push(`libdiffy names ${name}, which npm/ lacks`); continue }
+            const pkg = read(`bindings/node/npm/${platforms[name]}/package.json`)
+            if (pkg.version !== version) problems.push(`${name} is ${pkg.version}`)
+            if (pinned !== version) problems.push(`libdiffy pins ${name}@${pinned}`)
           }
-          if (Object.keys(main.optionalDependencies).length !== readdirSync('bindings/node/npm').length) problems.push('optionalDependencies and npm/ differ')
           if (problems.length) {
             console.error(`tag ${process.env.TAG} wants ${version}:\n  ${problems.join('\n  ')}`)
             process.exit(1)
           }
           EOF
 
-      # Platform packages first, so libdiffy never names a missing one.
-      # Published versions are skipped, so a failed run can be rerun.
+      # Only the platforms libdiffy lists, and those first, so it never names
+      # a missing one. Published versions are skipped, so a failed run can be
+      # rerun.
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -256,5 +258,12 @@ jobs:
               npm publish "./$1" --provenance --access public
             fi
           }
-          for dir in bindings/node/npm/*; do publish "$dir"; done
+          for dir in bindings/node/npm/*; do
+            name=$(node -p "require('./$dir/package.json').name")
+            if node -e "process.exit(require('./bindings/node/package.json').optionalDependencies['$name'] ? 0 : 1)"; then
+              publish "$dir"
+            else
+              echo "$name is not listed in libdiffy; skipping"
+            fi
+          done
           publish bindings/node

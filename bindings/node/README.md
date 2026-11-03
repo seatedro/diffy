@@ -46,7 +46,7 @@ An aborted `signal` rejects with `AbortError`. Bad input rejects with a
 | `libdiffy-darwin-x64` | macOS 11+, Intel |
 | `libdiffy-linux-x64-gnu` | Linux x64, glibc 2.28+ |
 | `libdiffy-linux-arm64-gnu` | Linux arm64, glibc 2.28+ |
-| `libdiffy-win32-x64-msvc` | Windows x64 |
+| `libdiffy-win32-x64-msvc` | Windows x64 (not on npm yet) |
 
 Each ships `THIRD_PARTY_NOTICES.md` (grammars) and `RUST_NOTICES.md` (Rust crates).
 

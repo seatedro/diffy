@@ -830,6 +830,22 @@ impl InteractionController {
                 self.failures.insert(key, message);
                 Reduction::changed()
             }
+            ViewportInstall::CompareFailed {
+                generation,
+                message,
+            } => {
+                if generation != self.generation {
+                    return Reduction::default();
+                }
+                // A refresh keeps the last diff until its files arrive. With
+                // no compare behind it, its lazy loads would never land, so
+                // show the failure instead. A text compare keeps its own doc.
+                if !self.text_compare.active {
+                    self.reset(generation);
+                }
+                self.phase = Phase::Failed(message);
+                Reduction::changed()
+            }
             ViewportInstall::Remove { key, revision } => {
                 if self.diff.is_none() {
                     return Reduction::default();

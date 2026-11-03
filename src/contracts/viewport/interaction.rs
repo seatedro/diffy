@@ -90,6 +90,11 @@ pub enum ViewportInstall {
         revision: FileRevision,
         message: String,
     },
+    /// The compare itself failed, so no files will follow its `Begin`.
+    CompareFailed {
+        generation: CompareGeneration,
+        message: String,
+    },
     Remove {
         key: FileKey,
         revision: FileRevision,

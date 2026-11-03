@@ -642,6 +642,10 @@ impl PipelineController {
         }
         let message = failure.message().to_owned();
         self.status = PipelineStatus::Failed(message.clone());
+        self.push(ViewportInstall::CompareFailed {
+            generation,
+            message: message.clone(),
+        });
         Reduction::changed().intent(Intent::Toast(ToastUpdate::Show {
             id: None,
             kind: ToastKind::Error,

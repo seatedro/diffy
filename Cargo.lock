@@ -1244,6 +1244,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "diffy-compare"
+version = "0.3.7"
+dependencies = [
+ "diffy-diff",
+ "diffy-semantic",
+ "diffy-syntax",
+]
+
+[[package]]
 name = "diffy-diff"
 version = "0.3.7"
 dependencies = [

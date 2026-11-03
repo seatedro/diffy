@@ -4,6 +4,7 @@ description = "Diff model for Diffy: unified patch parsing, line and word diffs,
 version.workspace = true
 edition = "2024"
 rust-version = "1.92"
+license = "MIT OR Apache-2.0"
 publish = false
 
 # No UI, text shaping, or syntax dependencies: the diff view in diffy-ui

@@ -4,6 +4,7 @@ description = "Structural diff of two sources parsed with tree-sitter, for Diffy
 version.workspace = true
 edition = "2024"
 rust-version = "1.92"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]

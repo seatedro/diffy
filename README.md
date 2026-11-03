@@ -48,4 +48,7 @@ dx serve --hot-patch --features hot-reload
 
 ## License
 
-GPL-3.0
+The Diffy app is GPL-3.0. The headless crates the compare chain is built
+from (`diffy-diff`, `diffy-semantic`, `diffy-syntax`, `diffy-compare`) and
+the Node binding are MIT OR Apache-2.0; see the `LICENSE-MIT` and
+`LICENSE-APACHE` files in each.

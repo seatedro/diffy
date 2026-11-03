@@ -1,0 +1,20 @@
+[package]
+name = "diffy-compare"
+description = "Headless file comparison for Diffy: semantic diff where a grammar exists, line diff otherwise."
+version.workspace = true
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# No UI, Git, or network dependencies: callers read the files and hand over
+# their bytes. Grammars come from a diffy-syntax store the caller builds.
+[dependencies]
+diffy-diff = { path = "../diffy-diff" }
+diffy-semantic = { path = "../diffy-semantic" }
+diffy-syntax = { path = "../diffy-syntax", features = ["engine"] }
+
+[features]
+default = []
+# The versioned, serializable display format in `wire`.
+serde = []

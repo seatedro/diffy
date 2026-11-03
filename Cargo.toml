@@ -1,6 +1,7 @@
 [workspace]
 members = [
   ".",
+  "crates/diffy-compare",
   "crates/diffy-diff",
   "crates/diffy-semantic",
   "crates/diffy-syntax",

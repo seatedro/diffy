@@ -4,6 +4,7 @@ description = "Tree-sitter syntax highlighting for Diffy, with grammars loaded a
 version.workspace = true
 edition = "2024"
 rust-version = "1.92"
+license = "MIT OR Apache-2.0"
 publish = false
 
 # No grammar is compiled in. Grammars arrive as packs (a shared library

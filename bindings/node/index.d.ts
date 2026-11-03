@@ -13,13 +13,21 @@ export function languages(): string[]
 
 /**
  * Diffs every file off the JS thread. Resolves with one File per input,
- * in input order.
+ * in input order. Waits in a process-wide FIFO queue while
+ * `max_concurrent_requests` others run (see `configure`).
  *
  * Rejects with an `AbortError` (`name === "AbortError"`, `code ===
  * "ABORT_ERR"`, `cause` the signal's reason) when `options.signal` aborts,
  * and with a `TypeError` whose `code` is `"InvalidArg"` for malformed input.
  */
 export function diff(request: DiffRequest, options?: DiffOptions): Promise<Document>
+
+/**
+ * `diff`, resolving to the Document as the JSON text it was built as, not
+ * parsed: for a server forwarding it to clients without parsing it on its
+ * event loop. `JSON.parse` of it equals what `diff` resolves to.
+ */
+export function diffJson(request: DiffRequest, options?: DiffOptions): Promise<string>
 
 /**
  * The context rows of `gap` (a Gap from a Document, or any sub-range of
@@ -29,6 +37,22 @@ export function diff(request: DiffRequest, options?: DiffOptions): Promise<Docum
  * `TypeError` whose `code` is `"InvalidArg"` for malformed input.
  */
 export function expand(file: FileInput, gap: Gap, options?: ExpandOptions): Promise<Row[]>
+
+/**
+ * Sets the given options, process-wide, and returns all of them. Throws a
+ * `TypeError` whose `code` is `"InvalidArg"` for an invalid value.
+ */
+export function configure(options?: Configuration): Required<Configuration>
+
+export interface Configuration {
+  /**
+   * The most `diff` and `diffJson` calls that run at once; later ones wait
+   * their turn. A positive integer. Default: the available cores divided
+   * by 4, at least 1. Raising it starts waiting requests at once; lowering
+   * it lets running ones finish. `expand` is never queued.
+   */
+  max_concurrent_requests?: number
+}
 
 // ---- Input -------------------------------------------------------------
 
@@ -52,8 +76,9 @@ export interface FileInput {
 export interface DiffRequest {
   files: FileInput[]
   /**
-   * Time budget for the whole request, from the call. Files started after
-   * it get line diffs, with `fallback.kind === "request_budget"`.
+   * Time budget for the whole request, from the call, so it includes time
+   * queued. Files started after it get line diffs, with
+   * `fallback.kind === "request_budget"`.
    * With `syntax`, files projected after it get no syntax spans or scope
    * headers.
    */

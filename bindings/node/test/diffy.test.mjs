@@ -1,11 +1,11 @@
 // npm test  (after `npm run build` with a bundle holding rust and typescript)
 
 import assert from 'node:assert/strict'
-import { describe, it } from 'node:test'
-
 import { createRequire } from 'node:module'
+import { availableParallelism } from 'node:os'
+import { afterEach, describe, it } from 'node:test'
 
-import { FORMAT_VERSION, diff, expand, languages } from '../index.js'
+import { FORMAT_VERSION, configure, diff, diffJson, expand, languages } from '../index.js'
 
 const native = createRequire(import.meta.url)('../binding.js')
 
@@ -133,6 +133,7 @@ describe('invalid input rejects', () => {
     'fractional gap length': () => expand(modified('a.rs', 'a', 'a'), { old_start: 1, new_start: 1, len: 1.5 }),
     'gap missing len': () => expand(modified('a.rs', 'a', 'a'), { old_start: 1, new_start: 1 }),
     'no gap': () => expand(modified('a.rs', 'a', 'a')),
+    'diffJson null request': () => diffJson(null),
   }
   for (const [name, call] of Object.entries(bad)) {
     it(name, async () => {
@@ -250,4 +251,129 @@ describe('diff', () => {
     assert.equal(doc.files.length, 1)
     controller.abort()
   })
+})
+
+describe('diffJson', () => {
+  it('resolves to the JSON diff resolves to', async () => {
+    const request = { files: [modified('src/view.rs', OLD_RS, NEW_RS)], syntax: true }
+    const json = await diffJson(request)
+    assert.equal(typeof json, 'string')
+    assert.deepEqual(JSON.parse(json), await diff(request))
+  })
+
+  it('aborts like diff', async () => {
+    const controller = new AbortController()
+    const running = diffJson(bigRequest(64), { signal: controller.signal })
+    controller.abort()
+    await assert.rejects(running, { name: 'AbortError' })
+  })
+})
+
+// The queue is process-wide; every test puts the default limit back.
+describe('queue', () => {
+  const { max_concurrent_requests: initial } = configure()
+  const small = () => diff({ files: [modified('a.rs', 'a\n', 'b\n')] })
+  afterEach(() => configure({ max_concurrent_requests: initial }))
+
+  it('defaults to a quarter of the cores, at least one', () => {
+    assert.ok(Number.isInteger(initial) && initial >= 1)
+    assert.ok(initial <= Math.max(1, Math.floor(availableParallelism() / 4)))
+  })
+
+  it('runs requests in order, at most the limit at once', async () => {
+    assert.deepEqual(configure({ max_concurrent_requests: 1 }), { max_concurrent_requests: 1 })
+    const order = []
+    const done = [diff(bigRequest(64)).then(() => order.push('big'))]
+    for (let i = 0; i < 4; i++) done.push(small().then(() => order.push(i)))
+    assert.deepEqual(native.queue(), { limit: 1, running: 1, queued: 4 })
+    await Promise.all(done)
+    // Unqueued, the small requests would finish long before the big one.
+    assert.deepEqual(order, ['big', 0, 1, 2, 3])
+    assert.deepEqual(native.queue(), { limit: 1, running: 0, queued: 0 })
+  })
+
+  it('never runs more than the limit', async () => {
+    configure({ max_concurrent_requests: 2 })
+    let settled = false
+    const all = Promise.all(Array.from({ length: 6 }, () => diff(bigRequest(16)))).finally(() => {
+      settled = true
+    })
+    let most = 0
+    while (!settled) {
+      const { running, queued } = native.queue()
+      most = Math.max(most, running)
+      assert.ok(running + queued <= 6)
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    await all
+    assert.equal(most, 2)
+  })
+
+  it('starts queued requests when the limit rises', async () => {
+    configure({ max_concurrent_requests: 1 })
+    const done = Promise.all(Array.from({ length: 3 }, () => diff(bigRequest(16))))
+    assert.equal(native.queue().queued, 2)
+    configure({ max_concurrent_requests: 3 })
+    assert.deepEqual(native.queue(), { limit: 3, running: 3, queued: 0 })
+    await done
+  })
+
+  it('rejects a request aborted while queued at once, without starting it', async () => {
+    configure({ max_concurrent_requests: 1 })
+    const running = diff(bigRequest(64))
+    const controller = new AbortController()
+    const reason = new Error('navigated away')
+    const queued = diff(bigRequest(64), { signal: controller.signal })
+    assert.deepEqual(native.queue(), { limit: 1, running: 1, queued: 1 })
+    controller.abort(reason)
+    assert.deepEqual(native.queue(), { limit: 1, running: 1, queued: 0 })
+    let pending = true
+    running.finally(() => {
+      pending = false
+    })
+    await assert.rejects(queued, (error) => {
+      assert.equal(error.name, 'AbortError')
+      assert.equal(error.cause, reason)
+      return true
+    })
+    assert.ok(pending, 'rejected before the running request finished')
+    await running
+  })
+
+  it('counts time queued against budget_ms', async () => {
+    configure({ max_concurrent_requests: 1 })
+    const running = diff(bigRequest(64))
+    const doc = await diff({ files: [modified('a.rs', 'fn a() {}\n', 'fn b() {}\n')], budget_ms: 1 })
+    assert.equal(doc.files[0].fallback?.kind, 'request_budget')
+    await running
+  })
+
+  it('does not queue expand', async () => {
+    configure({ max_concurrent_requests: 1 })
+    let pending = true
+    const running = diff(bigRequest(64)).finally(() => {
+      pending = false
+    })
+    const rows = await expand(modified('a.rs', 'x\n', 'x\n'), { old_start: 1, new_start: 1, len: 1 })
+    assert.equal(rows.length, 1)
+    assert.ok(pending, 'expand finished while a diff held the only slot')
+    await running
+  })
+
+  for (const [name, options] of Object.entries({
+    zero: { max_concurrent_requests: 0 },
+    fractional: { max_concurrent_requests: 1.5 },
+    'not a number': { max_concurrent_requests: '2' },
+    'not an object': 4,
+    null: null,
+  })) {
+    it(`rejects a ${name} limit`, () => {
+      assert.throws(() => configure(options), (error) => {
+        assert.ok(error instanceof TypeError)
+        assert.equal(error.code, 'InvalidArg')
+        return true
+      })
+      assert.equal(configure().max_concurrent_requests, initial)
+    })
+  }
 })

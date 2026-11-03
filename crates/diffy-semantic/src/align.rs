@@ -506,18 +506,28 @@ fn fill<'a>(
     }
     let moved = |s: usize, line: u32| sides[s].moved_lines[line as usize];
     let mut ids: HashMap<&'a str, u32> = HashMap::new();
-    let mut fresh = u32::MAX;
-    let mut id = |s: usize, line: u32, ids: &mut HashMap<&'a str, u32>| {
+    let id = |s: usize, line: u32, ids: &mut HashMap<&'a str, u32>| {
         if moved(s, line) {
-            fresh -= 1;
-            return fresh;
+            // Numbered below, once every other line has its id.
+            return 0;
         }
         let next = ids.len() as u32;
         *ids.entry(sides[s].lines.text(sides[s].tree.src, line))
             .or_insert(next)
     };
-    let a: Vec<u32> = olds.clone().map(|x| id(0, x, &mut ids)).collect();
-    let b: Vec<u32> = news.clone().map(|y| id(1, y, &mut ids)).collect();
+    let mut a: Vec<u32> = olds.clone().map(|x| id(0, x, &mut ids)).collect();
+    let mut b: Vec<u32> = news.clone().map(|y| id(1, y, &mut ids)).collect();
+    // Moved lines match nothing, so each gets an id of its own, counted on
+    // from the interned ones: the diff sizes its tables by the largest id.
+    let mut fresh = ids.len() as u32;
+    for (s, lines, side) in [(0, olds.clone(), &mut a), (1, news.clone(), &mut b)] {
+        for (line, slot) in lines.zip(side.iter_mut()) {
+            if moved(s, line) {
+                *slot = fresh;
+                fresh += 1;
+            }
+        }
+    }
     let (mut i, mut j) = (0u32, 0u32);
     for change in myers::diff(&a, &b) {
         while i < change.old.start {

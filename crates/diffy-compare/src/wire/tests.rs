@@ -290,7 +290,7 @@ fn semantic_diff() -> (FileInput, FileDiff) {
     file_builder
         .outline(vec![diffy_diff::OutlineItem {
             side: DocSide::New,
-            line: 1,
+            lines: 1..4,
             kind: Arc::from("function_item"),
             name: Arc::from("render_preview"),
             change: ItemChange::Edited(2),
@@ -328,6 +328,7 @@ fn semantic_documents_keep_spans_outline_moves_and_renames() {
         [OutlineItem {
             side: Side::New,
             line: 2,
+            end_line: Some(4),
             kind: "function_item".into(),
             name: "render_preview".into(),
             change: ItemChangeKind::Edited,
@@ -379,7 +380,7 @@ fn semantic_documents_keep_spans_outline_moves_and_renames() {
 }
 
 #[test]
-fn hunk_header_needs_an_item_before_the_change() {
+fn hunk_header_needs_an_item_containing_the_change() {
     let (input, diff) = semantic_diff();
     let mut document = DocumentBuilder::new();
     let source = diff.document.text(0, DocSide::Old).clone();
@@ -393,7 +394,7 @@ fn hunk_header_needs_an_item_before_the_change() {
         .context(1)
         .outline(vec![diffy_diff::OutlineItem {
             side: DocSide::Old,
-            line: 3,
+            lines: 3..4,
             kind: Arc::from("function_item"),
             name: Arc::from("later"),
             change: ItemChange::Removed,
@@ -405,6 +406,70 @@ fn hunk_header_needs_an_item_before_the_change() {
     };
     let file = file(&input, &diff, &WireOptions::default());
     assert_eq!(file.hunks[0].header, None);
+}
+
+#[test]
+fn hunk_headers_name_the_innermost_containing_item() {
+    let item = |side, lines, name: &str| diffy_diff::OutlineItem {
+        side,
+        lines,
+        kind: Arc::from("function_item"),
+        name: Arc::from(name),
+        change: ItemChange::Edited(1),
+    };
+    let header = |outline: Vec<diffy_diff::OutlineItem>, (old_len, new_len): (u32, u32)| {
+        let side = |len, line| match len {
+            0 => "zero\none\nthree\n".to_owned(),
+            _ => format!("zero\none\n{line}\nthree\n"),
+        };
+        let (old, new) = (side(old_len, "old"), side(new_len, "new"));
+        let mut document = DocumentBuilder::new();
+        let mut file_builder = document.file(
+            meta(),
+            SourceCoverage::Full,
+            TextStore::new(old.as_str()),
+            TextStore::new(new.as_str()),
+        );
+        file_builder
+            .structural(true)
+            .hunk(0, 0)
+            .context(2)
+            .change(old_len, new_len)
+            .context(1)
+            .outline(outline);
+        file_builder.finish().expect("builds");
+        let diff = FileDiff {
+            document: document.build(),
+            fallback: None,
+        };
+        file(&input(&old, &new), &diff, &WireOptions::default()).hunks[0]
+            .header
+            .clone()
+    };
+    // The change is on line 3 (zero-based 2) of each side.
+    let nested = || {
+        vec![
+            item(DocSide::New, 0..4, "outer"),
+            item(DocSide::New, 1..4, "inner"),
+            item(DocSide::Old, 2..3, "removed"),
+        ]
+    };
+    assert_eq!(header(nested(), (1, 1)).as_deref(), Some("inner"));
+    // Only the old side has lines, so its items come first.
+    assert_eq!(header(nested(), (1, 0)).as_deref(), Some("removed"));
+    // An old-only change without an old item takes the new item around
+    // the gap it leaves, which must hold the lines on both sides of it.
+    let new_only = || {
+        vec![
+            item(DocSide::New, 0..4, "outer"),
+            item(DocSide::New, 2..4, "after"),
+        ]
+    };
+    assert_eq!(header(new_only(), (1, 0)).as_deref(), Some("outer"));
+    assert_eq!(
+        header(vec![item(DocSide::New, 0..2, "before")], (1, 0)),
+        None
+    );
 }
 
 #[test]
@@ -769,4 +834,110 @@ fn files_projected_past_the_deadline_skip_syntax() {
         }));
         assert!(!file.hunks.is_empty());
     }
+}
+
+/// The hunk headers of a real semantic diff of `old` to `new`, without
+/// syntax, so they come from the outline alone; `None` without the pack.
+fn outline_headers(language: &str, path: &str, old: &str, new: &str) -> Option<Vec<String>> {
+    let store = diffy_syntax::testing::store_with(language)?;
+    let input = FileInput {
+        status: FileStatus::Modified,
+        old_path: Some(path.into()),
+        new_path: Some(path.into()),
+        old: old.as_bytes().to_vec(),
+        new: new.as_bytes().to_vec(),
+    };
+    let diff = crate::diff_file(&input, &crate::Options::new(&store)).expect("diffs");
+    assert_eq!(diff.fallback, None);
+    let file = file(&input, &diff, &WireOptions::default());
+    Some(
+        file.hunks
+            .into_iter()
+            .map(|hunk| hunk.header.unwrap_or_default())
+            .collect(),
+    )
+}
+
+#[test]
+fn hunk_headers_name_only_items_containing_the_change() {
+    let old = "def first():
+    a = 1
+    b = 2
+    c = 3
+    return a
+
+
+x = 1
+y = 2
+z = 3
+w = 4
+v = 5
+u = 6
+t = 7
+s = 8
+r = 9
+
+
+def second():
+    p = 1
+    q = 2
+    return p
+";
+    let new = old
+        .replace("a = 1", "a = 10")
+        .replace("v = 5", "v = 50")
+        .replace("q = 2", "q = 20");
+    let Some(headers) = outline_headers("python", "src/app.py", old, &new) else {
+        return;
+    };
+    // The middle change is a top-level statement below `first`.
+    assert_eq!(headers, ["first", "", "second"]);
+}
+
+#[test]
+fn hunk_headers_pick_the_innermost_item_on_the_change_side() {
+    let old = "impl Parser {
+    fn render(&self) {
+        draw(1);
+        draw(2);
+        draw(3);
+        draw(4);
+        draw(5);
+        draw(6);
+    }
+
+    fn other(&self) {
+        a();
+        b();
+        c();
+        d();
+        e();
+        f();
+        g();
+        h();
+    }
+
+    fn stay(&self) {
+        one();
+        two();
+        three();
+        four();
+    }
+
+    fn removed(&self) {
+        gone();
+    }
+}
+";
+    let new = old
+        .replace("draw(1)", "draw(10)")
+        .replace("        b();\n", "")
+        .replace("\n    fn removed(&self) {\n        gone();\n    }\n", "");
+    let Some(headers) = outline_headers("rust", "src/lib.rs", old, &new) else {
+        return;
+    };
+    // An edit inside a method names the method, not its impl; a deletion
+    // inside an edited method names it from the new side; a removed
+    // method names itself from the old side.
+    assert_eq!(headers, ["render", "other", "removed"]);
 }

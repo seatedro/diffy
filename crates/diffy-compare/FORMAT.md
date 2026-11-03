@@ -74,7 +74,7 @@ Line-diff files still get changed-word spans on `modified` rows.
 | Field | Type | |
 | --- | --- | --- |
 | `old_start`, `old_len`, `new_start`, `new_len` | number | The numbers of a unified diff's `@@ -old_start,old_len +new_start,new_len @@` line. A start is the side's first line in the hunk, or the line before it when that side is empty (`0` at the top of the file). |
-| `header` | string? | The item enclosing the hunk's first change, for the hunk's header line: an item name from the semantic outline (`render_preview`), or a scope label from the grammar (`fn render_preview`, `impl Parser`, `class Parser`, `parse()`). Absent when neither is known. |
+| `header` | string? | The innermost item whose lines contain the hunk's first changed line (blank lines skipped), for the hunk's header line: a changed item's name from the semantic outline (`render_preview`), else a scope label from the grammar (`fn render_preview`, `impl Parser`, `class Parser`, `parse()`). Absent when nothing contains the change, as for a top-level statement between functions. |
 | `gap_before` | Gap? | Unchanged lines between the previous hunk (or the top of the file) and this one. |
 | `rows` | Row[] | In display order; each side's line numbers ascend. |
 
@@ -171,6 +171,7 @@ independent layers: draw the change background, then the syntax colour.
 | --- | --- | --- |
 | `side` | `"old"` \| `"new"` | Which file `line` refers to: `removed` items are on the old side, the rest on the new. |
 | `line` | number | The item's first line. |
+| `end_line` | number? | The item's last line, inclusive. |
 | `kind` | string | The grammar's node kind, e.g. `function_item`, `class_declaration`. |
 | `name` | string | |
 | `change` | `"added"` \| `"removed"` \| `"renamed"` \| `"moved"` \| `"edited"` | `renamed`: only identifiers inside it were renamed. |
@@ -257,6 +258,7 @@ type SyntaxSpan = { start: number; end: number; class: string }; // UTF-16
 type OutlineItem = {
   side: "old" | "new";
   line: number;
+  end_line?: number;
   kind: string;
   name: string;
   change: "added" | "removed" | "renamed" | "moved" | "edited";
@@ -339,6 +341,7 @@ unit and `😀` two, so the changed `2` starts at 16 (byte 19).
         {
           "side": "new",
           "line": 11,
+          "end_line": 13,
           "kind": "function_item",
           "name": "render_preview",
           "change": "edited",

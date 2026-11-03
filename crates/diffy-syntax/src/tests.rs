@@ -1541,10 +1541,9 @@ mod bundled {
     use super::*;
     use HighlightKind::*;
 
-    /// Each default bundled language: a tag that should reach it, its
-    /// sample (a file under tools/syntax-pack/samples, or inline source),
-    /// and text the sample must color with a kind, as `syntax-pack check`
-    /// expects of its captures.
+    /// Language, a tag that reaches it, sample (file in
+    /// tools/syntax-pack/samples, or inline source), and text that must get
+    /// each kind.
     type Case = (
         &'static str,
         &'static str,
@@ -1604,8 +1603,7 @@ mod bundled {
             "fun main() {\n    val greeting = \"hi\"\n}\n",
             &[("fun", Keyword), ("\"hi\"", String)],
         ),
-        // Its inline spans come from markdown_inline and the fence from
-        // rust, both bundled, through its injection query.
+        // Inline spans and the fence arrive through injections.
         (
             "markdown",
             "md",
@@ -1680,10 +1678,8 @@ mod bundled {
         std::fs::read_to_string(&path).unwrap()
     }
 
-    // Catches a bundled grammar that is not linked, not reached by its
-    // tags, whose queries do not compile, or whose injections do not reach
-    // the other bundled grammars. Needs a bundle with the default set
-    // (`syntax-pack bundle`, then DIFFY_SYNTAX_BUNDLE).
+    // Needs a default-set bundle (`syntax-pack bundle`, then
+    // DIFFY_SYNTAX_BUNDLE).
     #[test]
     fn bundled_grammars_resolve_by_tag_and_highlight_their_samples() {
         if crate::bundled::languages().len() == 0 {
@@ -1713,8 +1709,6 @@ mod bundled {
         assert_eq!(store.status(&rust), LanguageStatus::Ready);
     }
 
-    // Catches bundled grammars missing from the catalog, or a store that
-    // did not opt in seeing them.
     #[test]
     fn the_catalog_lists_bundled_grammars_only_when_the_store_opts_in() {
         if crate::bundled::languages().len() == 0 {

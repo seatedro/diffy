@@ -1,25 +1,9 @@
-//! The versioned display format that non-Rust clients render diffs from.
+//! The versioned display format non-Rust clients render diffs from.
 //!
-//! [`file()`] and [`document`] project compare results ([`FileDiff`]) into
-//! plain serializable values; [`expand`] produces the rows of a collapsed
-//! gap on request. `FORMAT.md` beside this crate's manifest is the
-//! client-facing spec of every field.
-//!
-//! Versioning: [`Document::version`] is [`FORMAT_VERSION`]. It is bumped
-//! for any breaking change: removing or renaming a field or enum value,
-//! changing a field's type, meaning, or coordinates, or making an optional
-//! field required. Adding an optional field, or a value to an enum that
-//! clients are told to tolerate (syntax classes), is not breaking and
-//! keeps the version.
-//!
-//! Coordinates: line numbers are one-based. Span offsets are UTF-16 code
-//! units within the row's text, the way JavaScript indexes strings, and
-//! ranges are half-open. Text is each line as [`TextStore::display_line`]
-//! shows it: no newline, no trailing `\r`, invalid UTF-8 bytes as U+FFFD.
-//!
-//! Rows are layout-neutral: a `modified` row carries the removed line and
-//! the added line it became, so split and unified layouts both render
-//! without recomputing anything.
+//! [`file()`] and [`document`] project [`FileDiff`]s; [`expand`] returns the
+//! rows of a collapsed gap. The crate's `FORMAT.md` specifies every field.
+//! Lines are one-based; span offsets are half-open UTF-16 code units into
+//! [`TextStore::display_line`] text.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -36,23 +20,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::{FileDiff, FileInput};
 
-/// The format version every [`Document`] carries.
+/// Bump on any breaking change, as `FORMAT.md` defines it.
 pub const FORMAT_VERSION: u32 = 1;
 
-/// Sides longer than this get no syntax spans or scope headers by default.
+/// Default [`WireOptions::syntax_max_bytes`].
 pub const SYNTAX_MAX_BYTES: usize = 1 << 20;
 
 /// What a projection adds beyond the diff itself.
 #[derive(Debug, Clone, Copy)]
 pub struct WireOptions<'a> {
-    /// Grammars for syntax spans and for hunk headers of files without a
-    /// semantic outline. `None` (the default) emits neither.
+    /// Grammars for syntax spans and scope headers; `None` emits neither.
     pub syntax: Option<&'a GrammarStore>,
     /// Sides longer than this, in bytes, get no syntax spans or scope
     /// headers.
     pub syntax_max_bytes: usize,
-    /// Files projected after this get no syntax spans or scope headers, so
-    /// highlighting cannot run a request past its budget.
+    /// Files projected after this get no syntax spans or scope headers.
     pub deadline: Option<Instant>,
     /// Once set, the remaining files get no syntax spans or scope headers.
     pub cancel: Option<&'a AtomicBool>,
@@ -87,9 +69,8 @@ pub struct File {
     /// `None` for a deleted file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_path: Option<String>,
-    /// The language tag the path names (`rs`, `ts`, `dockerfile`), as
-    /// diffy names grammars; `None` when it names none or the compare
-    /// found no grammar for it.
+    /// The path's language tag (`rs`, `dockerfile`); `None` with
+    /// [`FallbackKind::NoGrammar`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     /// A binary file has no hunks or gaps.
@@ -112,8 +93,7 @@ pub struct File {
     /// whole file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gap_after: Option<Gap>,
-    /// Items the semantic diff found changed: new-side items, then
-    /// old-side ones.
+    /// New-side items, then old-side ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outline: Vec<OutlineItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -204,14 +184,13 @@ impl From<&crate::Fallback> for Fallback {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hunk {
-    /// The `@@ -old_start,old_len +new_start,new_len @@` numbers: a start
-    /// is the first line, or the line before an empty side.
+    /// The `@@ -old_start,old_len +new_start,new_len @@` numbers; an empty
+    /// side's start is the line before the hunk.
     pub old_start: u32,
     pub old_len: u32,
     pub new_start: u32,
     pub new_len: u32,
-    /// The item enclosing the hunk's first change (`render_preview`, or a
-    /// scope label such as `impl Parser`).
+    /// The innermost item around the first change, e.g. `impl Parser`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
     /// Unchanged lines between the previous hunk (or the file start) and
@@ -300,9 +279,8 @@ impl From<ChangeIntensity> for Intensity {
     }
 }
 
-/// A highlighted run of a line. Offsets are UTF-16 code units within the
-/// line's text; spans are sorted and disjoint, and text outside them is
-/// plain.
+/// A highlighted run of a line, with [`ChangeSpan`]'s offsets and ordering.
+/// Text outside spans is plain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyntaxSpan {
     pub start: u32,
@@ -392,8 +370,7 @@ fn is_false(value: &bool) -> bool {
 /// entries of the longer slice are ignored.
 pub fn document(inputs: &[FileInput], diffs: &[FileDiff], options: &WireOptions<'_>) -> Document {
     let len = inputs.len().min(diffs.len());
-    // Highlighting parses both sides of every file, so files are projected
-    // on workers like the diff itself.
+    // Highlighting parses every file, so it runs on workers.
     let files = if options.syntax.is_some() {
         crate::run::map_parallel(len, &|at| file(&inputs[at], &diffs[at], options))
     } else {
@@ -407,8 +384,7 @@ pub fn document(inputs: &[FileInput], diffs: &[FileDiff], options: &WireOptions<
     }
 }
 
-/// Projects one file. Highlighting and scope headers parse each side once;
-/// everything else is linear in the rows shown.
+/// Projects one file.
 pub fn file(input: &FileInput, diff: &FileDiff, options: &WireOptions<'_>) -> File {
     let late = options
         .deadline
@@ -474,11 +450,9 @@ pub fn file(input: &FileInput, diff: &FileDiff, options: &WireOptions<'_>) -> Fi
     out
 }
 
-/// Context rows for `gap` (or any sub-range of a gap) of `input`, with
-/// the new side's syntax spans when `options` asks for them. Highlighting
-/// parses the whole new side so lexical state is right. Rows stop early
-/// where the range leaves either side or the sides differ, as a stale
-/// request would.
+/// Context rows for `gap`, with new-side syntax when `options` asks for it.
+/// Highlighting parses the whole new side so lexical state is right. Stops
+/// early where the range leaves either side or the sides differ (stale).
 pub fn expand(input: &FileInput, gap: &Gap, options: &WireOptions<'_>) -> Vec<Row> {
     if gap.len == 0
         || gap.old_start == 0
@@ -667,8 +641,7 @@ impl<'a> Projector<'a> {
                 let old_spans = self.doc.semantic_spans(0, DocSide::Old, old.1);
                 let new_spans = self.doc.semantic_spans(0, DocSide::New, new.1);
                 if old_spans.is_empty() && new_spans.is_empty() {
-                    // A line-diff pair, or lines the semantic diff left
-                    // unmarked: changed words come from the word diff.
+                    // Unmarked by the semantic diff: use the word diff.
                     let old_text = self.display(DocSide::Old, old.0);
                     let new_text = self.display(DocSide::New, new.0);
                     let words = inline_diff(old_text, new_text);
@@ -750,9 +723,7 @@ impl<'a> Projector<'a> {
         // change between the anchor line and the one before.
         let (old, new) = match first_change {
             Some(bi) => {
-                // Blank lines lead most added and removed items and belong
-                // to the scope around them, so the first one with text
-                // anchors the change.
+                // Leading blank lines belong to the enclosing scope; skip them.
                 let first_text = |side: DocSide, store: u32, len: u32| {
                     (0..len)
                         .find(|&k| {
@@ -774,7 +745,7 @@ impl<'a> Projector<'a> {
                 (h.new_start[hi].saturating_sub(1), true),
             ),
         };
-        // The change shows on the new side when it has lines there.
+        // Prefer the new side when it has changed lines.
         let (side, other) = if new.1 {
             (DocSide::New, DocSide::Old)
         } else {
@@ -785,9 +756,9 @@ impl<'a> Projector<'a> {
             DocSide::New => new,
         };
         if let Some(semantics) = self.doc.semantics(0) {
-            // Edited items sit on the new side and removed ones on the
-            // old, so a side with no containing item defers to the other.
-            // Items on one side nest, so the shortest is the innermost.
+            // Edited items are new-side and removed ones old-side, so a side
+            // with no containing item defers to the other. Items on a side
+            // nest, so the shortest is innermost.
             let innermost = |side: DocSide| {
                 let (line, lines) = anchor(side);
                 semantics
@@ -868,8 +839,8 @@ enum Step {
     Added(u32),
 }
 
-/// Pairs a change block's lines as the semantic diff aligned them, when
-/// its rows cover the block in order; offsets within the block.
+/// Pairs a change block's lines as the semantic diff aligned them; `false`
+/// unless the rows cover the block in order.
 fn structural_steps(
     rows: &[AlignedRow],
     at: &BlockAt,
@@ -927,7 +898,6 @@ fn semantic(
     })
 }
 
-/// A context row of store line `store` of `text`, with its syntax.
 fn context_row(
     text: &TextStore,
     syntax: &[HighlightSpan],
@@ -945,8 +915,7 @@ fn context_row(
     }
 }
 
-/// Highlights a whole side once, when `options` asks for syntax and the
-/// side is within the size cap.
+/// Highlights a whole side, if `options` asks and it is within the size cap.
 fn highlights(
     options: &WireOptions<'_>,
     path: Option<&str>,

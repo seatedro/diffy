@@ -6,10 +6,8 @@
 //! queries and a manifest (see [`pack`]), from a [`GrammarStore`] the app
 //! configures: local pack directories it trusts, and with the `download`
 //! feature a signed index it downloads missing packs from. Until a
-//! language's grammar is available its code renders plain. The exception
-//! is the `bundled` feature, for builds that cannot load packs: it links
-//! the grammars `syntax-pack bundle` compiled (see [`bundled`] and
-//! PACKS.md), used after [`StoreConfig::bundled`].
+//! language's grammar is available its code renders plain. The `bundled`
+//! feature links a fixed set instead (see [`bundled`]).
 //!
 //! [`highlight`] runs synchronously; [`HighlightWorker`] runs it on a
 //! background thread and drops requests superseded by a newer generation
@@ -62,12 +60,10 @@
 //!   takes the process down; a panic in the highlighter is caught by the
 //!   worker. Packs come from pinned, hashed grammar sources built in CI.
 //! - Bundled grammars are part of the binary, built from the same pinned,
-//!   hashed sources, so they are as trusted as the rest of it; nothing is
-//!   loaded or hashed at run time.
+//!   hashed sources; nothing is loaded at run time.
 
-// `runtime` alone has no grammar source: it is for libraries that take a
-// store from a crate turning on `bundled` or `engine`, which Cargo unifies
-// in. Until then the code only a source reaches is dead.
+// `runtime` alone has no grammar source; a dependent enabling `engine` or
+// `bundled` supplies one through feature unification.
 #![cfg_attr(
     all(feature = "runtime", not(any(feature = "engine", feature = "bundled"))),
     allow(dead_code, unused_mut, unused_variables)

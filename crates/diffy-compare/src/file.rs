@@ -23,7 +23,7 @@ pub enum Prepared {
     },
 }
 
-/// Settles the files no diff algorithm needs to look at.
+/// Settles files that need no diff.
 pub fn prepare(input: &FileInput) -> Result<Prepared> {
     let meta = input.meta();
     if is_binary(&input.old) || is_binary(&input.new) {
@@ -72,8 +72,7 @@ pub(crate) fn diff_one(
     let Some(grammar) = grammars(&tag) else {
         return line(meta, Fallback::GrammarUnavailable(tag.to_string()));
     };
-    // Loading the grammar can take a while the first time, so the budget
-    // is measured again after it.
+    // A first grammar load can be slow; re-check the budget.
     let Some(max_time) = budget(options) else {
         return line(meta, Fallback::RequestBudget);
     };
@@ -85,8 +84,7 @@ pub(crate) fn diff_one(
         let Some(injector) = &grammar.injector else {
             return Vec::new();
         };
-        // Regions repeat a few languages many times (every `{expression}`
-        // of a Svelte template), so each is looked up once.
+        // Regions repeat a few languages many times; look each up once.
         let mut seen: Vec<(LanguageId, Option<SemanticGrammar>)> = Vec::new();
         let mut out = Vec::new();
         for (language, range) in injector.find(tree, source) {

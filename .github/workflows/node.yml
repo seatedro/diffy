@@ -1,8 +1,5 @@
 name: Node binding
 
-# Builds @diffy/node for every platform it ships, tests each on a native
-# runner, and publishes the packages on a `node-v<version>` tag.
-
 on:
   push:
     tags: ["node-v*"]
@@ -50,8 +47,8 @@ jobs:
             target: x86_64-apple-darwin
             os: macos-26
             node-arch: x64
-          # Built and tested inside manylinux_2_28 (glibc 2.28), so the
-          # grammars' C and the Rust link both see that glibc and nothing newer.
+          # Built in manylinux_2_28 so the grammars' C and the Rust link see
+          # glibc 2.28 and nothing newer.
           - platform: linux-x64-gnu
             target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
@@ -73,10 +70,9 @@ jobs:
       PLATFORM: ${{ matrix.platform }}
       TARGET: ${{ matrix.target }}
     steps:
-      # Before checkout: it needs git for the submodule. The image's GCC
-      # toolset compiles the grammars and links Rust (in place of the clang
-      # .cargo/config.toml names, keeping its -fuse-ld=lld), so both build
-      # against the image's glibc.
+      # Before checkout, which needs git for the submodule. The image's GCC
+      # replaces .cargo/config.toml's clang (keeping -fuse-ld=lld) so the
+      # grammars and the Rust link use the image's glibc.
       - name: Install build tools (manylinux)
         if: matrix.container
         run: |
@@ -154,8 +150,7 @@ jobs:
           cp "target/syntax-bundle/$TARGET/THIRD_PARTY_NOTICES.md" "$out/"
           ls -l "$out"
 
-      # Credits the Rust crates linked for this target, and fails on one
-      # whose license is not on the script's allowlist.
+      # Fails on a crate license outside the script's allowlist.
       - name: Write the Rust notices
         run: |
           node bindings/node/scripts/notices.mjs --locked --target "$TARGET" --out "bindings/node/npm/$PLATFORM"
@@ -244,7 +239,7 @@ jobs:
           EOF
 
       # Platform packages first, so @diffy/node never names a missing one.
-      # A version already on npm is skipped, so a failed run can be rerun.
+      # Published versions are skipped, so a failed run can be rerun.
       - name: Publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

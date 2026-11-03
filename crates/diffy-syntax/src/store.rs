@@ -577,8 +577,8 @@ impl StoreConfig {
         self
     }
 
-    /// Uses the grammars compiled into the binary ([`crate::bundled`]),
-    /// after the local pack roots and before any download.
+    /// Uses the compiled-in grammars ([`crate::bundled`]), searched after
+    /// local packs and before downloads.
     #[cfg(feature = "bundled")]
     pub fn bundled(mut self) -> Self {
         self.bundled = true;
@@ -695,7 +695,7 @@ impl Inner {
     }
 
     fn ships_tags(&self, tag: &str) -> bool {
-        // Only pack sources look past the tags already resolved.
+        // Only pack sources mutate state here.
         #[cfg_attr(not(feature = "engine"), allow(unused_mut))]
         let mut state = lock(&self.state);
         if let Some(Tag::Ready(grammar)) = state.tags.get(tag) {

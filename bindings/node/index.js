@@ -24,8 +24,8 @@ async function diffJson(request, options) {
   const work = call(() => native.diff(request, token))
   if (signal === undefined) return work
 
-  // Abort rejects at once; a queued native request never starts, a
-  // running one stops at its next file, and its own rejection is dropped.
+  // Abort rejects at once and cancels the native request; its own
+  // rejection is dropped.
   let onAbort
   const aborted = new Promise((_, reject) => {
     onAbort = () => {
@@ -57,8 +57,8 @@ function configure(options) {
   return { max_concurrent_requests: state.limit }
 }
 
-// The binding throws synchronously only for its arguments (each conversion
-// with its own code), or with GenericFailure when it cannot start a thread.
+// Sync throws are argument errors (codes vary by conversion), except
+// GenericFailure: no thread could start.
 function call(binding) {
   try {
     return binding()

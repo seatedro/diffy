@@ -4,16 +4,15 @@ Tree-sitter syntax highlighting for [Diffy](../../README.md).
 No grammar is compiled in by default: each language is a pack (a shared
 library, its queries, and a manifest) that a `GrammarStore` loads from local
 pack directories the app trusts or, with the `download` feature, from a
-signed index. Code renders plain until its grammar is available. Builds that
-cannot load packs (a headless server) link a fixed set with `bundled`.
+signed index. Code renders plain until its grammar is available. With
+`bundled`, a fixed set is compiled in instead.
 
-Features: `runtime` (the tree-sitter runtime: highlighting, injections,
-scopes, symbols), `engine` (`runtime` plus local packs), `download`
-(`engine` plus fetching packs over HTTPS with Ed25519-verified indexes), and
-`bundled` (`runtime` plus grammars compiled in from `syntax-pack bundle`,
-with no pack loading, `libloading`, `ring`, or JSON manifests). Without
-`runtime` the crate has no dependencies and every lookup falls back to
-plain text.
+Features: `runtime` (tree-sitter highlighting, injections, scopes,
+symbols), `engine` (`runtime` plus local packs), `download` (`engine` plus
+fetching packs over HTTPS with Ed25519-verified indexes), and `bundled`
+(`runtime` plus grammars from `syntax-pack bundle`; no pack loading).
+Without `runtime` the crate has no dependencies and every lookup falls back
+to plain text.
 
 `highlight` runs synchronously; `HighlightWorker` runs on a background
 thread and drops requests a newer generation superseded, which suits code

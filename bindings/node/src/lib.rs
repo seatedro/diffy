@@ -1,11 +1,9 @@
-//! The native half of `@diffy/node`; `index.js` wraps it and is the API.
+//! Native half of `@diffy/node`; `index.js` is the API.
 //!
-//! Each call copies its input on the JS thread, then does the work on a
-//! thread of its own, never on libuv's pool (which a server's file system,
-//! DNS, and zlib calls share), and settles its promise through a
-//! thread-safe function. `diff` requests wait their turn in [`queue`];
-//! `expand` starts at once. Results cross as one JSON string of the
-//! display format.
+//! Input is copied on the JS thread; work runs on threads of its own, not
+//! libuv's pool (shared with fs, DNS and zlib), and settles through a
+//! thread-safe function. `diff` waits in [`queue`]; `expand` starts at once.
+//! Results cross as one JSON string.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -23,7 +21,7 @@ mod queue;
 #[napi]
 pub const FORMAT_VERSION: u32 = wire::FORMAT_VERSION;
 
-/// The grammars compiled into this build, by canonical name.
+/// Bundled grammars, by canonical name.
 #[napi]
 pub fn languages() -> Vec<String> {
     diffy_syntax::bundled::languages()
@@ -31,8 +29,7 @@ pub fn languages() -> Vec<String> {
         .collect()
 }
 
-/// Built on first use, off the JS thread; bundled grammars only, so it
-/// never touches the network or the file system.
+/// Built lazily off the JS thread; bundled only, so no network or file system.
 fn grammars() -> &'static GrammarStore {
     static STORE: OnceLock<GrammarStore> = OnceLock::new();
     STORE.get_or_init(|| GrammarStore::new(StoreConfig::new().bundled()))
@@ -70,8 +67,7 @@ pub struct Gap {
     pub len: f64,
 }
 
-/// Stops the request it is passed to; `index.js` sets it from an
-/// `AbortSignal`.
+/// Set by `index.js` from an `AbortSignal`.
 #[napi]
 pub struct CancelToken {
     flag: Arc<AtomicBool>,
@@ -87,8 +83,8 @@ impl CancelToken {
         }
     }
 
-    /// Stops the request: a queued one is rejected at once and never
-    /// starts; a running one stops at its next file.
+    /// A queued request is rejected at once and never starts; a running one
+    /// stops at its next file.
     #[napi]
     pub fn cancel(&self) {
         self.flag.store(true, Ordering::Relaxed);
@@ -98,14 +94,12 @@ impl CancelToken {
 
 #[napi(object, object_from_js = false)]
 pub struct QueueState {
-    /// The most `diff` requests that run at once.
     pub limit: u32,
     pub running: u32,
     pub queued: u32,
 }
 
-/// Sets the most `diff` requests that run at once, if `limit` is given,
-/// and reports the queue.
+/// Sets the `diff` concurrency limit, if given, and reports the queue.
 #[napi(js_name = "queue")]
 pub fn queue_state(limit: Option<f64>) -> Result<QueueState> {
     if let Some(limit) = limit {
@@ -114,7 +108,7 @@ pub fn queue_state(limit: Option<f64>) -> Result<QueueState> {
                 "max_concurrent_requests: {limit} is not a positive integer"
             )));
         }
-        // Saturates past usize::MAX, which means "no limit" anyway.
+        // `as` saturates; usize::MAX means no limit anyway.
         queue::set_limit(limit as usize);
     }
     let state = queue::state();
@@ -126,8 +120,7 @@ pub fn queue_state(limit: Option<f64>) -> Result<QueueState> {
     })
 }
 
-/// Diffs `request.files` and resolves to the display format's JSON, once
-/// the request's turn in the queue comes.
+/// Queued; resolves to the Document's JSON.
 #[napi]
 pub fn diff<'env>(
     env: &'env Env,
@@ -158,8 +151,7 @@ pub fn diff<'env>(
         options.file_budget = file_budget;
         options.deadline = deadline;
         options.cancel = Some(&flag);
-        // No `vet`: renames are detected but not confirmed against the rest
-        // of the repository, which the binding never sees.
+        // No `vet`: the binding never sees the repository to confirm renames.
         let diffs = diffy_compare::diff_files(&inputs, &options).map_err(compare_error)?;
         let document = wire::document(
             &inputs,
@@ -180,8 +172,7 @@ pub fn diff<'env>(
     Ok(promise)
 }
 
-/// The context rows of `gap` in `file`, as the display format's JSON.
-/// Never queued: it is one file on one thread, and a user waits on it.
+/// Context rows of `gap` as JSON. Not queued: one file, and a user is waiting.
 #[napi]
 pub fn expand<'env>(
     env: &'env Env,
@@ -229,7 +220,7 @@ impl WireSettings {
 fn wire_settings(syntax: Option<bool>, max_bytes: Option<f64>) -> Result<WireSettings> {
     let syntax_max_bytes = match max_bytes {
         Some(bytes) if bytes.is_finite() && bytes >= 0.0 && bytes.fract() == 0.0 => {
-            // Saturates past usize::MAX, which means "no limit" anyway.
+            // `as` saturates; usize::MAX means no limit anyway.
             bytes as usize
         }
         Some(bytes) => return Err(invalid(format!("syntax_max_bytes: {bytes} is not a size"))),

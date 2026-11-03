@@ -103,7 +103,6 @@ describe('abort', () => {
     await assert.rejects(running, { name: 'AbortError' })
   })
 
-  // Needs the compare core: without it the request fails before the abort.
   it('leaves the binding usable', async () => {
     const controller = new AbortController()
     const running = diff(bigRequest(256), { signal: controller.signal })
@@ -148,7 +147,6 @@ describe('invalid input rejects', () => {
   }
 })
 
-// These need the compare core (diffy_compare::diff_files).
 describe('diff', () => {
   it('diffs a modified file semantically', async () => {
     const doc = await diff({ files: [modified('src/view.rs', OLD_RS, NEW_RS)] })
@@ -269,7 +267,7 @@ describe('diffJson', () => {
   })
 })
 
-// The queue is process-wide; every test puts the default limit back.
+// The queue is process-wide; each test restores the default limit.
 describe('queue', () => {
   const { max_concurrent_requests: initial } = configure()
   const small = () => diff({ files: [modified('a.rs', 'a\n', 'b\n')] })
@@ -287,7 +285,6 @@ describe('queue', () => {
     for (let i = 0; i < 4; i++) done.push(small().then(() => order.push(i)))
     assert.deepEqual(native.queue(), { limit: 1, running: 1, queued: 4 })
     await Promise.all(done)
-    // Unqueued, the small requests would finish long before the big one.
     assert.deepEqual(order, ['big', 0, 1, 2, 3])
     assert.deepEqual(native.queue(), { limit: 1, running: 0, queued: 0 })
   })

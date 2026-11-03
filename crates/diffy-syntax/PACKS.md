@@ -2,8 +2,8 @@
 
 Load tree-sitter grammars at runtime, from packs, to highlight diffs.
 
-- No grammar is compiled into the app. The `bundled` feature compiles a
-  fixed set into other builds (see [Bundled grammars](#bundled-grammars)).
+- No grammar is compiled into the app; other builds can use
+  [bundled grammars](#bundled-grammars).
 - A pack is a shared library exporting the tree-sitter language function,
   plus its highlight query, an optional injection query, and a manifest.
 - A `GrammarStore` feeds the diff view; an app adapts it to Quark's
@@ -134,32 +134,22 @@ cargo run -p syntax-pack -- check                 # re-check built packs for thi
 
 ## Bundled grammars
 
-For builds that must highlight with no packs and no download step, such
-as a headless server. The Diffy app does not use it.
+Compiled-in grammars, for builds without packs or downloads (such as a
+headless server). The app does not use them.
 
 - Default set: C, C++, CSS, Go, HTML, JavaScript, JSON, Kotlin, Markdown
   (with `markdown_inline`), Python, Rust, Swift, TOML, TSX, TypeScript,
   YAML.
-- `syntax-pack bundle` builds and checks each as a host pack (which adapts
-  its queries), then compiles the same verified sources into a static
-  library per grammar for the target and links them together once to
-  catch clashing symbols.
-- Output, `<out>/<target>/`: `lib/` (static libraries), `queries/`,
-  `bundle.tsv` (the table `build.rs` reads), `THIRD_PARTY_NOTICES.md`.
-- Build diffy-syntax with `--features bundled` and `DIFFY_SYNTAX_BUNDLE`
-  set to the absolute `<out>`; `build.rs` reads `<out>/<target>/` and
-  links it.
-- Without `DIFFY_SYNTAX_BUNDLE` the feature builds with an empty bundle and
-  a cargo warning.
-- `bundled` needs only the `runtime` tier, so a bundled-only build links no
-  pack loader (`libloading`, `ring`, JSON manifests) and has no
-  `StoreConfig::local_packs`. Turn on `engine` too to also load packs.
-- Bundled grammars get the same tags, queries, ABI check, and `catalog()`
-  entries as packs; nothing is loaded or hashed at run time.
+- `syntax-pack bundle` writes `<out>/<target>/`: `lib/` (static
+  libraries), `queries/`, `bundle.tsv`, `THIRD_PARTY_NOTICES.md`.
+- Build with `--features bundled` and `DIFFY_SYNTAX_BUNDLE` set to the
+  absolute `<out>`. Unset, the bundle is empty and cargo warns.
+- `bundled` needs only `runtime`: no `libloading`, `ring`, JSON manifests,
+  or `StoreConfig::local_packs`. Add `engine` to also load packs.
+- Same tags, queries, ABI check, and `catalog()` entries as packs.
 - `diffy_syntax::bundled::languages()` lists what a build has.
-- Ship `THIRD_PARTY_NOTICES.md` with anything you distribute: it holds each
-  grammar's license, repositories, commits, and license text, which MIT
-  requires.
+- Ship `THIRD_PARTY_NOTICES.md` with anything you distribute; the grammar
+  licenses require it.
 
 ```sh
 cargo run -p syntax-pack -- bundle --out "$PWD/target/syntax-bundle"            # default set, this host

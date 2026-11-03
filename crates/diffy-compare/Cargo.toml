@@ -7,26 +7,21 @@ rust-version = "1.92"
 license = "MIT OR Apache-2.0"
 publish = false
 
-# No UI, Git, or network dependencies: callers read the files and hand over
-# their bytes. Grammars come from a diffy-syntax store the caller builds.
 [dependencies]
 diffy-diff = { path = "../diffy-diff" }
 diffy-semantic = { path = "../diffy-semantic" }
 diffy-syntax = { path = "../diffy-syntax", features = ["runtime"] }
-# The line diff gix runs (histogram plus Git's slider heuristics), the same
-# crate and version gix already pulls into the app, so line diffs match Git
-# and the app links one copy.
+# gix's own line diff: matches Git, and the app links one copy.
 imara-diff = { package = "gix-imara-diff", version = "0.2.1", default-features = false }
 tracing = "0.1.44"
-# Only for `wire`.
 serde = { version = "1.0", default-features = false, features = ["derive", "std"], optional = true }
 
 [features]
 default = []
-# The versioned, serializable display format in `wire`.
+# Enables `wire`.
 serde = ["dep:serde"]
 
 [dev-dependencies]
 serde_json = "1.0"
-# Tests load grammar packs through `diffy_syntax::testing`.
+# For `diffy_syntax::testing` packs.
 diffy-syntax = { path = "../diffy-syntax", features = ["engine"] }

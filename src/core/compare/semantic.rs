@@ -184,8 +184,7 @@ fn rename_vet<'g>(
     }
 }
 
-/// Attributes each file's diff to the energy monitor and reports
-/// `LoadingFiles` progress every few files.
+/// Per-file energy attribution and throttled `LoadingFiles` progress.
 struct LoadingFiles<'a> {
     reporter: Option<&'a dyn ProgressSink>,
 }

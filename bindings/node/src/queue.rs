@@ -1,10 +1,8 @@
-//! The process-wide FIFO queue of `diff` requests.
+//! Process-wide FIFO of `diff` requests.
 //!
-//! At most [`limit`](Queue::limit) requests run at once, each on a thread
-//! of its own that fans out to a few more. A queued request holds no thread
-//! and blocks nothing: when a request finishes, its thread takes the next
-//! queued one, or exits. Requests are cancelled out of the queue at once
-//! and never start.
+//! At most [`limit`](Queue::limit) run at once, each on its own thread. A
+//! queued request holds no thread: a finishing thread takes the next one or
+//! exits. A cancelled queued request is rejected at once and never starts.
 
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -13,19 +11,16 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 
 use napi::{Env, Error, JsDeferred, Result, Status};
 
-/// The semantic diff may run on the request thread itself; give it the
-/// stack the app gives its semantic workers. Only reserved, not committed.
+/// The semantic diff may run on this thread; same stack as the app's
+/// semantic workers. Reserved, not committed.
 pub(crate) const STACK_BYTES: usize = 16 << 20;
 
-/// `diffy_compare` diffs a request of four or more files on four workers,
-/// then highlights them on as many, so a request can keep this many cores
-/// busy.
+/// `diffy_compare`'s per-request worker fan-out.
 const WORKERS_PER_REQUEST: usize = 4;
 
 /// A promise settled with a JSON string from any thread.
 pub(crate) type Deferred = JsDeferred<String, Box<dyn FnOnce(Env) -> Result<String> + Send>>;
 
-/// A request's work: the JSON it resolves to.
 pub(crate) type Work = Box<dyn FnOnce() -> Result<String> + Send>;
 
 pub(crate) struct Job {
@@ -78,15 +73,13 @@ impl Queue {
     }
 }
 
-/// One request per [`WORKERS_PER_REQUEST`] cores, so running requests keep
-/// every core busy without time-slicing each other's file budgets away.
+/// Fills the cores without requests time-slicing away each other's file
+/// budgets.
 fn default_limit() -> usize {
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     (cores / WORKERS_PER_REQUEST).max(1)
 }
 
-/// Queues `job`; it starts once it is the oldest and fewer than the limit
-/// are running.
 pub(crate) fn submit(job: Job) {
     let mut queue = lock();
     queue.waiting.push_back(job);
@@ -97,8 +90,7 @@ pub(crate) fn submit(job: Job) {
     }
 }
 
-/// Sets the limit and starts the queued jobs it now lets run. Running jobs
-/// past a lowered limit finish; no new ones start until under it.
+/// Raising the limit starts queued jobs; lowering it lets running ones finish.
 pub(crate) fn set_limit(limit: usize) {
     let mut queue = lock();
     queue.limit = limit.max(1);
@@ -127,8 +119,7 @@ pub(crate) fn state() -> State {
     }
 }
 
-/// Rejects the queued jobs `cancel` stops, which then never start. Running
-/// ones see the flag themselves.
+/// Rejects queued jobs with this flag; running ones poll it themselves.
 pub(crate) fn cancel(cancel: &Arc<AtomicBool>) {
     let mut queue = lock();
     let waiting = std::mem::take(&mut queue.waiting);
@@ -153,11 +144,11 @@ fn finish() -> Option<Job> {
     queue.next()
 }
 
-/// Runs `job`, which holds a slot, and then queued jobs, on a new thread.
+/// Runs `job`, which already holds a slot, then queued jobs, on a new thread.
 fn start(mut job: Job) {
     loop {
-        // The job is sent once the thread exists: a failed spawn drops its
-        // closure, and the job's promise must still be settled.
+        // Sent only once the thread exists: a failed spawn drops its closure,
+        // and the promise must still be settled.
         let error = match spawn_runner() {
             Ok(sender) => match sender.send(job) {
                 Ok(()) => return,
@@ -193,8 +184,7 @@ fn spawn_runner() -> std::io::Result<mpsc::SyncSender<Job>> {
     Ok(sender)
 }
 
-/// Runs `work` and settles `deferred` with its result. A panic in `work`
-/// rejects the promise; it cannot unwind into Node.
+/// A panic in `work` rejects the promise instead of unwinding into Node.
 pub(crate) fn settle(deferred: Deferred, work: Work) {
     match catch_unwind(AssertUnwindSafe(work)) {
         Ok(Ok(json)) => deferred.resolve(Box::new(move |_| Ok(json))),

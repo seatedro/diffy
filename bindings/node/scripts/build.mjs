@@ -1,10 +1,9 @@
-// Builds the addon with the `node` profile and copies it to
-// `diffy.<platform>.node`, the name binding.js and the platform packages use.
+// Builds the addon as `diffy.<platform>.node`, the name binding.js and the
+// platform packages load.
 //
 //   node scripts/build.mjs [--target TRIPLE] [--out DIR] [--profile NAME] [--locked]
 //
-// Set DIFFY_SYNTAX_BUNDLE to the absolute `syntax-pack bundle --out` directory
-// to compile grammars in; without it the build has none.
+// DIFFY_SYNTAX_BUNDLE: absolute `syntax-pack bundle --out` dir; unset, no grammars.
 
 import { spawnSync } from 'node:child_process'
 import { copyFileSync, mkdirSync } from 'node:fs'

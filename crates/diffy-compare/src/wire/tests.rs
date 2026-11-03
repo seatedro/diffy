@@ -241,9 +241,8 @@ fn invalid_utf8_lines_show_replacement_characters() {
     );
 }
 
-/// A structural document: `render` renamed to `render_preview` with an
-/// argument changed after multibyte text, plus an outline, a move, and a
-/// rename.
+/// `render` renamed to `render_preview`; an argument changed after multibyte
+/// text.
 fn semantic_diff() -> (FileInput, FileDiff) {
     let old = "fn keep() {}\nfn render() {\n    draw(\"é😀\", 1);\n}\n";
     let new = "fn keep() {}\nfn render_preview() {\n    draw(\"é😀\", 2);\n}\n";
@@ -457,8 +456,7 @@ fn hunk_headers_name_the_innermost_containing_item() {
     assert_eq!(header(nested(), (1, 1)).as_deref(), Some("inner"));
     // Only the old side has lines, so its items come first.
     assert_eq!(header(nested(), (1, 0)).as_deref(), Some("removed"));
-    // An old-only change without an old item takes the new item around
-    // the gap it leaves, which must hold the lines on both sides of it.
+    // Without an old item, the new item must surround the gap on both sides.
     let new_only = || {
         vec![
             item(DocSide::New, 0..4, "outer"),
@@ -525,7 +523,6 @@ fn aligned_rows_pair_lines_where_the_semantic_diff_put_them() {
             ("context", Some(4), Some(5)),
         ]
     );
-    // Unmarked pairs still get the word diff.
     let (_, new_line) = modified(&rows[1]);
     assert_eq!(new_line.changes, [span(3, 4, Intensity::NovelWord)]);
 }
@@ -567,7 +564,6 @@ fn gaps_track_each_side_and_expand_into_context_rows() {
     assert_eq!(rows[0], context(14, 16, "line 14"));
     assert_eq!(rows[16], context(30, 32, "line 30"));
 
-    // The bottom three lines of the gap above the hunk.
     let tail = Gap {
         old_start: 5,
         new_start: 5,
@@ -583,14 +579,13 @@ fn gaps_track_each_side_and_expand_into_context_rows() {
         ]
     );
 
-    // Past the end of the file: only the lines that exist.
     let past = Gap {
         old_start: 29,
         new_start: 31,
         len: 10,
     };
     assert_eq!(expand(&input, &past, &options).len(), 2);
-    // Stale: the sides differ, so nothing is claimed unchanged.
+    // Stale: the sides differ.
     let stale = Gap {
         old_start: 14,
         new_start: 14,
@@ -745,7 +740,6 @@ fn syntax_spans_are_classes_sliced_per_line_in_utf16() {
     assert_eq!(utf16_slice(&old_line.text, draw.start, draw.end), "draw");
     assert_eq!(draw.class, "function");
 
-    // Expanded context is highlighted with the whole file's parse.
     let gap = hunk.gap_before.expect("gap before");
     let rows = expand(&input, &gap, &options);
     let Row::Context { syntax, .. } = &rows[0] else {
@@ -778,8 +772,7 @@ fn the_spec_example_matches_the_types() {
     let value: serde_json::Value = serde_json::from_str(example).expect("example parses");
     let document: Document = serde_json::from_value(value.clone()).expect("example is a Document");
     assert_eq!(document.version, FORMAT_VERSION);
-    // Nothing in the example is unknown to the types or spelled
-    // differently from what they write.
+    // Round-trips exactly: no unknown or misspelled fields.
     assert_eq!(serde_json::to_value(&document).expect("serializes"), value);
 }
 
@@ -795,8 +788,7 @@ fn aligned_rows_that_miss_lines_fall_back_to_positional_pairs() {
         TextStore::new(new),
     );
     file_builder.structural(true).hunk(0, 0).change(2, 2);
-    // Only the first pair is aligned; the second line of each side is
-    // never mentioned.
+    // Only the first pair is aligned.
     file_builder.row(AlignedRow {
         old: Some(0),
         new: Some(0),
@@ -836,8 +828,8 @@ fn files_projected_past_the_deadline_skip_syntax() {
     }
 }
 
-/// The hunk headers of a real semantic diff of `old` to `new`, without
-/// syntax, so they come from the outline alone; `None` without the pack.
+/// Hunk headers of a semantic diff without syntax, so from the outline alone;
+/// `None` without the pack.
 fn outline_headers(language: &str, path: &str, old: &str, new: &str) -> Option<Vec<String>> {
     let store = diffy_syntax::testing::store_with(language)?;
     let input = FileInput {
@@ -936,8 +928,7 @@ fn hunk_headers_pick_the_innermost_item_on_the_change_side() {
     let Some(headers) = outline_headers("rust", "src/lib.rs", old, &new) else {
         return;
     };
-    // An edit inside a method names the method, not its impl; a deletion
-    // inside an edited method names it from the new side; a removed
-    // method names itself from the old side.
+    // Edited method, not its impl; a deletion inside an edited method (new
+    // side); a removed method (old side).
     assert_eq!(headers, ["render", "other", "removed"]);
 }

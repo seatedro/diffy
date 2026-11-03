@@ -30,11 +30,9 @@ ureq = { version = "3", default-features = false, features = ["rustls"], optiona
 
 [features]
 default = []
-# The tree-sitter runtime: highlighting, injections, scopes, and symbols
-# over the grammars a store gets from `bundled` or, with `engine`, packs.
+# Tree-sitter runtime (highlighting, injections, scopes, symbols); no grammars.
 runtime = ["dep:tree-sitter", "dep:tree-sitter-language", "dep:tracing"]
-# Pack loading from local directories: manifests, SHA-256 checks, and
-# shared libraries.
+# `runtime` plus pack loading from local directories.
 engine = [
   "runtime",
   "dep:libloading",
@@ -45,9 +43,7 @@ engine = [
 ]
 # Downloading packs on demand from a signed index.
 download = ["engine", "dep:quark-update", "dep:ureq"]
-# Grammars compiled in from the bundle `syntax-pack bundle` writes, named
-# by $DIFFY_SYNTAX_BUNDLE at build time (empty, with a warning, without it).
-# Needs no pack loading.
+# Grammars compiled in from $DIFFY_SYNTAX_BUNDLE (`syntax-pack bundle`).
 bundled = ["runtime"]
 
 [dev-dependencies]

@@ -1,10 +1,9 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// The directory `syntax-pack bundle --out` wrote, read by the `bundled`
-/// feature.
+/// The directory `syntax-pack bundle --out` wrote.
 const BUNDLE_VAR: &str = "DIFFY_SYNTAX_BUNDLE";
-/// First line of `<bundle>/<target>/bundle.tsv`; `syntax-pack` writes it.
+/// First line of `<bundle>/<target>/bundle.tsv`.
 const HEADER: &str = "# diffy-syntax bundle 1";
 const QUERIES: [&str; 5] = ["highlights", "injections", "locals", "semantic", "tags"];
 
@@ -22,8 +21,7 @@ fn main() {
     }
 }
 
-/// Writes `$OUT_DIR/bundled.rs`, the table `src/bundled.rs` includes, and
-/// links the bundle's static libraries.
+/// Writes `$OUT_DIR/bundled.rs` for `src/bundled.rs` and links the bundle.
 fn bundle(target: &str) -> Result<(), String> {
     println!("cargo:rerun-if-env-changed={BUNDLE_VAR}");
     let out_dir = std::env::var_os("OUT_DIR").ok_or("cargo did not set OUT_DIR")?;
@@ -47,10 +45,9 @@ fn bundle(target: &str) -> Result<(), String> {
     std::fs::write(&out, code).map_err(|e| format!("{}: {e}", out.display()))
 }
 
-/// The table for the bundle in `dir`, one line of `bundle.tsv` per grammar:
-/// language, symbol, ABI, library, aliases, extensions, source SHA-256
-/// (lists comma-separated, `-` when empty). Queries are
-/// `queries/<language>/<name>.scm`.
+/// The table for the bundle in `dir`. `bundle.tsv` columns: language,
+/// symbol, ABI, library, aliases, extensions, source SHA-256 (lists
+/// comma-separated, `-` when empty). Queries: `queries/<language>/<name>.scm`.
 fn generate(dir: &Path, target: &str) -> Result<String, String> {
     let manifest = dir.join("bundle.tsv");
     let text = std::fs::read_to_string(&manifest).map_err(|e| {
@@ -117,8 +114,7 @@ fn generate(dir: &Path, target: &str) -> Result<String, String> {
         println!("cargo:rerun-if-changed={}", archive.display());
         println!("cargo:rustc-link-lib=static={library}");
 
-        // Each grammar gets its own Rust name, so only the link name comes
-        // from the bundle.
+        // Only the link name comes from the bundle; the Rust name is ours.
         let _ = writeln!(
             externs,
             "    #[link_name = {symbol:?}]\n    fn grammar_{index}() -> *const ();"

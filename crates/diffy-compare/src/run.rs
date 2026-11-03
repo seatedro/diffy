@@ -22,9 +22,7 @@ pub(crate) fn cancelled(options: &Options<'_>) -> bool {
         .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
 }
 
-/// Diffs `input` under the observer's [`Observer::file`] hook.
-///
-/// [`Observer::file`]: crate::Observer::file
+/// Diffs `input` inside [`crate::Observer::file`].
 pub(crate) fn observed(
     input: &FileInput,
     options: &Options<'_>,
@@ -39,13 +37,12 @@ pub(crate) fn observed(
     });
     match out {
         Some(out) => out,
-        // The observer did not run the work; it still has to happen.
+        // The observer skipped `work`; run it anyway.
         None => diff_one(input, options, grammars),
     }
 }
 
-/// Diffs `inputs` on worker threads, which take the next file in order
-/// until none remain or the request is cancelled.
+/// Diffs `inputs` on workers that take files in order until done or cancelled.
 pub(crate) fn diff_all(
     inputs: &[FileInput],
     options: &Options<'_>,
@@ -101,10 +98,9 @@ pub(crate) fn diff_all(
     done.into_iter().map(|(_, diff)| diff).collect()
 }
 
-/// Runs `work` for every index in `0..len` on worker threads and returns
-/// the results in index order. The calling thread works too, so a worker
-/// that cannot start only costs parallelism; a worker's panic is resumed
-/// on the caller.
+/// Runs `work` for `0..len` on workers; results are in index order. The caller
+/// works too, so a worker that fails to spawn only costs parallelism; worker
+/// panics resume on the caller.
 #[cfg(feature = "serde")]
 pub(crate) fn map_parallel<T: Send>(len: usize, work: &(dyn Fn(usize) -> T + Sync)) -> Vec<T> {
     let next = AtomicUsize::new(0);

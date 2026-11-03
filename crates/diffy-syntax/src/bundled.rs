@@ -1,9 +1,6 @@
-//! Grammars compiled into the binary with the `bundled` feature.
-//!
-//! `syntax-pack bundle` compiles a fixed set of grammars from their pinned
-//! sources into static libraries and writes their queries and a table;
-//! `build.rs` links them when `DIFFY_SYNTAX_BUNDLE` names that directory.
-//! Without it the bundle is empty. A store uses them only after
+//! Grammars compiled in with the `bundled` feature, from the
+//! `syntax-pack bundle` output `DIFFY_SYNTAX_BUNDLE` names at build time
+//! (empty without it). Stores use them only after
 //! [`crate::StoreConfig::bundled`].
 
 /// One compiled-in grammar, as `build.rs` generates it.
@@ -11,7 +8,7 @@ pub(crate) struct Bundled {
     pub(crate) name: &'static str,
     pub(crate) aliases: &'static [&'static str],
     pub(crate) extensions: &'static [&'static str],
-    /// The grammar's tree-sitter ABI, checked against the linked grammar.
+    /// Declared tree-sitter ABI, checked against the linked grammar.
     pub(crate) abi: u32,
     pub(crate) language: unsafe extern "C" fn() -> *const (),
     /// SHA-256 of the pinned sources it was built from.
@@ -24,7 +21,7 @@ pub(crate) struct Bundled {
 }
 
 impl Bundled {
-    /// The canonical name, aliases, and extensions, each a lookup key.
+    /// Lookup keys: name, aliases, extensions.
     pub(crate) fn tags(&self) -> impl Iterator<Item = &'static str> {
         std::iter::once(self.name)
             .chain(self.aliases.iter().copied())
@@ -34,13 +31,12 @@ impl Bundled {
 
 include!(concat!(env!("OUT_DIR"), "/bundled.rs"));
 
-/// The canonical names of the grammars compiled into this build; empty
-/// when it was built without `DIFFY_SYNTAX_BUNDLE`.
+/// Names of the compiled-in grammars; empty without `DIFFY_SYNTAX_BUNDLE`.
 pub fn languages() -> impl ExactSizeIterator<Item = &'static str> + Clone {
     GRAMMARS.iter().map(|grammar| grammar.name)
 }
 
-/// The bundled grammar a name, alias, or extension names.
+/// By name, alias, or extension, ignoring ASCII case.
 pub(crate) fn find(tag: &str) -> Option<&'static Bundled> {
     GRAMMARS
         .iter()

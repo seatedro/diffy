@@ -10,23 +10,19 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
-# Build with `--profile node` (see the workspace manifest): release panics
-# abort, which would take the host Node process down with them.
+# Build with `--profile node`: release's panic = "abort" would kill the host.
 [dependencies]
 diffy-compare = { path = "../../crates/diffy-compare", features = ["serde"] }
 # Grammars compiled in from $DIFFY_SYNTAX_BUNDLE; no packs, no network.
 diffy-syntax = { path = "../../crates/diffy-syntax", features = ["bundled"] }
-# Node-API bindings. `napi4` is the lowest version with thread-safe
-# functions, which settle a promise from the request's own thread;
-# `dyn-symbols` resolves Node-API from the host process at load time, so
-# the same file loads in Node and Electron and needs no node.lib on Windows.
+# `napi4`: lowest with thread-safe functions. `dyn-symbols`: Node-API is
+# resolved from the host at load, so one file loads in Node and Electron and
+# Windows needs no node.lib.
 napi = { version = "3", default-features = false, features = ["napi4", "dyn-symbols"] }
-# The `#[napi]` attribute. Without `type-def`: index.d.ts is written by
-# hand from FORMAT.md, which generated types cannot express.
+# No `type-def`: index.d.ts is hand-written from FORMAT.md.
 napi-derive = { version = "3", default-features = false, features = ["strict"] }
-# Results cross into JS as one JSON string.
 serde_json = "1.0"
 
 [build-dependencies]
-# Emits the platform link flags a Node addon needs (macOS dynamic lookup).
+# Addon link flags (macOS dynamic lookup).
 napi-build = "2"

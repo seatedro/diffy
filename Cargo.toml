@@ -138,8 +138,7 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-# The Node binding (bindings/node): release, but a Rust panic unwinds to the
-# binding boundary and rejects the call instead of aborting the host process.
+# bindings/node: a panic rejects the call instead of aborting the Node process.
 [profile.node]
 inherits = "release"
 panic = "unwind"

@@ -1,4 +1,4 @@
-//! Line diffs: what a file gets when the semantic diff does not run.
+//! Line diffs.
 
 use diffy_diff::{
     DiffDocument, DocumentBuilder, FileMeta, SourceCoverage, TextStore, diff_from_changes,
@@ -24,7 +24,7 @@ pub fn line_diff(mut meta: FileMeta, old: &[u8], new: &[u8]) -> Result<DiffDocum
         .map_err(|error| Error::Build(error.to_string()))
 }
 
-/// A document for a binary file: its metadata and no text.
+/// A text-less document for a binary file.
 pub fn binary_document(mut meta: FileMeta) -> Result<DiffDocument> {
     meta.binary = true;
     let mut builder = DocumentBuilder::new();
@@ -40,8 +40,7 @@ pub fn binary_document(mut meta: FileMeta) -> Result<DiffDocument> {
     Ok(builder.build())
 }
 
-/// Histogram line diff with Git's slider heuristics, as `git diff` and
-/// gix compute it.
+/// Histogram with Git's slider heuristics, matching `git diff`.
 pub(crate) fn line_changes(old: &[u8], new: &[u8]) -> Vec<Change> {
     let input = InternedInput::new(old, new);
     let mut diff = Diff::compute(Algorithm::Histogram, &input);

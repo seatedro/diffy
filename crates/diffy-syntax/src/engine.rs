@@ -33,8 +33,7 @@ pub fn supported_abi() -> std::ops::RangeInclusive<u32> {
     ts::MIN_COMPATIBLE_LANGUAGE_VERSION as u32..=ts::LANGUAGE_VERSION as u32
 }
 
-/// Why a grammar, from a pack or the bundle, did not compile. Packs report
-/// it as the matching `pack::PackError`.
+/// Why a grammar did not compile; packs map it to `pack::PackError`.
 #[derive(Debug)]
 pub(crate) enum GrammarError {
     Abi { abi: u32, min: u32, max: u32 },
@@ -131,12 +130,10 @@ impl Grammar {
         })
     }
 
-    /// A grammar compiled into the binary, with its queries.
     #[cfg(feature = "bundled")]
     pub(crate) fn bundled(bundled: &crate::bundled::Bundled) -> Result<Self, GrammarError> {
-        // SAFETY: the function is the tree-sitter language function of a
-        // grammar `syntax-pack bundle` compiled from pinned, hashed sources
-        // and linked into this binary.
+        // SAFETY: a tree-sitter language function linked in from pinned,
+        // hashed sources by `syntax-pack bundle`.
         let language = unsafe { tree_sitter_language::LanguageFn::from_raw(bundled.language) };
         let grammar = Self::compile(
             language,
@@ -149,8 +146,7 @@ impl Grammar {
             locals: bundled.locals.map(Arc::from),
             semantic: bundled.semantic.map(Arc::from),
             tags: bundled.tags.map(Arc::from),
-            // Identifies the grammar build for tag caches, as a pack's
-            // library hash does.
+            // Keys tag caches, like a pack's library hash.
             library: Some(Arc::from(bundled.source)),
             ..grammar
         })
@@ -184,8 +180,7 @@ impl Grammar {
         self.tags.as_ref()
     }
 
-    /// Checks `language`'s ABI against the one its pack or bundle
-    /// declares and compiles its highlight and injection queries.
+    /// Checks the ABI against `expected_abi` and compiles the queries.
     fn compile(
         language: tree_sitter_language::LanguageFn,
         expected_abi: u32,

@@ -1,40 +1,35 @@
 # Diffy display format, version 1
 
-The JSON that Diffy's compare produces for clients to render diffs from
-(`diffy_compare::wire`, behind the crate's `serde` feature). It is
-layout-neutral: one row list renders both split and unified views, and
-nothing needs recomputing on the client.
+JSON produced by `diffy_compare::wire` (crate feature `serde`). Layout-neutral:
+one row list renders both split and unified views.
 
 ## Versioning
 
-Every document carries `version`. It changes only for a breaking change:
-removing or renaming a field or enum value, changing a field's type,
-meaning, or coordinates, or making an optional field required. Adding an
-optional field is not breaking and keeps the version, so clients must
-ignore fields they do not know. The one enum that may gain values without
-a bump is the syntax `class`; treat unknown classes as plain text.
+- `version` changes only on a breaking change: removing or renaming a field or
+  enum value, changing a field's type, meaning or coordinates, or making an
+  optional field required.
+- Adding an optional field keeps the version, so ignore unknown fields.
+- Syntax `class` may gain values without a bump; render unknown ones as plain.
 
 ## Conventions
 
-- Field names are `snake_case`; enum values are `snake_case` strings.
-- Optional fields are omitted when empty: an absent string or object means
-  none, an absent array means `[]`, an absent boolean means `false`.
+- Field names and enum values are `snake_case`.
+- Optional fields are omitted when empty: absent string or object means none,
+  absent array means `[]`, absent boolean means `false`.
 - Line numbers are 1-based.
-- Ranges are half-open: `start` is included, `end` is not.
-- **Span offsets are UTF-16 code units within the row's `text`**, the way
-  JavaScript indexes strings: `text.slice(span.start, span.end)` is the
-  span's text.
-- `text` is one line as Diffy displays it: no line terminator, no trailing
-  `\r` of a CRLF line, and each byte that is not valid UTF-8 shown as
-  U+FFFD (`�`). Whether the last line ends with a newline is stated on the
-  file (`old_missing_newline`, `new_missing_newline`).
+- Ranges are half-open: `start` included, `end` excluded.
+- **Span offsets are UTF-16 code units within the row's `text`**:
+  `text.slice(span.start, span.end)` is the span's text.
+- `text` is one display line: no line terminator, no trailing `\r`, invalid
+  UTF-8 bytes as U+FFFD (`�`). The final newline is reported per file
+  (`old_missing_newline`, `new_missing_newline`).
 
 ## Document
 
 | Field | Type | |
 | --- | --- | --- |
 | `version` | number | The format version, `1`. |
-| `files` | File[] | In the order the files were requested. |
+| `files` | File[] | In request order. |
 
 ## File
 
@@ -43,7 +38,7 @@ a bump is the syntax `class`; treat unknown classes as plain text.
 | `status` | `"modified"` \| `"added"` \| `"deleted"` \| `"renamed"` \| `"copied"` | |
 | `old_path` | string? | Absent for an added file. |
 | `new_path` | string? | Absent for a deleted file. Show `new_path ?? old_path`. |
-| `language` | string? | The language tag the path names, as Diffy names grammars: the extension (`rs`, `ts`, `py`) or, for a file without one, its lowercased name (`dockerfile`). Absent when the path names none, or when `fallback.kind` is `no_grammar`. |
+| `language` | string? | The path's language tag, as Diffy names grammars: the extension (`rs`, `ts`, `py`), or the lowercased name of a file without one (`dockerfile`). Absent when the path names none, or when `fallback.kind` is `no_grammar`. |
 | `binary` | boolean? | A binary file has no `hunks` and no `gap_after`. |
 | `additions` | number | Added lines. |
 | `deletions` | number | Removed lines. |
@@ -51,37 +46,34 @@ a bump is the syntax `class`; treat unknown classes as plain text.
 | `new_missing_newline` | boolean? | The new file's last line has no newline. |
 | `fallback` | Fallback? | Present when the file got a line diff instead of a semantic one. |
 | `hunks` | Hunk[]? | In file order. |
-| `gap_after` | Gap? | Unchanged lines after the last hunk. For a file with no hunks (unchanged, or renamed without edits) this is the whole file. |
+| `gap_after` | Gap? | Unchanged lines after the last hunk; the whole file when there are no hunks (unchanged, or renamed without edits). |
 | `outline` | OutlineItem[]? | Items the semantic diff found changed. |
 | `moves` | Move[]? | Code the semantic diff found moved. |
 | `renames` | Rename[]? | Identifiers the semantic diff found renamed. |
 
-A file renders as: for each hunk, its `gap_before` (if any), its header,
-its rows; then `gap_after` (if any).
+Render order: for each hunk, `gap_before`, header, rows; then `gap_after`.
 
 ### Fallback
 
 | Field | Type | |
 | --- | --- | --- |
-| `kind` | `"no_grammar"` \| `"grammar_unavailable"` \| `"semantic"` \| `"request_budget"` | `no_grammar`: no language is known for the path. `grammar_unavailable`: the path names a language whose grammar could not load. `semantic`: the semantic diff gave up, see `reason`. `request_budget`: the request's deadline passed before this file was diffed. |
-| `reason` | `"too_large"` \| `"parse_errors"` \| `"error_coverage"` \| `"unparsed"` \| `"budget"` \| `"timeout"`? | Present when `kind` is `semantic`. The file was too large; had too many parse errors; parse errors covered too much of it; the parser gave up; the work budget ran out; the time budget ran out. |
+| `kind` | `"no_grammar"` \| `"grammar_unavailable"` \| `"semantic"` \| `"request_budget"` | `no_grammar`: no language for the path. `grammar_unavailable`: the language's grammar failed to load. `semantic`: the semantic diff gave up, see `reason`. `request_budget`: the request's deadline passed before this file was diffed. |
+| `reason` | `"too_large"` \| `"parse_errors"` \| `"error_coverage"` \| `"unparsed"` \| `"budget"` \| `"timeout"`? | Present when `kind` is `semantic`, in order: file too large; too many parse errors; parse errors cover too much; parser gave up; work budget ran out; time budget ran out. |
 | `message` | string | For people, e.g. `"exceeded the semantic time budget"`. Wording may change; branch on `kind` and `reason`. |
-
-Line-diff files still get changed-word spans on `modified` rows.
 
 ## Hunk
 
 | Field | Type | |
 | --- | --- | --- |
-| `old_start`, `old_len`, `new_start`, `new_len` | number | The numbers of a unified diff's `@@ -old_start,old_len +new_start,new_len @@` line. A start is the side's first line in the hunk, or the line before it when that side is empty (`0` at the top of the file). |
-| `header` | string? | The innermost item whose lines contain the hunk's first changed line (blank lines skipped), for the hunk's header line: a changed item's name from the semantic outline (`render_preview`), else a scope label from the grammar (`fn render_preview`, `impl Parser`, `class Parser`, `parse()`). Absent when nothing contains the change, as for a top-level statement between functions. |
+| `old_start`, `old_len`, `new_start`, `new_len` | number | The `@@ -old_start,old_len +new_start,new_len @@` numbers. An empty side's start is the line before the hunk (`0` at the top of the file). |
+| `header` | string? | The innermost item containing the hunk's first non-blank changed line: a changed item's name from the outline (`render_preview`), else a grammar scope label (`fn render_preview`, `impl Parser`, `parse()`). Absent when nothing contains it, e.g. a top-level statement between functions. |
 | `gap_before` | Gap? | Unchanged lines between the previous hunk (or the top of the file) and this one. |
 | `rows` | Row[] | In display order; each side's line numbers ascend. |
 
 ## Gap
 
-Unchanged lines left out of the hunks. The lines are identical on both
-sides; the starts differ when earlier changes shifted lines.
+Unchanged lines left out of the hunks, identical on both sides; the starts
+differ when earlier changes shifted lines.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -89,16 +81,15 @@ sides; the starts differ when earlier changes shifted lines.
 | `new_start` | number | First line on the new side. |
 | `len` | number | Lines in the gap, at least 1. |
 
-To expand, send the server a Gap: the whole gap, or any sub-range of it
-(the first 20 lines: `{old_start, new_start, len: 20}`; the last 20:
-`{old_start: old_start + len - 20, new_start: new_start + len - 20, len:
-20}`). The server answers with `context` rows (below), with syntax spans
-when the request asked for syntax. The answer can be shorter than `len`
-when the range runs past the end of the file or no longer matches it.
+To expand, send a Gap: the whole gap or any sub-range (first 20 lines:
+`{old_start, new_start, len: 20}`; last 20: `{old_start: old_start + len - 20,
+new_start: new_start + len - 20, len: 20}`). The reply is `context` rows, with
+syntax spans if syntax was requested. It can be shorter than `len` when the
+range runs past the end of the file or no longer matches it.
 
 ## Row
 
-A row is one of four kinds, told apart by `kind`.
+Tagged by `kind`.
 
 ### `context`
 
@@ -120,11 +111,11 @@ An unchanged line.
 | `added` | `new`: Line |
 | `modified` | `old`: Line, `new`: Line — a removed line beside the added line it became. |
 
-Split view: `old` goes left, `new` right; a `removed` row leaves the right
-empty and an `added` row the left. Unified view: a `modified` row is its
-`old` line as removed then its `new` line as added; to read like `git
-diff`, show a run of consecutive `modified` rows as all their old lines,
-then all their new lines.
+- Split view: `old` left, `new` right; `removed` leaves the right empty,
+  `added` the left.
+- Unified view: a `modified` row is its `old` line removed, then its `new` line
+  added. To read like `git diff`, show a run of `modified` rows as all their
+  old lines, then all their new lines.
 
 ### Line
 
@@ -137,39 +128,40 @@ One side of a changed row.
 | `changes` | ChangeSpan[]? | What changed within the line. Sorted, never overlapping. |
 | `syntax` | SyntaxSpan[]? | From this side's file. |
 
-A `removed` or `added` line without `changes` changed as a whole. A
-`modified` line without `changes` has no word-level detail: the lines are
-too different to compare word by word, too long, or differ only in what
-`text` does not show (a `\r`, an invalid byte, the final newline).
+Without `changes`, a `removed` or `added` line changed as a whole; a `modified`
+line has no word-level detail (too different, too long, or differing only in
+what `text` hides: a `\r`, an invalid byte, the final newline).
 
 ### ChangeSpan
 
 | Field | Type | |
 | --- | --- | --- |
 | `start`, `end` | number | UTF-16 offsets within the line's `text`. |
-| `intensity` | `"novel"` \| `"novel_word"` \| `"unchanged_context"` \| `"renamed"` | `novel`: syntax that exists only on this side (an inserted or deleted expression); `novel_word`: a changed word in an otherwise matched line; `unchanged_context`: unchanged syntax inside a changed line, for a subdued highlight or none; `renamed`: an identifier matched as renamed (see `renames`). |
+| `intensity` | `"novel"` \| `"novel_word"` \| `"unchanged_context"` \| `"renamed"` | `novel`: syntax only on this side (an inserted or deleted expression). `novel_word`: a changed word in an otherwise matched line. `unchanged_context`: unchanged syntax inside a changed line; subdue or skip it. `renamed`: an identifier matched as renamed (see `renames`). |
 
-Line-diff files only use `novel_word`.
+Line-diff files get only `novel_word` spans, on `modified` rows.
 
 ### SyntaxSpan
 
-Present only when the request asked for syntax, the file's language has a
-grammar, and the side is not too large. Text outside every span is plain.
+Present only when syntax was requested, the language has a grammar, and the
+side is under the size cap. Text outside every span is plain.
 
 | Field | Type | |
 | --- | --- | --- |
 | `start`, `end` | number | UTF-16 offsets within the line's `text`. Sorted, never overlapping. |
-| `class` | string | One of `keyword`, `string`, `comment`, `number`, `type`, `function`, `operator`, `punctuation`, `variable`, `constant`, `builtin`, `attribute`, `tag`, `property`, `namespace`, `label`, `preprocessor`. Map each to a theme colour; treat any other value as plain. |
+| `class` | string | One of `keyword`, `string`, `comment`, `number`, `type`, `function`, `operator`, `punctuation`, `variable`, `constant`, `builtin`, `attribute`, `tag`, `property`, `namespace`, `label`, `preprocessor`. Map each to a theme colour; render any other value as plain. |
 
-Syntax comes from parsing each whole file, so a line inside a multi-line
-string or comment is highlighted as such. Changes and syntax are
-independent layers: draw the change background, then the syntax colour.
+Each whole file is parsed, so lines inside multi-line strings and comments
+highlight correctly. Changes and syntax are independent layers: draw the change
+background, then the syntax colour.
 
 ## OutlineItem
 
+New-side items first, then old-side ones.
+
 | Field | Type | |
 | --- | --- | --- |
-| `side` | `"old"` \| `"new"` | Which file `line` refers to: `removed` items are on the old side, the rest on the new. |
+| `side` | `"old"` \| `"new"` | Which file `line` refers to: `removed` items are old-side, the rest new-side. |
 | `line` | number | The item's first line. |
 | `end_line` | number? | The item's last line, inclusive. |
 | `kind` | string | The grammar's node kind, e.g. `function_item`, `class_declaration`. |
@@ -177,12 +169,10 @@ independent layers: draw the change background, then the syntax colour.
 | `change` | `"added"` \| `"removed"` \| `"renamed"` \| `"moved"` \| `"edited"` | `renamed`: only identifiers inside it were renamed. |
 | `edits` | number? | Changed lines of an `edited` item. |
 
-New-side items come first, then old-side ones.
-
 ## Move
 
-`old_len` lines starting at old line `old_start` moved to `new_len` lines
-starting at new line `new_start`.
+`old_len` lines from old line `old_start` moved to `new_len` lines at new line
+`new_start`.
 
 | Field | Type | |
 | --- | --- | --- |
@@ -280,10 +270,9 @@ type Rename = { old: string; new: string; uses: number };
 
 ## Example
 
-A Rust file where `render` became `render_preview` and an argument
-changed after a line with non-ASCII text, diffed semantically, without
-syntax. Lines 1–9 and 14–20 are unchanged and collapsed. `é` is one UTF-16
-unit and `😀` two, so the changed `2` starts at 16 (byte 19).
+A semantic Rust diff without syntax: `render` became `render_preview`, and an
+argument changed after non-ASCII text. Lines 1–9 and 14–20 are collapsed. `é`
+is one UTF-16 unit and `😀` two, so the changed `2` starts at 16 (byte 19).
 
 ```json
 {
@@ -371,8 +360,7 @@ unit and `😀` two, so the changed `2` starts at 16 (byte 19).
 }
 ```
 
-With syntax requested, rows also carry spans, e.g. the old line 12 above
-gains:
+With syntax requested, old line 12 above also gains:
 
 ```json
 "syntax": [

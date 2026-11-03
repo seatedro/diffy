@@ -12,12 +12,11 @@
 //!     <out>/<triple>/skipped.json; a grammars.toml language fails the build.
 //!     Grammars marked `generate` need tree-sitter CLI 0.26.8 ($TREE_SITTER).
 //! syntax-pack bundle [LANGUAGE...] [--target TRIPLE] [--out DIR] [--sources DIR] [--work DIR] [--jobs N]
-//!     Compile LANGUAGEs (default: BUNDLE_DEFAULT) from their pinned,
-//!     hashed sources into static libraries for TRIPLE, for diffy-syntax's
-//!     `bundled` feature (DIFFY_SYNTAX_BUNDLE=DIR). Each is first built and
-//!     checked as a pack for this host, which adapts its queries. Writes
-//!     <out>/<triple>/: lib/, queries/<language>/, bundle.tsv, and
-//!     THIRD_PARTY_NOTICES.md. --out defaults to <workspace>/target/syntax-bundle.
+//!     Compile LANGUAGEs (default: BUNDLE_DEFAULT) into static libraries for
+//!     TRIPLE, for diffy-syntax's `bundled` feature (DIFFY_SYNTAX_BUNDLE=DIR).
+//!     Each is first built and checked as a host pack. Writes <out>/<triple>/:
+//!     lib/, queries/<language>/, bundle.tsv, THIRD_PARTY_NOTICES.md.
+//!     --out defaults to <workspace>/target/syntax-bundle.
 //! syntax-pack registry --registry FILE [--extensions FILE] [--jobs N]
 //!     Pin every grammar in nvim-treesitter's registry.json that is not in
 //!     grammars.toml, build and check each for this host, and rewrite
@@ -75,8 +74,8 @@ const HOST: &str = env!("SYNTAX_PACK_HOST");
 const KEY_VAR: &str = "DIFFY_SYNTAX_SIGNING_KEY";
 const TREE_SITTER_CLI: &str = "0.26.8";
 const TREE_SITTER_VAR: &str = "TREE_SITTER";
-/// What `bundle` compiles in when no languages are named. `markdown_inline`
-/// is there because markdown's injection query names it.
+/// `bundle`'s languages when none are named; markdown injects
+/// `markdown_inline`.
 const BUNDLE_DEFAULT: &[&str] = &[
     "c",
     "cpp",
@@ -458,8 +457,8 @@ fn inputs(
     Ok(inputs)
 }
 
-/// Builds `language`'s pack; returns the directory of the C sources it
-/// compiled (generated ones for a `generate` grammar).
+/// Builds `language`'s pack; returns its C source directory (generated for
+/// `generate` grammars).
 fn build(lock: &Lock, language: &str, options: &Options) -> Result<PathBuf, String> {
     let grammar = lock
         .get(language)
@@ -656,7 +655,6 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A C build of the sources in `src` for `target`, objects in `objects`.
 fn c_build(src: &Path, target: &str, objects: &Path) -> cc::Build {
     let mut build = cc::Build::new();
     build
@@ -724,8 +722,7 @@ fn compile(
     run_link(link, output)
 }
 
-/// The command that links a shared library `output` for `target`; the
-/// caller adds the inputs.
+/// Linker command for the shared library `output`; the caller adds inputs.
 fn shared_link(
     compiler: &cc::Tool,
     target: &str,
@@ -771,8 +768,8 @@ fn bundle_library(language: &str) -> String {
     format!("diffy_grammar_{name}")
 }
 
-/// The file name `cc` gives the static library `name` for `target`, and
-/// rustc looks for.
+/// File name of static library `name` on `target`, as `cc` writes and
+/// rustc expects.
 fn static_library_file(target: &str, name: &str) -> String {
     if target.contains("msvc") {
         format!("{name}.lib")
@@ -800,9 +797,8 @@ fn bundle(lock: &Lock, options: &Options) -> Result<(), String> {
     let _ = fs::remove_dir_all(&out);
     let lib_dir = out.join("lib");
     fs::create_dir_all(&lib_dir).map_err(|e| format!("{}: {e}", lib_dir.display()))?;
-    // Packs for this host, whatever the target: building one adapts its
-    // queries to tree-sitter and checks them, and its sample, against the
-    // grammar the bundle compiles from the same sources.
+    // Host packs, whatever the target: building one adapts its queries, and
+    // checking it tests them against the sources the bundle compiles.
     let host = Options {
         target: HOST.to_owned(),
         out: options.work.join("bundle-packs"),
@@ -887,8 +883,8 @@ fn bundle(lock: &Lock, options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-/// Compiles parser.c and its C scanner in `src` into the static library
-/// `library` for `target`, copied into `lib_dir`.
+/// Compiles `src`'s parser.c and C scanner into the static `library` in
+/// `lib_dir`.
 fn compile_static(
     src: &Path,
     scanner: Scanner,
@@ -900,8 +896,8 @@ fn compile_static(
     let _ = fs::remove_dir_all(objects);
     fs::create_dir_all(objects).map_err(|e| format!("{}: {e}", objects.display()))?;
     let mut build = c_build(src, target, objects);
-    // Position-independent so a shared library (a Node addon) can link it;
-    // the dynamic CRT on MSVC, as Rust uses by default.
+    // PIC so shared libraries (Node addons) can link it; dynamic CRT to
+    // match Rust on MSVC.
     build.pic(true).static_crt(false).file(src.join("parser.c"));
     if scanner == Scanner::C {
         build.file(src.join("scanner.c"));
@@ -916,9 +912,8 @@ fn compile_static(
     Ok(())
 }
 
-/// Links every library of the bundle into one shared library, as a
-/// consumer's build would link them into one binary: two grammars defining
-/// the same global symbol fail here, for this target, instead of there.
+/// Links the whole bundle into one shared library, so clashing global
+/// symbols fail here rather than in a consumer's build.
 fn probe_link(options: &Options, symbols: &BTreeSet<String>) -> Result<(), String> {
     let target = &options.target;
     let objects = options
@@ -958,8 +953,8 @@ fn probe_link(options: &Options, symbols: &BTreeSet<String>) -> Result<(), Strin
     run_link(link, &output).map_err(|e| format!("the bundle does not link as one: {e}"))
 }
 
-/// Each bundled grammar's license, the repositories and commits its
-/// sources and queries come from, and the license files found in them.
+/// Per grammar: license, source repositories and commits, and their
+/// license files.
 fn third_party_notices(lock: &Lock, options: &Options) -> Result<String, String> {
     let mut text = String::from(
         "# Third-party notices\n\n\
@@ -978,16 +973,15 @@ fn third_party_notices(lock: &Lock, options: &Options) -> Result<String, String>
         for (index, (repo, rev, root)) in sources.into_iter().enumerate() {
             text.push_str(&format!("Source: {repo} at {rev}\n\n"));
             let licenses = license_files(&root)?;
-            // The grammar's repository holds the C code compiled in; query
-            // repositories (nvim-treesitter-queries-*) carry no license file.
+            // The grammar repository's C code is compiled in, so it must
+            // ship a license.
             if licenses.is_empty() && index == 0 {
                 return Err(format!(
                     "{language}: {repo} at {rev} has no license file to ship"
                 ));
             }
             if licenses.is_empty() && repo.contains("nvim-treesitter-queries-") {
-                // These repositories split out nvim-treesitter's queries,
-                // which it licenses Apache-2.0; the text follows the list.
+                // Split from nvim-treesitter, whose queries are Apache-2.0.
                 nvim_queries = true;
                 text.push_str(
                     "Queries from nvim-treesitter, licensed Apache-2.0 \
@@ -1017,12 +1011,11 @@ fn third_party_notices(lock: &Lock, options: &Options) -> Result<String, String>
     Ok(text)
 }
 
-/// The Apache License 2.0, verbatim.
 const APACHE_2_0: &str = include_str!("../APACHE-2.0.txt");
 
-/// The repository, commit, and checkout of every source a language's
-/// build reads: its grammar, its query repository, and other entries'
-/// files it names (`@<language>/`, `@<language>:q/`).
+/// Repository, commit, and checkout of every source `language`'s build
+/// reads: its grammar, its queries, and other entries it names
+/// (`@<language>/`, `@<language>:q/`).
 fn source_repositories(
     lock: &Lock,
     language: &str,
@@ -1079,7 +1072,7 @@ fn source_repositories(
     Ok(found)
 }
 
-/// The license files at the top of a checkout, by name.
+/// License files at a checkout's top level, sorted.
 fn license_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = fs::read_dir(root).map_err(|e| format!("{}: {e}", root.display()))?;
     let mut found: Vec<PathBuf> = entries

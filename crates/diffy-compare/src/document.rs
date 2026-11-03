@@ -140,8 +140,8 @@ pub fn clean_spans(spans: Vec<SemanticSpan>, text: &str) -> Vec<SemanticSpan> {
     out
 }
 
-/// Builds one file from semantic rows (cleaned, see [`clean_spans`]):
-/// rows become hunks, and lines between rows that differ are line-diffed.
+/// One file from cleaned (see [`clean_spans`]) semantic rows; differing lines
+/// between rows are line-diffed.
 pub fn document_from_rows(
     meta: FileMeta,
     old: TextStore,

@@ -1,55 +1,39 @@
-// Types for @diffy/node. The output types follow Diffy's display format,
-// version 1; the spec of every field is crates/diffy-compare/FORMAT.md:
+// Output follows Diffy's display format, version 1, specified in
 // https://github.com/seatedro/diffy/blob/master/crates/diffy-compare/FORMAT.md
-//
-// Clients must ignore fields they do not know: adding an optional field
-// does not change FORMAT_VERSION.
+// Ignore unknown fields: new optional fields keep FORMAT_VERSION.
 
-/** The display format version of every Document this build returns. */
+/** Display format version of every Document this build returns. */
 export const FORMAT_VERSION: number
 
-/** Canonical names of the grammars compiled into this build, e.g. `"rust"`. */
+/** Canonical names of the bundled grammars, e.g. `"rust"`. */
 export function languages(): string[]
 
 /**
- * Diffs every file off the JS thread. Resolves with one File per input,
- * in input order. Waits in a process-wide FIFO queue while
- * `max_concurrent_requests` others run (see `configure`).
- *
- * Rejects with an `AbortError` (`name === "AbortError"`, `code ===
- * "ABORT_ERR"`, `cause` the signal's reason) when `options.signal` aborts,
- * and with a `TypeError` whose `code` is `"InvalidArg"` for malformed input.
+ * Diffs off the JS thread; one File per input, in order. Waits in a
+ * process-wide FIFO while `max_concurrent_requests` others run.
+ * Rejects with an `AbortError` (`code: "ABORT_ERR"`, `cause`: the signal's
+ * reason) on abort, and a `TypeError` (`code: "InvalidArg"`) for bad input.
  */
 export function diff(request: DiffRequest, options?: DiffOptions): Promise<Document>
 
-/**
- * `diff`, resolving to the Document as the JSON text it was built as, not
- * parsed: for a server forwarding it to clients without parsing it on its
- * event loop. `JSON.parse` of it equals what `diff` resolves to.
- */
+/** `diff`, unparsed: forward the Document's JSON without parsing it on the event loop. */
 export function diffJson(request: DiffRequest, options?: DiffOptions): Promise<string>
 
 /**
- * The context rows of `gap` (a Gap from a Document, or any sub-range of
- * one) of `file`, which must hold the same contents the Document was made
- * from. Fewer rows than `gap.len` come back when the range runs past the
- * end of either side or the sides no longer match there. Rejects with a
- * `TypeError` whose `code` is `"InvalidArg"` for malformed input.
+ * Context rows of `gap` (a Document's Gap or a sub-range of one); `file` must
+ * hold the contents the Document was made from. Fewer than `gap.len` rows past
+ * either side's end or where the sides differ. Bad input rejects as in `diff`.
  */
 export function expand(file: FileInput, gap: Gap, options?: ExpandOptions): Promise<Row[]>
 
-/**
- * Sets the given options, process-wide, and returns all of them. Throws a
- * `TypeError` whose `code` is `"InvalidArg"` for an invalid value.
- */
+/** Sets the given options process-wide; returns all. Throws a `TypeError` (`code: "InvalidArg"`) for a bad value. */
 export function configure(options?: Configuration): Required<Configuration>
 
 export interface Configuration {
   /**
-   * The most `diff` and `diffJson` calls that run at once; later ones wait
-   * their turn. A positive integer. Default: the available cores divided
-   * by 4, at least 1. Raising it starts waiting requests at once; lowering
-   * it lets running ones finish. `expand` is never queued.
+   * Concurrent `diff`/`diffJson` calls; the rest queue. Positive integer.
+   * Default: cores / 4, at least 1. Raising it starts queued calls at once;
+   * lowering it lets running ones finish. `expand` is never queued.
    */
   max_concurrent_requests?: number
 }
@@ -59,9 +43,8 @@ export interface Configuration {
 export type Status = 'modified' | 'added' | 'deleted' | 'renamed' | 'copied'
 
 /**
- * One changed file as the caller read it. Contents are bytes; a string is
- * taken as its UTF-8 encoding. Missing contents are empty. At least one
- * path is required: the language comes from `new_path ?? old_path`.
+ * Contents are bytes; a string means its UTF-8. Missing contents are empty.
+ * Needs a path; the language comes from `new_path ?? old_path`.
  */
 export interface FileInput {
   status: Status
@@ -76,14 +59,12 @@ export interface FileInput {
 export interface DiffRequest {
   files: FileInput[]
   /**
-   * Time budget for the whole request, from the call, so it includes time
-   * queued. Files started after it get line diffs, with
-   * `fallback.kind === "request_budget"`.
-   * With `syntax`, files projected after it get no syntax spans or scope
-   * headers.
+   * Whole-request budget from the call, time queued included. Files started
+   * after it get line diffs (`fallback.kind: "request_budget"`); with
+   * `syntax`, files projected after it get no syntax spans or scope headers.
    */
   budget_ms?: number
-  /** Time budget for each file's semantic diff. Default 400. */
+  /** Per-file semantic diff budget. Default 400. */
   file_budget_ms?: number
   /** Add syntax spans to rows. Default false. */
   syntax?: boolean
@@ -108,7 +89,7 @@ export interface ExpandOptions {
 
 export interface Document {
   version: 1
-  /** In the order the files were requested. */
+  /** In request order. */
   files: File[]
 }
 
@@ -119,9 +100,8 @@ export interface File {
   /** Absent for a deleted file. Show `new_path ?? old_path`. */
   new_path?: string
   /**
-   * The language tag the path names: the extension (`rs`, `ts`) or, for a
-   * file without one, its lowercased name (`dockerfile`). Absent when the
-   * path names none, or when `fallback.kind` is `no_grammar`.
+   * The extension (`rs`) or, without one, the lowercased name (`dockerfile`).
+   * Absent when the path names none or `fallback.kind` is `no_grammar`.
    */
   language?: string
   /** A binary file has no `hunks` and no `gap_after`. */
@@ -136,10 +116,7 @@ export interface File {
   fallback?: Fallback
   /** In file order. Render each hunk's `gap_before`, header, rows; then `gap_after`. */
   hunks?: Hunk[]
-  /**
-   * Unchanged lines after the last hunk. For a file with no hunks
-   * (unchanged, or renamed without edits) this is the whole file.
-   */
+  /** Unchanged lines after the last hunk; the whole file when there are no hunks. */
   gap_after?: Gap
   /** Items the semantic diff found changed: new-side items, then old-side ones. */
   outline?: OutlineItem[]
@@ -151,10 +128,9 @@ export interface File {
 
 export interface Fallback {
   /**
-   * `no_grammar`: no language is known for the path. `grammar_unavailable`:
-   * the path names a language whose grammar could not load. `semantic`: the
-   * semantic diff gave up, see `reason`. `request_budget`: the request's
-   * deadline passed before this file was diffed.
+   * `no_grammar`: no language for the path. `grammar_unavailable`: its grammar
+   * failed to load. `semantic`: the semantic diff gave up, see `reason`.
+   * `request_budget`: the request deadline passed first.
    */
   kind: 'no_grammar' | 'grammar_unavailable' | 'semantic' | 'request_budget'
   /** Present when `kind` is `semantic`. */
@@ -169,9 +145,9 @@ export interface Hunk {
   old_len: number
   new_start: number
   new_len: number
-  /** The item enclosing the hunk's first change, for its header line. */
+  /** Item enclosing the first change, for the header line. */
   header?: string
-  /** Unchanged lines between the previous hunk (or the top of the file) and this one. */
+  /** Unchanged lines since the previous hunk or the top of the file. */
   gap_before?: Gap
   /** In display order; each side's line numbers ascend. */
   rows: Row[]

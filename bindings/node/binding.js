@@ -1,8 +1,7 @@
 'use strict'
 
-// Loads the native addon: $DIFFY_NODE_BINARY (a path, from the working
-// directory) if set, else a local build beside this file (`npm run build`),
-// else this platform's package.
+// Loads $DIFFY_NODE_BINARY (resolved from the cwd), else a local
+// `npm run build` output, else this platform's package.
 
 const { existsSync, readFileSync } = require('node:fs')
 const { join, resolve } = require('node:path')

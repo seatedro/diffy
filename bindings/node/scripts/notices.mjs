@@ -1,11 +1,8 @@
-// Writes RUST_NOTICES.md: every Rust crate compiled into the addon for a
-// target, with its license and the license files it ships. Fails, writing
-// nothing, if a crate's license is not on the permissive allowlist.
+// Writes RUST_NOTICES.md: each Rust crate linked into the addon for a target,
+// with its license files. Fails, writing nothing, on a license outside the
+// allowlist. Grammars are credited in the bundle's THIRD_PARTY_NOTICES.md.
 //
 //   node scripts/notices.mjs [--target TRIPLE] [--out DIR] [--locked]
-//
-// The grammars compiled in are credited separately, in the bundle's
-// THIRD_PARTY_NOTICES.md.
 
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
@@ -14,8 +11,8 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
 const PACKAGE = 'diffy-node'
-// SPDX identifiers that need no more than this notice. MPL-2.0 is
-// file-level copyleft: it binds only the crate's own files, unmodified here.
+// Licenses this notice satisfies. MPL-2.0 binds only the crate's own files,
+// shipped unmodified.
 const PERMITTED = new Set([
   'MIT',
   'Apache-2.0',
@@ -31,8 +28,7 @@ const PERMITTED = new Set([
 ])
 const PERMITTED_EXCEPTIONS = new Set(['LLVM-exception'])
 const LICENSE_FILE = /^(licen[cs]e|copying|notice)/i
-// Crates whose packages ship no license file, with the text from their
-// repository, so their copyright notice is still reproduced.
+// napi-rs crates ship no license file; reproduce their repository's.
 const NAPI_RS = { path: resolve(dirname(fileURLToPath(import.meta.url)), '../notices/napi-rs-LICENSE'), source: 'github.com/napi-rs/napi-rs' }
 const FALLBACK_LICENSES = new Map(['napi', 'napi-sys', 'napi-derive', 'napi-derive-backend'].map((name) => [name, NAPI_RS]))
 
@@ -47,10 +43,9 @@ const { values } = parseArgs({
 const target = values.target ?? hostTriple()
 const locked = values.locked ? ['--locked'] : []
 
-// The crate set comes from `cargo tree`, which resolves features for this
-// package alone, as `cargo build -p` does. `cargo metadata` resolves them
-// for the whole workspace, so its graph also holds crates only the app
-// links (its HTTP client and TLS stack).
+// `cargo tree -p` resolves features for this package alone, as `cargo build
+// -p` does; `cargo metadata` resolves the whole workspace and would add
+// app-only crates (HTTP, TLS).
 const tree = cargo(['tree', '-p', PACKAGE, '-e', 'normal', '--target', target, '--prefix', 'none', '--format', '{p}', ...locked])
 const used = new Set()
 for (const line of tree.split('\n')) {
@@ -90,7 +85,7 @@ const out = [
   '',
   `Diffy's own crates (${ours.map((pkg) => `\`${pkg.name}\``).join(', ')}) are ${[...new Set(ours.map((pkg) => pkg.license))].join('; ')}: see LICENSE-MIT and LICENSE-APACHE.`,
 ]
-// Many crates ship the same license text; it is printed once.
+// Identical license texts are printed once.
 const printed = new Map()
 for (const pkg of theirs) {
   out.push('', `## ${pkg.name} ${pkg.version}`, '', `License: ${pkg.license}`)

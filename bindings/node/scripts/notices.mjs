@@ -31,6 +31,10 @@ const PERMITTED = new Set([
 ])
 const PERMITTED_EXCEPTIONS = new Set(['LLVM-exception'])
 const LICENSE_FILE = /^(licen[cs]e|copying|notice)/i
+// Crates whose packages ship no license file, with the text from their
+// repository, so their copyright notice is still reproduced.
+const NAPI_RS = { path: resolve(dirname(fileURLToPath(import.meta.url)), '../notices/napi-rs-LICENSE'), source: 'github.com/napi-rs/napi-rs' }
+const FALLBACK_LICENSES = new Map(['napi', 'napi-sys', 'napi-derive', 'napi-derive-backend'].map((name) => [name, NAPI_RS]))
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const { values } = parseArgs({
@@ -92,9 +96,12 @@ for (const pkg of theirs) {
   out.push('', `## ${pkg.name} ${pkg.version}`, '', `License: ${pkg.license}`)
   if (pkg.repository) out.push(`Repository: ${pkg.repository}`)
   const files = licenseFiles(pkg)
-  if (files.length === 0) out.push('', `No license file in the package; its license is \`${pkg.license}\`.`)
-  for (const file of files) {
-    const text = readFileSync(resolve(dirname(pkg.manifest_path), file), 'utf8')
+  const fallback = FALLBACK_LICENSES.get(pkg.name)
+  if (files.length === 0 && !fallback) out.push('', `No license file in the package; its license is \`${pkg.license}\`.`)
+  const paths = files.map((file) => [file, resolve(dirname(pkg.manifest_path), file)])
+  if (files.length === 0 && fallback) paths.push([`LICENSE (from ${fallback.source})`, fallback.path])
+  for (const [file, path] of paths) {
+    const text = readFileSync(path, 'utf8')
     const key = text.replaceAll('\r\n', '\n').replace(/[ \t]+$/gm, '').trim()
     const first = printed.get(key)
     if (first) {

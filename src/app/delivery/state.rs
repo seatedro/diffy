@@ -22,7 +22,11 @@ pub const UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 pub enum UpdateState {
     #[default]
     Idle,
+    /// A check the user asked for; its result is announced.
     Checking,
+    /// A background check; it stays quiet unless the user asks for a check
+    /// while it runs.
+    CheckingSilently,
     Downloading(AvailableUpdate),
     ReadyToRestart(StagedUpdate),
     Restarting(StagedUpdate),
@@ -95,7 +99,26 @@ impl DeliveryController {
     }
 
     fn polls_for_updates(&self) -> bool {
-        self.updates_supported && self.auto_update && !self.busy()
+        self.updates_supported
+            && self.auto_update
+            && matches!(self.update, UpdateState::Idle | UpdateState::Failed(_))
+    }
+
+    /// `Some(silent)` while a check runs.
+    fn running_check(&self) -> Option<bool> {
+        match self.update {
+            UpdateState::Checking => Some(false),
+            UpdateState::CheckingSilently => Some(true),
+            _ => None,
+        }
+    }
+
+    fn check_silently(&mut self) -> Reduction {
+        if !self.polls_for_updates() {
+            return Reduction::default();
+        }
+        self.set_update(UpdateState::CheckingSilently)
+            .effect(DeliveryEffect::CheckForUpdates { silent: true })
     }
 
     fn busy(&self) -> bool {
@@ -130,11 +153,7 @@ impl DeliveryController {
         if generation != self.poll_generation {
             return Reduction::default();
         }
-        let mut reduction = if self.polls_for_updates() {
-            Reduction::default().effect(DeliveryEffect::CheckForUpdates { silent: true })
-        } else {
-            Reduction::default()
-        };
+        let mut reduction = self.check_silently();
         reduction.merge(self.schedule_poll());
         reduction
     }
@@ -144,11 +163,7 @@ impl DeliveryController {
             return Reduction::default();
         }
         self.auto_update = auto_update;
-        let mut reduction = if self.polls_for_updates() {
-            Reduction::default().effect(DeliveryEffect::CheckForUpdates { silent: true })
-        } else {
-            Reduction::default()
-        };
+        let mut reduction = self.check_silently();
         reduction.merge(self.schedule_poll());
         reduction
     }
@@ -174,9 +189,7 @@ impl DeliveryController {
                     .map(|&language| language.to_owned()),
             ),
         );
-        if self.polls_for_updates() {
-            reduction = reduction.effect(DeliveryEffect::CheckForUpdates { silent: true });
-        }
+        reduction.merge(self.check_silently());
         reduction.merge(self.schedule_poll());
         reduction
     }
@@ -225,6 +238,14 @@ impl DeliveryController {
         self.update = update;
         Reduction::changed()
     }
+
+    fn update_failed(&mut self, message: String, silent: bool) -> Reduction {
+        if silent {
+            return self.set_update(UpdateState::Idle);
+        }
+        self.set_update(UpdateState::Failed(message.clone()))
+            .intent(Intent::Toast(ToastUpdate::error(message)))
+    }
 }
 
 pub fn grammar_languages(path: &str) -> impl Iterator<Item = String> {
@@ -249,6 +270,10 @@ impl Controller for DeliveryController {
     fn reduce_action(&mut self, action: Self::Action, _cx: &SharedContext) -> Reduction {
         match action {
             DeliveryAction::CheckForUpdates => {
+                // The background check already running answers the user too.
+                if matches!(self.update, UpdateState::CheckingSilently) {
+                    return self.set_update(UpdateState::Checking);
+                }
                 if self.busy() {
                     return Reduction::default();
                 }
@@ -290,8 +315,14 @@ impl Controller for DeliveryController {
     }
 
     fn reduce_event(&mut self, event: Self::Event, _cx: &SharedContext) -> Reduction {
+        // Check results go by the running check rather than the flag the
+        // check started with: a manual check may have adopted a background
+        // one, and a result with no check running changes nothing.
         match event {
-            DeliveryEvent::UpdateAvailable { update, silent } => {
+            DeliveryEvent::UpdateAvailable { update, .. } => {
+                let Some(silent) = self.running_check() else {
+                    return Reduction::default();
+                };
                 let message = format!("Downloading Diffy {}.", update.version);
                 let reduction = self
                     .set_update(UpdateState::Downloading((*update).clone()))
@@ -302,7 +333,10 @@ impl Controller for DeliveryController {
                     reduction.intent(toast(ToastKind::Info, message))
                 }
             }
-            DeliveryEvent::UpdateNotAvailable { silent } => {
+            DeliveryEvent::UpdateNotAvailable { .. } => {
+                let Some(silent) = self.running_check() else {
+                    return Reduction::default();
+                };
                 let reduction = self.set_update(UpdateState::Idle);
                 if silent {
                     reduction
@@ -310,13 +344,14 @@ impl Controller for DeliveryController {
                     reduction.intent(toast(ToastKind::Info, "Diffy is up to date.".to_owned()))
                 }
             }
-            DeliveryEvent::UpdateCheckFailed { message, silent }
-            | DeliveryEvent::UpdateInstallFailed { message, silent } => {
-                if silent {
-                    return self.set_update(UpdateState::Idle);
-                }
-                self.set_update(UpdateState::Failed(message.clone()))
-                    .intent(Intent::Toast(ToastUpdate::error(message)))
+            DeliveryEvent::UpdateCheckFailed { message, .. } => {
+                let Some(silent) = self.running_check() else {
+                    return Reduction::default();
+                };
+                self.update_failed(message, silent)
+            }
+            DeliveryEvent::UpdateInstallFailed { message, silent } => {
+                self.update_failed(message, silent)
             }
             DeliveryEvent::UpdateStaged { staged, silent } => {
                 let message = format!(

@@ -35,7 +35,7 @@ fn row(title: &str, detail: &str, control: AnyElement, last: bool, theme: &Theme
 fn version_detail(update: &UpdateState) -> String {
     let current = format!("Diffy {}", crate::APP_VERSION);
     match update {
-        UpdateState::Idle => current,
+        UpdateState::Idle | UpdateState::CheckingSilently => current,
         UpdateState::Checking => format!("{current} · checking for updates"),
         UpdateState::Downloading(update) => {
             format!("{current} · downloading {}", update.version)

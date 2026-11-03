@@ -3,10 +3,10 @@
 //! Each call copies its input on the JS thread, then does the work on a
 //! thread of its own, never on libuv's pool (which a server's file system,
 //! DNS, and zlib calls share), and settles its promise through a
-//! thread-safe function. Results cross as one JSON string of the display
-//! format, which `index.js` parses.
+//! thread-safe function. `diff` requests wait their turn in [`queue`];
+//! `expand` starts at once. Results cross as one JSON string of the
+//! display format.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -18,9 +18,7 @@ use napi::bindgen_prelude::{Either, Object, Uint8Array};
 use napi::{Env, Error, Result, Status};
 use napi_derive::napi;
 
-/// The semantic diff may run on the request thread itself; give it the
-/// stack the app gives its semantic workers. Only reserved, not committed.
-const STACK_BYTES: usize = 16 << 20;
+mod queue;
 
 #[napi]
 pub const FORMAT_VERSION: u32 = wire::FORMAT_VERSION;
@@ -89,20 +87,54 @@ impl CancelToken {
         }
     }
 
+    /// Stops the request: a queued one is rejected at once and never
+    /// starts; a running one stops at its next file.
     #[napi]
     pub fn cancel(&self) {
         self.flag.store(true, Ordering::Relaxed);
+        queue::cancel(&self.flag);
     }
 }
 
-/// Diffs `request.files` and resolves to the display format's JSON.
+#[napi(object, object_from_js = false)]
+pub struct QueueState {
+    /// The most `diff` requests that run at once.
+    pub limit: u32,
+    pub running: u32,
+    pub queued: u32,
+}
+
+/// Sets the most `diff` requests that run at once, if `limit` is given,
+/// and reports the queue.
+#[napi(js_name = "queue")]
+pub fn queue_state(limit: Option<f64>) -> Result<QueueState> {
+    if let Some(limit) = limit {
+        if !(limit.is_finite() && limit >= 1.0 && limit.fract() == 0.0) {
+            return Err(invalid(format!(
+                "max_concurrent_requests: {limit} is not a positive integer"
+            )));
+        }
+        // Saturates past usize::MAX, which means "no limit" anyway.
+        queue::set_limit(limit as usize);
+    }
+    let state = queue::state();
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    Ok(QueueState {
+        limit: count(state.limit),
+        running: count(state.running),
+        queued: count(state.queued),
+    })
+}
+
+/// Diffs `request.files` and resolves to the display format's JSON, once
+/// the request's turn in the queue comes.
 #[napi]
 pub fn diff<'env>(
     env: &'env Env,
     request: DiffRequest,
     cancel: &CancelToken,
 ) -> Result<Object<'env>> {
-    // The request budget runs from the call, not from when the thread starts.
+    // The request budget runs from the call, so it counts time queued.
     let start = Instant::now();
     let deadline = request
         .budget_ms
@@ -119,7 +151,8 @@ pub fn diff<'env>(
         .map(file_input)
         .collect::<Result<Vec<_>>>()?;
     let flag = Arc::clone(&cancel.flag);
-    spawn(env, "diffy-node-diff", move || {
+    let (deferred, promise) = env.create_deferred()?;
+    let work: queue::Work = Box::new(move || {
         let grammars = grammars();
         let mut options = Options::new(grammars);
         options.file_budget = file_budget;
@@ -138,10 +171,17 @@ pub fn diff<'env>(
             },
         );
         serde_json::to_string(&document).map_err(json_error)
-    })
+    });
+    queue::submit(queue::Job {
+        deferred,
+        cancel: Arc::clone(&cancel.flag),
+        work,
+    });
+    Ok(promise)
 }
 
 /// The context rows of `gap` in `file`, as the display format's JSON.
+/// Never queued: it is one file on one thread, and a user waits on it.
 #[napi]
 pub fn expand<'env>(
     env: &'env Env,
@@ -156,10 +196,17 @@ pub fn expand<'env>(
     };
     let wire = wire_settings(syntax, None)?;
     let input = file_input(file)?;
-    spawn(env, "diffy-node-expand", move || {
+    let (deferred, promise) = env.create_deferred()?;
+    let work: queue::Work = Box::new(move || {
         let rows = wire::expand(&input, &gap, &wire.options(grammars()));
         serde_json::to_string(&rows).map_err(json_error)
-    })
+    });
+    std::thread::Builder::new()
+        .name("diffy-node-expand".to_owned())
+        .stack_size(queue::STACK_BYTES)
+        .spawn(move || queue::settle(deferred, work))
+        .map_err(|error| Error::from_reason(format!("could not start a thread: {error}")))?;
+    Ok(promise)
 }
 
 /// [`WireOptions`] without the borrowed store, so it can cross threads.
@@ -251,32 +298,4 @@ fn compare_error(error: diffy_compare::Error) -> Error {
 
 fn json_error(error: serde_json::Error) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
-}
-
-/// Runs `work` on a new thread and returns a promise of its result. A
-/// panic in `work` rejects the promise; it cannot unwind into Node.
-fn spawn<'env, F>(env: &'env Env, name: &str, work: F) -> Result<Object<'env>>
-where
-    F: FnOnce() -> Result<String> + Send + 'static,
-{
-    let (deferred, promise) = env.create_deferred::<String, _>()?;
-    std::thread::Builder::new()
-        .name(name.to_owned())
-        .stack_size(STACK_BYTES)
-        .spawn(move || match catch_unwind(AssertUnwindSafe(work)) {
-            Ok(Ok(json)) => deferred.resolve(move |_| Ok(json)),
-            Ok(Err(error)) => deferred.reject(error),
-            Err(panic) => deferred.reject(panic_error(panic.as_ref())),
-        })
-        .map_err(|error| Error::from_reason(format!("could not start a thread: {error}")))?;
-    Ok(promise)
-}
-
-fn panic_error(panic: &(dyn std::any::Any + Send)) -> Error {
-    let message = panic
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("unknown panic");
-    Error::new(Status::GenericFailure, format!("diffy panicked: {message}"))
 }

@@ -154,6 +154,13 @@ jobs:
           cp "target/syntax-bundle/$TARGET/THIRD_PARTY_NOTICES.md" "$out/"
           ls -l "$out"
 
+      # Credits the Rust crates linked for this target, and fails on one
+      # whose license is not on the script's allowlist.
+      - name: Write the Rust notices
+        run: |
+          node bindings/node/scripts/notices.mjs --locked --target "$TARGET" --out "bindings/node/npm/$PLATFORM"
+          grep -c '^## ' "bindings/node/npm/$PLATFORM/RUST_NOTICES.md"
+
       - name: Sign ad hoc (macOS)
         if: runner.os == 'macOS'
         run: codesign --force --sign - "bindings/node/npm/$PLATFORM/diffy.$PLATFORM.node"
@@ -210,6 +217,7 @@ jobs:
             cp -R "artifacts/node-$platform/." "$dir"
             test -f "$dir/diffy.$platform.node"
             test -f "$dir/THIRD_PARTY_NOTICES.md"
+            test -f "$dir/RUST_NOTICES.md"
           done
 
       - name: Check versions against the tag

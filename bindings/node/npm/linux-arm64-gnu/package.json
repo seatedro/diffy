@@ -12,6 +12,7 @@
   "files": [
     "diffy.linux-arm64-gnu.node",
     "THIRD_PARTY_NOTICES.md",
+    "RUST_NOTICES.md",
     "LICENSE-MIT",
     "LICENSE-APACHE"
   ],

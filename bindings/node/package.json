@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "notices": "node scripts/notices.mjs",
     "test": "node --test test/diffy.test.mjs"
   },
   "optionalDependencies": {

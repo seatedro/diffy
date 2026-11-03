@@ -210,26 +210,43 @@ fn failure(reply: &Reply, context: &str) -> DiffyError {
 fn settle(credential: u64, quota: Quota, reply: &Reply, errors: &[Value]) -> Result<()> {
     let now = SystemTime::now();
     let mut pauses = PAUSES.lock().unwrap_or_else(PoisonError::into_inner);
-    pauses.retain(|pause| !(pause.credential == credential && pause.quota == quota));
+    // A success doesn't lift a pause still running: its request may have
+    // gone out before the one that was refused.
+    pauses.retain(|pause| {
+        !(pause.credential == credential && pause.quota == quota) || pause.until > now
+    });
     if is_rate_limited(reply.status, &reply.headers, &reply.body, errors) {
-        let until = retry_at(&reply.headers, now);
-        pauses.push(Pause {
+        let until = pause(
+            &mut pauses,
             credential,
             quota,
-            until,
-        });
+            retry_at(&reply.headers, now),
+        );
         return Err(rate_limit_error(until, now));
     }
     if header(&reply.headers, "x-ratelimit-remaining") == Some("0")
         && let Some(until) = reset_at(&reply.headers).filter(|until| *until > now)
     {
-        pauses.push(Pause {
-            credential,
-            quota,
-            until,
-        });
+        pause(&mut pauses, credential, quota, until);
     }
     Ok(())
+}
+
+/// Pauses `credential`'s `quota` until `until`, or until a later pause
+/// already set ends; returns when that is.
+fn pause(pauses: &mut Vec<Pause>, credential: u64, quota: Quota, until: SystemTime) -> SystemTime {
+    let ours = |pause: &Pause| pause.credential == credential && pause.quota == quota;
+    let until = pauses
+        .iter()
+        .filter(|&pause| ours(pause))
+        .fold(until, |until, pause| until.max(pause.until));
+    pauses.retain(|pause| !ours(pause));
+    pauses.push(Pause {
+        credential,
+        quota,
+        until,
+    });
+    until
 }
 
 fn paused(credential: u64, quota: Quota, now: SystemTime) -> Result<()> {

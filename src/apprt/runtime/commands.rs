@@ -113,8 +113,13 @@ impl CommandsRuntime {
                     events.send(CommandsEvent::FilesListed { request, files });
                 });
             }
-            CommandsEffect::ScanRepositories { options, known } => {
+            CommandsEffect::ScanRepositories {
+                generation,
+                options,
+                known,
+            } => {
                 let job = ScanJob {
+                    generation,
                     options: *options,
                     known,
                 };
@@ -163,6 +168,7 @@ impl CommandsRuntime {
 }
 
 struct ScanJob {
+    generation: u64,
     options: RepoDiscovery,
     known: Vec<PathBuf>,
 }
@@ -177,6 +183,7 @@ fn scan_worker_loop(receiver: Receiver<(ScanJob, ScopedEventSender)>) {
             sent_cache = true;
             if let Some(cached) = dir.as_deref().and_then(repo_discovery::load_cache) {
                 events.send(CommandsEvent::RepositoriesScanned {
+                    generation: job.generation,
                     scan: Arc::new(cached),
                     cached: true,
                 });
@@ -189,6 +196,7 @@ fn scan_worker_loop(receiver: Receiver<(ScanJob, ScopedEventSender)>) {
             tracing::warn!(%error, "saving repository scan failed");
         }
         events.send(CommandsEvent::RepositoriesScanned {
+            generation: job.generation,
             scan: Arc::new(scan),
             cached: false,
         });

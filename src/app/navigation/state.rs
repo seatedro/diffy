@@ -757,6 +757,12 @@ impl NavigationController {
     }
 
     fn reconcile_selection(&mut self, reveal: bool) -> Reduction {
+        // The first manifest settles a selection asked for before it, even an
+        // empty one, so the next repository opened doesn't inherit it.
+        let (file_index, file_path) = match &mut self.startup {
+            Some(plan) => (plan.file_index.take(), plan.file_path.take()),
+            None => (None, None),
+        };
         let files = self.files();
         if files.is_empty() {
             let had = self.selection.take().is_some();
@@ -771,15 +777,10 @@ impl NavigationController {
                 f.paths.display_path() == path || f.paths.old_path().is_some_and(|old| old == path)
             })
         };
-        let startup = self.startup.as_ref();
-        let preferred = startup
-            .and_then(|s| s.file_path.as_deref())
+        let preferred = file_path
+            .as_deref()
             .and_then(by_path)
-            .or_else(|| {
-                startup
-                    .and_then(|s| s.file_index)
-                    .and_then(|i| files.get(i))
-            });
+            .or_else(|| file_index.and_then(|i| files.get(i)));
         let current = self.selection.as_ref().and_then(|s| {
             files
                 .iter()
@@ -797,10 +798,6 @@ impl NavigationController {
             && preferred.is_none()
             && current.is_some();
         let path = target.paths.display_path().into_owned();
-        if let Some(plan) = &mut self.startup {
-            plan.file_index = None;
-            plan.file_path = None;
-        }
         if unchanged {
             if let Some(selection) = &mut self.selection {
                 selection.path = path;
@@ -1674,6 +1671,9 @@ impl NavigationController {
             } => {
                 if reason == RepositorySyncReason::Open {
                     self.status = RepoStatus::Failed(message.clone());
+                    // The startup plan was for this repository; the next one
+                    // opens with its own compare.
+                    self.startup = None;
                 }
                 tracing::warn!(path = %path.display(), ?reason, %message, "repository sync failed");
                 Reduction::changed().intent(Intent::Toast(ToastUpdate::error(message)))

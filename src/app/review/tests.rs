@@ -1365,6 +1365,25 @@ fn reply_failure_keeps_the_draft_for_retry() {
 }
 
 #[test]
+fn cancelling_a_reopened_reply_keeps_its_draft() {
+    let mut driver = Driver::signed_in_with_pr();
+    driver.act(ReviewAction::ReplyToThread(driver.thread()));
+    driver.type_text("Half-written reply");
+    // Another composer takes over: the reply stays a draft.
+    driver.act(ReviewAction::OpenComposer);
+    driver.act(ReviewAction::CancelComment);
+
+    driver.act(ReviewAction::ReplyToThread(driver.thread()));
+    assert_eq!(driver.review.host.composer_text(), "Half-written reply");
+    driver.act(ReviewAction::CancelComment);
+
+    let drafts: Vec<_> = driver.session().drafts.values().collect();
+    assert_eq!(drafts.len(), 1);
+    assert!(matches!(drafts[0].kind, ReviewDraftKind::Reply { .. }));
+    assert_eq!(drafts[0].body, "Half-written reply");
+}
+
+#[test]
 fn submit_review_recovers_from_partial_failure() {
     let mut driver = Driver::signed_in_with_pr();
     driver.act(ReviewAction::OpenComposerAt(target(2..3)));

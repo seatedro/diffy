@@ -11,6 +11,13 @@
 //!     does. A registry language that fails is left out and recorded in
 //!     <out>/<triple>/skipped.json; a grammars.toml language fails the build.
 //!     Grammars marked `generate` need tree-sitter CLI 0.26.8 ($TREE_SITTER).
+//! syntax-pack bundle [LANGUAGE...] [--target TRIPLE] [--out DIR] [--sources DIR] [--work DIR] [--jobs N]
+//!     Compile LANGUAGEs (default: BUNDLE_DEFAULT) from their pinned,
+//!     hashed sources into static libraries for TRIPLE, for diffy-syntax's
+//!     `bundled` feature (DIFFY_SYNTAX_BUNDLE=DIR). Each is first built and
+//!     checked as a pack for this host, which adapts its queries. Writes
+//!     <out>/<triple>/: lib/, queries/<language>/, bundle.tsv, and
+//!     THIRD_PARTY_NOTICES.md. --out defaults to <workspace>/target/syntax-bundle.
 //! syntax-pack registry --registry FILE [--extensions FILE] [--jobs N]
 //!     Pin every grammar in nvim-treesitter's registry.json that is not in
 //!     grammars.toml, build and check each for this host, and rewrite
@@ -68,6 +75,27 @@ const HOST: &str = env!("SYNTAX_PACK_HOST");
 const KEY_VAR: &str = "DIFFY_SYNTAX_SIGNING_KEY";
 const TREE_SITTER_CLI: &str = "0.26.8";
 const TREE_SITTER_VAR: &str = "TREE_SITTER";
+/// What `bundle` compiles in when no languages are named. `markdown_inline`
+/// is there because markdown's injection query names it.
+const BUNDLE_DEFAULT: &[&str] = &[
+    "c",
+    "cpp",
+    "css",
+    "go",
+    "html",
+    "javascript",
+    "json",
+    "kotlin",
+    "markdown",
+    "markdown_inline",
+    "python",
+    "rust",
+    "swift",
+    "toml",
+    "tsx",
+    "typescript",
+    "yaml",
+];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -80,6 +108,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Clone)]
 struct Options {
     languages: Vec<String>,
     target: String,
@@ -155,7 +184,7 @@ fn run(args: &[String]) -> Result<(), String> {
             let options = options()?;
             let mut skipped = BTreeMap::new();
             let results = registry::par_map(&options.languages, options.jobs, |language| {
-                build(&lock, language, &options).and_then(|()| {
+                build(&lock, language, &options).and_then(|_| {
                     if options.target == HOST {
                         check_language(&lock, language, &options)
                     } else {
@@ -176,6 +205,16 @@ fn run(args: &[String]) -> Result<(), String> {
                 }
             }
             write_skipped(&options, &skipped)
+        }
+        Some("bundle") => {
+            let mut options = parse_options(&args[1..])?;
+            if options.languages.is_empty() {
+                options.languages = BUNDLE_DEFAULT.iter().map(|l| (*l).to_owned()).collect();
+            }
+            if !args.iter().any(|arg| arg == "--out") {
+                options.out = workspace().join("target/syntax-bundle");
+            }
+            bundle(&lock, &options)
         }
         Some("check") => check(&lock, &options()?),
         Some("index") => index(&lock, &options()?),
@@ -201,7 +240,7 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "usage: syntax-pack build|check|index|verify|remote-check|registry|public-key|list \
+            "usage: syntax-pack build|bundle|check|index|verify|remote-check|registry|public-key|list \
              (see src/main.rs)"
                 .to_owned(),
         ),
@@ -419,7 +458,9 @@ fn inputs(
     Ok(inputs)
 }
 
-fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
+/// Builds `language`'s pack; returns the directory of the C sources it
+/// compiled (generated ones for a `generate` grammar).
+fn build(lock: &Lock, language: &str, options: &Options) -> Result<PathBuf, String> {
     let grammar = lock
         .get(language)
         .ok_or_else(|| format!("{language} is not pinned"))?;
@@ -560,7 +601,7 @@ fn build(lock: &Lock, language: &str, options: &Options) -> Result<(), String> {
         out.join(&library_name).display(),
         manifest.library.size
     );
-    Ok(())
+    Ok(src)
 }
 
 fn pack_file(dir: &Path, name: &str) -> Result<PackFile, String> {
@@ -615,6 +656,22 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A C build of the sources in `src` for `target`, objects in `objects`.
+fn c_build(src: &Path, target: &str, objects: &Path) -> cc::Build {
+    let mut build = cc::Build::new();
+    build
+        .cargo_metadata(false)
+        .cargo_warnings(false)
+        .warnings(false)
+        .target(target)
+        .host(HOST)
+        .opt_level(2)
+        .debug(false)
+        .out_dir(objects)
+        .include(src);
+    build
+}
+
 /// Compiles parser.c and its scanner in `src` into the shared library
 /// `output` for `target`.
 fn compile(
@@ -626,18 +683,8 @@ fn compile(
 ) -> Result<(), String> {
     let _ = fs::remove_dir_all(objects);
     fs::create_dir_all(objects).map_err(|e| e.to_string())?;
-    let mut build = cc::Build::new();
-    build
-        .cargo_metadata(false)
-        .cargo_warnings(false)
-        .warnings(false)
-        .target(target)
-        .host(HOST)
-        .opt_level(2)
-        .debug(false)
-        .out_dir(objects)
-        .include(src)
-        .file(src.join("parser.c"));
+    let mut build = c_build(src, target, objects);
+    build.file(src.join("parser.c"));
     if scanner == Scanner::C {
         build.file(src.join("scanner.c"));
     }
@@ -657,42 +704,15 @@ fn compile(
         .try_compile_intermediates()
         .map_err(|e| e.to_string())?;
     if scanner == Scanner::Cc {
-        let mut cxx = cc::Build::new();
-        cxx.cargo_metadata(false)
-            .cargo_warnings(false)
-            .warnings(false)
-            .cpp(true)
-            .target(target)
-            .host(HOST)
-            .opt_level(2)
-            .debug(false)
-            .out_dir(objects)
-            .include(src)
-            .file(src.join("scanner.cc"));
+        let mut cxx = c_build(src, target, objects);
+        cxx.cpp(true).file(src.join("scanner.cc"));
         if !compiler.is_like_msvc() {
             cxx.flag("-fvisibility=hidden");
         }
         objs.extend(cxx.try_compile_intermediates().map_err(|e| e.to_string())?);
     }
 
-    let mut link = if compiler.is_like_msvc() {
-        let mut link = cc::windows_registry::find_tool(target, "link.exe")
-            .ok_or("link.exe not found; run from a Visual Studio developer shell")?
-            .to_command();
-        link.args(["/NOLOGO", "/DLL"])
-            .arg(format!("/OUT:{}", output.display()))
-            .arg(format!("/IMPLIB:{}", objects.join("parser.lib").display()));
-        link
-    } else {
-        let mut link = compiler.to_command();
-        if target.contains("apple") {
-            link.args(["-dynamiclib", "-Wl,-dead_strip", "-Wl,-x"]);
-        } else {
-            link.args(["-shared", "-s"]);
-        }
-        link.arg("-o").arg(output);
-        link
-    };
+    let mut link = shared_link(&compiler, target, objects, output)?;
     link.args(&objs);
     if scanner == Scanner::Cc && !compiler.is_like_msvc() {
         link.arg(if target.contains("apple") {
@@ -701,11 +721,364 @@ fn compile(
             "-lstdc++"
         });
     }
+    run_link(link, output)
+}
+
+/// The command that links a shared library `output` for `target`; the
+/// caller adds the inputs.
+fn shared_link(
+    compiler: &cc::Tool,
+    target: &str,
+    objects: &Path,
+    output: &Path,
+) -> Result<Command, String> {
+    if compiler.is_like_msvc() {
+        let mut link = cc::windows_registry::find_tool(target, "link.exe")
+            .ok_or("link.exe not found; run from a Visual Studio developer shell")?
+            .to_command();
+        link.args(["/NOLOGO", "/DLL"])
+            .arg(format!("/OUT:{}", output.display()))
+            .arg(format!("/IMPLIB:{}", objects.join("parser.lib").display()));
+        Ok(link)
+    } else {
+        let mut link = compiler.to_command();
+        if target.contains("apple") {
+            link.args(["-dynamiclib", "-Wl,-dead_strip", "-Wl,-x"]);
+        } else {
+            link.args(["-shared", "-s"]);
+        }
+        link.arg("-o").arg(output);
+        Ok(link)
+    }
+}
+
+fn run_link(mut link: Command, output: &Path) -> Result<(), String> {
     let status = link.status().map_err(|e| format!("linker: {e}"))?;
     if !status.success() {
         return Err(format!("linking {} failed: {status}", output.display()));
     }
     Ok(())
+}
+
+// ---- Bundle -------------------------------------------------------------
+
+/// The static library name of a bundled language.
+fn bundle_library(language: &str) -> String {
+    let name: String = language
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("diffy_grammar_{name}")
+}
+
+/// The file name `cc` gives the static library `name` for `target`, and
+/// rustc looks for.
+fn static_library_file(target: &str, name: &str) -> String {
+    if target.contains("msvc") {
+        format!("{name}.lib")
+    } else {
+        format!("lib{name}.a")
+    }
+}
+
+fn bundle(lock: &Lock, options: &Options) -> Result<(), String> {
+    let target = &options.target;
+    let mut libraries = BTreeMap::new();
+    for language in &options.languages {
+        let grammar = lock
+            .get(language)
+            .ok_or_else(|| format!("{language} is not pinned"))?;
+        // Linking one would need the C++ runtime in every consumer.
+        if grammar.scanner == Scanner::Cc {
+            return Err(format!("{language}: C++ scanners cannot be bundled"));
+        }
+        if let Some(other) = libraries.insert(bundle_library(language), language) {
+            return Err(format!("{other} and {language} share a library name"));
+        }
+    }
+    let out = options.out.join(target);
+    let _ = fs::remove_dir_all(&out);
+    let lib_dir = out.join("lib");
+    fs::create_dir_all(&lib_dir).map_err(|e| format!("{}: {e}", lib_dir.display()))?;
+    // Packs for this host, whatever the target: building one adapts its
+    // queries to tree-sitter and checks them, and its sample, against the
+    // grammar the bundle compiles from the same sources.
+    let host = Options {
+        target: HOST.to_owned(),
+        out: options.work.join("bundle-packs"),
+        ..options.clone()
+    };
+    let results = registry::par_map(&options.languages, options.jobs, |language| {
+        let src = build(lock, language, &host)?;
+        check_language(lock, language, &host)?;
+        let grammar = lock
+            .get(language)
+            .ok_or_else(|| format!("{language} is not pinned"))?;
+        let objects = options
+            .work
+            .join("bundle-objects")
+            .join(target)
+            .join(language);
+        let library = bundle_library(language);
+        eprintln!("compiling {language} into {library} for {target}");
+        compile_static(&src, grammar.scanner, target, &objects, &library, &lib_dir)
+            .map_err(|e| format!("{language}: {e}"))
+    });
+    for result in results {
+        result?;
+    }
+
+    let mut table = String::from(
+        "# diffy-syntax bundle 1\n\
+         # language\tsymbol\tabi\tlibrary\taliases\textensions\tsource sha256\n",
+    );
+    let mut symbols = BTreeSet::new();
+    for language in &options.languages {
+        let dir = host.out.join(HOST).join(language);
+        let manifest = pack::read_manifest(&dir).map_err(|e| format!("{language}: {e}"))?;
+        if !symbols.insert(manifest.symbol.clone()) {
+            return Err(format!("{language}: symbol {} is taken", manifest.symbol));
+        }
+        let queries = out.join("queries").join(language);
+        fs::create_dir_all(&queries).map_err(|e| e.to_string())?;
+        for (name, file) in [
+            ("highlights", Some(&manifest.highlights)),
+            ("injections", manifest.injections.as_ref()),
+            ("locals", manifest.locals.as_ref()),
+            ("semantic", manifest.semantic.as_ref()),
+            ("tags", manifest.tags.as_ref()),
+        ] {
+            if let Some(file) = file {
+                let to = queries.join(format!("{name}.scm"));
+                fs::copy(dir.join(&file.path), &to)
+                    .map_err(|e| format!("{}: {e}", to.display()))?;
+            }
+        }
+        let list = |tags: &[String]| match tags.join(",") {
+            joined if joined.is_empty() => "-".to_owned(),
+            joined => joined,
+        };
+        let source = manifest
+            .source
+            .as_ref()
+            .ok_or_else(|| format!("{language}: the pack names no source"))?;
+        table.push_str(&format!(
+            "{language}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            manifest.symbol,
+            manifest.abi,
+            bundle_library(language),
+            list(&manifest.aliases),
+            list(&manifest.extensions),
+            source.sha256,
+        ));
+    }
+    probe_link(options, &symbols)?;
+    let notices = out.join("THIRD_PARTY_NOTICES.md");
+    fs::write(&notices, third_party_notices(lock, options)?)
+        .map_err(|e| format!("{}: {e}", notices.display()))?;
+    // Written last: diffy-syntax refuses a bundle without it.
+    fs::write(out.join("bundle.tsv"), table).map_err(|e| e.to_string())?;
+    for language in &options.languages {
+        let path = lib_dir.join(static_library_file(target, &bundle_library(language)));
+        let size = fs::metadata(&path).map_err(|e| e.to_string())?.len();
+        println!("{} ({size} bytes)", path.display());
+    }
+    println!("{}", out.display());
+    Ok(())
+}
+
+/// Compiles parser.c and its C scanner in `src` into the static library
+/// `library` for `target`, copied into `lib_dir`.
+fn compile_static(
+    src: &Path,
+    scanner: Scanner,
+    target: &str,
+    objects: &Path,
+    library: &str,
+    lib_dir: &Path,
+) -> Result<(), String> {
+    let _ = fs::remove_dir_all(objects);
+    fs::create_dir_all(objects).map_err(|e| format!("{}: {e}", objects.display()))?;
+    let mut build = c_build(src, target, objects);
+    // Position-independent so a shared library (a Node addon) can link it;
+    // the dynamic CRT on MSVC, as Rust uses by default.
+    build.pic(true).static_crt(false).file(src.join("parser.c"));
+    if scanner == Scanner::C {
+        build.file(src.join("scanner.c"));
+    }
+    let compiler = build.try_get_compiler().map_err(|e| e.to_string())?;
+    if !compiler.is_like_msvc() {
+        build.flag("-std=c11").flag("-fvisibility=hidden");
+    }
+    build.try_compile(library).map_err(|e| e.to_string())?;
+    let file = static_library_file(target, library);
+    fs::copy(objects.join(&file), lib_dir.join(&file)).map_err(|e| format!("{file}: {e}"))?;
+    Ok(())
+}
+
+/// Links every library of the bundle into one shared library, as a
+/// consumer's build would link them into one binary: two grammars defining
+/// the same global symbol fail here, for this target, instead of there.
+fn probe_link(options: &Options, symbols: &BTreeSet<String>) -> Result<(), String> {
+    let target = &options.target;
+    let objects = options
+        .work
+        .join("bundle-objects")
+        .join(target)
+        .join("probe");
+    let _ = fs::remove_dir_all(&objects);
+    fs::create_dir_all(&objects).map_err(|e| e.to_string())?;
+    let mut probe = String::new();
+    for symbol in symbols {
+        probe.push_str(&format!("const void *{symbol}(void);\n"));
+    }
+    probe.push_str("const void *(*const diffy_bundle_probe[])(void) = {\n");
+    for symbol in symbols {
+        probe.push_str(&format!("    {symbol},\n"));
+    }
+    probe.push_str("};\n");
+    let source = objects.join("probe.c");
+    fs::write(&source, probe).map_err(|e| e.to_string())?;
+    let mut build = c_build(&objects, target, &objects);
+    build.pic(true).static_crt(false).file(&source);
+    let compiler = build.try_get_compiler().map_err(|e| e.to_string())?;
+    let objs = build
+        .try_compile_intermediates()
+        .map_err(|e| format!("probe: {e}"))?;
+    let output = objects.join(match pack::library_suffix(target) {
+        ".dll" => "probe.dll".to_owned(),
+        suffix => format!("libprobe{suffix}"),
+    });
+    let mut link = shared_link(&compiler, target, &objects, &output)?;
+    link.args(&objs);
+    let lib_dir = options.out.join(target).join("lib");
+    for language in &options.languages {
+        link.arg(lib_dir.join(static_library_file(target, &bundle_library(language))));
+    }
+    run_link(link, &output).map_err(|e| format!("the bundle does not link as one: {e}"))
+}
+
+/// Each bundled grammar's license, the repositories and commits its
+/// sources and queries come from, and the license files found in them.
+fn third_party_notices(lock: &Lock, options: &Options) -> Result<String, String> {
+    let mut text = String::from(
+        "# Third-party notices\n\n\
+         These tree-sitter grammars and queries are compiled into this software.\n",
+    );
+    for language in &options.languages {
+        let grammar = lock
+            .get(language)
+            .ok_or_else(|| format!("{language} is not pinned"))?;
+        text.push_str(&format!(
+            "\n## {language}\n\nLicense: {}\n\n",
+            grammar.license.as_deref().unwrap_or("unknown")
+        ));
+        let sources = source_repositories(lock, language, options)?;
+        for (index, (repo, rev, root)) in sources.into_iter().enumerate() {
+            text.push_str(&format!("Source: {repo} at {rev}\n\n"));
+            let licenses = license_files(&root)?;
+            // The grammar's repository holds the C code compiled in; query
+            // repositories (nvim-treesitter-queries-*) carry no license file.
+            if licenses.is_empty() && index == 0 {
+                return Err(format!(
+                    "{language}: {repo} at {rev} has no license file to ship"
+                ));
+            }
+            if licenses.is_empty() {
+                text.push_str("This repository has no license file.\n\n");
+            }
+            for path in licenses {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                let license = read_text(&path)?;
+                text.push_str(&format!(
+                    "{name}:\n\n```text\n{}\n```\n\n",
+                    license.trim_end()
+                ));
+            }
+        }
+    }
+    Ok(text)
+}
+
+/// The repository, commit, and checkout of every source a language's
+/// build reads: its grammar, its query repository, and other entries'
+/// files it names (`@<language>/`, `@<language>:q/`).
+fn source_repositories(
+    lock: &Lock,
+    language: &str,
+    options: &Options,
+) -> Result<Vec<(String, String, PathBuf)>, String> {
+    let grammar = lock
+        .get(language)
+        .ok_or_else(|| format!("{language} is not pinned"))?;
+    let mut found = vec![(
+        grammar.repo.clone(),
+        grammar.rev.clone(),
+        checkout(lock, language, options)?,
+    )];
+    let names = grammar
+        .include
+        .iter()
+        .chain(&grammar.highlights)
+        .chain(&grammar.injections)
+        .chain(&grammar.locals)
+        .chain(&grammar.tags);
+    for name in names {
+        let (owner, queries) = if name.starts_with("q:") {
+            (language, true)
+        } else if let Some((other, _)) = name.strip_prefix('@').and_then(|r| r.split_once('/')) {
+            match other.strip_suffix(":q") {
+                Some(other) => (other, true),
+                None => (other, false),
+            }
+        } else {
+            continue;
+        };
+        let (source, root) = if queries {
+            let source = lock
+                .queries_of(owner)
+                .ok_or_else(|| format!("{owner} has no pinned queries"))?;
+            (source, queries_checkout(lock, owner, options)?)
+        } else {
+            let other = lock
+                .get(owner)
+                .ok_or_else(|| format!("{owner} is not pinned"))?;
+            let source = Source {
+                repo: other.repo.clone(),
+                rev: other.rev.clone(),
+            };
+            (source, checkout(lock, owner, options)?)
+        };
+        if !found
+            .iter()
+            .any(|(repo, rev, _)| *repo == source.repo && *rev == source.rev)
+        {
+            found.push((source.repo, source.rev, root));
+        }
+    }
+    Ok(found)
+}
+
+/// The license files at the top of a checkout, by name.
+fn license_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = fs::read_dir(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_ascii_uppercase();
+            path.is_file()
+                && ["LICENSE", "LICENCE", "COPYING"]
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+        })
+        .collect();
+    found.sort();
+    Ok(found)
 }
 
 // ---- Check --------------------------------------------------------------

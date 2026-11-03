@@ -1,16 +1,16 @@
 [package]
 name = "diffy-syntax"
-description = "Tree-sitter syntax highlighting for Diffy, with grammars loaded at runtime from signed packs."
+description = "Tree-sitter syntax highlighting for Diffy, with grammars loaded at runtime from signed packs or compiled in."
 version.workspace = true
 edition = "2024"
 rust-version = "1.92"
 license = "MIT OR Apache-2.0"
 publish = false
 
-# No grammar is compiled in. Grammars arrive as packs (a shared library
-# plus queries and a manifest) from a local directory the app names, or
-# from a signed index the app configures; see the crate docs and
-# PACKS.md. Without any feature this crate has no
+# No grammar is compiled in unless `bundled` is on. Grammars arrive as
+# packs (a shared library plus queries and a manifest) from a local
+# directory the app names, or from a signed index the app configures; see
+# the crate docs and PACKS.md. Without any feature this crate has no
 # dependencies and every lookup falls back to plain text.
 [dependencies]
 tree-sitter = { version = "0.26", optional = true }
@@ -43,6 +43,9 @@ engine = [
 ]
 # Downloading packs on demand from a signed index.
 download = ["engine", "dep:quark-update", "dep:ureq"]
+# Grammars compiled in from the bundle `syntax-pack bundle` writes, named
+# by $DIFFY_SYNTAX_BUNDLE at build time (empty, with a warning, without it).
+bundled = ["engine"]
 
 [dev-dependencies]
 tempfile = "3"

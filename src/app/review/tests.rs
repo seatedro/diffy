@@ -18,7 +18,7 @@ use super::{AuthStatus, ReviewController, ReviewOverlay, overlay, view as title_
 use crate::app::shell::Slot;
 use crate::app::text_targets::{REVIEW_COMPOSER, REVIEW_PULLS_FILTER, TextCx, TextHost, focus_id};
 use crate::apprt::services::{GitHubBackend, ReviewServices};
-use crate::contracts::commands::ToastUpdate;
+use crate::contracts::commands::{SettingsSnapshot, ToastUpdate};
 use crate::contracts::navigation::{
     RepositoryContext, RepositoryRevision, RepositorySnapshot, RepositorySyncReason,
 };
@@ -718,6 +718,15 @@ impl Driver {
                 }
                 Intent::SetReviewTarget(review) => self.shared.review = review.clone(),
                 Intent::SettingsChanged(settings) => self.shared.settings = settings.clone(),
+                // Stands in for commands, the settings writer.
+                Intent::EditSettings(edit) => {
+                    let mut settings = self.shared.settings.settings.clone();
+                    edit.apply(&mut settings);
+                    self.shared.settings = Rc::new(SettingsSnapshot {
+                        revision: self.shared.settings.revision + 1,
+                        settings,
+                    });
+                }
                 Intent::PublishManifest(manifest) => self.shared.manifest = Some(manifest.clone()),
                 Intent::RepositoryChanged(repository) => {
                     self.shared.repository = Some(repository.clone())

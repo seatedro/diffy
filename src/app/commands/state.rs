@@ -2571,6 +2571,7 @@ impl Controller for CommandsController {
                 }
                 Reduction::changed()
             }
+            Intent::EditSettings(edit) => self.update_settings(|s| edit.apply(s)),
             Intent::SettingsChanged(snapshot) => {
                 if Rc::ptr_eq(snapshot, &self.settings) || **snapshot == *self.settings {
                     return Reduction::default();

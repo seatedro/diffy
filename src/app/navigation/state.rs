@@ -13,7 +13,7 @@ use super::smart_sort::{Finish, SmartSort, SortStatus};
 
 use crate::app::text_targets::{SIDEBAR_FILTER, TextCx, TextHost};
 use crate::contracts::commands::{
-    CommandsAction, RefPickerRequest, SettingsSnapshot, ToastKind, ToastUpdate,
+    CommandsAction, RefPickerRequest, SettingsEdit, ToastKind, ToastUpdate,
 };
 use crate::contracts::navigation::{
     CompareField, HistoryRequest, NavigationAction, NavigationEffect, NavigationEvent,
@@ -33,7 +33,7 @@ use crate::contracts::viewport::pipeline::{
 use crate::core::compare::{CompareMode, LayoutMode, RendererKind};
 use crate::core::ref_catalog::WORKING_TREE_LABEL;
 use crate::core::vcs::model::{RefKind, VcsChange, VcsCompareRequest, VcsCompareSpec, VcsKind};
-use crate::platform::persistence::{PersistedCompare, Settings};
+use crate::platform::persistence::PersistedCompare;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoStatus {
@@ -862,18 +862,10 @@ impl NavigationController {
             layout: self.compare.layout,
             renderer: self.compare.renderer,
         };
-        let current = &cx.settings.settings;
-        if current.last_compare.as_ref() == Some(&compare) {
+        if cx.settings.settings.last_compare.as_ref() == Some(&compare) {
             return None;
         }
-        let settings = Settings {
-            last_compare: Some(compare),
-            ..current.clone()
-        };
-        Some(Intent::SettingsChanged(Rc::new(SettingsSnapshot {
-            revision: cx.settings.revision + 1,
-            settings,
-        })))
+        Some(Intent::EditSettings(SettingsEdit::LastCompare(compare)))
     }
 
     fn history_range(&self) -> Option<(String, String)> {

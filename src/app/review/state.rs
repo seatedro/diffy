@@ -13,7 +13,7 @@ use super::presentation::{CardHost, ReviewPresentation};
 use super::pulls::PullsPage;
 use crate::app::text_targets::{REVIEW_COMPOSER, REVIEW_PULLS_FILTER, TextCx, TextHost};
 use crate::contracts::commands::{
-    CommandDescriptor, CommandSource, CommandsAction, SettingsSnapshot, ToastKind, ToastUpdate,
+    CommandDescriptor, CommandSource, CommandsAction, SettingsEdit, ToastKind, ToastUpdate,
 };
 use crate::contracts::navigation::SelectionOrigin;
 use crate::contracts::review::{
@@ -1055,12 +1055,7 @@ impl ReviewController {
         if cx.settings.settings.github_user == user {
             return Reduction::default();
         }
-        let mut settings = cx.settings.settings.clone();
-        settings.github_user = user;
-        Reduction::default().intent(Intent::SettingsChanged(Rc::new(SettingsSnapshot {
-            revision: cx.settings.revision + 1,
-            settings,
-        })))
+        Reduction::default().intent(Intent::EditSettings(SettingsEdit::GitHubUser(user)))
     }
 
     fn open_composer(&mut self, target: ComposerTarget, body: &str) -> Reduction {

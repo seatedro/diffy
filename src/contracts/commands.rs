@@ -386,10 +386,18 @@ pub enum CommandsEvent {
 }
 
 impl CommandsEvent {
+    /// Results that don't belong to a repository. A scan or a settings save
+    /// started just before a workspace switch, as `--repo` startup does in
+    /// the same turn, must still land.
     pub fn app_scoped(&self) -> bool {
         matches!(
             self,
-            Self::CloneProgress { .. } | Self::CloneFinished { .. }
+            Self::SettingsSaved
+                | Self::SettingsSaveFailed { .. }
+                | Self::FontCatalogReady { .. }
+                | Self::RepositoriesScanned { .. }
+                | Self::CloneProgress { .. }
+                | Self::CloneFinished { .. }
         )
     }
 }

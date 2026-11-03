@@ -27,7 +27,7 @@ use crate::contracts::commands::{
 };
 use crate::contracts::navigation::{CompareField, NavigationAction, RepositorySyncReason};
 use crate::contracts::review::{GitHubRequest, ReviewAction, ReviewEffect, ReviewEvent};
-use crate::contracts::shared::{JobId, SharedContext};
+use crate::contracts::shared::{JobId, SharedContext, WorkspaceEpoch};
 use crate::contracts::shell::{
     Action, Controller, Effect, Intent, LogicalFocus, Reduction, ShellAction, ShellEffect,
     ShellEvent,
@@ -1245,6 +1245,42 @@ fn enter_and_arrows_in_the_launcher_open_a_repository() {
     assert_eq!(opened_repo(&ui), Some(PathBuf::from("/w/beta")));
     assert!(ui.try_find(By::role_name(Role::Main, "Launcher")).is_none());
     assert_eq!(ui.focus(), Some(SIDEBAR));
+}
+
+#[test]
+fn app_wide_results_started_before_the_startup_repository_opens_still_land() {
+    let mut args = no_args();
+    args.repo = Some(PathBuf::from(super::fixtures::REPO));
+    let mut ui = harness::harness_with(startup(args, Settings::default()));
+    assert_eq!(ui.app().0.shared().workspace, WorkspaceEpoch(1));
+    assert!(effects(&ui).iter().any(|effect| matches!(
+        effect,
+        Effect::Commands(CommandsEffect::ScanRepositories { .. })
+    )));
+
+    harness::deliver_at(
+        &mut ui,
+        WorkspaceEpoch(0),
+        CommandsEvent::RepositoriesScanned {
+            scan: Arc::new(RepoScan::default()),
+            cached: false,
+        },
+    );
+    let (scan, scanning) = ui.app().0.controllers().commands.repo_scan_status();
+    assert!(scan.is_some());
+    assert!(!scanning);
+
+    harness::deliver_at(
+        &mut ui,
+        WorkspaceEpoch(0),
+        CommandsEvent::SettingsSaveFailed {
+            message: "disk full".to_owned(),
+        },
+    );
+    ui.find(By::role_name(
+        Role::Alert,
+        "Settings were not saved: disk full",
+    ));
 }
 
 #[test]

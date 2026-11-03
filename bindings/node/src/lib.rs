@@ -6,7 +6,7 @@
 //! Results cross as one JSON string.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use diffy_compare::wire::{self, WireOptions};
@@ -192,11 +192,27 @@ pub fn expand<'env>(
         let rows = wire::expand(&input, &gap, &wire.options(grammars()));
         serde_json::to_string(&rows).map_err(json_error)
     });
-    std::thread::Builder::new()
+    // Sent only once the thread exists: a failed spawn drops its closure,
+    // and the promise must still be settled.
+    let (sender, receiver) = mpsc::sync_channel::<(queue::Deferred, queue::Work)>(1);
+    let spawned = std::thread::Builder::new()
         .name("diffy-node-expand".to_owned())
         .stack_size(queue::STACK_BYTES)
-        .spawn(move || queue::settle(deferred, work))
-        .map_err(|error| Error::from_reason(format!("could not start a thread: {error}")))?;
+        .spawn(move || {
+            if let Ok((deferred, work)) = receiver.recv() {
+                queue::settle(deferred, work);
+            }
+        });
+    let (deferred, error) = match spawned {
+        Ok(_) => match sender.send((deferred, work)) {
+            Ok(()) => return Ok(promise),
+            Err(mpsc::SendError((deferred, _))) => (deferred, "it exited at once".to_owned()),
+        },
+        Err(error) => (deferred, error.to_string()),
+    };
+    deferred.reject(Error::from_reason(format!(
+        "could not start a thread: {error}"
+    )));
     Ok(promise)
 }
 

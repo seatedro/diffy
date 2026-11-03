@@ -6,9 +6,12 @@ use tempfile::TempDir;
 
 use super::{PatchSelection, Side, SideRange, apply_selection};
 use crate::contracts::navigation::RepositorySyncReason;
+use crate::core::compare::RendererKind;
+use crate::core::compare::git::compare_worktree;
 use crate::core::error::Result;
 use crate::core::vcs::discovery;
-use crate::core::vcs::model::{ChangeBucket, FileChange, FileOperation};
+use crate::core::vcs::git::GitService;
+use crate::core::vcs::model::{ChangeBucket, FileChange, FileChangeStatus, FileOperation};
 
 fn run(dir: &Path, program: &str, args: &[&str]) -> Vec<u8> {
     let output = Command::new(program)
@@ -475,4 +478,43 @@ fn commits_amend_and_soft_undo() {
     assert_eq!(index(dir.path(), "f.txt"), b"b\n");
     let head = git(dir.path(), &["log", "-1", "--format=%s"]);
     assert_eq!(head, b"base\n");
+}
+
+/// `f.txt` is edited on a side branch and deleted here, so merging the
+/// branch stops on a modify/delete (`DU`) conflict: the index has no
+/// "ours" stage and `git diff` prints only an "Unmerged path" line.
+fn modify_delete_conflict(dir: &Path) {
+    commit(dir, &[("f.txt", b"a\nb\n")]);
+    git(dir, &["checkout", "-q", "-b", "theirs"]);
+    commit(dir, &[("f.txt", b"theirs\n")]);
+    git(dir, &["checkout", "-q", "-"]);
+    git(dir, &["rm", "-q", "f.txt"]);
+    git(dir, &["commit", "-q", "-m", "drop"]);
+    let merge = Command::new("git")
+        .args(["merge", "-q", "theirs"])
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(!merge.status.success(), "the merge should stop on f.txt");
+}
+
+#[test]
+fn modify_delete_conflict_still_opens_the_working_tree() {
+    let dir = repo();
+    modify_delete_conflict(dir.path());
+    let conflict = change(dir.path(), "f.txt", ChangeBucket::Conflicted);
+    assert_eq!(conflict.status, FileChangeStatus::Conflicted);
+
+    let mut service = GitService::new();
+    service.open(dir.path().to_str().unwrap()).unwrap();
+    let output = compare_worktree(&service, RendererKind::Builtin, None).unwrap();
+    let at = output
+        .entries
+        .iter()
+        .position(|entry| entry.path() == "f.txt")
+        .unwrap();
+    assert_eq!(output.entries[at].bucket, Some(ChangeBucket::Conflicted));
+    assert!(output.document(at).is_some());
 }

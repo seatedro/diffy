@@ -192,7 +192,7 @@ pub struct NavigationController {
     anchor: Option<FileKey>,
     modifiers: Cell<ClickModifiers>,
     banner: RefCell<super::banner::BannerCache>,
-    tags: RefCell<(usize, Rc<HashMap<String, Vec<String>>>)>,
+    tags: RefCell<(Option<RepositoryRevision>, Rc<HashMap<String, Vec<String>>>)>,
     avatars_requested: HashSet<String>,
     scrollbars: [ScrollbarVisibility; 2],
     watched_worktree: Option<PathBuf>,
@@ -242,7 +242,7 @@ impl Default for NavigationController {
             anchor: None,
             modifiers: Cell::new(ClickModifiers::default()),
             banner: RefCell::new(None),
-            tags: RefCell::new((0, Rc::default())),
+            tags: RefCell::new((None, Rc::default())),
             avatars_requested: HashSet::new(),
             scrollbars: Default::default(),
             watched_worktree: None,
@@ -381,7 +381,8 @@ impl NavigationController {
         let Some(repo) = &self.repository else {
             return Rc::default();
         };
-        let identity = Arc::as_ptr(&repo.snapshot) as usize;
+        // Keyed by revision: a freed snapshot's address can come back.
+        let identity = Some(repo.revision);
         let mut cache = self.tags.borrow_mut();
         if cache.0 != identity {
             let mut map: HashMap<String, Vec<String>> = HashMap::new();

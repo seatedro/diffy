@@ -4,7 +4,7 @@ use quark_ui::element::ScrollbarVisibility;
 use quark_ui::text_input::TextField;
 
 use crate::contracts::commands::RefPickerRequest;
-use crate::contracts::navigation::CompareField;
+use crate::contracts::navigation::{CompareField, RepositoryRevision};
 use crate::contracts::viewport::pipeline::DiffSize;
 use crate::core::ref_catalog::{RefCatalog, RefEntry, RefEntryKind, RefResults, RefRow};
 
@@ -17,6 +17,7 @@ pub struct RefPicker {
     pub catalog: Option<Arc<RefCatalog>>,
     pub results: Arc<RefResults>,
     pub catalog_generation: u64,
+    pub catalog_revision: Option<RepositoryRevision>,
     pub filter_generation: u64,
     pub selected: Option<usize>,
     pub scroll_px: f32,
@@ -36,6 +37,7 @@ impl RefPicker {
             catalog: None,
             results: Arc::default(),
             catalog_generation: 0,
+            catalog_revision: None,
             filter_generation: 0,
             selected: None,
             scroll_px: 0.0,

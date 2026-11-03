@@ -262,6 +262,7 @@ impl CommandsAction {
 pub enum CommandsEffect {
     SaveSettings(Box<Settings>),
     ScanRepositories {
+        generation: u64,
         options: Box<RepoDiscovery>,
         known: Vec<PathBuf>,
     },
@@ -366,6 +367,7 @@ pub enum CommandsEvent {
         files: Result<Arc<[String]>, String>,
     },
     RepositoriesScanned {
+        generation: u64,
         scan: Arc<RepoScan>,
         cached: bool,
     },

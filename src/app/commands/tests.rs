@@ -1230,13 +1230,28 @@ fn scanned(ui: &mut harness::Harness, repos: &[(&str, Option<&str>)]) {
             .collect(),
         ..RepoScan::default()
     };
+    let generation = scan_generation(ui);
     harness::deliver(
         ui,
         CommandsEvent::RepositoriesScanned {
+            generation,
             scan: Arc::new(scan),
             cached: false,
         },
     );
+}
+
+fn scan_generation(ui: &harness::Harness) -> u64 {
+    effects(ui)
+        .iter()
+        .rev()
+        .find_map(|effect| match effect {
+            Effect::Commands(CommandsEffect::ScanRepositories { generation, .. }) => {
+                Some(*generation)
+            }
+            _ => None,
+        })
+        .expect("a repository scan was requested")
 }
 
 fn opened_repo(ui: &harness::Harness) -> Option<PathBuf> {
@@ -1322,10 +1337,12 @@ fn app_wide_results_started_before_the_startup_repository_opens_still_land() {
         Effect::Commands(CommandsEffect::ScanRepositories { .. })
     )));
 
+    let generation = scan_generation(&ui);
     harness::deliver_at(
         &mut ui,
         WorkspaceEpoch(0),
         CommandsEvent::RepositoriesScanned {
+            generation,
             scan: Arc::new(RepoScan::default()),
             cached: false,
         },

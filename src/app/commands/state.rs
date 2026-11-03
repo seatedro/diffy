@@ -130,6 +130,7 @@ pub struct CommandsController {
     frecency: Option<FrecencyStore>,
     repo_scan: Option<Arc<RepoScan>>,
     repo_scanning: bool,
+    repo_scan_generation: u64,
     repo_picker_current: Option<PathBuf>,
     launcher: Option<Launcher>,
     clones: Vec<(JobId, String)>,
@@ -188,6 +189,7 @@ impl Default for CommandsController {
             frecency: None,
             repo_scan: None,
             repo_scanning: false,
+            repo_scan_generation: 0,
             repo_picker_current: None,
             launcher: Some(Launcher::default()),
             clones: Vec::new(),
@@ -745,7 +747,9 @@ impl CommandsController {
 
     fn scan_repositories(&mut self) -> Reduction {
         self.repo_scanning = true;
+        self.repo_scan_generation += 1;
         Reduction::changed().effect(CommandsEffect::ScanRepositories {
+            generation: self.repo_scan_generation,
             options: Box::new(self.settings.settings.repo_discovery.clone()),
             known: recent_repo_paths(self.frecency.as_ref(), RECENT_REPOSITORIES),
         })
@@ -2406,7 +2410,16 @@ impl Controller for CommandsController {
                 _ => Reduction::default(),
             },
             CommandsEvent::FilesListed { request, files } => self.files_listed(*request, files),
-            CommandsEvent::RepositoriesScanned { scan, cached } => {
+            CommandsEvent::RepositoriesScanned {
+                generation,
+                scan,
+                cached,
+            } => {
+                // The worker runs one scan at a time; until the newest one
+                // reports, an older one's roots are stale and it's still busy.
+                if !cached && generation != self.repo_scan_generation {
+                    return Reduction::default();
+                }
                 if !cached {
                     self.repo_scanning = false;
                 }

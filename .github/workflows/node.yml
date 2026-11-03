@@ -31,6 +31,8 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "11.0"
   # The oldest glibc the Linux binaries may need (manylinux_2_28).
   MAX_GLIBC: "2.28"
+  # .cargo/config.toml's macOS runner signs with a local identity CI lacks.
+  DIFFY_SKIP_CODESIGN: "1"
 
 jobs:
   build:
@@ -72,11 +74,12 @@ jobs:
     steps:
       # Before checkout, which needs git for the submodule. The image's GCC
       # replaces .cargo/config.toml's clang (keeping -fuse-ld=lld) so the
-      # grammars and the Rust link use the image's glibc.
+      # grammars and the Rust link use the image's glibc. libclang is for
+      # bindgen in tree-sitter-cli's QuickJS.
       - name: Install build tools (manylinux)
         if: matrix.container
         run: |
-          dnf install -y git lld
+          dnf install -y git lld clang-devel
           echo "CC=gcc" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_$(echo "$TARGET" | tr 'a-z-' 'A-Z_')_LINKER=gcc" >> "$GITHUB_ENV"
 

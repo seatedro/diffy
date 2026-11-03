@@ -299,8 +299,12 @@ pub fn init_pull_request_cache(dir: &Path, owner: &str, repo: &str) -> Result<()
         .parent()
         .ok_or_else(|| DiffyError::General(format!("{} has no parent", dir.display())))?;
     std::fs::create_dir_all(parent).map_err(|error| io("create", parent, error))?;
+    // One build dir per call: concurrent prepares in this process must not
+    // remove each other's half-built repository.
+    static BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let build = BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let building = parent.join(format!(
-        ".{}.{}",
+        ".{}.{}.{build}",
         dir.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("cache"),

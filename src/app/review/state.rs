@@ -837,6 +837,7 @@ impl ReviewController {
         }
         self.pr = None;
         self.composer = None;
+        self.host.clear_composer();
         self.overview = OverviewState::default();
         self.expanded.clear();
         self.in_flight.retain(|_, entry| entry.pr.is_none());

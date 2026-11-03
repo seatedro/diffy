@@ -153,6 +153,7 @@ pub enum SemanticReason {
     Unparsed,
     Budget,
     Timeout,
+    Invalid,
 }
 
 impl From<&crate::Fallback> for Fallback {
@@ -162,6 +163,7 @@ impl From<&crate::Fallback> for Fallback {
             crate::Fallback::NoGrammar => (FallbackKind::NoGrammar, None),
             crate::Fallback::GrammarUnavailable(_) => (FallbackKind::GrammarUnavailable, None),
             crate::Fallback::RequestBudget => (FallbackKind::RequestBudget, None),
+            crate::Fallback::Invalid(_) => (FallbackKind::Semantic, Some(SemanticReason::Invalid)),
             crate::Fallback::Semantic(semantic) => {
                 let reason = match semantic {
                     Semantic::TooLarge(_) => SemanticReason::TooLarge,

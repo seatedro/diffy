@@ -73,6 +73,8 @@ pub enum Fallback {
     GrammarUnavailable(String),
     /// The semantic diff gave up.
     Semantic(diffy_semantic::Fallback),
+    /// The semantic diff's rows did not build a document (a bug).
+    Invalid(String),
     /// The request's deadline passed before this file was diffed.
     RequestBudget,
 }
@@ -83,6 +85,7 @@ impl std::fmt::Display for Fallback {
             Self::NoGrammar => f.write_str("no grammar for this file"),
             Self::GrammarUnavailable(tag) => write!(f, "{tag} grammar unavailable"),
             Self::Semantic(fallback) => fallback.fmt(f),
+            Self::Invalid(error) => write!(f, "semantic result unusable: {error}"),
             Self::RequestBudget => f.write_str("request time budget exhausted"),
         }
     }

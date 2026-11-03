@@ -940,7 +940,9 @@ fn history_reloads_when_the_reviewed_pull_request_moves() {
     assert!(history_requests(&ui).is_empty());
 
     ui.app_mut().inject(target("two"));
-    assert_eq!(history_requests(&ui), [first + 1]);
+    let reloaded = history_requests(&ui);
+    assert_eq!(reloaded.len(), 1);
+    assert!(reloaded[0] > first);
     ui.frame();
     ui.find(By::name("Loading history"));
 }

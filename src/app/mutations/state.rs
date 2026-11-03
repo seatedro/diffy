@@ -1111,8 +1111,11 @@ impl MutationsController {
         if !started {
             self.ai.checks = self.ai.checks.saturating_sub(1);
         }
+        // An unreadable diff says nothing about whether it moved, so the
+        // generation carries on.
         let Some(staged) = staged else {
-            return self.stop_stale_generation();
+            self.settle_generation();
+            return Reduction::changed();
         };
         let expected = if started {
             let observed = self.ai.observed.take();

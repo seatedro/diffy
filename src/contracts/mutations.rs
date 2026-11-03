@@ -485,6 +485,7 @@ pub enum MutationsEvent {
     },
     StagedDiffChecked {
         generation: u64,
+        /// `None` when the diff could not be read.
         staged: Option<StagedDigest>,
     },
     CommitMessageChunk {

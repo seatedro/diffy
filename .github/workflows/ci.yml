@@ -69,14 +69,18 @@ jobs:
           key: ci-linux-v1
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
+      # cargo counts the vendored difftastic as a workspace member despite
+      # the exclude, and its difft binary can't link without the grammars
+      # its default features bundle, so its own targets are skipped. Its
+      # library still builds for semantic-eval.
+      #
       # Compiler warnings and clippy's correctness and suspicious lints fail
       # the build. Style, complexity and perf lints are allowed until the
-      # ones already on master are cleaned up; that also covers the vendored
-      # difftastic, which semantic-eval builds.
+      # ones already on master are cleaned up.
       - name: Clippy
         run: >-
-          cargo clippy --workspace --all-targets --locked --
+          cargo clippy --workspace --exclude difftastic --all-targets --locked --
           -D warnings -A clippy::style -A clippy::complexity -A clippy::perf
 
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --exclude difftastic --locked

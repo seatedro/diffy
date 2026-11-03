@@ -17,6 +17,8 @@ impl StatusBits {
     pub const WT_RENAMED: Self = Self(1 << 8);
     pub const WT_TYPECHANGE: Self = Self(1 << 9);
     pub const CONFLICTED: Self = Self(1 << 10);
+    /// Added with `git add -N`: tracked, with no content staged yet.
+    pub const WT_INTENT_TO_ADD: Self = Self(1 << 11);
 
     pub const fn bits(self) -> u32 {
         self.0
@@ -144,6 +146,8 @@ pub fn status_items_from_entry_with_old_path(
 
     if status.contains(StatusBits::WT_NEW) {
         items.push(item(path.clone(), None, StatusScope::Untracked, "U"));
+    } else if status.contains(StatusBits::WT_INTENT_TO_ADD) {
+        items.push(item(path.clone(), None, StatusScope::Unstaged, "A"));
     } else if status.intersects(StatusBits::WT_MODIFIED | StatusBits::WT_TYPECHANGE) {
         items.push(item(path.clone(), None, StatusScope::Unstaged, "M"));
     } else if status.contains(StatusBits::WT_DELETED) {
@@ -202,6 +206,14 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].scope, StatusScope::Untracked);
         assert_eq!(items[0].status, "U");
+    }
+
+    #[test]
+    fn lists_intent_to_add_as_an_unstaged_add() {
+        let items = status_items_from_entry("new.rs".to_owned(), StatusBits::WT_INTENT_TO_ADD);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].scope, StatusScope::Unstaged);
+        assert_eq!(items[0].status, "A");
     }
 
     #[test]

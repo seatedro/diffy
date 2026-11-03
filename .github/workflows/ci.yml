@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # The optional difftastic dependency is a submodule; cargo metadata
+      # needs its manifest even when the feature is off.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  check:
+    name: clippy and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      # .cargo/config.toml links with clang and lld; the rest are the
+      # windowing, GL and D-Bus headers the app links against.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            lld \
+            libdbus-1-dev \
+            libgl1-mesa-dev \
+            libssl-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            pkg-config
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ci-linux-v1
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      # cargo counts the vendored difftastic as a workspace member despite
+      # the exclude, and its difft binary can't link without the grammars
+      # its default features bundle, so its own targets are skipped. Its
+      # library still builds for semantic-eval.
+      #
+      # Compiler warnings and clippy's correctness and suspicious lints fail
+      # the build. Style, complexity and perf lints are allowed until the
+      # ones already on master are cleaned up.
+      - name: Clippy
+        run: >-
+          cargo clippy --workspace --exclude difftastic --all-targets --locked --
+          -D warnings -A clippy::style -A clippy::complexity -A clippy::perf
+
+      - name: Test
+        run: cargo test --workspace --exclude difftastic --locked

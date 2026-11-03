@@ -394,6 +394,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn words_cover_a_line_only_when_they_span_its_text() {
         assert!(covers_text(&[2..9], "  let x;  "));
         assert!(!covers_text(&[2..5], "  let x;  "));

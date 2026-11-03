@@ -67,6 +67,8 @@ const REF_FRECENCY_PREFIX: &str = "ref:";
 const CLONE_JOBS: u64 = 1 << 48;
 
 const TIP_DELAY_MS: u64 = 8_000;
+// The click that activates the window lands right after the focus change.
+const ACTIVATION_CLICK: std::time::Duration = std::time::Duration::from_millis(1_000);
 
 #[derive(Debug, Clone, Copy)]
 enum TipSession {
@@ -136,7 +138,7 @@ pub struct CommandsController {
     file_lists: Vec<FileList>,
     file_pending: Option<FileListKey>,
     file_generation: u64,
-    go_prefix: bool,
+    go_prefix: Cell<bool>,
     tip: Cell<TipSession>,
     tip_since: Cell<Option<u64>>,
     shortcuts_reviewing: bool,
@@ -144,7 +146,7 @@ pub struct CommandsController {
     go_since: Cell<Option<u64>>,
     row_stride: f32,
     outbox: RefCell<Vec<PlatformRequest>>,
-    activation_click: Cell<bool>,
+    activation_click: Cell<Option<std::time::Instant>>,
 }
 
 impl std::fmt::Debug for CommandsController {
@@ -194,7 +196,7 @@ impl Default for CommandsController {
             file_lists: Vec::new(),
             file_pending: None,
             file_generation: 0,
-            go_prefix: false,
+            go_prefix: Cell::new(false),
             tip: Cell::new(TipSession::Pending),
             tip_since: Cell::new(None),
             shortcuts_reviewing: false,
@@ -202,7 +204,7 @@ impl Default for CommandsController {
             go_since: Cell::new(None),
             row_stride: 0.0,
             outbox: RefCell::new(Vec::new()),
-            activation_click: Cell::new(false),
+            activation_click: Cell::new(None),
         }
     }
 }
@@ -221,12 +223,26 @@ impl CommandsController {
     }
 
     pub(super) fn observe_window_focus(&self, focused: bool) {
+        self.cancel_go();
         self.activation_click
-            .set(focused && !self.layers.is_empty());
+            .set((focused && !self.layers.is_empty()).then(std::time::Instant::now));
     }
 
     pub(super) fn observe_key(&self) {
-        self.activation_click.set(false);
+        self.activation_click.set(None);
+    }
+
+    pub(super) fn observe_pointer_press(&self) {
+        self.cancel_go();
+    }
+
+    /// Whether this dismissal comes from the click that brought the window
+    /// forward, which shouldn't close the overlay it landed on. A later
+    /// first click, after refocusing from the keyboard, is the user's own.
+    fn takes_activation_click(&self) -> bool {
+        self.activation_click
+            .take()
+            .is_some_and(|at| at.elapsed() < ACTIVATION_CLICK)
     }
 
     pub fn editing_ref(&self) -> Option<CompareField> {
@@ -295,7 +311,12 @@ impl CommandsController {
     }
 
     pub fn go_pending(&self) -> bool {
-        self.go_prefix
+        self.go_prefix.get()
+    }
+
+    fn cancel_go(&self) {
+        self.go_prefix.set(false);
+        self.go_since.set(None);
     }
 
     pub(super) fn go_since(&self, now_ms: u64) -> u64 {
@@ -305,8 +326,7 @@ impl CommandsController {
     }
 
     fn leader(&mut self, binding: &str, cx: &SharedContext) -> Reduction {
-        self.go_prefix = false;
-        self.go_since.set(None);
+        self.cancel_go();
         match keymap::leader(binding) {
             Some(leader) => {
                 let mut reduction = self.run(leader.action(), cx);
@@ -534,6 +554,8 @@ impl CommandsController {
         if self.modal_open() && kind != LayerKind::Confirmation {
             return None;
         }
+        // Keys belong to the overlay now, not a leader sequence begun earlier.
+        self.cancel_go();
         let mut return_focus = self.current_focus();
         while let Some(layer) = self.layers.pop() {
             self.clear_layer(layer.kind);
@@ -1259,6 +1281,7 @@ impl CommandsController {
         if self.modal_open() {
             return Reduction::default();
         }
+        self.cancel_go();
         while let Some(kind) = self.top_layer() {
             self.pop_layer(kind);
         }
@@ -1399,7 +1422,7 @@ impl CommandsController {
 
     fn run_shortcut(&mut self, command: ShortcutCommand, cx: &SharedContext) -> Reduction {
         if command == ShortcutCommand::GoPrefix {
-            self.go_prefix = true;
+            self.go_prefix.set(true);
             self.go_since.set(None);
             return Reduction::changed();
         }
@@ -2077,7 +2100,7 @@ impl Controller for CommandsController {
             A::OpenKeymaps => self.open_settings(Some(SettingsSection::Keymaps)),
             A::CloseOverlay => self.close_top(),
             A::BackdropDismiss => {
-                if self.activation_click.replace(false) {
+                if self.takes_activation_click() {
                     Reduction::default()
                 } else {
                     self.close_top()
@@ -2159,11 +2182,11 @@ impl Controller for CommandsController {
                 Some(LayerKind::ContextMenu) => self.context_menu_key(&binding, cx),
                 _ => Reduction::default(),
             },
-            A::Palette(PaletteEvent::Dismiss) if self.activation_click.replace(false) => {
+            A::Palette(PaletteEvent::Dismiss) if self.takes_activation_click() => {
                 Reduction::default()
             }
             A::Palette(event) => {
-                self.activation_click.set(false);
+                self.activation_click.set(None);
                 let outcome = self.palette.apply(event);
                 self.palette_outcome(outcome, cx)
             }
@@ -2501,6 +2524,7 @@ impl Controller for CommandsController {
                     self.pop_layer(kind);
                 }
                 self.file_pending = None;
+                self.cancel_go();
                 if self.layers.is_empty() && self.view_focus == Some(LAUNCHER) {
                     self.view_focus = Some(crate::app::text_targets::SIDEBAR);
                     self.focus(self.view_focus);

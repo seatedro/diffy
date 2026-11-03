@@ -99,7 +99,8 @@ binary as an optional dependency:
 
 There is no musl build. Installing with `--omit=optional` leaves the binary
 out. Each platform package ships `THIRD_PARTY_NOTICES.md`, which lists the
-grammars compiled in and their licenses.
+grammars compiled in and their licenses, and `RUST_NOTICES.md`, which lists
+the Rust crates compiled in with their licenses and license texts.
 
 For Electron, unpack `*.node` from the asar archive (for example with
 electron-builder's `asarUnpack`).
@@ -119,6 +120,10 @@ npm test
 The build uses the workspace's `node` profile: `release`, but with
 `panic = "unwind"` so that panics can be caught. Set
 `DIFFY_NODE_BINARY=path/to/diffy.node` to load a specific binary.
+
+`npm run notices -- --target TRIPLE --out DIR` writes `DIR/RUST_NOTICES.md`
+for the crates `diffy-node` links on that target, and fails if any has a
+license outside its allowlist of permissive ones.
 
 `.github/workflows/node.yml` builds and tests every platform. Linux builds
 run inside manylinux_2_28, so their binaries need glibc 2.28 at most, and

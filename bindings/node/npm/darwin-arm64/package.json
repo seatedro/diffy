@@ -12,6 +12,7 @@
   "files": [
     "diffy.darwin-arm64.node",
     "THIRD_PARTY_NOTICES.md",
+    "RUST_NOTICES.md",
     "LICENSE-MIT",
     "LICENSE-APACHE"
   ],

@@ -311,6 +311,8 @@ pub enum MutationsEffect {
         job: JobId,
         repo_path: PathBuf,
         remote: String,
+        /// Local branch to fast-forward to its configured upstream, whose
+        /// name may differ.
         branch: String,
     },
     LoadAiKeys,

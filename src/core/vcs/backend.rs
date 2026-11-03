@@ -156,6 +156,8 @@ pub trait VcsRepository: Send {
     fn publish(&mut self, _action: &PublishAction) -> Result<PublishOutcome> {
         Err(unsupported_operation(self.location(), "publish"))
     }
+    /// Fetch `remote`, then fast-forward the local `branch` to its
+    /// configured upstream.
     fn pull_fast_forward(
         &mut self,
         _remote: &str,
